@@ -316,6 +316,44 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(result["b1_job_id"], "job_existing")
         self.assertEqual(fake_database.inserted, [])
 
+    def test_image_generation_idempotency_returns_existing_before_alias_resolution(self) -> None:
+        payload = {"model": "image-default", "prompt": "castle"}
+        existing = job_row(idempotency_key="img_1", request_params=media_job_request_params(input=payload))
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+
+        def fail_resolver(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("idempotent image generation replay should not resolve mutable aliases")
+
+        self.patch_attr("resolve_catalog_alias_for_auth", fail_resolver)
+
+        result = asyncio.run(main.image_generations(payload, idempotency_key="img_1"))
+
+        self.assertEqual(result["b1_job_id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_media_job_idempotency_returns_existing_before_workflow_or_alias_checks(self) -> None:
+        payload = media_job_payload(input={"workflow_id": "workflow_1", "workflow_version": "1.0.0", "parameters": {"prompt": "castle"}})
+        existing = job_row(idempotency_key="media_1", request_params=payload.model_dump())
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:write"})))
+
+        async def fail_workflow_check(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("idempotent media-job replay should not revalidate mutable workflow state")
+
+        def fail_resolver(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("idempotent media-job replay should not resolve mutable aliases")
+
+        self.patch_attr("enforce_workflow_backed_media_job", fail_workflow_check)
+        self.patch_attr("resolve_catalog_alias_for_auth", fail_resolver)
+
+        result = asyncio.run(main.media_job_create(payload, idempotency_key="media_1"))
+
+        self.assertEqual(result["id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
+
     def test_media_upload_rejects_artifact_storage_limit_before_staging(self) -> None:
         self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:write"})))
         with tempfile.TemporaryDirectory() as tmp:

@@ -6959,12 +6959,19 @@ async def image_generations(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "inference:write")
-    model = payload.get("model", "image-default")
+    job_payload = MediaJobCreate(modality="image", operation="generation", model=payload.get("model", "image-default"), input=payload)
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, job_payload)
+            return openai_image_job_response(existing)
+    model = job_payload.model
     resolution = resolve_catalog_alias_for_auth(model, "image", auth, payload.get("runtime_policy", "any"), operation="image-generation")
     job = await create_job_record(
         auth.subject_id,
-        MediaJobCreate(modality="image", operation="generation", model=payload.get("model", "image-default"), input=payload),
-        idempotency_key=idempotency_key,
+        job_payload,
+        idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )
     return openai_image_job_response(job)
@@ -7026,9 +7033,15 @@ async def media_job_create(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:write")
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, payload)
+            return jsonable_encoder(existing)
     await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
-    job = await create_job_record(auth.subject_id, payload, idempotency_key=idempotency_key, resolution=resolution)
+    job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
     return jsonable_encoder(job)
 
 

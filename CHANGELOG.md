@@ -43,3 +43,4 @@
 - Tightened durable media-job idempotency so invalid keys are rejected, reused keys must match the original job identity, and image-edit replays avoid restaging upload data.
 - Restricted runtime reservation creation to configured GPU runtimes so CPU-only or external adapters cannot create scheduler records that the GPU lease will never enforce.
 - Scoped Model Hub catalog responses to each dedicated client's `allowed_models` policy so limited workstation keys cannot discover unrelated aliases or manifests.
+- Moved media-job and image-generation idempotent replay checks ahead of mutable workflow and alias validation so retries return the original durable job after catalog or workflow changes.
