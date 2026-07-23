@@ -104,6 +104,26 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             main.current_request.reset(token)
 
+    async def test_modelhub_blob_requires_acceptance_for_gated_licence(self) -> None:
+        auth = AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"*"}))
+        record = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "license": {"name": "Example", "redistribution": "downloadable", "acceptance_required": True},
+        }
+
+        original_records = main.downloadable_records_for_blob
+        main.downloadable_records_for_blob = lambda sha256: [record]
+        self.addCleanup(lambda: setattr(main, "downloadable_records_for_blob", original_records))
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.require_modelhub_blob_authorized(auth, "a" * 64, set())
+        self.assertEqual(raised.exception.status_code, 428)
+        self.assertEqual(raised.exception.detail["required_model_refs"], ["downloadable-llm@1.0.0"])
+
+        await main.require_modelhub_blob_authorized(auth, "a" * 64, {"downloadable-llm@1.0.0"})
+
     async def test_modelhub_blob_rate_limit_can_be_disabled(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")
         main.settings = replace(main.settings, modelhub_blob_requests_per_minute=0)

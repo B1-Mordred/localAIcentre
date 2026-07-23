@@ -461,7 +461,7 @@ When `POST /v1/media/jobs` includes `input.workflow_id` and `input.workflow_vers
 
 ## Model Hub Blobs
 
-Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
+Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable. If every allowed catalog record for the blob sets `license.acceptance_required=true`, the request must include `X-B1-Accept-License: model_id@version`; otherwise the control plane returns HTTP 428 with the required model refs. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
 
 Supported blob response behaviour:
 
@@ -492,7 +492,7 @@ Inference-only model manifests remain visible in the catalog but are not downloa
 
 The response contains deterministic `keep`, `download`, `replace`, or `skip` actions. Download actions include the blob URL, expected byte size, ETag, licence metadata, redacted source metadata, execution modes, resource estimate, and the resolved immutable model version. Inference-only models return a `skip` action instead of a blob URL, with the same policy metadata so clients can explain why the model must be consumed through hosted inference.
 
-Official `b1-model-client sync` runs refuse `keep`, `download`, or `replace` actions whose manifest sets `license.acceptance_required=true` unless the operator reruns with `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` after reviewing `b1-model-client plan`.
+Official `b1-model-client sync` runs refuse `keep`, `download`, or `replace` actions whose manifest sets `license.acceptance_required=true` unless the operator reruns with `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` after reviewing `b1-model-client plan`. When accepted, the client sends `X-B1-Accept-License` with the resolved immutable model refs on each blob request that needs it.
 
 ## Model Hub Clients
 

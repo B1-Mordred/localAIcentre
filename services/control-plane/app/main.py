@@ -3776,15 +3776,29 @@ async def require_modelhub_model_authorized(auth: AuthContext, model_id: str, *,
     return client
 
 
-async def require_modelhub_blob_authorized(auth: AuthContext, sha256: str) -> None:
+async def require_modelhub_blob_authorized(auth: AuthContext, sha256: str, accepted_license_refs: set[str] | None = None) -> None:
     records = downloadable_records_for_blob(sha256)
     if not records:
         raise HTTPException(status_code=403, detail="blob is not downloadable by catalog policy")
     client = await modelhub_client_for_auth(auth)
     if client is not None and not client.get("allow_downloads", True):
         raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download blobs")
-    if client is not None and not any(model_allowed_by_client(client, record["id"], record) for record in records):
+    allowed_records = records
+    if client is not None:
+        allowed_records = [record for record in records if model_allowed_by_client(client, record["id"], record)]
+    if not allowed_records:
         raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download this blob")
+    accepted = accepted_license_refs or set()
+    if not any(modelhub_policy.record_license_acceptance_satisfied(record, accepted) for record in allowed_records):
+        required_refs = sorted(filter(None, (modelhub_policy.model_ref_for_record(record) for record in allowed_records)))
+        raise HTTPException(
+            status_code=428,
+            detail={
+                "error": "licence acceptance is required before downloading this blob",
+                "accepted_header": "X-B1-Accept-License",
+                "required_model_refs": required_refs,
+            },
+        )
 
 
 def validate_modelhub_allowed_models(allowed_models: list[str]) -> list[str]:
@@ -6692,10 +6706,19 @@ async def modelhub_versions(model_id: str, authorization: str | None = Header(de
 
 @app.get("/modelhub/v1/blobs/{sha256}")
 @app.head("/modelhub/v1/blobs/{sha256}")
-async def modelhub_blob(sha256: str, request: Request, authorization: str | None = Header(default=None)) -> Response:
+async def modelhub_blob(
+    sha256: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_b1_accept_license: str | None = Header(default=None, alias="X-B1-Accept-License"),
+) -> Response:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:sync")
-    await require_modelhub_blob_authorized(auth, sha256)
+    try:
+        accepted_license_refs = modelhub_policy.parse_accepted_license_refs(x_b1_accept_license)
+    except CatalogError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await require_modelhub_blob_authorized(auth, sha256, accepted_license_refs)
     rate_headers = await enforce_modelhub_blob_rate_limit(auth)
     response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request)
     for key, value in rate_headers.items():

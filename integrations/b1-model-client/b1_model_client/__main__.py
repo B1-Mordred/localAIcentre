@@ -280,7 +280,16 @@ def expected_etag(sha256: str) -> str:
     return f'"sha256:{sha256.lower()}"'
 
 
-def download_blob(base_url: str, token: str | None, sha256: str, expected_size: int, target: Path, *, source: dict[str, Any] | None = None) -> dict[str, Any]:
+def download_blob(
+    base_url: str,
+    token: str | None,
+    sha256: str,
+    expected_size: int,
+    target: Path,
+    *,
+    source: dict[str, Any] | None = None,
+    accept_licenses: bool = False,
+) -> dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".partial")
     if target.exists() and sha256_file(target) == sha256:
@@ -298,6 +307,10 @@ def download_blob(base_url: str, token: str | None, sha256: str, expected_size: 
     request.add_header("Accept", "application/octet-stream")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    if accept_licenses and source:
+        accepted_refs = accepted_license_refs_for_action(source)
+        if accepted_refs:
+            request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
     if resume_from:
         request.add_header("Range", f"bytes={resume_from}-")
 
@@ -407,6 +420,17 @@ def action_requires_license_acceptance(action: dict[str, Any]) -> bool:
     return bool(action.get("requires_license_acceptance") or metadata.get("requires_license_acceptance") or license_info.get("acceptance_required"))
 
 
+def accepted_license_refs_for_action(action: dict[str, Any]) -> list[str]:
+    if not action_requires_license_acceptance(action):
+        return []
+    metadata = action.get("model_metadata") if isinstance(action.get("model_metadata"), dict) else {}
+    model_id = metadata.get("id") or action.get("model_id")
+    version = metadata.get("version") or action.get("version")
+    if isinstance(model_id, str) and model_id and isinstance(version, str) and version:
+        return [f"{model_id}@{version}"]
+    return []
+
+
 def license_acceptance_required_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         action
@@ -460,7 +484,15 @@ def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], 
         if action["action"] not in {"download", "replace"}:
             results.append(action)
             continue
-        result = download_blob(base_url, token, action["blob"], int(action["expected_size"]), Path(action["path"]), source=action)
+        result = download_blob(
+            base_url,
+            token,
+            action["blob"],
+            int(action["expected_size"]),
+            Path(action["path"]),
+            source=action,
+            accept_licenses=accept_licenses,
+        )
         mark_managed_blob(state, action["blob"], int(action["expected_size"]), action)
         results.append(result)
     save_state(cache, state)

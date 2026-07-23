@@ -230,7 +230,16 @@ class ModelClientTests(unittest.TestCase):
                 }
             ]
 
-        def fake_download(base_url: str, token: str | None, sha256: str, expected_size: int, target: Path, *, source: dict[str, Any] | None = None) -> dict[str, Any]:
+        def fake_download(
+            base_url: str,
+            token: str | None,
+            sha256: str,
+            expected_size: int,
+            target: Path,
+            *,
+            source: dict[str, Any] | None = None,
+            accept_licenses: bool = False,
+        ) -> dict[str, Any]:
             seen.update({"base_url": base_url, "token": token, "sha256": sha256, "expected_size": expected_size, "target": target})
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"payload")
@@ -276,7 +285,17 @@ class ModelClientTests(unittest.TestCase):
                 }
             ]
 
-        def fake_download(base_url: str, token: str | None, sha256: str, expected_size: int, target: Path, *, source: dict[str, Any] | None = None) -> dict[str, Any]:
+        def fake_download(
+            base_url: str,
+            token: str | None,
+            sha256: str,
+            expected_size: int,
+            target: Path,
+            *,
+            source: dict[str, Any] | None = None,
+            accept_licenses: bool = False,
+        ) -> dict[str, Any]:
+            self.assertTrue(accept_licenses)
             seen["downloaded"] = True
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"payload")
@@ -349,6 +368,67 @@ class ModelClientTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), payload)
         finally:
             client.urllib.request.urlopen = original
+
+    def test_download_blob_sends_license_acceptance_header_when_enabled(self) -> None:
+        payload = b"accepted-model"
+        digest = hashlib.sha256(payload).hexdigest()
+        seen_headers: dict[str, str] = {}
+
+        class FakeResponse:
+            status = 200
+            headers = {
+                "ETag": f'"sha256:{digest}"',
+                "X-Checksum-SHA256": digest,
+                "Content-Length": str(len(payload)),
+            }
+
+            def __init__(self) -> None:
+                self.offset = 0
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                if self.offset >= len(payload):
+                    return b""
+                end = len(payload) if size < 0 else min(len(payload), self.offset + size)
+                chunk = payload[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+            seen_headers.update({key.lower(): value for key, value in request.header_items()})
+            return FakeResponse()
+
+        source = {
+            "requires_license_acceptance": True,
+            "model_metadata": {"id": "licenced-model", "version": "1.0.0"},
+        }
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "blobs" / digest
+                result = client.download_blob(
+                    "http://modelhub",
+                    None,
+                    digest,
+                    len(payload),
+                    target,
+                    source=source,
+                    accept_licenses=True,
+                )
+        finally:
+            client.urllib.request.urlopen = original
+
+        self.assertEqual(result["status"], "downloaded")
+        self.assertEqual(seen_headers["x-b1-accept-license"], "licenced-model@1.0.0")
 
     def test_load_state_rejects_malformed_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

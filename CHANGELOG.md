@@ -25,4 +25,4 @@
 - Added Makefile targets for smoke, integration, compatibility, and security tests, with an opt-in live `/admin/runtimes` integration check and offline Compose exposure/privilege security checks.
 - Added Redis-coordinated Model Hub blob download rate limiting with per-subject `X-RateLimit-*` headers and a bounded in-process fallback before proxying blob requests to internal storage.
 - Added Voicebox voice-profile dependency checks to model removal and blob quarantine planning so active profiles block unsafe cleanup and disabled profiles remain visible in dependency reports.
-- Added licence/source/resource metadata to Model Hub sync plans and made `b1-model-client` require explicit licence acknowledgement before synchronising acceptance-gated models.
+- Added licence/source/resource metadata to Model Hub sync plans and made `b1-model-client` and Model Hub blob downloads require explicit licence acknowledgement before synchronising acceptance-gated models.

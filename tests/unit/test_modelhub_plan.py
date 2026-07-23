@@ -17,6 +17,7 @@ from app.modelhub import (  # noqa: E402
     downloadable_records_for_blob,
     downloadable_versions_for,
     model_allowed_by_allowed_set,
+    parse_accepted_license_refs,
     validate_allowed_models,
     validate_cidr_allowlist,
 )
@@ -178,6 +179,14 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertFalse(client_ip_allowed_by_cidr(["192.168.2.0/24"], None))
         self.assertFalse(client_ip_allowed_by_cidr(["192.168.2.0/24"], "not-an-ip"))
         self.assertTrue(client_ip_allowed_by_cidr([], "not-an-ip"))
+
+    def test_license_acceptance_header_parser_requires_model_version_refs(self) -> None:
+        self.assertEqual(
+            parse_accepted_license_refs("downloadable-llm@1.0.0, other-model@2026-07-23"),
+            {"downloadable-llm@1.0.0", "other-model@2026-07-23"},
+        )
+        with self.assertRaisesRegex(ValueError, "invalid accepted licence reference"):
+            parse_accepted_license_refs("downloadable-llm")
 
 
 if __name__ == "__main__":

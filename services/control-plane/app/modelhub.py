@@ -1,14 +1,51 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from .catalog import CatalogError, ModelCatalog
 
+ACCEPTED_LICENSE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,127}@[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
+
 
 def manifest_is_downloadable(record: dict[str, Any]) -> bool:
     return bool(record.get("downloadable"))
+
+
+def parse_accepted_license_refs(header_value: str | None) -> set[str]:
+    if not header_value:
+        return set()
+    refs: set[str] = set()
+    for raw_ref in header_value.split(","):
+        ref = raw_ref.strip()
+        if not ref:
+            continue
+        if len(ref) > 256 or not ACCEPTED_LICENSE_REF_PATTERN.match(ref):
+            raise CatalogError(f"invalid accepted licence reference: {ref}")
+        refs.add(ref)
+    return refs
+
+
+def model_ref_for_record(record: dict[str, Any]) -> str | None:
+    model_id = record.get("id")
+    version = record.get("version")
+    if isinstance(model_id, str) and model_id and isinstance(version, str) and version:
+        return f"{model_id}@{version}"
+    return None
+
+
+def record_requires_license_acceptance(record: dict[str, Any]) -> bool:
+    license_info = record.get("license") if isinstance(record.get("license"), dict) else {}
+    return bool(record.get("requires_license_acceptance") or license_info.get("acceptance_required"))
+
+
+def record_license_acceptance_satisfied(record: dict[str, Any], accepted_refs: set[str]) -> bool:
+    if not record_requires_license_acceptance(record):
+        return True
+    model_ref = model_ref_for_record(record)
+    return bool(model_ref and model_ref in accepted_refs)
 
 
 def redacted_source_metadata(source: dict[str, Any] | None) -> dict[str, Any]:
