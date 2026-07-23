@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app.adapters import RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url  # noqa: E402
+from app.adapters import ADAPTER_CONTRACT_VERSION, RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url  # noqa: E402
 from app.catalog import (  # noqa: E402
     AliasDefinition,
     ManifestFile,
@@ -79,6 +79,20 @@ class RuntimeAdapterTests(unittest.TestCase):
 
         self.assertIsNotNone(adapter)
         self.assertEqual(adapter.health_path, "/readyz")
+
+    def test_public_adapter_contract_exposes_versioned_capabilities(self) -> None:
+        adapter = self.registry().adapter("comfyui")
+        self.assertIsNotNone(adapter)
+
+        public = adapter.public_dict()
+
+        self.assertEqual(public["adapter_contract"]["version"], ADAPTER_CONTRACT_VERSION)
+        self.assertEqual(public["adapter_contract"]["surfaces"]["scheduler"], "global-gpu-lease")
+        self.assertEqual(public["adapter_contract"]["surfaces"]["submit"], "native-http-websocket")
+        self.assertEqual(public["adapter_contract"]["methods"]["load_warm_model"], "b1-runtime-hooks")
+        self.assertEqual(public["capabilities"]["modalities"], ["image", "video", "workflow"])
+        self.assertTrue(public["capabilities"]["requires_gpu"])
+        self.assertTrue(public["native_api"])
 
     def test_non_comfy_policy_selects_non_comfy_runtime_when_available(self) -> None:
         catalog = ModelCatalog(
@@ -166,6 +180,9 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertNotIn("api_key", public)
         self.assertNotIn("base_url", public)
         self.assertTrue(public["external"])
+        self.assertEqual(public["adapter_contract"]["version"], ADAPTER_CONTRACT_VERSION)
+        self.assertEqual(public["adapter_contract"]["surfaces"]["scheduler"], "cpu-or-external")
+        self.assertEqual(public["adapter_contract"]["methods"]["unload_free_memory"], "not-available-for-external-runtime")
 
     @unittest.skipIf(importlib.util.find_spec("httpx") is None, "httpx is not installed in this lightweight test environment")
     def test_openai_compatible_adapter_uses_configured_bearer_token(self) -> None:
@@ -314,6 +331,8 @@ class RuntimeAdapterTests(unittest.TestCase):
 
         self.assertEqual(calls, ["http://audio-cpu/healthz"])
         self.assertEqual(health["status"], "unconfigured")
+        self.assertEqual(health["adapter_contract"]["version"], ADAPTER_CONTRACT_VERSION)
+        self.assertEqual(health["capabilities"]["modalities"], ["embedding", "tts", "stt"])
         self.assertEqual(health["details"]["engine"], "scaffold")
         self.assertFalse(health["details"]["capabilities"]["speech"])
 

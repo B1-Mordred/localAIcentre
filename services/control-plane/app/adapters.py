@@ -7,6 +7,8 @@ from urllib.parse import urlparse, urlunparse
 
 from .catalog import CatalogAlias
 
+ADAPTER_CONTRACT_VERSION = "b1-runtime-adapter/v1alpha1"
+
 PRIVATE_RUNTIME_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -146,7 +148,60 @@ class RuntimeAdapter:
         data = asdict(self)
         data.pop("base_url")
         data.pop("api_key")
+        data["capabilities"] = self.capability_discovery()
+        data["adapter_contract"] = self.adapter_contract()
         return data
+
+    def capability_discovery(self) -> dict[str, Any]:
+        return {
+            "modalities": list(self.modalities),
+            "operations": list(self.operations),
+            "requires_gpu": self.requires_gpu,
+            "external": self.external,
+            "native_api": self.native_api,
+            "openai_compatible": self.openai_compatible,
+            "configured": self.configured,
+        }
+
+    def adapter_contract(self) -> dict[str, Any]:
+        scheduler_surface = "global-gpu-lease" if self.requires_gpu and not self.external else "cpu-or-external"
+        if self.openai_compatible:
+            submit_surface = "openai-compatible-http"
+        elif self.native_api:
+            submit_surface = "native-http-websocket"
+        elif self.name == "generic-http":
+            submit_surface = "reserved-generic-http"
+        else:
+            submit_surface = "control-plane-managed"
+        runtime_control = "runtime-agent-predefined-actions" if not self.external else "not-available-for-external-runtime"
+        lifecycle = "b1-runtime-hooks" if not self.external else "not-available-for-external-runtime"
+        events = "native-websocket-bridge" if self.native_api else "job-sse"
+        return {
+            "version": ADAPTER_CONTRACT_VERSION,
+            "surfaces": {
+                "scheduler": scheduler_surface,
+                "submit": submit_surface,
+                "events": events,
+                "runtime_control": runtime_control,
+                "lifecycle": lifecycle,
+                "health": self.health_path,
+            },
+            "methods": {
+                "capability_discovery": "implemented",
+                "model_listing": lifecycle if not self.external else "health-endpoint-only",
+                "health": "implemented",
+                "validate_request_profile": "resolver-and-admission-policy",
+                "load_warm_model": lifecycle,
+                "submit_stream_inference": submit_surface,
+                "progress_events": events,
+                "cancel_interrupt": "native-proxy-or-job-state",
+                "unload_free_memory": runtime_control,
+                "active_queued_work_discovery": "runtime-state-and-native-queue",
+                "metrics": "runtime-agent-metrics" if not self.external else "health-endpoint-only",
+                "failure_classification": "implemented",
+                "graceful_forced_recovery": runtime_control,
+            },
+        }
 
     def openai_url(self, path: str) -> str:
         if not self.openai_compatible:

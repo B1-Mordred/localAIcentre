@@ -13,6 +13,7 @@ This repository currently contains the first runnable project slice:
 - Open WebUI wired to the unified API through a generated internal scoped service key
 - FastAPI control plane scaffold with catalog-backed model aliases, job, Model Hub, and ComfyUI compatibility endpoints
 - LocalAI/OpenAI-compatible forwarding for installed chat, vision-language responses, and embedding aliases, gated by the global GPU scheduler lease when the selected runtime requires GPU
+- versioned runtime-adapter contract metadata in `/admin/runtimes`, covering capability discovery, scheduler surface, submission/event surface, lifecycle hooks, unload/recovery control, metrics, and external-runtime limits
 - native ComfyUI `POST /prompt` admission through the global GPU lease with durable `native_prompt_id` recording, background history tracking, bidirectional `/ws` text/binary bridging, progress parsing, and ComfyUI output ingestion into authenticated artifact storage
 - ComfyUI-backed media jobs that submit native prompt payloads or mapped published workflow JSON through the same GPU runner, record `native_prompt_id`, poll native history, ingest `/view` outputs, and release the scheduler lease after completion
 - LocalAI-backed image-generation media jobs that call OpenAI-compatible `/v1/images/generations`, persist returned `b64_json`, `data:` URL, or same-origin runtime URL media, and fail to `recovery_required` when no media is returned

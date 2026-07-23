@@ -448,7 +448,25 @@ type RuntimeAdapterStatus = {
   external?: boolean;
   error?: string;
   details?: unknown;
+  capabilities?: RuntimeAdapterCapabilities;
+  adapter_contract?: RuntimeAdapterContract;
   runtime_state?: RuntimeState | null;
+};
+
+type RuntimeAdapterCapabilities = {
+  modalities?: string[];
+  operations?: string[];
+  requires_gpu?: boolean;
+  external?: boolean;
+  native_api?: boolean;
+  openai_compatible?: boolean;
+  configured?: boolean;
+};
+
+type RuntimeAdapterContract = {
+  version: string;
+  surfaces?: Record<string, string>;
+  methods?: Record<string, string>;
 };
 
 type ExternalRuntimeConfig = {
@@ -502,6 +520,21 @@ const capabilitySummary = (value: unknown): string => {
   return Object.entries(capabilities)
     .map(([name, enabled]) => `${name}: ${booleanLabel(enabled)}`)
     .join(", ");
+};
+
+const runtimeCapabilitySummary = (capabilities?: RuntimeAdapterCapabilities): string => {
+  if (!capabilities) return "";
+  const modalities = capabilities.modalities?.length ? capabilities.modalities.join(", ") : "none";
+  const operations = capabilities.operations?.length ? capabilities.operations.join(", ") : "manifest-defined";
+  return `${modalities} / ${operations}`;
+};
+
+const contractMethodSummary = (methods?: Record<string, string>): string => {
+  if (!methods) return "";
+  return Object.entries(methods)
+    .slice(0, 8)
+    .map(([name, status]) => `${name.replaceAll("_", " ")}: ${status}`)
+    .join(" / ");
 };
 
 type VoiceProfile = {
@@ -1532,7 +1565,10 @@ function Runtimes() {
       </section>
       {runtimes.map((runtime) => {
         const details = detailRecord(runtime.details);
-        const capabilities = capabilitySummary(details.capabilities);
+        const reportedCapabilities = runtime.capabilities ?? (details.capabilities as RuntimeAdapterCapabilities | undefined);
+        const capabilities = runtimeCapabilitySummary(reportedCapabilities) || capabilitySummary(details.capabilities);
+        const contract = runtime.adapter_contract;
+        const surfaces = contract?.surfaces;
         return (
           <section className="panel" key={runtime.name}>
             <SectionTitle icon={<TerminalSquare size={18} />} title={runtime.name} />
@@ -1544,10 +1580,12 @@ function Runtimes() {
                 {runtime.runtime_state?.job_id && <tr><td>Last job</td><td>{runtime.runtime_state.job_id}</td></tr>}
                 <tr><td>GPU lease</td><td>{runtime.requires_gpu ? "required" : "not required"}</td></tr>
                 <tr><td>API</td><td>{runtime.openai_compatible ? "OpenAI" : runtime.native_api ? "native" : "internal"}</td></tr>
+                {contract && <tr><td>Contract</td><td>{contract.version}<small>{surfaces ? `${surfaces.scheduler ?? "scheduler"} / ${surfaces.submit ?? "submit"} / ${surfaces.events ?? "events"}` : ""}</small></td></tr>}
                 {details.engine !== undefined && <tr><td>Engine</td><td>{String(details.engine)}</td></tr>}
                 {details.placeholder !== undefined && <tr><td>Placeholder</td><td>{booleanLabel(details.placeholder)}</td></tr>}
                 {details.placeholder_enabled !== undefined && <tr><td>Placeholder enabled</td><td>{booleanLabel(details.placeholder_enabled)}</td></tr>}
                 {capabilities && <tr><td>Capabilities</td><td>{capabilities}</td></tr>}
+                {contract?.methods && <tr><td>Methods</td><td>{contractMethodSummary(contract.methods)}</td></tr>}
                 {runtime.error && <tr><td>Error</td><td>{runtime.error}</td></tr>}
               </tbody>
             </table>
