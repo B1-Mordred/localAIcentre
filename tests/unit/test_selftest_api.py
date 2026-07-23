@@ -129,7 +129,13 @@ class SelfTestApiTests(unittest.TestCase):
         class FakeResponse:
             status_code = 200
             content = b"{}"
-            headers: dict[str, str] = {}
+            headers = {
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            }
 
         class FakeAsyncClient:
             def __init__(self, timeout: float, verify: bool | str) -> None:
@@ -162,8 +168,45 @@ class SelfTestApiTests(unittest.TestCase):
             result = asyncio.run(main.self_test_tls_routing())
 
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["routes"][0]["security_headers"], "ok")
         self.assertEqual(FakeAsyncClient.calls[0]["verify"], str(ca_file))  # type: ignore[attr-defined]
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Accept"], "application/json")  # type: ignore[attr-defined]
+
+    def test_tls_routing_probe_fails_without_gateway_security_headers(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b"{}"
+            headers = {"X-Content-Type-Options": "nosniff"}
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, verify: bool | str) -> None:
+                self.timeout = timeout
+                self.verify = verify
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        self.patch_settings(
+            self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
+            self_test_tls_verify=False,
+        )
+
+        result = asyncio.run(main.self_test_tls_routing())
+
+        self.assertEqual(result["status"], "failed")
+        route = result["data"]["routes"][0]
+        self.assertEqual(route["security_headers"], "failed")
+        self.assertIn("missing strict-transport-security", route["header_failures"])
 
 
 if __name__ == "__main__":

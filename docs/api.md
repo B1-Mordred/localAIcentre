@@ -114,7 +114,7 @@ DELETE /modelhub/v1/clients/{client_id}
 
 ## Self-Test and Metrics
 
-`GET /admin/self-test` requires `admin:read` and returns an overall `ok`, `degraded`, or `failed` status plus individual checks for PostgreSQL, Redis, storage permissions, runtime health, runtime production-readiness, runtime-agent status, runtime-agent metrics, GPU metric availability, TLS gateway routing, a tiny embedding inference, runtime-agent unload capability, and artifact-server Range delivery.
+`GET /admin/self-test` requires `admin:read` and returns an overall `ok`, `degraded`, or `failed` status plus individual checks for PostgreSQL, Redis, storage permissions, runtime health, runtime production-readiness, runtime-agent status, runtime-agent metrics, GPU metric availability, TLS gateway routing and Caddy security headers, a tiny embedding inference, runtime-agent unload capability, and artifact-server Range delivery.
 
 `GET /admin/metrics?limit=500` requires `admin:read` and returns the lightweight in-app observability report used by the Dashboard. It combines durable PostgreSQL job records, scheduler ownership, runtime state rows, and runtime-agent telemetry into queue depth/wait summaries, recent completed/failed/cancelled job counts, load/run-time summaries, peak RAM/VRAM summaries, model-switch counts from started jobs, active runtime status, host memory/storage, and normalized GPU utilization, temperature, power, and memory values. The endpoint remains reachable when runtime-agent metrics are unavailable; the response then sets `runtime_agent.available=false` and includes the error instead of failing the dashboard.
 
@@ -122,7 +122,7 @@ DELETE /modelhub/v1/clients/{client_id}
 
 Runtime production-readiness is controlled by `B1_RUNTIME_DEPLOYMENT_MODE` and `B1_RUNTIME_PRODUCTION_REQUIRED`. In `development` mode, placeholders or unhealthy required runtimes create a warning. In `production` mode, they fail the self-test so cutover cannot treat mock LocalAI, mock ComfyUI, mock Voicebox, or scaffold CPU audio as accepted production backends.
 
-Stable acceptance-oriented check names include `database`, `redis`, `runtimes`, `runtime-agent:status`, `runtime-agent:metrics`, `gpu:nvml`, `tls:routing`, `inference:tiny`, `runtime-agent:unload`, and `artifact:delivery`. The unload check uses `dry_run=true`, so it proves the authenticated runtime-agent path without restarting containers.
+Stable acceptance-oriented check names include `database`, `redis`, `runtimes`, `runtime-agent:status`, `runtime-agent:metrics`, `gpu:nvml`, `tls:routing`, `inference:tiny`, `runtime-agent:unload`, and `artifact:delivery`. The TLS routing check fails if a configured HTTPS route is unreachable, returns an error status, or omits the expected Caddy security headers. The unload check uses `dry_run=true`, so it proves the authenticated runtime-agent path without restarting containers.
 
 The runtime-agent internal `GET /v1/metrics` endpoint is protected by the internal runtime-agent mTLS channel and bearer token, and returns CPU/load, host memory/swap, configured disk paths, and GPU telemetry from `nvidia-smi` when available. It does not accept command, path, or device parameters from callers.
 

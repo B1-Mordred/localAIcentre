@@ -5182,12 +5182,22 @@ async def self_test_tls_routing() -> dict[str, Any]:
             except httpx.HTTPError as exc:
                 routes.append({"url": url, "status": "failed", "detail": exc.__class__.__name__})
                 continue
-            routes.append({"url": url, "status": "ok" if response.status_code < 400 else "failed", "http_status": response.status_code})
+            header_failures = selftest_policy.gateway_security_header_failures(response.headers)
+            route_ok = response.status_code < 400 and not header_failures
+            route: dict[str, Any] = {
+                "url": url,
+                "status": "ok" if route_ok else "failed",
+                "http_status": response.status_code,
+                "security_headers": "ok" if not header_failures else "failed",
+            }
+            if header_failures:
+                route["header_failures"] = header_failures
+            routes.append(route)
     failed = [route for route in routes if route["status"] != "ok"]
     return selftest_policy.check(
         "tls:routing",
         "failed" if failed else "ok",
-        "TLS gateway routes checked" if not failed else "one or more TLS gateway routes failed",
+        "TLS gateway routes and security headers checked" if not failed else "one or more TLS gateway route or security-header checks failed",
         {
             "routes": routes,
             "verify_tls": settings.self_test_tls_verify,

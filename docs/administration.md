@@ -105,7 +105,7 @@ The System tab runs `GET /admin/self-test`. The check verifies PostgreSQL, Redis
 
 The same report performs bounded end-to-end probes required for operator acceptance:
 
-- `tls:routing` requests the configured HTTPS self-test URLs, defaulting to `https://$B1_HOST_API/healthz`. With the default Caddy internal CA, the control plane verifies TLS with `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` when that file exists.
+- `tls:routing` requests the configured HTTPS self-test URLs, defaulting to `https://$B1_HOST_API/healthz`. With the default Caddy internal CA, the control plane verifies TLS with `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` when that file exists. Each route must also return the Caddy security headers `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`; this catches direct backend exposure or gateway configuration drift before cutover.
 - `inference:tiny` runs a minimal `embedding-default` request and verifies the returned vector shape. If the scaffold CPU engine is disabled and no production embedding engine is configured, this fails rather than reporting a fake-ready inference path.
 - `runtime-agent:unload` submits a `dry_run=true` unload request for `B1_SELF_TEST_UNLOAD_RUNTIME`, default `localai`, proving the mTLS/token/runtime-action path without restarting containers.
 - `runtimes:production-readiness` classifies required runtime health. Development mode reports placeholders as a warning; production mode reports placeholders, missing runtimes, or unhealthy required runtimes as failed.

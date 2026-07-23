@@ -33,6 +33,31 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(selftest.check_http_result("agent", {"ok": True})["status"], "ok")
         self.assertEqual(selftest.check_http_result("agent", None, "timeout")["status"], "degraded")
 
+    def test_gateway_security_header_failures_require_caddy_headers(self) -> None:
+        self.assertEqual(
+            selftest.gateway_security_header_failures(
+                {
+                    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                }
+            ),
+            [],
+        )
+
+        failures = selftest.gateway_security_header_failures(
+            {
+                "Strict-Transport-Security": "max-age=31536000",
+                "X-Content-Type-Options": "nosniff",
+            }
+        )
+
+        self.assertIn("strict-transport-security missing includesubdomains", failures)
+        self.assertIn("missing x-frame-options", failures)
+        self.assertIn("missing permissions-policy", failures)
+
     def test_runtime_production_readiness_warns_for_development_placeholders(self) -> None:
         result = selftest.runtime_production_readiness_check(
             [

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 VALID_RUNTIME_DEPLOYMENT_MODES = {"development", "production"}
+REQUIRED_GATEWAY_SECURITY_HEADERS = {
+    "strict-transport-security": ("max-age=", "includesubdomains"),
+    "x-content-type-options": ("nosniff",),
+    "x-frame-options": ("deny",),
+    "referrer-policy": ("no-referrer",),
+    "permissions-policy": ("camera=()", "microphone=()", "geolocation=()"),
+}
 
 
 def check(name: str, status: str, detail: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -56,6 +63,20 @@ def check_http_result(name: str, payload: dict[str, Any] | None, error: str | No
     if payload is None:
         return check(name, "degraded", "no response payload")
     return check(name, "ok", "response received", payload)
+
+
+def gateway_security_header_failures(headers: Mapping[str, str]) -> list[str]:
+    normalized = {str(name).lower(): str(value).lower() for name, value in headers.items()}
+    failures: list[str] = []
+    for header, required_tokens in REQUIRED_GATEWAY_SECURITY_HEADERS.items():
+        value = normalized.get(header, "")
+        if not value:
+            failures.append(f"missing {header}")
+            continue
+        missing_tokens = [token for token in required_tokens if token not in value]
+        if missing_tokens:
+            failures.append(f"{header} missing {', '.join(missing_tokens)}")
+    return failures
 
 
 def runtime_health_name(item: dict[str, Any]) -> str:
