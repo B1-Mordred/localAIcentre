@@ -21,7 +21,6 @@ import httpx
 import redis.asyncio as redis
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect as websocket_connect
@@ -84,6 +83,7 @@ runtime_configuration_cache: dict[str, dict[str, Any]] | None = None
 resource_policy_override: ResourcePolicy | None = None
 admission_policy_override: admission.AdmissionPolicy | None = None
 maintenance_state_cache: dict[str, Any] | None = None
+network_policy_cache: dict[str, Any] | None = None
 approved_node_pins: dict[tuple[str, str], ApprovedNodePin] | None = None
 job_runners: list[Any] = []
 job_runner_tasks: list[asyncio.Task[None]] = []
@@ -111,32 +111,24 @@ SERVICE_LOG_SECRET_PATTERNS = [
 TERMINAL_JOB_STATES = {JobState.COMPLETED.value, JobState.CANCELLED.value, JobState.FAILED.value, JobState.EXPIRED.value}
 MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
 MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
+CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+CORS_ALLOW_HEADERS = [
+    "Authorization",
+    "Content-Type",
+    "Idempotency-Key",
+    "X-B1-CSRF",
+    "X-Request-Id",
+    "X-B1-Owner",
+    "X-B1-Field",
+    "X-B1-Filename",
+    "X-B1-Accept-License",
+]
 
 app = FastAPI(
     title="B1 AI Hub Control Plane",
     version="0.1.0",
     description="Authoritative scheduler, registry, job, compatibility, and unified API service for B1 AI Hub.",
 )
-
-if settings.cors_allow_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(settings.cors_allow_origins),
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "Idempotency-Key",
-            "X-B1-CSRF",
-            "X-Request-Id",
-            "X-B1-Owner",
-            "X-B1-Field",
-            "X-B1-Filename",
-            "X-B1-Accept-License",
-        ],
-    )
-
 
 class ChatCompletionRequest(BaseModel):
     model: str = "chat-default"
@@ -206,6 +198,11 @@ class ApiClientCreate(BaseModel):
 
 class CidrAllowlistUpdateRequest(BaseModel):
     cidr_allowlist: list[str] = Field(default_factory=list)
+
+
+class NetworkPolicyUpdateRequest(BaseModel):
+    cors_allow_origins: list[str] = Field(default_factory=list)
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
 
 
 class BlobState(BaseModel):
@@ -526,11 +523,131 @@ def require_api_client_network_allowed(client: dict[str, Any], request: Request 
         raise HTTPException(status_code=403, detail="API client is not permitted from this network")
 
 
+def normalize_cors_origin(raw_origin: str) -> str:
+    value = raw_origin.strip()
+    if not value:
+        raise ValueError("CORS origin entries cannot be empty")
+    if value in {"*", "null"}:
+        raise ValueError("CORS origin wildcard/null values are not allowed with credentials")
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError(f"invalid CORS origin: {raw_origin}") from exc
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError(f"CORS origin must be an http(s) origin: {raw_origin}")
+    if parts.username or parts.password:
+        raise ValueError("CORS origins cannot contain credentials")
+    if parts.query or parts.fragment or parts.path not in {"", "/"}:
+        raise ValueError("CORS origins must not include a path, query, or fragment")
+    host = parts.hostname.lower()
+    host_part = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    default_port = (parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80)
+    netloc = host_part if port is None or default_port else f"{host_part}:{port}"
+    return f"{parts.scheme}://{netloc}"
+
+
+def validate_cors_allow_origins(origins: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for origin in origins:
+        try:
+            value = normalize_cors_origin(origin)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return normalized
+
+
+def validate_network_policy_payload(payload: NetworkPolicyUpdateRequest) -> dict[str, list[str]]:
+    return {
+        "cors_allow_origins": validate_cors_allow_origins(payload.cors_allow_origins),
+        "trusted_proxy_cidrs": validate_modelhub_cidr_allowlist(payload.trusted_proxy_cidrs),
+    }
+
+
+def environment_network_policy_payload() -> dict[str, list[str]]:
+    cors_allow_origins: list[str] = []
+    for origin in settings.cors_allow_origins:
+        try:
+            normalized = normalize_cors_origin(origin)
+        except ValueError:
+            continue
+        if normalized not in cors_allow_origins:
+            cors_allow_origins.append(normalized)
+    try:
+        trusted_proxy_cidrs = validate_modelhub_cidr_allowlist(list(settings.trusted_proxy_cidrs))
+    except HTTPException:
+        trusted_proxy_cidrs = list(settings.trusted_proxy_cidrs)
+    return {
+        "cors_allow_origins": cors_allow_origins,
+        "trusted_proxy_cidrs": trusted_proxy_cidrs,
+    }
+
+
+def effective_network_policy_values() -> dict[str, list[str]]:
+    if network_policy_cache is not None:
+        return {
+            "cors_allow_origins": list(network_policy_cache.get("cors_allow_origins") or []),
+            "trusted_proxy_cidrs": list(network_policy_cache.get("trusted_proxy_cidrs") or []),
+        }
+    return environment_network_policy_payload()
+
+
+def public_network_policy_payload(row: dict[str, Any] | None) -> dict[str, Any]:
+    environment = environment_network_policy_payload()
+    effective = {
+        "cors_allow_origins": list(row["cors_allow_origins"]) if row is not None else environment["cors_allow_origins"],
+        "trusted_proxy_cidrs": list(row["trusted_proxy_cidrs"]) if row is not None else environment["trusted_proxy_cidrs"],
+    }
+    return jsonable_encoder(
+        {
+            "id": "default",
+            "source": "database" if row is not None else "environment",
+            "effective": effective,
+            "environment": environment,
+            "updated_by": row.get("updated_by") if row is not None else None,
+            "created_at": row.get("created_at") if row is not None else None,
+            "updated_at": row.get("updated_at") if row is not None else None,
+        }
+    )
+
+
+async def load_network_policy_cache() -> dict[str, Any] | None:
+    row = await database.get_network_policy_record()
+    globals()["network_policy_cache"] = row
+    return row
+
+
+def cors_origin_allowed(origin: str | None) -> str | None:
+    if not origin:
+        return None
+    try:
+        normalized = normalize_cors_origin(origin)
+    except ValueError:
+        return None
+    return normalized if normalized in effective_network_policy_values()["cors_allow_origins"] else None
+
+
+def add_cors_headers(response: Response, allowed_origin: str) -> None:
+    response.headers["Access-Control-Allow-Origin"] = allowed_origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = ", ".join(CORS_ALLOW_METHODS)
+    response.headers["Access-Control-Allow-Headers"] = ", ".join(CORS_ALLOW_HEADERS)
+    vary = response.headers.get("Vary")
+    if not vary:
+        response.headers["Vary"] = "Origin"
+    elif "origin" not in {part.strip().lower() for part in vary.split(",")}:
+        response.headers["Vary"] = f"{vary}, Origin"
+
+
 def client_host(request: Request | None) -> str | None:
     if request is None or request.client is None:
         return None
     direct_host = modelhub_policy.normalized_ip_literal(request.client.host) or request.client.host
-    if modelhub_policy.client_ip_allowed_by_cidr(list(settings.trusted_proxy_cidrs), request.client.host):
+    if modelhub_policy.client_ip_allowed_by_cidr(effective_network_policy_values()["trusted_proxy_cidrs"], request.client.host):
         forwarded_host = forwarded_client_host(request)
         if forwarded_host is not None:
             return forwarded_host
@@ -700,10 +817,23 @@ async def csrf_failure_response(request: Request) -> Response | None:
 async def request_context_and_csrf_middleware(request: Request, call_next):
     token = current_request.set(request)
     try:
+        allowed_origin = cors_origin_allowed(request.headers.get("origin"))
+        is_cors_preflight = request.method.upper() == "OPTIONS" and bool(request.headers.get("access-control-request-method"))
+        if is_cors_preflight:
+            if allowed_origin is None:
+                return JSONResponse(status_code=400, content={"detail": "CORS origin is not allowed"})
+            response = Response(status_code=204)
+            add_cors_headers(response, allowed_origin)
+            return response
         failure = await csrf_failure_response(request)
         if failure is not None:
+            if allowed_origin is not None:
+                add_cors_headers(failure, allowed_origin)
             return failure
-        return await call_next(request)
+        response = await call_next(request)
+        if allowed_origin is not None:
+            add_cors_headers(response, allowed_origin)
+        return response
     finally:
         current_request.reset(token)
 
@@ -2478,6 +2608,7 @@ async def startup() -> None:
     globals()["settings"] = settings_for_startup
     database.configure_engine(settings_for_startup.database_url)
     await database.verify_schema_current()
+    await load_network_policy_cache()
     await load_maintenance_state_cache()
     await load_resource_policy_override()
     await refresh_runtime_configuration_cache()
@@ -2826,6 +2957,70 @@ async def admin_admission_policy_reset(authorization: str | None = Header(defaul
         metadata={"previous": admission_policy_dict(admission_policy_from_record(previous)) if previous else None, "source": "environment"},
     )
     return public_admission_policy_payload(None)
+
+
+@app.get("/admin/network-policy")
+async def admin_network_policy_get(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "network policy management requires administrator role")
+    row = await load_network_policy_cache()
+    return public_network_policy_payload(row)
+
+
+@app.post("/admin/network-policy/validate")
+async def admin_network_policy_validate(payload: NetworkPolicyUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "network policy management requires administrator role")
+    normalized = validate_network_policy_payload(payload)
+    return {
+        "status": "accepted",
+        "accepted": True,
+        "errors": [],
+        "candidate": normalized,
+    }
+
+
+@app.put("/admin/network-policy")
+async def admin_network_policy_update(payload: NetworkPolicyUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "network policy management requires administrator role")
+    normalized = validate_network_policy_payload(payload)
+    row = await database.upsert_network_policy_record({**normalized, "updated_by": auth.subject_id})
+    globals()["network_policy_cache"] = row
+    await record_audit_event(
+        auth,
+        "network_policy.updated",
+        target_type="network_policy",
+        target_id="default",
+        summary="Updated network policy",
+        metadata={
+            "source": "database",
+            "cors_allow_origins": normalized["cors_allow_origins"],
+            "trusted_proxy_cidrs": normalized["trusted_proxy_cidrs"],
+        },
+    )
+    return public_network_policy_payload(row)
+
+
+@app.delete("/admin/network-policy")
+async def admin_network_policy_reset(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "network policy management requires administrator role")
+    previous = await database.delete_network_policy_record()
+    globals()["network_policy_cache"] = None
+    await record_audit_event(
+        auth,
+        "network_policy.reset",
+        target_type="network_policy",
+        target_id="default",
+        summary="Reset network policy to environment defaults",
+        metadata={"previous": public_network_policy_payload(previous)["effective"] if previous else None, "source": "environment"},
+    )
+    return public_network_policy_payload(None)
 
 
 @app.get("/admin/maintenance")

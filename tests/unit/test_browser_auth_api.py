@@ -133,6 +133,20 @@ class FakeDatabase:
         row = self.modelhub_clients.get(client_id)
         return dict(row) if row is not None else None
 
+    async def get_network_policy_record(self) -> dict[str, Any] | None:
+        row = getattr(self, "network_policy", None)
+        return dict(row) if row is not None else None
+
+    async def upsert_network_policy_record(self, payload: dict[str, Any], policy_id: str = "default") -> dict[str, Any]:
+        row = {"id": policy_id, "created_at": "created", "updated_at": "updated", **payload}
+        self.network_policy = row
+        return dict(row)
+
+    async def delete_network_policy_record(self, policy_id: str = "default") -> dict[str, Any] | None:
+        row = getattr(self, "network_policy", None)
+        self.network_policy = None
+        return dict(row) if row is not None else None
+
     async def update_modelhub_client_policy(
         self,
         client_id: str,
@@ -155,6 +169,7 @@ class BrowserAuthApiTests(unittest.TestCase):
         self.original_database = main.database
         self.original_settings = main.settings
         self.original_model_catalog = main.model_catalog
+        self.original_network_policy_cache = main.network_policy_cache
         self.database = FakeDatabase()
         main.database = self.database
         main.settings = replace(
@@ -168,11 +183,13 @@ class BrowserAuthApiTests(unittest.TestCase):
             model_catalog_dir=str(ROOT / "model-catalog"),
         )
         main.model_catalog = None
+        main.network_policy_cache = None
 
     def tearDown(self) -> None:
         main.database = self.original_database
         main.settings = self.original_settings
         main.model_catalog = self.original_model_catalog
+        main.network_policy_cache = self.original_network_policy_cache
 
     def request_context(self, request: FakeRequest):
         token = main.current_request.set(request)
@@ -439,6 +456,81 @@ class BrowserAuthApiTests(unittest.TestCase):
                 )
             )
         self.assertEqual(caught.exception.status_code, 409)
+
+    def test_network_policy_can_be_updated_and_reset(self) -> None:
+        updated = asyncio.run(
+            main.admin_network_policy_update(
+                main.NetworkPolicyUpdateRequest(
+                    cors_allow_origins=[
+                        "https://control.ai.b1.germering/",
+                        "https://CONTROL.ai.b1.germering",
+                        "http://localhost:5173",
+                    ],
+                    trusted_proxy_cidrs=["10.0.0.44/24", "127.0.0.1/32"],
+                ),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(updated["source"], "database")
+        self.assertEqual(updated["effective"]["cors_allow_origins"], ["https://control.ai.b1.germering", "http://localhost:5173"])
+        self.assertEqual(updated["effective"]["trusted_proxy_cidrs"], ["10.0.0.0/24", "127.0.0.1/32"])
+        self.assertEqual(main.network_policy_cache["cors_allow_origins"], ["https://control.ai.b1.germering", "http://localhost:5173"])
+        self.assertIn("network_policy.updated", [event["event_type"] for event in self.database.audit_events])
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(
+                main.admin_network_policy_update(
+                    main.NetworkPolicyUpdateRequest(cors_allow_origins=["*"], trusted_proxy_cidrs=[]),
+                    authorization="Bearer setup-key",
+                )
+            )
+        self.assertEqual(caught.exception.status_code, 422)
+
+        reset = asyncio.run(main.admin_network_policy_reset(authorization="Bearer setup-key"))
+        self.assertEqual(reset["source"], "environment")
+        self.assertIsNone(main.network_policy_cache)
+        self.assertIn("network_policy.reset", [event["event_type"] for event in self.database.audit_events])
+
+    def test_dynamic_cors_middleware_uses_network_policy(self) -> None:
+        main.network_policy_cache = {
+            "id": "default",
+            "cors_allow_origins": ["https://control.ai.b1.germering"],
+            "trusted_proxy_cidrs": ["127.0.0.1/32"],
+        }
+
+        allowed = FakeRequest(
+            method="OPTIONS",
+            headers={"origin": "https://control.ai.b1.germering", "access-control-request-method": "POST"},
+        )
+        blocked = FakeRequest(
+            method="OPTIONS",
+            headers={"origin": "https://evil.example", "access-control-request-method": "POST"},
+        )
+
+        async def call_next(request: FakeRequest) -> Any:
+            return main.Response("miss")
+
+        allowed_response = asyncio.run(main.request_context_and_csrf_middleware(allowed, call_next))
+        blocked_response = asyncio.run(main.request_context_and_csrf_middleware(blocked, call_next))
+
+        self.assertEqual(allowed_response.status_code, 204)
+        self.assertEqual(allowed_response.headers["Access-Control-Allow-Origin"], "https://control.ai.b1.germering")
+        self.assertEqual(allowed_response.headers["Access-Control-Allow-Credentials"], "true")
+        self.assertNotEqual(allowed_response.headers["Access-Control-Allow-Origin"], "*")
+        self.assertEqual(blocked_response.status_code, 400)
+
+    def test_network_policy_trusted_proxy_cidrs_drive_client_host(self) -> None:
+        main.network_policy_cache = {
+            "id": "default",
+            "cors_allow_origins": [],
+            "trusted_proxy_cidrs": ["10.0.0.0/8"],
+        }
+        trusted = FakeRequest(headers={"x-forwarded-for": "192.168.2.55"}, client_host="10.1.2.3")
+        untrusted = FakeRequest(headers={"x-forwarded-for": "192.168.2.55"}, client_host="172.20.0.4")
+
+        self.assertEqual(main.client_host(trusted), "192.168.2.55")
+        self.assertEqual(main.client_host(untrusted), "172.20.0.4")
 
 
 if __name__ == "__main__":

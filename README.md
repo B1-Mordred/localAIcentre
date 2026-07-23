@@ -28,7 +28,7 @@ This repository currently contains the first runnable project slice:
 - persisted, administrator-editable RTX 3060/32 GB resource policy with hard bounds, dry-run validation, catalog admission refresh, and live GPU-runner reserve updates
 - persisted administrator-controlled maintenance mode that blocks new inference/media/reservation work, admin job retries, and queued runner claims while leaving cancellation, backups, audit, and inspection paths available
 - persisted controlled-update planning with pinned image digest validation, maintenance-gated staging backups, runtime-agent pinned-image staging, generated Compose image override artifacts, self-test recording, promotion handoff validation, and predefined runtime-agent rollback dry-run/execute metadata
-- browser first-admin setup, scrypt password hashes, HttpOnly session cookies, CSRF-protected UI mutations, and CORS allowlists for the configured LAN UI origins
+- browser first-admin setup, scrypt password hashes, HttpOnly session cookies, CSRF-protected UI mutations, and web-managed CORS/trusted-proxy allowlists for LAN UI origins
 - CPU and GPU job runners that persist durable job state, recover interrupted work, verify runtime-agent VRAM metrics before GPU execution when available, cancel long LocalAI/Voicebox runtime calls cooperatively, and fail unsupported runtime/job shapes without writing placeholder success artifacts
 - Alembic-backed control-plane database migration runner that executes before Uvicorn and startup schema verification that fails closed on missing tables/columns
 - durable Voicebox profile registry with Control Center create/export/delete flows, audit events, backup coverage, TTS alias/runtime validation, and artifact-only voice sample references

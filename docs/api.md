@@ -16,6 +16,10 @@ GET  /admin/admission-policy
 POST /admin/admission-policy/validate
 PUT  /admin/admission-policy
 DELETE /admin/admission-policy
+GET  /admin/network-policy
+POST /admin/network-policy/validate
+PUT  /admin/network-policy
+DELETE /admin/network-policy
 GET  /admin/maintenance
 PUT  /admin/maintenance
 GET  /admin/updates
@@ -135,6 +139,28 @@ curl -s https://api.ai.b1.germering/admin/runtimes/localai/recover \
 The control plane validates that the selected adapter is configured and non-external, then calls the mTLS/token-protected runtime-agent predefined action endpoint. The runtime-agent only accepts services in `B1_RUNTIME_ACTION_SERVICES` and implements the current forced unload/recovery strategy as a bounded restart of that allowlisted runtime service. With the default `B1_ENABLE_MUTATIONS=false`, these endpoints return a dry-run response.
 
 Runtime-agent `/v1/images/{service}/inspect` and `/v1/images/{service}/pull` are internal update-staging endpoints. Both require an allowlisted service name and an image reference pinned with `@sha256:<digest>`; `latest` and missing digests are rejected. Pull is a mutation and returns `status=dry_run` unless `B1_ENABLE_MUTATIONS=true`. Runtime-agent `/v1/rollback` is intentionally internal and predefined. It restarts only the static `B1_ROLLBACK_SERVICES` sequence after validating every entry against `B1_ALLOWED_SERVICES`; it accepts only the common `reason` and `timeout_seconds` payload. With mutations disabled it returns the rollback plan as a dry run.
+
+## Network Policy
+
+Administrators manage browser CORS origins and trusted reverse-proxy CIDRs through the System tab or these endpoints:
+
+```text
+GET    /admin/network-policy
+POST   /admin/network-policy/validate
+PUT    /admin/network-policy
+DELETE /admin/network-policy
+```
+
+`PUT` persists a single default policy in PostgreSQL and updates the live control-plane cache immediately:
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/network-policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"cors_allow_origins":["https://control.ai.b1.germering","https://media.ai.b1.germering"],"trusted_proxy_cidrs":["127.0.0.1/32","172.16.0.0/12"]}'
+```
+
+CORS origins are canonicalized to `scheme://host[:port]`; wildcard and `null` origins are rejected because browser credentials are allowed only for explicit origins. `trusted_proxy_cidrs` controls when the control plane trusts `X-Forwarded-For` or `Forwarded` headers for API-client and Model Hub CIDR checks. `DELETE` returns to the environment defaults from `B1_CORS_ALLOW_ORIGINS` and `B1_TRUSTED_PROXY_CIDRS`.
 
 ## Model Hub Clients
 
@@ -526,7 +552,7 @@ curl -s https://models.ai.b1.germering/modelhub/v1/clients \
 
 The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{client_id}` is called. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{client_id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
 
-The control plane derives the effective client IP from the direct peer address unless the peer matches `B1_TRUSTED_PROXY_CIDRS`. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The default Compose value trusts loopback and common Docker-internal proxy ranges; production operators can tighten it when they assign static Docker network ranges.
+The control plane derives the effective client IP from the direct peer address unless the peer matches the active network policy's trusted proxy CIDRs. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The environment default comes from `B1_TRUSTED_PROXY_CIDRS`, and administrators can persist a live override through `/admin/network-policy` or the System tab.
 
 ## Scheduler Lease
 

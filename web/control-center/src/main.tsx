@@ -205,6 +205,21 @@ type AdmissionPolicyPayload = {
   bounds: Record<keyof AdmissionPolicyValues, { minimum: number; maximum: number }>;
 };
 
+type NetworkPolicyValues = {
+  cors_allow_origins: string[];
+  trusted_proxy_cidrs: string[];
+};
+
+type NetworkPolicyPayload = {
+  id: string;
+  source: string;
+  effective: NetworkPolicyValues;
+  environment: NetworkPolicyValues;
+  updated_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 type BackupSummary = {
   name: string;
   created_at?: string;
@@ -2742,6 +2757,9 @@ function System() {
   const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
   const [admissionPolicy, setAdmissionPolicy] = useState<AdmissionPolicyPayload | null>(null);
   const [admissionPolicyForm, setAdmissionPolicyForm] = useState<Record<string, string>>({});
+  const [networkPolicy, setNetworkPolicy] = useState<NetworkPolicyPayload | null>(null);
+  const [networkCorsOrigins, setNetworkCorsOrigins] = useState("");
+  const [networkTrustedProxyCidrs, setNetworkTrustedProxyCidrs] = useState("");
   const [maintenance, setMaintenance] = useState<MaintenanceState | null>(null);
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [updates, setUpdates] = useState<UpdatePlan[]>([]);
@@ -2775,6 +2793,18 @@ function System() {
     apiJson<AdmissionPolicyPayload>(`/admin/admission-policy`)
       .then(setAdmissionPolicyPayload)
       .catch(() => setAdmissionPolicy(null));
+  };
+
+  const setNetworkPolicyPayload = (payload: NetworkPolicyPayload) => {
+    setNetworkPolicy(payload);
+    setNetworkCorsOrigins(payload.effective.cors_allow_origins.join(", "));
+    setNetworkTrustedProxyCidrs(payload.effective.trusted_proxy_cidrs.join(", "));
+  };
+
+  const loadNetworkPolicy = () => {
+    apiJson<NetworkPolicyPayload>(`/admin/network-policy`)
+      .then(setNetworkPolicyPayload)
+      .catch(() => setNetworkPolicy(null));
   };
 
   const loadMaintenance = () => {
@@ -2892,6 +2922,36 @@ function System() {
       .finally(() => setBusy(false));
   };
 
+  const networkPolicyBody = (): NetworkPolicyValues => ({
+    cors_allow_origins: parseCsv(networkCorsOrigins),
+    trusted_proxy_cidrs: parseCsv(networkTrustedProxyCidrs)
+  });
+
+  const runNetworkPolicyAction = (action: "validate" | "save" | "reset") => {
+    setBusy(true);
+    setMessage(action === "reset" ? "resetting network" : `${action} network`);
+    const path = action === "validate" ? "/admin/network-policy/validate" : "/admin/network-policy";
+    const init: RequestInit = action === "reset"
+      ? { method: "DELETE" }
+      : {
+          method: action === "save" ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(networkPolicyBody())
+        };
+    apiJson<any>(path, init)
+      .then((payload) => {
+        if (action === "validate") {
+          setMessage(payload.accepted ? "network accepted" : payload.errors.join("; "));
+          return;
+        }
+        setNetworkPolicyPayload(payload);
+        setMessage(`network ${action === "save" ? "saved" : "reset"}`);
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const setMaintenanceMode = (enabled: boolean) => {
     setBusy(true);
     setMessage(enabled ? "enabling maintenance" : "disabling maintenance");
@@ -2964,6 +3024,7 @@ function System() {
     loadAudit();
     loadResourcePolicy();
     loadAdmissionPolicy();
+    loadNetworkPolicy();
     loadMaintenance();
     loadUpdates();
   }, []);
@@ -3037,6 +3098,30 @@ function System() {
               </label>
             );
           })}
+        </div>
+      )}
+      <div className="subsection-title">
+        <ShieldCheck size={16} />
+        <h3>Network Policy</h3>
+      </div>
+      <div className="toolbar">
+        <button title="Validate network policy" onClick={() => runNetworkPolicyAction("validate")} disabled={busy || !networkPolicy}><ListChecks size={16} />Validate</button>
+        <button title="Save network policy" onClick={() => runNetworkPolicyAction("save")} disabled={busy || !networkPolicy}><ShieldCheck size={16} />Save</button>
+        <button title="Reset network policy" onClick={() => runNetworkPolicyAction("reset")} disabled={busy || !networkPolicy}><RotateCcw size={16} />Reset</button>
+        <span className="toolbar-status">{networkPolicy ? `${networkPolicy.source} network` : "network unavailable"}</span>
+      </div>
+      {networkPolicy && (
+        <div className="policy-grid">
+          <label>
+            CORS origins
+            <input value={networkCorsOrigins} onChange={(event) => setNetworkCorsOrigins(event.target.value)} />
+            <small>{networkPolicy.effective.cors_allow_origins.length} active</small>
+          </label>
+          <label>
+            Trusted proxy CIDRs
+            <input value={networkTrustedProxyCidrs} onChange={(event) => setNetworkTrustedProxyCidrs(event.target.value)} />
+            <small>{networkPolicy.effective.trusted_proxy_cidrs.length} active</small>
+          </label>
         </div>
       )}
       <div className="subsection-title">
