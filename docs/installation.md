@@ -44,6 +44,14 @@ Open `https://control.ai.b1.germering/` after the services are healthy. On first
 
 For direct local HTTP development only, set `B1_SESSION_COOKIE_SECURE=false` and keep `B1_DEV_AUTH_BYPASS=false` unless you explicitly want to bypass every role check.
 
+After creating a scoped API client with `models:read`, `jobs:read`, and `jobs:write`, run the opt-in live smoke suite from the repository root:
+
+```bash
+B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
+```
+
+The smoke suite checks gateway health, authenticated model listing, an async `tts-fast` media job, SSE job events, artifact download, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt` or trust that root certificate on the test machine. See `tests/smoke/README.md` for temporary-host and TLS options.
+
 Model storage under `$B1_DATA_ROOT/models` has three distinct responsibilities:
 
 - `blobs/` is the authoritative content-addressed library.

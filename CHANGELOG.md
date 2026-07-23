@@ -21,3 +21,5 @@
 - Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.
 - Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.
 - Added cooperative cancellation for blocking LocalAI and Voicebox GPU media runtime calls, aborting the control-plane request, marking the durable job cancelled, and requesting bounded runtime-agent recovery before releasing the GPU lease.
+- Added an opt-in live smoke test target for deployed health, authenticated model listing, async TTS media jobs, SSE event delivery, artifact download, and optional admin self-test.
+- Added Makefile targets for smoke, integration, compatibility, and security tests, with an opt-in live `/admin/runtimes` integration check and offline Compose exposure/privilege security checks.

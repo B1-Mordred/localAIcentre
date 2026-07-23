@@ -10,7 +10,7 @@ B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config unit openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config unit smoke integration compatibility security openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -34,6 +34,18 @@ production-voicebox-compose-config:
 
 unit:
 	python3 -m unittest discover -s tests/unit -v
+
+smoke:
+	python3 -m unittest discover -s tests/smoke -v
+
+integration:
+	python3 -m unittest discover -s tests/integration -v
+
+compatibility:
+	python3 -m unittest discover -s tests/compatibility -v
+
+security:
+	python3 -m unittest discover -s tests/security -v
 
 openapi:
 	python3 deploy/scripts/generate_openapi.py --output docs/openapi.json
