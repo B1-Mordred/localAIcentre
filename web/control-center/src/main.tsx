@@ -44,6 +44,15 @@ type RuntimeState = {
   updated_at?: string;
 };
 
+type AdmissionPolicyValues = {
+  max_queued_jobs_per_owner: number;
+  max_active_jobs_per_owner: number;
+  max_jobs_per_hour_per_owner: number;
+  max_queued_jobs_global: number;
+  artifact_storage_max_bytes: number;
+  artifact_storage_reserve_bytes: number;
+};
+
 type AdminStatus = {
   service: string;
   resource_policy: Record<string, number>;
@@ -59,14 +68,9 @@ type AdminStatus = {
 };
 
 type AdmissionReport = {
-  policy: {
-    max_queued_jobs_per_owner: number;
-    max_active_jobs_per_owner: number;
-    max_jobs_per_hour_per_owner: number;
-    max_queued_jobs_global: number;
-    artifact_storage_max_bytes: number;
-    artifact_storage_reserve_bytes: number;
-  };
+  policy: AdmissionPolicyValues;
+  policy_source?: string;
+  bounds?: Record<keyof AdmissionPolicyValues, { minimum: number; maximum: number }>;
   queue?: {
     owner_id: string;
     owner_queued_jobs: number;
@@ -190,6 +194,13 @@ type ResourcePolicyPayload = {
   effective: ResourcePolicyValues;
   default: ResourcePolicyValues;
   bounds: Record<keyof ResourcePolicyValues, { minimum: number; maximum: number }>;
+};
+
+type AdmissionPolicyPayload = {
+  source: string;
+  effective: AdmissionPolicyValues;
+  default: AdmissionPolicyValues;
+  bounds: Record<keyof AdmissionPolicyValues, { minimum: number; maximum: number }>;
 };
 
 type BackupSummary = {
@@ -733,6 +744,15 @@ const INTEGER_POLICY_FIELDS = new Set<keyof ResourcePolicyValues>([
   "comfyui_maximum_parallel_jobs",
   "comfyui_maximum_batch_size"
 ]);
+
+const ADMISSION_POLICY_FIELDS: { key: keyof AdmissionPolicyValues; label: string; step: string; formatter?: (value: number) => string }[] = [
+  { key: "max_queued_jobs_per_owner", label: "Owner queued", step: "1" },
+  { key: "max_active_jobs_per_owner", label: "Owner active", step: "1" },
+  { key: "max_jobs_per_hour_per_owner", label: "Jobs/hour", step: "1" },
+  { key: "max_queued_jobs_global", label: "Global queued", step: "1" },
+  { key: "artifact_storage_max_bytes", label: "Artifact cap", step: "1048576", formatter: formatHostBytes },
+  { key: "artifact_storage_reserve_bytes", label: "Disk reserve", step: "1048576", formatter: formatHostBytes }
+];
 
 const UPDATE_IMAGE_REFS_TEMPLATE = JSON.stringify(
   [
@@ -2349,6 +2369,8 @@ function System() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [resourcePolicy, setResourcePolicy] = useState<ResourcePolicyPayload | null>(null);
   const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
+  const [admissionPolicy, setAdmissionPolicy] = useState<AdmissionPolicyPayload | null>(null);
+  const [admissionPolicyForm, setAdmissionPolicyForm] = useState<Record<string, string>>({});
   const [maintenance, setMaintenance] = useState<MaintenanceState | null>(null);
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [updates, setUpdates] = useState<UpdatePlan[]>([]);
@@ -2371,6 +2393,17 @@ function System() {
     apiJson<ResourcePolicyPayload>(`/admin/resource-policy`)
       .then(setPolicyPayload)
       .catch(() => setResourcePolicy(null));
+  };
+
+  const setAdmissionPolicyPayload = (payload: AdmissionPolicyPayload) => {
+    setAdmissionPolicy(payload);
+    setAdmissionPolicyForm(Object.fromEntries(ADMISSION_POLICY_FIELDS.map((field) => [field.key, String(payload.effective[field.key])])));
+  };
+
+  const loadAdmissionPolicy = () => {
+    apiJson<AdmissionPolicyPayload>(`/admin/admission-policy`)
+      .then(setAdmissionPolicyPayload)
+      .catch(() => setAdmissionPolicy(null));
   };
 
   const loadMaintenance = () => {
@@ -2455,6 +2488,39 @@ function System() {
       .finally(() => setBusy(false));
   };
 
+  const admissionPolicyBody = (): AdmissionPolicyValues => {
+    return Object.fromEntries(
+      ADMISSION_POLICY_FIELDS.map((field) => {
+        const raw = admissionPolicyForm[field.key] ?? "";
+        return [field.key, Math.trunc(Number.parseFloat(raw))];
+      })
+    ) as AdmissionPolicyValues;
+  };
+
+  const runAdmissionPolicyAction = (action: "validate" | "save" | "reset") => {
+    setBusy(true);
+    setMessage(action === "reset" ? "resetting admission" : `${action} admission`);
+    const path = action === "validate" ? "/admin/admission-policy/validate" : "/admin/admission-policy";
+    const init: RequestInit = action === "reset"
+      ? { method: "DELETE" }
+      : {
+          method: action === "save" ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(admissionPolicyBody())
+        };
+    apiJson<any>(path, init)
+      .then((payload) => {
+        if (action === "validate") {
+          setMessage(payload.accepted ? "admission accepted" : payload.errors.join("; "));
+          return;
+        }
+        setAdmissionPolicyPayload(payload);
+        setMessage(`admission ${action === "save" ? "saved" : "reset"}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const setMaintenanceMode = (enabled: boolean) => {
     setBusy(true);
     setMessage(enabled ? "enabling maintenance" : "disabling maintenance");
@@ -2526,6 +2592,7 @@ function System() {
     runSelfTest();
     loadAudit();
     loadResourcePolicy();
+    loadAdmissionPolicy();
     loadMaintenance();
     loadUpdates();
   }, []);
@@ -2564,6 +2631,38 @@ function System() {
                   onChange={(event) => setPolicyForm((current) => ({ ...current, [field.key]: event.target.value }))}
                 />
                 <small>{bounds.minimum}..{bounds.maximum}</small>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <div className="subsection-title">
+        <ListChecks size={16} />
+        <h3>Admission Policy</h3>
+      </div>
+      <div className="toolbar">
+        <button title="Validate admission policy" onClick={() => runAdmissionPolicyAction("validate")} disabled={busy || !admissionPolicy}><ListChecks size={16} />Validate</button>
+        <button title="Save admission policy" onClick={() => runAdmissionPolicyAction("save")} disabled={busy || !admissionPolicy}><ShieldCheck size={16} />Save</button>
+        <button title="Reset admission policy" onClick={() => runAdmissionPolicyAction("reset")} disabled={busy || !admissionPolicy}><RotateCcw size={16} />Reset</button>
+        <span className="toolbar-status">{admissionPolicy ? `${admissionPolicy.source} limits` : "admission unavailable"}</span>
+      </div>
+      {admissionPolicy && (
+        <div className="policy-grid">
+          {ADMISSION_POLICY_FIELDS.map((field) => {
+            const bounds = admissionPolicy.bounds[field.key];
+            const value = Number.parseFloat(admissionPolicyForm[field.key] ?? "");
+            return (
+              <label key={field.key}>
+                {field.label}
+                <input
+                  type="number"
+                  min={bounds.minimum}
+                  max={bounds.maximum}
+                  step={field.step}
+                  value={admissionPolicyForm[field.key] ?? ""}
+                  onChange={(event) => setAdmissionPolicyForm((current) => ({ ...current, [field.key]: event.target.value }))}
+                />
+                <small>{bounds.minimum}..{bounds.maximum}{field.formatter && Number.isFinite(value) ? ` / ${field.formatter(value)}` : ""}</small>
               </label>
             );
           })}

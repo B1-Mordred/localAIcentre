@@ -82,6 +82,7 @@ model_catalog: ModelCatalog | None = None
 runtime_registry: RuntimeRegistry | None = None
 runtime_configuration_cache: dict[str, dict[str, Any]] | None = None
 resource_policy_override: ResourcePolicy | None = None
+admission_policy_override: admission.AdmissionPolicy | None = None
 maintenance_state_cache: dict[str, Any] | None = None
 approved_node_pins: dict[tuple[str, str], ApprovedNodePin] | None = None
 job_runners: list[Any] = []
@@ -348,6 +349,15 @@ class ResourcePolicyUpdateRequest(BaseModel):
     llm_default_parallel_requests: int = Field(ge=1)
     comfyui_maximum_parallel_jobs: int = Field(ge=1)
     comfyui_maximum_batch_size: int = Field(ge=1)
+
+
+class AdmissionPolicyUpdateRequest(BaseModel):
+    max_queued_jobs_per_owner: int = Field(ge=0)
+    max_active_jobs_per_owner: int = Field(ge=0)
+    max_jobs_per_hour_per_owner: int = Field(ge=0)
+    max_queued_jobs_global: int = Field(ge=0)
+    artifact_storage_max_bytes: int = Field(ge=0)
+    artifact_storage_reserve_bytes: int = Field(ge=0)
 
 
 SecretCategory = Literal["remote-provider", "model-download", "runtime", "integration", "other"]
@@ -732,8 +742,74 @@ def admission_error_response(exc: admission.AdmissionDeniedError) -> HTTPExcepti
     )
 
 
-def admission_policy() -> admission.AdmissionPolicy:
+def base_admission_policy() -> admission.AdmissionPolicy:
     return admission.policy_from_settings(settings)
+
+
+def admission_policy() -> admission.AdmissionPolicy:
+    return admission_policy_override or base_admission_policy()
+
+
+def admission_policy_from_record(row: dict[str, Any]) -> admission.AdmissionPolicy:
+    fields = admission.AdmissionPolicy.__dataclass_fields__
+    return admission.AdmissionPolicy(**{name: int(row[name]) for name in fields})
+
+
+def admission_policy_dict(policy: admission.AdmissionPolicy) -> dict[str, Any]:
+    return {name: getattr(policy, name) for name in admission.AdmissionPolicy.__dataclass_fields__}
+
+
+def admission_policy_hard_bounds() -> dict[str, dict[str, int]]:
+    base = base_admission_policy()
+    tib = 1024**4
+    return {
+        "max_queued_jobs_per_owner": {"minimum": 0, "maximum": max(base.max_queued_jobs_per_owner, 1000)},
+        "max_active_jobs_per_owner": {"minimum": 0, "maximum": max(base.max_active_jobs_per_owner, 128)},
+        "max_jobs_per_hour_per_owner": {"minimum": 0, "maximum": max(base.max_jobs_per_hour_per_owner, 10000)},
+        "max_queued_jobs_global": {"minimum": 0, "maximum": max(base.max_queued_jobs_global, 10000)},
+        "artifact_storage_max_bytes": {"minimum": 0, "maximum": max(base.artifact_storage_max_bytes, 8 * tib)},
+        "artifact_storage_reserve_bytes": {"minimum": 0, "maximum": max(base.artifact_storage_reserve_bytes, 2 * tib)},
+    }
+
+
+def validate_admission_policy_candidate(policy: admission.AdmissionPolicy) -> list[str]:
+    bounds = admission_policy_hard_bounds()
+    values = admission_policy_dict(policy)
+    errors: list[str] = []
+    for field, value in values.items():
+        minimum = bounds[field]["minimum"]
+        maximum = bounds[field]["maximum"]
+        if value < minimum or value > maximum:
+            errors.append(f"{field} must be between {minimum} and {maximum}")
+    if policy.max_queued_jobs_per_owner and policy.max_queued_jobs_global and policy.max_queued_jobs_global < policy.max_queued_jobs_per_owner:
+        errors.append("max_queued_jobs_global must be zero or at least max_queued_jobs_per_owner")
+    if policy.max_active_jobs_per_owner and policy.max_queued_jobs_per_owner and policy.max_active_jobs_per_owner > policy.max_queued_jobs_per_owner:
+        errors.append("max_active_jobs_per_owner must be zero or no greater than max_queued_jobs_per_owner")
+    return errors
+
+
+def admission_policy_from_update(payload: AdmissionPolicyUpdateRequest) -> admission.AdmissionPolicy:
+    return admission.AdmissionPolicy(**payload.model_dump())
+
+
+async def load_admission_policy_override() -> admission.AdmissionPolicy | None:
+    global admission_policy_override
+    row = await database.get_admission_policy_record()
+    admission_policy_override = admission_policy_from_record(row) if row else None
+    return admission_policy_override
+
+
+def public_admission_policy_payload(row: dict[str, Any] | None = None) -> dict[str, Any]:
+    effective = admission_policy()
+    default = base_admission_policy()
+    return {
+        "id": "default",
+        "source": "database" if admission_policy_override is not None else "environment",
+        "effective": admission_policy_dict(effective),
+        "default": admission_policy_dict(default),
+        "bounds": admission_policy_hard_bounds(),
+        "override": jsonable_encoder(row) if row else None,
+    }
 
 
 def artifact_storage_snapshot(policy: admission.AdmissionPolicy | None = None) -> admission.ArtifactStorageSnapshot:
@@ -769,7 +845,10 @@ async def queue_admission_snapshot(owner_id: str) -> admission.QueueAdmissionSna
 async def admission_report(owner_id: str | None = None) -> dict[str, Any]:
     policy = admission_policy()
     queue = await queue_admission_snapshot(owner_id) if owner_id else None
-    return admission.public_report(policy, queue=queue, storage=artifact_storage_snapshot(policy))
+    report = admission.public_report(policy, queue=queue, storage=artifact_storage_snapshot(policy))
+    report["policy_source"] = "database" if admission_policy_override is not None else "environment"
+    report["bounds"] = admission_policy_hard_bounds()
+    return report
 
 
 async def enforce_queue_admission(owner_id: str) -> None:
@@ -2301,6 +2380,7 @@ async def startup() -> None:
     expired_sessions = await database.revoke_expired_browser_sessions()
     open_webui_client = await ensure_open_webui_api_client()
     globals()["model_catalog"] = await refresh_catalog_cache()
+    await load_admission_policy_override()
     globals()["runtime_registry"] = build_runtime_registry(
         localai_url=settings_for_startup.localai_url,
         comfyui_url=settings_for_startup.comfyui_url,
@@ -2571,6 +2651,77 @@ async def admin_admission(
     if owner_id and not (auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR}):
         raise HTTPException(status_code=403, detail="owner-specific admission inspection requires admin or operator role")
     return jsonable_encoder(await admission_report(owner_id or auth.subject_id))
+
+
+@app.get("/admin/admission-policy")
+async def admin_admission_policy_get(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "admission policy management requires administrator role")
+    row = await database.get_admission_policy_record()
+    if row is not None and admission_policy_override is None:
+        globals()["admission_policy_override"] = admission_policy_from_record(row)
+    return public_admission_policy_payload(row)
+
+
+@app.post("/admin/admission-policy/validate")
+async def admin_admission_policy_validate(payload: AdmissionPolicyUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "admission policy management requires administrator role")
+    policy = admission_policy_from_update(payload)
+    errors = validate_admission_policy_candidate(policy)
+    return {
+        "status": "accepted" if not errors else "rejected",
+        "accepted": not errors,
+        "errors": errors,
+        "candidate": admission_policy_dict(policy),
+        "bounds": admission_policy_hard_bounds(),
+    }
+
+
+@app.put("/admin/admission-policy")
+async def admin_admission_policy_update(payload: AdmissionPolicyUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "admission policy management requires administrator role")
+    policy = admission_policy_from_update(payload)
+    errors = validate_admission_policy_candidate(policy)
+    if errors:
+        raise HTTPException(status_code=422, detail={"message": "admission policy violates hard safety bounds", "errors": errors})
+    row = await database.upsert_admission_policy_record({**admission_policy_dict(policy), "updated_by": auth.subject_id})
+    globals()["admission_policy_override"] = admission_policy_from_record(row)
+    await record_audit_event(
+        auth,
+        "admission_policy.updated",
+        target_type="admission_policy",
+        target_id="default",
+        summary="Updated admission policy",
+        metadata={
+            "source": "database",
+            "effective": admission_policy_dict(admission_policy()),
+            "bounds": admission_policy_hard_bounds(),
+        },
+    )
+    return public_admission_policy_payload(row)
+
+
+@app.delete("/admin/admission-policy")
+async def admin_admission_policy_reset(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "admission policy management requires administrator role")
+    previous = await database.delete_admission_policy_record()
+    globals()["admission_policy_override"] = None
+    await record_audit_event(
+        auth,
+        "admission_policy.reset",
+        target_type="admission_policy",
+        target_id="default",
+        summary="Reset admission policy to environment defaults",
+        metadata={"previous": admission_policy_dict(admission_policy_from_record(previous)) if previous else None, "source": "environment"},
+    )
+    return public_admission_policy_payload(None)
 
 
 @app.get("/admin/maintenance")

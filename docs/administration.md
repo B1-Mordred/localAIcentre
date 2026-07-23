@@ -69,6 +69,12 @@ The System tab exposes the effective RTX 3060/32 GB resource policy. Administrat
 
 Hard bounds are derived from the environment-defined physical profile, so the default installation cannot raise GPU memory above 12 GiB or host RAM above 32 GiB from the browser. The one-GPU safety policy keeps `gpu_max_active_pipelines=1`, `comfyui_maximum_parallel_jobs=1`, and `comfyui_maximum_batch_size=1`. Updating the policy refreshes catalog resource-admission labels and updates the live GPU runner's VRAM reserve without a restart.
 
+## Admission Policy
+
+The System tab also exposes the effective media admission policy. Administrators can dry-run validation, save a database override, or reset back to the environment defaults for owner queue depth, owner active jobs, owner hourly job rate, global queued jobs, artifact-root byte cap, and filesystem free-space reserve. The persisted row is included in the control-plane logical PostgreSQL export and reloaded on control-plane restart.
+
+Dashboard and Storage show the live admission snapshot from `GET /admin/admission`. Queue/rate counters come from durable PostgreSQL job rows. Artifact headroom is checked before accepting new uploads or media jobs; use generated-artifact retention cleanup to reclaim space when new work returns HTTP 507.
+
 ## Maintenance Mode
 
 The System tab also manages persisted maintenance mode. Enabling it requires an administrator role, `admin:write`, and a reason. The state is stored in PostgreSQL, included in `/admin/status`, exported in logical database backups, and reloaded by the control plane on restart.
@@ -189,7 +195,7 @@ Before archiving, the control plane exports its PostgreSQL tables to `data/contr
 
 Backup retention cleanup preserves the newest configured backup count, optionally filters candidates by age, reports invalid backup entries without deleting them, and removes only validated direct child backup directories under `$B1_BACKUP_ROOT`. Generated-artifact retention considers only terminal job artifacts older than the configured cutoff, can be limited to generated namespaces such as `localai`, `comfyui`, `audio-cpu`, or `voicebox`, preserves protected Voicebox profile sample artifacts, refuses symlinks and paths not scoped to the job or native ComfyUI prompt ID, and marks job artifact metadata as deleted after reclaiming the file. Deleted artifact downloads return HTTP 410 while the durable job record remains inspectable.
 
-Admission limits are shown on Dashboard and Storage from `GET /admin/admission`. Queue/rate limits are configured by `B1_MAX_QUEUED_JOBS_PER_OWNER`, `B1_MAX_ACTIVE_JOBS_PER_OWNER`, `B1_MAX_JOBS_PER_HOUR_PER_OWNER`, and `B1_MAX_QUEUED_JOBS_GLOBAL`. Artifact headroom is configured by `B1_ARTIFACT_STORAGE_RESERVE_BYTES` and optional `B1_ARTIFACT_STORAGE_MAX_BYTES`; use generated-artifact retention cleanup to reclaim space when new uploads or jobs return HTTP 507.
+Admission limits are shown on Dashboard and Storage from `GET /admin/admission`. The System tab manages persisted admission overrides; the environment variables `B1_MAX_QUEUED_JOBS_PER_OWNER`, `B1_MAX_ACTIVE_JOBS_PER_OWNER`, `B1_MAX_JOBS_PER_HOUR_PER_OWNER`, `B1_MAX_QUEUED_JOBS_GLOBAL`, `B1_ARTIFACT_STORAGE_RESERVE_BYTES`, and `B1_ARTIFACT_STORAGE_MAX_BYTES` remain the reset defaults.
 
 The scheduled backup policy stores `enabled`, `interval_hours`, `keep_last`, optional `delete_older_than_days`, and a safe `label_prefix` in PostgreSQL. The background scheduler is enabled by `B1_BACKUP_SCHEDULER_ENABLED=true`, wakes at `B1_BACKUP_SCHEDULER_INTERVAL_SECONDS`, atomically claims a due schedule row, creates a normal backup with PostgreSQL logical and native custom-format dumps plus configured archive encryption, applies the stored retention policy, records schedule status, and writes a system audit event. The Storage tab can also run that scheduled policy immediately. Restore-test extraction verifies archive checksums and runs `pg_restore --list` for native dumps. After restore-test extraction, Control Center can request a non-destructive PostgreSQL logical import plan. Applying the logical import is available through the admin API only and requires `apply=true` plus `confirm_backup_name` matching the backup name; the importer upserts rows by primary key after migrations have created the target schema.
 

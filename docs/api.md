@@ -11,6 +11,11 @@ POST /auth/login
 POST /auth/logout
 GET  /admin/status
 GET  /admin/metrics
+GET  /admin/admission
+GET  /admin/admission-policy
+POST /admin/admission-policy/validate
+PUT  /admin/admission-policy
+DELETE /admin/admission-policy
 GET  /admin/maintenance
 PUT  /admin/maintenance
 GET  /admin/updates
@@ -198,10 +203,6 @@ Backup retention is available through `POST /admin/backups/retention-plan` with 
 
 Generated artifact retention is available through `POST /admin/artifacts/retention-plan` with `storage:read` and `POST /admin/artifacts/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, optional generated-output `namespaces` such as `localai`, `comfyui`, `audio-cpu`, or `voicebox`, a bounded `limit`, and `confirm=true` for cleanup. The planner considers only artifacts recorded on terminal jobs older than the cutoff, refuses staged input/temporary/secret namespaces, preserves active or newer jobs, preserves Voicebox profile sample artifacts, rejects symlinks, missing files, non-files, metadata size mismatches, traversal, and artifacts whose path is not scoped to the job ID or native ComfyUI prompt ID. Cleanup re-runs the plan, unlinks only accepted files under `$B1_ARTIFACT_ROOT`, marks the affected job artifact metadata with `retention_status=deleted`, and writes an audit event. Later downloads of a deleted artifact return HTTP 410.
 
-New media job admission is bounded by `B1_MAX_QUEUED_JOBS_PER_OWNER`, `B1_MAX_ACTIVE_JOBS_PER_OWNER`, `B1_MAX_JOBS_PER_HOUR_PER_OWNER`, and `B1_MAX_QUEUED_JOBS_GLOBAL`. Limit breaches return HTTP 429 with a structured `detail.code` such as `owner_queue_limit`, `owner_active_limit`, `owner_rate_limit`, or `global_queue_limit`. Idempotent repeats with an existing `Idempotency-Key` return the original job before admission checks.
-
-New uploads and media jobs also check artifact headroom before accepting work. `B1_ARTIFACT_STORAGE_RESERVE_BYTES` protects free space on the filesystem containing `$B1_ARTIFACT_ROOT`, and optional `B1_ARTIFACT_STORAGE_MAX_BYTES` caps bytes under the artifact root. Storage breaches return HTTP 507 with `detail.code` of `artifact_storage_reserve` or `artifact_storage_limit`.
-
 Scheduled backups are managed through:
 
 ```text
@@ -260,7 +261,7 @@ curl -X PUT https://api.ai.b1.germering/admin/secrets/model-download:hf \
 
 ## Resource Policy
 
-The effective RTX 3060/32 GB admission policy is exposed at:
+The effective RTX 3060/32 GB resource policy is exposed at:
 
 ```text
 GET    /admin/resource-policy
@@ -278,6 +279,31 @@ curl -X PUT https://api.ai.b1.germering/admin/resource-policy \
   -H "Authorization: Bearer $B1_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"gpu_total_vram_gib":12,"gpu_usable_vram_gib":10,"gpu_reserve_vram_gib":2,"gpu_max_active_pipelines":1,"host_total_ram_gib":32,"host_reserve_ram_gib":6,"llm_default_context":8192,"llm_maximum_context":16384,"llm_default_parallel_requests":1,"comfyui_maximum_parallel_jobs":1,"comfyui_maximum_batch_size":1}'
+```
+
+## Admission Policy
+
+The media queue, rate, and artifact-storage admission policy is exposed at:
+
+```text
+GET    /admin/admission-policy
+POST   /admin/admission-policy/validate
+PUT    /admin/admission-policy
+DELETE /admin/admission-policy
+GET    /admin/admission
+```
+
+These routes require an `admin` role for policy management. Read requires `admin:read`; validation, update, and reset require `admin:write`. `GET /admin/admission-policy` returns the effective policy, environment default, hard bounds, source (`environment` or `database`), and persisted override row when present. `POST /validate` returns `accepted=false` plus errors without storing anything. `PUT` persists the override, reloads the in-process policy, and audits the change. `DELETE` returns to the environment defaults.
+
+`GET /admin/admission` returns the live counters and storage snapshot used before accepting new `/v1/media/jobs` and `/v1/media/uploads` requests. New media job admission is bounded by `max_queued_jobs_per_owner`, `max_active_jobs_per_owner`, `max_jobs_per_hour_per_owner`, and `max_queued_jobs_global`. Limit breaches return HTTP 429 with a structured `detail.code` such as `owner_queue_limit`, `owner_active_limit`, `owner_rate_limit`, or `global_queue_limit`. Idempotent repeats with an existing `Idempotency-Key` return the original job before admission checks.
+
+New uploads and media jobs also check artifact headroom before accepting work. `artifact_storage_reserve_bytes` protects free space on the filesystem containing `$B1_ARTIFACT_ROOT`, and optional `artifact_storage_max_bytes` caps bytes under the artifact root. Storage breaches return HTTP 507 with `detail.code` of `artifact_storage_reserve` or `artifact_storage_limit`.
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/admission-policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"max_queued_jobs_per_owner":20,"max_active_jobs_per_owner":3,"max_jobs_per_hour_per_owner":60,"max_queued_jobs_global":100,"artifact_storage_max_bytes":0,"artifact_storage_reserve_bytes":10737418240}'
 ```
 
 ## Authentication

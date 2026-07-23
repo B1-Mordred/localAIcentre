@@ -90,6 +90,20 @@ class DatabaseExportTests(unittest.TestCase):
                         "updated_at": created,
                     }
                 ],
+                "b1_admission_policies": [
+                    {
+                        "id": "default",
+                        "max_queued_jobs_per_owner": 20,
+                        "max_active_jobs_per_owner": 3,
+                        "max_jobs_per_hour_per_owner": 60,
+                        "max_queued_jobs_global": 100,
+                        "artifact_storage_max_bytes": 0,
+                        "artifact_storage_reserve_bytes": 10 * 1024**3,
+                        "updated_by": "admin_1",
+                        "created_at": created,
+                        "updated_at": created,
+                    }
+                ],
                 "b1_backup_schedules": [
                     {
                         "id": "default",
@@ -177,6 +191,7 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertEqual(payload["row_counts"]["b1_voice_profiles"], 1)
         self.assertEqual(payload["row_counts"]["b1_encrypted_secrets"], 1)
         self.assertEqual(payload["row_counts"]["b1_resource_policies"], 1)
+        self.assertEqual(payload["row_counts"]["b1_admission_policies"], 1)
         self.assertEqual(payload["row_counts"]["b1_backup_schedules"], 1)
         self.assertEqual(payload["row_counts"]["b1_maintenance_state"], 1)
         self.assertEqual(payload["row_counts"]["b1_update_plans"], 1)
@@ -207,6 +222,8 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertIn("credential_secret_name", {column["name"] for column in model_downloads["schema"]["columns"]})
         resource_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_resource_policies")
         self.assertEqual(resource_policies["rows"][0]["gpu_reserve_vram_gib"], 2.0)
+        admission_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_admission_policies")
+        self.assertEqual(admission_policies["rows"][0]["artifact_storage_reserve_bytes"], 10 * 1024**3)
         backup_schedules = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_backup_schedules")
         self.assertEqual(backup_schedules["rows"][0]["last_status"], "completed")
         maintenance = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_maintenance_state")

@@ -299,6 +299,21 @@ resource_policies = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+admission_policies = Table(
+    "b1_admission_policies",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("max_queued_jobs_per_owner", Integer, nullable=False),
+    Column("max_active_jobs_per_owner", Integer, nullable=False),
+    Column("max_jobs_per_hour_per_owner", Integer, nullable=False),
+    Column("max_queued_jobs_global", Integer, nullable=False),
+    Column("artifact_storage_max_bytes", BigInteger, nullable=False),
+    Column("artifact_storage_reserve_bytes", BigInteger, nullable=False),
+    Column("updated_by", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 backup_schedules = Table(
     "b1_backup_schedules",
     metadata,
@@ -425,6 +440,7 @@ EXPORT_TABLES = [
     encrypted_secrets,
     runtime_configurations,
     resource_policies,
+    admission_policies,
     backup_schedules,
     maintenance_state,
     update_plans,
@@ -492,6 +508,20 @@ SCHEMA_COMPATIBILITY_SQL = [
         ")"
     ),
     "CREATE INDEX IF NOT EXISTS b1_runtime_configurations_enabled_idx ON b1_runtime_configurations (enabled)",
+    (
+        "CREATE TABLE IF NOT EXISTS b1_admission_policies ("
+        "id varchar(64) PRIMARY KEY, "
+        "max_queued_jobs_per_owner integer NOT NULL, "
+        "max_active_jobs_per_owner integer NOT NULL, "
+        "max_jobs_per_hour_per_owner integer NOT NULL, "
+        "max_queued_jobs_global integer NOT NULL, "
+        "artifact_storage_max_bytes bigint NOT NULL, "
+        "artifact_storage_reserve_bytes bigint NOT NULL, "
+        "updated_by varchar(128), "
+        "created_at timestamp with time zone NOT NULL, "
+        "updated_at timestamp with time zone NOT NULL"
+        ")"
+    ),
     "CREATE INDEX IF NOT EXISTS b1_backup_schedules_next_run_idx ON b1_backup_schedules (enabled, next_run_at)",
     "CREATE INDEX IF NOT EXISTS b1_maintenance_state_enabled_idx ON b1_maintenance_state (enabled)",
     "ALTER TABLE b1_update_plans ADD COLUMN IF NOT EXISTS image_stage jsonb NOT NULL DEFAULT '[]'::jsonb",
@@ -947,6 +977,56 @@ async def delete_resource_policy_record(policy_id: str = "default") -> dict[str,
         return None
     async with engine.begin() as conn:
         await conn.execute(resource_policies.delete().where(resource_policies.c.id == policy_id))
+    return existing
+
+
+async def get_admission_policy_record(policy_id: str = "default") -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(admission_policies).where(admission_policies.c.id == policy_id))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def upsert_admission_policy_record(payload: dict[str, Any], policy_id: str = "default") -> dict[str, Any]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    existing = await get_admission_policy_record(policy_id)
+    row = {
+        "id": policy_id,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+        **payload,
+    }
+    stmt = pg_insert(admission_policies).values(**row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[admission_policies.c.id],
+        set_={
+            "max_queued_jobs_per_owner": stmt.excluded.max_queued_jobs_per_owner,
+            "max_active_jobs_per_owner": stmt.excluded.max_active_jobs_per_owner,
+            "max_jobs_per_hour_per_owner": stmt.excluded.max_jobs_per_hour_per_owner,
+            "max_queued_jobs_global": stmt.excluded.max_queued_jobs_global,
+            "artifact_storage_max_bytes": stmt.excluded.artifact_storage_max_bytes,
+            "artifact_storage_reserve_bytes": stmt.excluded.artifact_storage_reserve_bytes,
+            "updated_by": stmt.excluded.updated_by,
+            "updated_at": now,
+        },
+    )
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return await get_admission_policy_record(policy_id) or row
+
+
+async def delete_admission_policy_record(policy_id: str = "default") -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    existing = await get_admission_policy_record(policy_id)
+    if existing is None:
+        return None
+    async with engine.begin() as conn:
+        await conn.execute(admission_policies.delete().where(admission_policies.c.id == policy_id))
     return existing
 
 

@@ -1,6 +1,50 @@
 {
   "components": {
     "schemas": {
+      "AdmissionPolicyUpdateRequest": {
+        "properties": {
+          "artifact_storage_max_bytes": {
+            "minimum": 0.0,
+            "title": "Artifact Storage Max Bytes",
+            "type": "integer"
+          },
+          "artifact_storage_reserve_bytes": {
+            "minimum": 0.0,
+            "title": "Artifact Storage Reserve Bytes",
+            "type": "integer"
+          },
+          "max_active_jobs_per_owner": {
+            "minimum": 0.0,
+            "title": "Max Active Jobs Per Owner",
+            "type": "integer"
+          },
+          "max_jobs_per_hour_per_owner": {
+            "minimum": 0.0,
+            "title": "Max Jobs Per Hour Per Owner",
+            "type": "integer"
+          },
+          "max_queued_jobs_global": {
+            "minimum": 0.0,
+            "title": "Max Queued Jobs Global",
+            "type": "integer"
+          },
+          "max_queued_jobs_per_owner": {
+            "minimum": 0.0,
+            "title": "Max Queued Jobs Per Owner",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_queued_jobs_per_owner",
+          "max_active_jobs_per_owner",
+          "max_jobs_per_hour_per_owner",
+          "max_queued_jobs_global",
+          "artifact_storage_max_bytes",
+          "artifact_storage_reserve_bytes"
+        ],
+        "title": "AdmissionPolicyUpdateRequest",
+        "type": "object"
+      },
       "ApiClientCreate": {
         "properties": {
           "display_name": {
@@ -1466,6 +1510,214 @@
           }
         },
         "summary": "Admin Admission"
+      }
+    },
+    "/admin/admission-policy": {
+      "delete": {
+        "operationId": "admin_admission_policy_reset_admin_admission_policy_delete",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Admission Policy Reset Admin Admission Policy Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Admission Policy Reset"
+      },
+      "get": {
+        "operationId": "admin_admission_policy_get_admin_admission_policy_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Admission Policy Get Admin Admission Policy Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Admission Policy Get"
+      },
+      "put": {
+        "operationId": "admin_admission_policy_update_admin_admission_policy_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionPolicyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Admission Policy Update Admin Admission Policy Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Admission Policy Update"
+      }
+    },
+    "/admin/admission-policy/validate": {
+      "post": {
+        "operationId": "admin_admission_policy_validate_admin_admission_policy_validate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionPolicyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Admission Policy Validate Admin Admission Policy Validate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Admission Policy Validate"
       }
     },
     "/admin/api-clients": {
