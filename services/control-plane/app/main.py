@@ -306,6 +306,12 @@ class ArtifactRetentionRequest(BaseModel):
     confirm: bool = False
 
 
+class ModelQuarantineRetentionRequest(BaseModel):
+    delete_older_than_days: int = Field(default=30, ge=1, le=3650)
+    limit: int = Field(default=5000, ge=1, le=50000)
+    confirm: bool = False
+
+
 class BackupScheduleUpdateRequest(BaseModel):
     enabled: bool = False
     interval_hours: int = Field(default=24, ge=1, le=720)
@@ -3714,6 +3720,10 @@ def artifact_retention_error_response(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def model_lifecycle_error_response(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(exc))
+
+
 def backup_schedule_from_payload(payload: BackupScheduleUpdateRequest, auth: AuthContext, now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now(tz=UTC)
     try:
@@ -5339,6 +5349,53 @@ async def admin_artifact_cleanup(payload: ArtifactRetentionRequest, authorizatio
         },
     )
     return public_report
+
+
+@app.post("/admin/models/quarantine/retention-plan")
+async def admin_model_quarantine_retention_plan(payload: ModelQuarantineRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:read")
+    try:
+        return await asyncio.to_thread(
+            model_lifecycle.build_blob_quarantine_retention_plan,
+            data_root_path(),
+            delete_older_than_days=payload.delete_older_than_days,
+            limit=payload.limit,
+        )
+    except model_lifecycle.ModelLifecycleError as exc:
+        raise model_lifecycle_error_response(exc) from exc
+
+
+@app.post("/admin/models/quarantine/cleanup")
+async def admin_model_quarantine_cleanup(payload: ModelQuarantineRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:write")
+    try:
+        report = await asyncio.to_thread(
+            model_lifecycle.apply_blob_quarantine_retention_plan,
+            data_root_path(),
+            delete_older_than_days=payload.delete_older_than_days,
+            confirmed=payload.confirm,
+            limit=payload.limit,
+        )
+    except model_lifecycle.ModelLifecycleError as exc:
+        raise model_lifecycle_error_response(exc) from exc
+    log_event("model_quarantine_cleanup_completed", deleted=report["deleted_count"], reclaimable=report["total_reclaimable_bytes"])
+    await record_audit_event(
+        auth,
+        "model_quarantine.cleanup",
+        target_type="model_quarantine",
+        summary="Applied model blob quarantine retention cleanup",
+        metadata={
+            "policy": report["policy"],
+            "deleted_count": report["deleted_count"],
+            "deleted_paths": [item["path"] for item in report["deleted"]],
+            "total_reclaimable_bytes": report["total_reclaimable_bytes"],
+            "invalid_preserved_count": report["invalid_preserved_count"],
+            "truncated": report.get("truncated"),
+        },
+    )
+    return report
 
 
 @app.post("/admin/backups")

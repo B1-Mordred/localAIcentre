@@ -60,7 +60,7 @@ Default exclusions avoid backing up reproducibly downloadable blobs, caches, pre
 - `data/postgres`
 - `data/redis`
 
-Active reproducibly downloadable blobs are excluded by default because they can be re-synchronized through Model Hub. Blobs that an operator explicitly moved to `models/quarantine/blobs` are included by default so cleanup remains recoverable until the quarantine retention process is implemented and tested.
+Active reproducibly downloadable blobs are excluded by default because they can be re-synchronized through Model Hub. Blobs that an operator explicitly moved to `models/quarantine/blobs` are included by default so cleanup remains recoverable until the operator applies model quarantine retention cleanup from the Storage tab or `/admin/models/quarantine/cleanup`.
 
 Backup retention is dry-run first. The Control Center Storage tab and API can plan cleanup with a `keep_last` count and optional `delete_older_than_days` threshold. The newest `keep_last` backups are always preserved. If an age threshold is set, backups outside the newest set are candidates only when their manifest `created_at` is older than the threshold. Invalid backup directories and symlinked entries are reported but preserved.
 
@@ -78,6 +78,15 @@ curl -X POST https://api.ai.b1.germering/admin/backups/cleanup \
   -H "Authorization: Bearer $B1_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"keep_last": 5, "delete_older_than_days": 30, "confirm": true}'
+```
+
+Model blob quarantine retention is also dry-run first. `POST /admin/models/quarantine/retention-plan` scans only `$B1_DATA_ROOT/models/quarantine/blobs`, reports old recoverable quarantine batches, and preserves malformed or symlinked entries. Applying `POST /admin/models/quarantine/cleanup` with `confirm=true` deletes only validated old quarantine batch directories; it never deletes active authoritative blobs or runtime views.
+
+```bash
+curl -X POST https://api.ai.b1.germering/admin/models/quarantine/retention-plan \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"delete_older_than_days": 30, "limit": 5000}'
 ```
 
 ## Scheduled Backups

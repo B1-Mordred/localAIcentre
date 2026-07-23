@@ -838,6 +838,31 @@
         "title": "ModelInstallRequest",
         "type": "object"
       },
+      "ModelQuarantineRetentionRequest": {
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "delete_older_than_days": {
+            "default": 30,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Delete Older Than Days",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 5000,
+            "maximum": 50000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "ModelQuarantineRetentionRequest",
+        "type": "object"
+      },
       "ModelRemoveRequest": {
         "properties": {
           "confirm": {
@@ -3850,6 +3875,122 @@
           }
         },
         "summary": "Admin Model Install Plan"
+      }
+    },
+    "/admin/models/quarantine/cleanup": {
+      "post": {
+        "operationId": "admin_model_quarantine_cleanup_admin_models_quarantine_cleanup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelQuarantineRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Quarantine Cleanup Admin Models Quarantine Cleanup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Quarantine Cleanup"
+      }
+    },
+    "/admin/models/quarantine/retention-plan": {
+      "post": {
+        "operationId": "admin_model_quarantine_retention_plan_admin_models_quarantine_retention_plan_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelQuarantineRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Quarantine Retention Plan Admin Models Quarantine Retention Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Quarantine Retention Plan"
       }
     },
     "/admin/models/{model_id}/versions/{version}": {

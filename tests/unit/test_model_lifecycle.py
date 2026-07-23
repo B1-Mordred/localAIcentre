@@ -560,6 +560,81 @@ class ModelLifecycleTests(unittest.TestCase):
                 model_lifecycle.sha256_file = original_sha256_file
             self.assertEqual(source.read_bytes(), changed)
 
+    def test_blob_quarantine_retention_plans_and_deletes_old_sets(self) -> None:
+        old_data = b"old quarantined blob"
+        new_data = b"new quarantined blob"
+        old_sha = hashlib.sha256(old_data).hexdigest()
+        new_sha = hashlib.sha256(new_data).hexdigest()
+        now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quarantine_root = root / "models" / "quarantine" / "blobs" / "chat-small"
+            old_set = quarantine_root / "1.0.0-20260701T120000Z"
+            new_set = quarantine_root / "1.0.0-20260722T120000Z"
+            invalid_set = quarantine_root / "not-a-valid-set"
+            old_set.mkdir(parents=True)
+            new_set.mkdir(parents=True)
+            invalid_set.mkdir(parents=True)
+            (old_set / old_sha).write_bytes(old_data)
+            (new_set / new_sha).write_bytes(new_data)
+            (invalid_set / "not-a-sha").write_bytes(b"preserve")
+
+            plan = model_lifecycle.build_blob_quarantine_retention_plan(
+                root,
+                delete_older_than_days=7,
+                now=now,
+            )
+
+            self.assertEqual(plan["status"], "planned")
+            self.assertEqual(plan["candidate_count"], 1)
+            self.assertEqual(plan["candidates"][0]["quarantine_set"], "1.0.0-20260701T120000Z")
+            self.assertEqual(plan["kept_count"], 1)
+            self.assertEqual(plan["invalid_preserved_count"], 1)
+            self.assertEqual(plan["total_reclaimable_bytes"], len(old_data))
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "requires explicit confirmation"):
+                model_lifecycle.apply_blob_quarantine_retention_plan(
+                    root,
+                    delete_older_than_days=7,
+                    confirmed=False,
+                    now=now,
+                )
+
+            cleaned = model_lifecycle.apply_blob_quarantine_retention_plan(
+                root,
+                delete_older_than_days=7,
+                confirmed=True,
+                now=now,
+            )
+
+            self.assertEqual(cleaned["status"], "cleaned")
+            self.assertEqual(cleaned["deleted_count"], 1)
+            self.assertFalse(old_set.exists())
+            self.assertTrue((new_set / new_sha).is_file())
+            self.assertTrue((invalid_set / "not-a-sha").is_file())
+
+    def test_blob_quarantine_retention_preserves_symlinks_and_unsafe_children(self) -> None:
+        data = b"quarantined blob"
+        digest = hashlib.sha256(data).hexdigest()
+        now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quarantine_root = root / "models" / "quarantine" / "blobs" / "chat-small"
+            unsafe_set = quarantine_root / "1.0.0-20260701T120000Z"
+            unsafe_set.mkdir(parents=True)
+            (unsafe_set / digest).write_bytes(data)
+            (unsafe_set / "nested").mkdir()
+
+            plan = model_lifecycle.build_blob_quarantine_retention_plan(
+                root,
+                delete_older_than_days=7,
+                now=now,
+            )
+
+            self.assertEqual(plan["candidate_count"], 0)
+            self.assertEqual(plan["invalid_preserved_count"], 1)
+            self.assertIn("not a regular file", plan["invalid_preserved"][0]["reason"])
+
     def test_runtime_view_creation_refuses_existing_symlink(self) -> None:
         data = b"runtime view model"
         digest = hashlib.sha256(data).hexdigest()

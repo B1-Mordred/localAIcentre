@@ -230,6 +230,36 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(audit_events[0]["target_id"], "chat-small@1.0.0")
             self.assertEqual(audit_events[0]["metadata"]["moved"][0]["sha256"], digest)
 
+    def test_model_quarantine_cleanup_plans_deletes_and_records_audit(self) -> None:
+        data = b"quarantined model blob"
+        digest = hashlib.sha256(data).hexdigest()
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_set = root / "models" / "quarantine" / "blobs" / "chat-small" / "1.0.0-20260701T120000Z"
+            old_set.mkdir(parents=True)
+            (old_set / digest).write_bytes(data)
+            self.patch_common(root, FakeDatabase({}, []), audit_events)
+
+            plan = asyncio.run(
+                main.admin_model_quarantine_retention_plan(
+                    main.ModelQuarantineRetentionRequest(delete_older_than_days=7, limit=100),
+                )
+            )
+            cleaned = asyncio.run(
+                main.admin_model_quarantine_cleanup(
+                    main.ModelQuarantineRetentionRequest(delete_older_than_days=7, limit=100, confirm=True),
+                )
+            )
+
+            self.assertEqual(plan["candidate_count"], 1)
+            self.assertEqual(cleaned["status"], "cleaned")
+            self.assertEqual(cleaned["deleted_count"], 1)
+            self.assertFalse(old_set.exists())
+            self.assertEqual(audit_events[0]["event_type"], "model_quarantine.cleanup")
+            self.assertEqual(audit_events[0]["metadata"]["deleted_count"], 1)
+            self.assertEqual(audit_events[0]["metadata"]["total_reclaimable_bytes"], len(data))
+
     def test_alias_policy_update_persists_refreshes_and_records_audit(self) -> None:
         audit_events: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as tmp:

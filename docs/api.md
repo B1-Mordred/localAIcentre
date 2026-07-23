@@ -44,6 +44,8 @@ GET  /admin/self-test
 GET  /admin/audit-log
 POST /admin/artifacts/retention-plan
 POST /admin/artifacts/cleanup
+POST /admin/models/quarantine/retention-plan
+POST /admin/models/quarantine/cleanup
 GET  /admin/jobs
 GET  /admin/jobs/{job_id}
 POST /admin/jobs/{job_id}/priority
@@ -57,6 +59,8 @@ GET  /admin/models/downloads/{download_id}
 POST /admin/models/downloads
 DELETE /admin/models/downloads/{download_id}
 POST /admin/models/install
+POST /admin/models/quarantine/retention-plan
+POST /admin/models/quarantine/cleanup
 DELETE /admin/models/{id}/versions/{version}
 GET  /admin/models/{id}/versions/{version}/blob-quarantine-plan
 POST /admin/models/{id}/versions/{version}/blobs/quarantine
@@ -213,6 +217,8 @@ Optional filters are `event_type`, `actor_id`, and `target_type`. Audit events r
 Backup retention is available through `POST /admin/backups/retention-plan` with `storage:read` and `POST /admin/backups/cleanup` with `storage:write`. Both accept `keep_last` and optional `delete_older_than_days`; cleanup also requires `confirm=true`. The cleanup endpoint re-runs the plan and deletes only validated direct child backup directories under `$B1_BACKUP_ROOT`, while symlinked or invalid entries are reported and preserved.
 
 Generated artifact retention is available through `POST /admin/artifacts/retention-plan` with `storage:read` and `POST /admin/artifacts/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, optional generated-output `namespaces` such as `localai`, `comfyui`, `audio-cpu`, or `voicebox`, a bounded `limit`, and `confirm=true` for cleanup. The planner considers only artifacts recorded on terminal jobs older than the cutoff, refuses staged input/temporary/secret namespaces, preserves active or newer jobs, preserves Voicebox profile sample artifacts, rejects symlinks, missing files, non-files, metadata size mismatches, traversal, and artifacts whose path is not scoped to the job ID or native ComfyUI prompt ID. Cleanup re-runs the plan, unlinks only accepted files under `$B1_ARTIFACT_ROOT`, marks the affected job artifact metadata with `retention_status=deleted`, and writes an audit event. Later downloads of a deleted artifact return HTTP 410.
+
+Recoverable model-blob quarantine retention is available through `POST /admin/models/quarantine/retention-plan` with `storage:read` and `POST /admin/models/quarantine/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, a bounded `limit`, and `confirm=true` for cleanup. The planner scans only `$B1_DATA_ROOT/models/quarantine/blobs`, accepts quarantine set directories named with the existing `<version>-YYYYMMDDTHHMMSSZ` suffix, and preserves malformed entries, symlinks, nested directories, non-regular files, or non-SHA-256 filenames for operator review. Cleanup re-runs the plan and deletes only validated old quarantine set directories; it never deletes active authoritative blobs under `$B1_DATA_ROOT/models/blobs` or runtime views.
 
 Scheduled backups are managed through:
 

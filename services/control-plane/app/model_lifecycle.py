@@ -8,8 +8,9 @@ import shutil
 import stat
 import tarfile
 import zipfile
+from contextlib import suppress
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qsl, quote, urljoin, urlparse, urlunparse
@@ -25,6 +26,8 @@ class ModelLifecycleError(ValueError):
 
 SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
+SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+QUARANTINE_SET_RE = re.compile(r"^(?P<version>.+)-(?P<timestamp>\d{8}T\d{6}Z)$")
 SUPPORTED_ARCHIVE_FORMATS = {"zip", "tar", "tar.gz", "tgz", "tar.bz2", "tbz2", "tar.xz", "txz"}
 ARCHIVE_FORMAT_BY_SUFFIX = {
     ".zip": "zip",
@@ -891,6 +894,206 @@ def quarantine_authoritative_blobs(
         shutil.move(str(source), str(destination))
         moved.append({**blob, "status": "quarantined"})
     return {**plan, "status": "quarantined", "can_quarantine": False, "moved": moved}
+
+
+def quarantine_set_timestamp(name: str) -> datetime | None:
+    match = QUARANTINE_SET_RE.fullmatch(name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group("timestamp"), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=True))
+        return True
+    except (FileNotFoundError, ValueError):
+        return False
+
+
+def _invalid_quarantine_entry(path: Path, reason: str) -> dict[str, Any]:
+    return {"path": str(path), "reason": reason}
+
+
+def _quarantine_set_summary(set_dir: Path, root: Path, cutoff: datetime) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    if not _path_inside(set_dir, root):
+        return None, None, _invalid_quarantine_entry(set_dir, "path escapes blob quarantine root")
+    if set_dir.is_symlink():
+        return None, None, _invalid_quarantine_entry(set_dir, "quarantine set is a symlink")
+    if not set_dir.is_dir():
+        return None, None, _invalid_quarantine_entry(set_dir, "quarantine set is not a directory")
+    try:
+        safe_component(set_dir.name, "quarantine set directory")
+    except ModelLifecycleError as exc:
+        return None, None, _invalid_quarantine_entry(set_dir, str(exc))
+    timestamp = quarantine_set_timestamp(set_dir.name)
+    if timestamp is None:
+        return None, None, _invalid_quarantine_entry(set_dir, "quarantine set name does not include a valid timestamp")
+    version = QUARANTINE_SET_RE.fullmatch(set_dir.name).group("version")  # type: ignore[union-attr]
+    invalid_children: list[str] = []
+    blob_count = 0
+    total_size = 0
+    for child in sorted(set_dir.iterdir(), key=lambda item: item.name):
+        if child.is_symlink():
+            invalid_children.append(f"{child.name}: symlink")
+            continue
+        if not child.is_file():
+            invalid_children.append(f"{child.name}: not a regular file")
+            continue
+        if not SHA256_RE.fullmatch(child.name):
+            invalid_children.append(f"{child.name}: not a sha256 blob name")
+            continue
+        blob_count += 1
+        total_size += child.stat().st_size
+    if invalid_children:
+        return None, None, _invalid_quarantine_entry(set_dir, "; ".join(invalid_children))
+    model_id = set_dir.parent.name
+    record = {
+        "model_id": model_id,
+        "version": version,
+        "quarantine_set": set_dir.name,
+        "path": str(set_dir),
+        "created_at": timestamp.isoformat(),
+        "blob_count": blob_count,
+        "size_bytes": total_size,
+    }
+    if timestamp >= cutoff:
+        return None, {**record, "reason": "newer than retention cutoff"}, None
+    return {**record, "reason": "older than retention cutoff"}, None, None
+
+
+def build_blob_quarantine_retention_plan(
+    data_root: Path,
+    *,
+    delete_older_than_days: int,
+    now: datetime | None = None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    current = now or datetime.now(tz=UTC)
+    cutoff = current - timedelta(days=delete_older_than_days)
+    root = blob_quarantine_root(data_root)
+    policy = {
+        "delete_older_than_days": delete_older_than_days,
+        "cutoff": cutoff.isoformat(),
+        "limit": limit,
+    }
+    if not root.exists():
+        return {
+            "status": "planned",
+            "policy": policy,
+            "root": str(root),
+            "candidate_count": 0,
+            "kept_count": 0,
+            "invalid_preserved_count": 0,
+            "total_reclaimable_bytes": 0,
+            "candidates": [],
+            "kept": [],
+            "invalid_preserved": [],
+            "truncated": False,
+        }
+    if root.is_symlink() or not root.is_dir():
+        raise ModelLifecycleError(f"blob quarantine root is unsafe: {root}")
+
+    candidates: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    scanned_sets = 0
+    truncated = False
+    root_resolved = root.resolve(strict=True)
+    for model_dir in sorted(root.iterdir(), key=lambda item: item.name):
+        if model_dir.is_symlink():
+            invalid.append(_invalid_quarantine_entry(model_dir, "model quarantine directory is a symlink"))
+            continue
+        if not model_dir.is_dir():
+            invalid.append(_invalid_quarantine_entry(model_dir, "model quarantine entry is not a directory"))
+            continue
+        try:
+            safe_component(model_dir.name, "model quarantine directory")
+        except ModelLifecycleError as exc:
+            invalid.append(_invalid_quarantine_entry(model_dir, str(exc)))
+            continue
+        for set_dir in sorted(model_dir.iterdir(), key=lambda item: item.name):
+            if scanned_sets >= limit:
+                truncated = True
+                break
+            scanned_sets += 1
+            candidate, keep, invalid_entry = _quarantine_set_summary(set_dir, root_resolved, cutoff)
+            if candidate is not None:
+                candidates.append(candidate)
+            if keep is not None:
+                kept.append(keep)
+            if invalid_entry is not None:
+                invalid.append(invalid_entry)
+        if truncated:
+            break
+    return {
+        "status": "planned",
+        "policy": policy,
+        "root": str(root),
+        "candidate_count": len(candidates),
+        "kept_count": len(kept),
+        "invalid_preserved_count": len(invalid),
+        "total_reclaimable_bytes": sum(int(candidate["size_bytes"]) for candidate in candidates),
+        "candidates": candidates,
+        "kept": kept,
+        "invalid_preserved": invalid,
+        "truncated": truncated,
+    }
+
+
+def _delete_quarantine_set(path: Path, root: Path) -> dict[str, Any]:
+    root_resolved = root.resolve(strict=True)
+    set_resolved = path.resolve(strict=True)
+    if not _path_inside(set_resolved, root_resolved):
+        raise ModelLifecycleError(f"quarantine cleanup path escapes root: {path}")
+    if path.is_symlink() or not path.is_dir():
+        raise ModelLifecycleError(f"quarantine cleanup path is unsafe: {path}")
+    for child in path.iterdir():
+        if child.is_symlink() or not child.is_file() or not SHA256_RE.fullmatch(child.name):
+            raise ModelLifecycleError(f"quarantine cleanup path contains unsafe entry: {child}")
+    shutil.rmtree(path)
+    with suppress(OSError):
+        parent = path.parent
+        parent_resolved = parent.resolve(strict=True)
+        if parent_resolved != root_resolved and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    return {"path": str(path), "status": "deleted"}
+
+
+def apply_blob_quarantine_retention_plan(
+    data_root: Path,
+    *,
+    delete_older_than_days: int,
+    confirmed: bool,
+    now: datetime | None = None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    if not confirmed:
+        raise ModelLifecycleError("model quarantine cleanup requires explicit confirmation")
+    plan = build_blob_quarantine_retention_plan(
+        data_root,
+        delete_older_than_days=delete_older_than_days,
+        now=now,
+        limit=limit,
+    )
+    root = Path(plan["root"])
+    deleted: list[dict[str, Any]] = []
+    for candidate in plan["candidates"]:
+        deleted.append(
+            {
+                **candidate,
+                **_delete_quarantine_set(Path(candidate["path"]), root),
+            }
+        )
+    return {
+        **plan,
+        "status": "cleaned",
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+    }
 
 
 def source_url_allowed(manifest: ModelManifest) -> bool:

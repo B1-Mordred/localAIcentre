@@ -245,6 +245,22 @@ type ArtifactRetentionPlan = {
   job_update_count?: number;
 };
 
+type ModelQuarantineRetentionPlan = {
+  status: string;
+  policy: { delete_older_than_days: number; cutoff?: string | null; limit?: number };
+  root: string;
+  candidate_count: number;
+  kept_count: number;
+  invalid_preserved_count: number;
+  total_reclaimable_bytes: number;
+  truncated?: boolean;
+  candidates: { model_id?: string; version?: string; quarantine_set?: string; path: string; size_bytes?: number; reason: string }[];
+  kept: { model_id?: string; version?: string; quarantine_set?: string; path: string; reason: string }[];
+  invalid_preserved: { path: string; reason: string }[];
+  deleted?: { model_id?: string; version?: string; quarantine_set?: string; path: string; size_bytes?: number; status?: string }[];
+  deleted_count?: number;
+};
+
 type BackupSchedule = {
   source: string;
   enabled: boolean;
@@ -2217,6 +2233,7 @@ function Storage() {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
   const [artifactRetentionPlan, setArtifactRetentionPlan] = useState<ArtifactRetentionPlan | null>(null);
+  const [modelQuarantinePlan, setModelQuarantinePlan] = useState<ModelQuarantineRetentionPlan | null>(null);
   const [admissionReport, setAdmissionReport] = useState<AdmissionReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
   const [keepLast, setKeepLast] = useState("5");
@@ -2224,6 +2241,8 @@ function Storage() {
   const [artifactDeleteOlderThanDays, setArtifactDeleteOlderThanDays] = useState("30");
   const [artifactNamespaces, setArtifactNamespaces] = useState("");
   const [artifactLimit, setArtifactLimit] = useState("5000");
+  const [modelQuarantineDeleteOlderThanDays, setModelQuarantineDeleteOlderThanDays] = useState("30");
+  const [modelQuarantineLimit, setModelQuarantineLimit] = useState("5000");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState("24");
   const [scheduleKeepLast, setScheduleKeepLast] = useState("7");
@@ -2348,6 +2367,34 @@ function Storage() {
       .finally(() => setBusy(false));
   };
 
+  const modelQuarantineRetentionPayload = (confirm: boolean) => {
+    const age = Number.parseInt(modelQuarantineDeleteOlderThanDays, 10);
+    const limit = Number.parseInt(modelQuarantineLimit, 10);
+    return {
+      delete_older_than_days: Number.isFinite(age) ? age : 30,
+      limit: Number.isFinite(limit) ? limit : 5000,
+      confirm
+    };
+  };
+
+  const runModelQuarantineRetention = (apply: boolean) => {
+    setBusy(true);
+    setMessage(apply ? "model quarantine cleanup" : "model quarantine plan");
+    apiFetch(`/admin/models/quarantine/${apply ? "cleanup" : "retention-plan"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(modelQuarantineRetentionPayload(apply))
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload: ModelQuarantineRetentionPlan) => {
+        setModelQuarantinePlan(payload);
+        setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} quarantine candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
+        loadAdmission();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const schedulePayload = (runImmediately = false) => {
     const interval = Number.parseInt(scheduleIntervalHours, 10);
     const keep = Number.parseInt(scheduleKeepLast, 10);
@@ -2462,6 +2509,27 @@ function Storage() {
           {Boolean(artifactRetentionPlan.deleted?.length) && <small>{artifactRetentionPlan.deleted?.slice(0, 6).map((item) => `deleted ${item.path}`).join(" / ")}</small>}
           {artifactRetentionPlan.invalid_preserved_count > 0 && <small>{artifactRetentionPlan.invalid_preserved_count} invalid artifact entr{artifactRetentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
           {artifactRetentionPlan.job_update_count !== undefined && <small>{artifactRetentionPlan.job_update_count} job record{artifactRetentionPlan.job_update_count === 1 ? "" : "s"} updated</small>}
+        </div>
+      )}
+      <div className="subsection-title">
+        <Database size={16} />
+        <h3>Model Quarantine</h3>
+      </div>
+      <div className="toolbar job-filters">
+        <label>Older than<input aria-label="Delete model quarantine older than days" inputMode="numeric" value={modelQuarantineDeleteOlderThanDays} onChange={(event) => setModelQuarantineDeleteOlderThanDays(event.target.value)} /></label>
+        <label>Scan<input aria-label="Model quarantine cleanup scan limit" inputMode="numeric" value={modelQuarantineLimit} onChange={(event) => setModelQuarantineLimit(event.target.value)} /></label>
+        <button title="Plan model quarantine cleanup" onClick={() => runModelQuarantineRetention(false)} disabled={busy}><ListChecks size={16} />Plan</button>
+        <button title="Apply model quarantine cleanup" onClick={() => runModelQuarantineRetention(true)} disabled={busy || modelQuarantinePlan?.status !== "planned" || !modelQuarantinePlan?.candidate_count}><Trash2 size={16} />Cleanup</button>
+      </div>
+      {modelQuarantinePlan && (
+        <div className="one-time-key">
+          <strong>Model quarantine {modelQuarantinePlan.status}</strong>
+          <span>{modelQuarantinePlan.candidate_count} candidate{modelQuarantinePlan.candidate_count === 1 ? "" : "s"} / {formatBytes(modelQuarantinePlan.total_reclaimable_bytes)} reclaimable</span>
+          <small>Older than {modelQuarantinePlan.policy.delete_older_than_days} days / root {modelQuarantinePlan.root}</small>
+          {modelQuarantinePlan.candidates.length > 0 && <small>{modelQuarantinePlan.candidates.slice(0, 6).map((candidate) => `${candidate.model_id ?? "model"} ${candidate.quarantine_set ?? candidate.path}: ${formatBytes(candidate.size_bytes)}`).join(" / ")}</small>}
+          {Boolean(modelQuarantinePlan.deleted?.length) && <small>{modelQuarantinePlan.deleted?.slice(0, 6).map((item) => `deleted ${item.quarantine_set ?? item.path}`).join(" / ")}</small>}
+          {modelQuarantinePlan.invalid_preserved_count > 0 && <small>{modelQuarantinePlan.invalid_preserved_count} invalid quarantine entr{modelQuarantinePlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
+          {modelQuarantinePlan.truncated && <small>Scan limit reached; increase the limit and plan again for remaining entries</small>}
         </div>
       )}
       <table>
