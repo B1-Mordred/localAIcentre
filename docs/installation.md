@@ -21,11 +21,23 @@ Set `B1_DOCKER_GID` in `.env` to the final command's value when runtime-agent sh
 
 ## First Boot
 
+For local development and repository validation, start the lightweight topology:
+
 ```bash
 cp .env.example .env
 make bootstrap
 docker compose up -d
 ```
+
+For the production appliance path on `ai.b1.germering`, start from the production template instead:
+
+```bash
+cp .env.production.example .env
+make bootstrap
+docker compose up -d
+```
+
+The production template sets `COMPOSE_FILE=compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml` and `COMPOSE_PROFILES=voicebox`, so Docker Compose selects the real-runtime overlays while the operator start command remains `docker compose up -d`. It also sets `B1_RUNTIME_DEPLOYMENT_MODE=production`, makes LocalAI, ComfyUI, Voicebox, and audio-cpu required for production readiness, disables CPU scaffold responses, and leaves external/cloud providers and Docker mutations disabled. Remove the Voicebox overlay/profile and remove `voicebox` from `B1_RUNTIME_PRODUCTION_REQUIRED` only when intentionally operating without managed Voicebox.
 
 Bootstrap creates external data directories and generated secrets under `/srv/b1-ai-hub` by default. It does not delete or overwrite existing stack data. The generated secrets include the runtime-agent bearer token plus a private runtime-agent mTLS CA, server certificate, and control-plane client certificate used for the internal `https://runtime-agent:8443` API.
 
@@ -60,7 +72,7 @@ Model storage under `$B1_DATA_ROOT/models` has three distinct responsibilities:
 
 ## Production LocalAI Override
 
-The default `docker compose up -d` topology intentionally uses the lightweight mock `localai` service so a fresh repository can boot before GPU models are installed. For real LocalAI runtime validation, start the stack with the production override:
+The development `.env.example` path intentionally uses the lightweight mock `localai` service so a fresh repository can boot before GPU models are installed. The production `.env.production.example` path includes this override automatically through `COMPOSE_FILE`. For isolated LocalAI validation, start the stack with only the production LocalAI override:
 
 ```bash
 docker compose -f compose.yaml -f compose.production-localai.yaml up -d
@@ -87,7 +99,7 @@ Do not set `B1_RUNTIME_DEPLOYMENT_MODE=production` for cutover until LocalAI is 
 
 ## Production ComfyUI Override
 
-For native ComfyUI validation, start the stack with the production ComfyUI override:
+The production `.env.production.example` path includes this override automatically through `COMPOSE_FILE`. For isolated native ComfyUI validation, start the stack with only the production ComfyUI override:
 
 ```bash
 docker compose -f compose.yaml -f compose.production-comfyui.yaml up -d
@@ -121,7 +133,7 @@ Native clients still use `https://comfy.ai.b1.germering/` through the control-pl
 
 ## Production Voicebox Override
 
-Voicebox is optional in the base topology. For managed Voicebox server/web/API validation, start the stack with the production Voicebox override and the `voicebox` profile:
+Voicebox is optional in the base topology. The production `.env.production.example` path enables the `voicebox` profile and includes this override automatically through `COMPOSE_FILE`. For isolated managed Voicebox server/web/API validation, start the stack with the production Voicebox override and the `voicebox` profile:
 
 ```bash
 docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox up -d

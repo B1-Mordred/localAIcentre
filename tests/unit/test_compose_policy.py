@@ -25,6 +25,24 @@ def _compose_override(loader: yaml.SafeLoader, node: yaml.Node):
     return loader.construct_scalar(node)
 
 
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise AssertionError(f"{path}:{line_number} is not a KEY=VALUE line")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise AssertionError(f"{path}:{line_number} has an empty key")
+        if key in values:
+            raise AssertionError(f"{path}:{line_number} duplicates {key}")
+        values[key] = value.strip()
+    return values
+
+
 ComposePolicyLoader.add_constructor("!reset", _compose_reset)
 ComposePolicyLoader.add_constructor("!override", _compose_override)
 
@@ -37,6 +55,7 @@ class ComposePolicyTests(unittest.TestCase):
         cls.production_localai_text = (ROOT / "compose.production-localai.yaml").read_text(encoding="utf-8")
         cls.production_comfyui_text = (ROOT / "compose.production-comfyui.yaml").read_text(encoding="utf-8")
         cls.production_voicebox_text = (ROOT / "compose.production-voicebox.yaml").read_text(encoding="utf-8")
+        cls.production_env = _read_env(ROOT / ".env.production.example")
         cls.production_localai_compose = yaml.load(
             cls.production_localai_text,
             Loader=ComposePolicyLoader,
@@ -203,6 +222,32 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_CPU_AUDIO_MODEL_ROOT"], "/srv/b1-ai-hub/models")
         self.assertEqual(environment["B1_PIPER_BINARY"], "${B1_PIPER_BINARY:-/opt/piper/piper}")
         self.assertEqual(environment["B1_PIPER_MODEL_PATH"], "${B1_PIPER_MODEL_PATH:-}")
+
+    def test_production_env_selects_real_runtime_overlays_for_default_command(self) -> None:
+        self.assertEqual(
+            self.production_env["COMPOSE_FILE"].split(":"),
+            [
+                "compose.yaml",
+                "compose.production-localai.yaml",
+                "compose.production-comfyui.yaml",
+                "compose.production-voicebox.yaml",
+            ],
+        )
+        self.assertEqual(self.production_env["COMPOSE_PROFILES"], "voicebox")
+        self.assertNotIn("compose.legacy-comfy.yaml", self.production_env["COMPOSE_FILE"])
+        self.assertEqual(self.production_env["B1_RUNTIME_DEPLOYMENT_MODE"], "production")
+        self.assertEqual(
+            set(self.production_env["B1_RUNTIME_PRODUCTION_REQUIRED"].split()),
+            {"localai", "comfyui", "audio-cpu", "voicebox"},
+        )
+
+    def test_production_env_disables_development_placeholders_and_cloud_by_default(self) -> None:
+        self.assertEqual(self.production_env["B1_CPU_AUDIO_ENGINE"], "piper")
+        self.assertEqual(self.production_env["B1_CPU_EMBEDDING_ENGINE"], "onnx")
+        self.assertEqual(self.production_env["B1_CPU_STT_ENGINE"], "vosk")
+        self.assertEqual(self.production_env["B1_CPU_AUDIO_ENABLE_PLACEHOLDER"], "false")
+        self.assertEqual(self.production_env["B1_ALLOW_EXTERNAL_PROVIDERS"], "false")
+        self.assertEqual(self.production_env["B1_ENABLE_MUTATIONS"], "false")
 
     def test_production_localai_override_builds_b1_wrapper_image(self) -> None:
         service = self.production_localai_compose["services"]["localai"]

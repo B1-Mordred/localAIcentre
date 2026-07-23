@@ -54,12 +54,12 @@ The placeholder runtime containers are intentional at this stage. They keep `doc
 LocalAI, ComfyUI, and Voicebox now have production runtime overrides:
 
 ```bash
-docker compose -f compose.yaml -f compose.production-localai.yaml up -d
-docker compose -f compose.yaml -f compose.production-comfyui.yaml up -d
-docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox up -d
+cp .env.production.example .env
+make bootstrap
+docker compose up -d
 ```
 
-The base Compose file remains the lightweight development topology; these overrides must be used for real GPU runtime smoke and acceptance work. See [deploy/localai/README.md](./deploy/localai/README.md), [deploy/comfyui/README.md](./deploy/comfyui/README.md), [deploy/voicebox/README.md](./deploy/voicebox/README.md), and [docs/installation.md](./docs/installation.md).
+The base Compose file remains the lightweight development topology, but the production env template sets `COMPOSE_FILE` and `COMPOSE_PROFILES` so the normal Compose command selects the real LocalAI, ComfyUI, and Voicebox overlays. The explicit `-f` commands remain useful for partial runtime validation. See [deploy/localai/README.md](./deploy/localai/README.md), [deploy/comfyui/README.md](./deploy/comfyui/README.md), [deploy/voicebox/README.md](./deploy/voicebox/README.md), and [docs/installation.md](./docs/installation.md).
 
 Seeded aliases are visible on first boot, but direct inference only runs for aliases backed by an installed manifest. The initial installed manifests are CPU-only development placeholders for embeddings, fast TTS, and STT; the scaffold CPU embedding endpoint returns deterministic local hash vectors for smoke testing, not semantic RAG quality. The catalog also includes `b1-piper-en-us-amy-low` as an available, checksum-pinned Piper voice recommendation for `tts-fast`, `b1-minilm-l6-v2-onnx-q4` as an available, checksum-pinned ONNX embedding recommendation for `embedding-default`, and `b1-vosk-small-en-us-0.15` as an available, checksum-pinned Vosk recommendation for `stt-default`; installing any of them creates a read-only `audio-cpu` runtime view and requests carry the immutable model ref to the runtime. The bundled CPU runtime marks scaffold responses with `b1_placeholder=true` or `X-B1-Placeholder: true` and can be disabled with `B1_CPU_AUDIO_ENABLE_PLACEHOLDER=false`, in which case scaffold endpoints return HTTP 503 until a real engine is configured. The default audio-cpu image installs checksum-pinned rhasspy/piper `2023.11.14-2` for real CPU TTS when `B1_CPU_AUDIO_ENGINE=piper`, includes pinned ONNX Runtime/tokenizer dependencies for real local embeddings when `B1_CPU_EMBEDDING_ENGINE=onnx`, and includes pinned Vosk bindings for real local PCM WAV transcription when `B1_CPU_STT_ENGINE=vosk`. GPU aliases remain visible as uninstalled until real validated model manifests are added.
 
@@ -71,6 +71,12 @@ Review and copy the example environment:
 
 ```bash
 cp .env.example .env
+```
+
+For the real-runtime appliance path, copy the production template instead:
+
+```bash
+cp .env.production.example .env
 ```
 
 Run the bootstrap checks and create the external data tree:
