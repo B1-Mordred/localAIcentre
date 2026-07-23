@@ -46,6 +46,9 @@ PATCH /admin/voicebox/profiles/{profile_id}
 POST /admin/voicebox/profiles/{profile_id}/export
 DELETE /admin/voicebox/profiles/{profile_id}
 GET  /admin/self-test
+GET  /admin/acceptance-reports
+POST /admin/acceptance-reports
+GET  /admin/acceptance-reports/{report_id}
 GET  /admin/audit-log
 POST /admin/artifacts/retention-plan
 POST /admin/artifacts/cleanup
@@ -123,6 +126,8 @@ DELETE /modelhub/v1/clients/{client_id}
 Runtime production-readiness is controlled by `B1_RUNTIME_DEPLOYMENT_MODE` and `B1_RUNTIME_PRODUCTION_REQUIRED`. In `development` mode, placeholders or unhealthy required runtimes create a warning. In `production` mode, they fail the self-test so cutover cannot treat mock LocalAI, mock ComfyUI, mock Voicebox, or scaffold CPU audio as accepted production backends.
 
 Stable acceptance-oriented check names include `database`, `redis`, `runtimes`, `runtime-agent:status`, `runtime-agent:metrics`, `gpu:nvml`, `tls:routing`, `inference:tiny`, `runtime-agent:unload`, and `artifact:delivery`. The TLS routing check fails if a configured HTTPS route is unreachable, returns an error status, or omits the expected Caddy security headers. The unload check uses `dry_run=true`, so it proves the authenticated runtime-agent path without restarting containers.
+
+`POST /admin/acceptance-reports` requires administrator `admin:write`, reruns the same self-test, snapshots `GET /admin/metrics`, the effective resource policy, admission headroom, maintenance state, scheduler lease, runtime state rows, and active runtime reservations, then writes a JSON report, Markdown handoff report, and `SHA256SUMS` under `$B1_BACKUP_ROOT/acceptance/<report_id>/`. `GET /admin/acceptance-reports` lists summaries and `GET /admin/acceptance-reports/{report_id}` returns the stored report. A report is marked `operator_handoff_ready=true` only when the self-test is `ok`, runtime deployment mode is `production`, runtime production-readiness is `ok`, and GPU/NVML evidence is present and healthy.
 
 The runtime-agent internal `GET /v1/metrics` endpoint is protected by the internal runtime-agent mTLS channel and bearer token, and returns CPU/load, host memory/swap, configured disk paths, and GPU telemetry from `nvidia-smi` when available. It does not accept command, path, or device parameters from callers.
 

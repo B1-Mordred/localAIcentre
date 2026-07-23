@@ -27,6 +27,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from . import admission
+from . import acceptance
 from . import database
 from . import artifact_retention
 from . import audit as audit_policy
@@ -203,6 +204,11 @@ class RuntimeReservationCreate(BaseModel):
     model: str
     duration_seconds: int = Field(default=300, ge=30, le=7200)
     reason: str = Field(default="")
+
+
+class AcceptanceReportCreate(BaseModel):
+    label: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=4000)
 
 
 class RuntimeActionRequest(BaseModel):
@@ -3114,13 +3120,7 @@ async def admin_status(
     }
 
 
-@app.get("/admin/metrics")
-async def admin_metrics(
-    authorization: str | None = Header(default=None),
-    limit: int = Query(default=500, ge=1, le=500),
-) -> dict[str, Any]:
-    auth = await authenticate(authorization)
-    require_scope(auth, "admin:read")
+async def build_admin_metrics_payload(limit: int = 500) -> dict[str, Any]:
     jobs = await database.list_jobs(limit=limit)
     state_counts = await database.job_counts_by_state()
     runtime_states = await database.list_runtime_states()
@@ -3136,6 +3136,16 @@ async def admin_metrics(
             agent_error=agent_error,
         )
     )
+
+
+@app.get("/admin/metrics")
+async def admin_metrics(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=500, ge=1, le=500),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    return await build_admin_metrics_payload(limit=limit)
 
 
 @app.get("/admin/admission")
@@ -5385,11 +5395,94 @@ async def build_self_test_report(subject_id: str) -> dict[str, Any]:
     }
 
 
+def acceptance_report_root_path() -> Path:
+    return acceptance.acceptance_root(backup_root_path())
+
+
+async def build_acceptance_report_snapshot(auth: AuthContext, payload: AcceptanceReportCreate) -> dict[str, Any]:
+    now = datetime.now(tz=UTC)
+    report = acceptance.build_report(
+        report_id=acceptance.new_report_id(now),
+        created_by=auth.subject_id,
+        label=payload.label,
+        notes=payload.notes,
+        generated_at=now,
+        runtime_deployment_mode=settings.runtime_deployment_mode,
+        resource_policy=resource_policy_dict(resource_policy()),
+        maintenance=current_maintenance_state(),
+        self_test=await build_self_test_report(auth.subject_id),
+        metrics=await build_admin_metrics_payload(limit=500),
+        admission=await admission_report(auth.subject_id),
+        scheduler_lease=jsonable_encoder(await database.get_scheduler_owner()),
+        runtime_states=jsonable_encoder(await database.list_runtime_states()),
+        runtime_reservations=[
+            public_runtime_reservation(row)
+            for row in await database.list_runtime_reservations(limit=50, status="active")
+        ],
+    )
+    return jsonable_encoder(report)
+
+
 @app.get("/admin/self-test")
 async def admin_self_test(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:read")
     return await build_self_test_report(auth.subject_id)
+
+
+@app.get("/admin/acceptance-reports")
+async def admin_acceptance_reports(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "acceptance reports require administrator role")
+    return {"object": "list", "data": acceptance.list_reports(acceptance_report_root_path(), limit=limit)}
+
+
+@app.get("/admin/acceptance-reports/{report_id}")
+async def admin_acceptance_report_get(report_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "acceptance reports require administrator role")
+    try:
+        report = acceptance.load_report(acceptance_report_root_path(), report_id)
+    except acceptance.AcceptanceReportError as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=404 if "not found" in detail else 400, detail=detail) from exc
+    return {
+        "summary": acceptance.public_report_summary(report, acceptance.report_directory(acceptance_report_root_path(), report_id)),
+        "report": report,
+    }
+
+
+@app.post("/admin/acceptance-reports")
+async def admin_acceptance_report_create(payload: AcceptanceReportCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "acceptance reports require administrator role")
+    report = await build_acceptance_report_snapshot(auth, payload)
+    try:
+        summary = await asyncio.to_thread(acceptance.write_report, acceptance_report_root_path(), report)
+    except acceptance.AcceptanceReportError as exc:
+        raise HTTPException(status_code=409 if "already exists" in str(exc) else 400, detail=str(exc)) from exc
+    await record_audit_event(
+        auth,
+        "acceptance_report.created",
+        target_type="acceptance_report",
+        target_id=report["id"],
+        summary=f"Created acceptance report {report['id']}",
+        metadata={
+            "label": report.get("label"),
+            "status": report.get("status"),
+            "runtime_deployment_mode": report.get("runtime_deployment_mode"),
+            "operator_handoff_ready": report.get("operator_handoff_ready"),
+            "acceptance_blockers": report.get("acceptance_blockers"),
+            "files": summary.get("files"),
+        },
+    )
+    return {"summary": summary, "report": report}
 
 
 @app.get("/admin/updates")

@@ -31,6 +31,12 @@ class ControlCenterSourceTests(unittest.TestCase):
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 
+    def test_system_tab_surfaces_acceptance_reports(self) -> None:
+        self.assertIn("type AcceptanceReportSummary", self.source)
+        self.assertIn("/admin/acceptance-reports?limit=10", self.source)
+        self.assertIn("/admin/acceptance-reports", self.source)
+        self.assertIn("<h3>Acceptance Reports</h3>", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

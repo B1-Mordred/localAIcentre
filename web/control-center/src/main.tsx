@@ -329,6 +329,23 @@ type SelfTestResult = {
   checks: SelfTestCheck[];
 };
 
+type AcceptanceReportSummary = {
+  id: string;
+  label?: string;
+  generated_at?: string;
+  created_by?: string;
+  status: string;
+  runtime_deployment_mode?: string;
+  operator_handoff_ready: boolean;
+  acceptance_blockers: string[];
+  files?: {
+    directory?: string;
+    json?: string;
+    markdown?: string;
+    sha256sums?: string;
+  };
+};
+
 type AuditEvent = {
   id: string;
   created_at: string;
@@ -2830,6 +2847,9 @@ function Storage() {
 
 function System() {
   const [result, setResult] = useState<SelfTestResult | null>(null);
+  const [acceptanceReports, setAcceptanceReports] = useState<AcceptanceReportSummary[]>([]);
+  const [acceptanceLabel, setAcceptanceLabel] = useState("");
+  const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [resourcePolicy, setResourcePolicy] = useState<ResourcePolicyPayload | null>(null);
   const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
@@ -2929,6 +2949,29 @@ function System() {
       .then((payload) => {
         setResult(payload);
         setMessage(payload.status);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const loadAcceptanceReports = () => {
+    apiJson<{ object: string; data: AcceptanceReportSummary[] }>(`/admin/acceptance-reports?limit=10`)
+      .then((payload) => setAcceptanceReports(payload.data ?? []))
+      .catch(() => setAcceptanceReports([]));
+  };
+
+  const createAcceptanceReport = () => {
+    setBusy(true);
+    setMessage("creating acceptance report");
+    apiJson<{ summary: AcceptanceReportSummary; report: unknown }>(`/admin/acceptance-reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: acceptanceLabel.trim(), notes: acceptanceNotes.trim() })
+    })
+      .then((payload) => {
+        setMessage(`acceptance ${payload.summary.status}`);
+        setAcceptanceReports((current) => [payload.summary, ...current.filter((item) => item.id !== payload.summary.id)].slice(0, 10));
+        loadAudit();
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -3099,6 +3142,7 @@ function System() {
 
   useEffect(() => {
     runSelfTest();
+    loadAcceptanceReports();
     loadAudit();
     loadResourcePolicy();
     loadAdmissionPolicy();
@@ -3294,6 +3338,43 @@ function System() {
             </tr>
           ))}
           {!result?.checks?.length && <tr><td colSpan={3}>No self-test results</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <Archive size={16} />
+        <h3>Acceptance Reports</h3>
+      </div>
+      <div className="stack">
+        <div className="split">
+          <label>Label<input value={acceptanceLabel} onChange={(event) => setAcceptanceLabel(event.target.value)} maxLength={120} /></label>
+          <label>Status<input value={result?.status ?? "not run"} readOnly /></label>
+        </div>
+        <label>Notes<textarea rows={3} value={acceptanceNotes} onChange={(event) => setAcceptanceNotes(event.target.value)} maxLength={4000} /></label>
+      </div>
+      <div className="toolbar">
+        <button title="Create acceptance report" onClick={createAcceptanceReport} disabled={busy}><Archive size={16} />Create</button>
+        <button title="Refresh acceptance reports" onClick={loadAcceptanceReports} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="toolbar-status">{acceptanceReports.length ? `${acceptanceReports.length} reports` : "no reports"}</span>
+      </div>
+      <table>
+        <thead><tr><th>Report</th><th>Status</th><th>Mode</th><th>Files</th><th>Blockers</th></tr></thead>
+        <tbody>
+          {acceptanceReports.map((report) => (
+            <tr key={report.id}>
+              <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
+              <td>
+                <span className={statusPillClass(report.status)}>{report.status}</span>
+                <small>{report.operator_handoff_ready ? "handoff ready" : "operator review"}</small>
+              </td>
+              <td>{report.runtime_deployment_mode ?? "unknown"}</td>
+              <td>
+                {report.files?.markdown ? <small>{report.files.markdown}</small> : "pending"}
+                {report.files?.sha256sums ? <small>{report.files.sha256sums}</small> : null}
+              </td>
+              <td>{report.acceptance_blockers.length ? report.acceptance_blockers.slice(0, 3).join("; ") : "none"}</td>
+            </tr>
+          ))}
+          {!acceptanceReports.length && <tr><td colSpan={5}>No acceptance reports recorded</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">

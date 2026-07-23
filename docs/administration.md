@@ -115,6 +115,16 @@ Tune these probes with `B1_SELF_TEST_TLS_URLS`, `B1_SELF_TEST_TLS_CA_FILE`, `B1_
 
 GPU/NVML metrics are reported as a warning when unavailable so a CPU-only development host can still use the rest of the appliance checks. On the target RTX host, missing GPU metrics indicate that NVIDIA host prerequisites or container runtime GPU visibility still need attention.
 
+## Acceptance Reports
+
+The System tab can create a durable acceptance report after the operator has switched `B1_RUNTIME_DEPLOYMENT_MODE=production` and completed the temporary-hostname validation sequence. Report creation reruns the system self-test, snapshots Dashboard metrics, admission headroom, effective RTX 3060/32 GB resource policy, maintenance state, scheduler lease, runtime state rows, and active runtime reservations, then writes:
+
+- `$B1_BACKUP_ROOT/acceptance/<report_id>/report.json`
+- `$B1_BACKUP_ROOT/acceptance/<report_id>/report.md`
+- `$B1_BACKUP_ROOT/acceptance/<report_id>/SHA256SUMS`
+
+The Markdown report is the operator handoff artifact for cutover review. It is marked handoff-ready only when the self-test is `ok`, production runtime readiness is `ok`, the deployment mode is `production`, and GPU/NVML evidence is healthy. Development placeholders, missing GPU metrics, degraded self-test checks, or production-readiness warnings are preserved as acceptance blockers rather than hidden behind a green report.
+
 ## Audit Log
 
 The System tab also shows recent audit events from `GET /admin/audit-log`. The control plane stores successful administrative mutations in PostgreSQL, including API-client creation/revocation, scheduler lease acquisition, backup create/verify/restore-test/import actions, workflow publish/unpublish, job cancellation/retry/priority updates, runtime reservation create/cancel, and Model Hub client create/revoke.
