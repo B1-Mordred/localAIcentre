@@ -200,11 +200,20 @@ p {
   gap: 10px;
 }
 
+.metrics.compact {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin: 8px 0 12px;
+}
+
 .metric {
   border-left: 3px solid #1f6f5b;
   padding: 8px 10px;
   background: #f8faf8;
   min-height: 82px;
+}
+
+.metrics.compact .metric {
+  min-height: 70px;
 }
 
 .metric span,
@@ -217,6 +226,10 @@ p {
   display: block;
   margin: 8px 0 4px;
   font-size: 20px;
+}
+
+.metrics.compact .metric strong {
+  font-size: 16px;
 }
 
 .toolbar {
@@ -663,6 +676,7 @@ td {
 
   .panel-grid,
   .metrics,
+  .metrics.compact,
   .split,
   .inline-form,
   .policy-grid,

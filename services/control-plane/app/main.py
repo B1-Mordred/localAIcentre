@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
+from . import admission
 from . import database
 from . import artifact_retention
 from . import audit as audit_policy
@@ -720,6 +721,65 @@ def staged_input_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
 
+def admission_error_response(exc: admission.AdmissionDeniedError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": str(exc),
+            **exc.details,
+        },
+    )
+
+
+def admission_policy() -> admission.AdmissionPolicy:
+    return admission.policy_from_settings(settings)
+
+
+def artifact_storage_snapshot(policy: admission.AdmissionPolicy | None = None) -> admission.ArtifactStorageSnapshot:
+    effective_policy = policy or admission_policy()
+    return admission.artifact_storage_snapshot(Path(settings.artifact_root), effective_policy)
+
+
+def enforce_artifact_storage_headroom(incoming_bytes: int = 0) -> None:
+    policy = admission_policy()
+    try:
+        admission.enforce_artifact_storage_admission(policy, artifact_storage_snapshot(policy), incoming_bytes=incoming_bytes)
+    except admission.AdmissionDeniedError as exc:
+        raise admission_error_response(exc) from exc
+
+
+async def queue_admission_snapshot(owner_id: str) -> admission.QueueAdmissionSnapshot:
+    since = datetime.now(tz=UTC) - timedelta(hours=1)
+    owner_queued, owner_active, owner_recent, global_queued = await asyncio.gather(
+        database.count_jobs(owner_id=owner_id, states=admission.QUEUE_STATES),
+        database.count_jobs(owner_id=owner_id, states=admission.ACTIVE_STATES),
+        database.count_jobs(owner_id=owner_id, created_after=since),
+        database.count_jobs(states=admission.QUEUE_STATES),
+    )
+    return admission.QueueAdmissionSnapshot(
+        owner_id=owner_id,
+        owner_queued_jobs=owner_queued,
+        owner_active_jobs=owner_active,
+        owner_jobs_last_hour=owner_recent,
+        global_queued_jobs=global_queued,
+    )
+
+
+async def admission_report(owner_id: str | None = None) -> dict[str, Any]:
+    policy = admission_policy()
+    queue = await queue_admission_snapshot(owner_id) if owner_id else None
+    return admission.public_report(policy, queue=queue, storage=artifact_storage_snapshot(policy))
+
+
+async def enforce_queue_admission(owner_id: str) -> None:
+    policy = admission_policy()
+    try:
+        admission.enforce_queue_admission(policy, await queue_admission_snapshot(owner_id))
+    except admission.AdmissionDeniedError as exc:
+        raise admission_error_response(exc) from exc
+
+
 def stage_media_input(
     auth: AuthContext,
     *,
@@ -728,6 +788,7 @@ def stage_media_input(
     declared_mime_type: str | None = None,
     filename: str | None = None,
 ) -> dict[str, Any]:
+    enforce_artifact_storage_headroom(len(content))
     try:
         return media_artifacts.write_staged_input_bytes(
             Path(settings.artifact_root),
@@ -2201,6 +2262,8 @@ async def create_job_record(
         if existing is not None:
             return existing
     require_not_in_maintenance(f"{request_payload.modality}/{request_payload.operation}")
+    await enforce_queue_admission(owner)
+    enforce_artifact_storage_headroom(0)
     job_id = f"job_{uuid.uuid4().hex}"
     payload = {
         "id": job_id,
@@ -2461,6 +2524,7 @@ async def admin_status(
         "sync_inference_lease_ttl_seconds": settings.sync_inference_lease_ttl_seconds,
         "model_download_runner_enabled": settings.model_download_runner_enabled,
         "maintenance": current_maintenance_state(),
+        "admission": await admission_report(auth.subject_id),
         "queue": await database.job_counts_by_state(),
         "scheduler_lease": jsonable_encoder(await database.get_scheduler_owner()),
         "runtime_states": jsonable_encoder(await database.list_runtime_states()),
@@ -2495,6 +2559,18 @@ async def admin_metrics(
             agent_error=agent_error,
         )
     )
+
+
+@app.get("/admin/admission")
+async def admin_admission(
+    authorization: str | None = Header(default=None),
+    owner_id: str | None = Query(default=None, max_length=128),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    if owner_id and not (auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR}):
+        raise HTTPException(status_code=403, detail="owner-specific admission inspection requires admin or operator role")
+    return jsonable_encoder(await admission_report(owner_id or auth.subject_id))
 
 
 @app.get("/admin/maintenance")

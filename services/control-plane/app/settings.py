@@ -72,6 +72,12 @@ class Settings:
     backup_encryption_mode: str
     artifact_root: str
     upload_max_bytes: int
+    max_queued_jobs_per_owner: int
+    max_active_jobs_per_owner: int
+    max_jobs_per_hour_per_owner: int
+    max_queued_jobs_global: int
+    artifact_storage_max_bytes: int
+    artifact_storage_reserve_bytes: int
     model_catalog_dir: str
     workflow_seed_dir: str
     comfyui_node_pin_registry: str
@@ -179,6 +185,12 @@ def load_settings() -> Settings:
         backup_encryption_mode=os.getenv("B1_BACKUP_ENCRYPTION_MODE", "copy").strip().lower(),
         artifact_root=os.getenv("B1_ARTIFACT_ROOT", "/srv/b1-ai-hub/artifacts"),
         upload_max_bytes=_int("B1_UPLOAD_MAX_BYTES", 256 * 1024 * 1024),
+        max_queued_jobs_per_owner=_int("B1_MAX_QUEUED_JOBS_PER_OWNER", 20),
+        max_active_jobs_per_owner=_int("B1_MAX_ACTIVE_JOBS_PER_OWNER", 3),
+        max_jobs_per_hour_per_owner=_int("B1_MAX_JOBS_PER_HOUR_PER_OWNER", 60),
+        max_queued_jobs_global=_int("B1_MAX_QUEUED_JOBS_GLOBAL", 100),
+        artifact_storage_max_bytes=_int("B1_ARTIFACT_STORAGE_MAX_BYTES", 0),
+        artifact_storage_reserve_bytes=_int("B1_ARTIFACT_STORAGE_RESERVE_BYTES", 10 * 1024 * 1024 * 1024),
         model_catalog_dir=os.getenv("B1_MODEL_CATALOG_DIR", "/opt/b1/model-catalog"),
         workflow_seed_dir=os.getenv("B1_WORKFLOW_SEED_DIR", "/opt/b1/workflows/approved"),
         comfyui_node_pin_registry=os.getenv("B1_COMFYUI_NODE_PIN_REGISTRY", "/opt/b1/workflows/approved-node-pins.json"),

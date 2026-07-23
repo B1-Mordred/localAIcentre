@@ -1535,6 +1535,29 @@ async def list_jobs(
     return [dict(row) for row in rows]
 
 
+async def count_jobs(
+    *,
+    owner_id: str | None = None,
+    states: set[str] | frozenset[str] | tuple[str, ...] | list[str] | None = None,
+    created_after: datetime | None = None,
+) -> int:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    filters = []
+    if owner_id:
+        filters.append(jobs.c.owner_id == owner_id)
+    if states:
+        filters.append(jobs.c.state.in_(tuple(states)))
+    if created_after is not None:
+        filters.append(jobs.c.created_at >= created_after)
+    query = select(func.count()).select_from(jobs)
+    if filters:
+        query = query.where(and_(*filters))
+    async with engine.connect() as conn:
+        result = await conn.execute(query)
+        return int(result.scalar_one())
+
+
 async def list_artifact_retention_jobs(cutoff: datetime, limit: int = 5000) -> list[dict[str, Any]]:
     if engine is None:
         raise RuntimeError("database engine is not configured")

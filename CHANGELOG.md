@@ -12,3 +12,4 @@
 - Added a production Voicebox Compose override and pinned B1 Voicebox image build from upstream `v0.5.0`, including native `:17493` routing through a B1 REST/WebSocket proxy, B1-managed voice data/cache storage, read-only model-view mapping, conservative scheduler lifecycle hooks, and CI/SBOM inventory coverage.
 - Added a control-plane observability report at `GET /admin/metrics` and wired the Dashboard to display queue waits, recent job timings, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring a heavy monitoring stack.
 - Added generated-artifact retention planning and confirmed cleanup through the Storage tab and `POST /admin/artifacts/*`, preserving protected Voicebox samples and marking reclaimed job artifacts as deleted.
+- Added configurable admission controls for media job queue/rate limits and artifact storage headroom, exposed through `GET /admin/admission`, Dashboard, and the Storage tab.

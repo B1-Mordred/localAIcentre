@@ -48,6 +48,7 @@ type AdminStatus = {
   service: string;
   resource_policy: Record<string, number>;
   resource_policy_source?: string;
+  admission?: AdmissionReport;
   maintenance?: MaintenanceState;
   external_providers_enabled: boolean;
   gpu_default_idle_timeout_seconds?: number;
@@ -55,6 +56,34 @@ type AdminStatus = {
   scheduler_lease?: SchedulerLease | null;
   runtime_states?: RuntimeState[];
   queue?: { state: string; count: number }[];
+};
+
+type AdmissionReport = {
+  policy: {
+    max_queued_jobs_per_owner: number;
+    max_active_jobs_per_owner: number;
+    max_jobs_per_hour_per_owner: number;
+    max_queued_jobs_global: number;
+    artifact_storage_max_bytes: number;
+    artifact_storage_reserve_bytes: number;
+  };
+  queue?: {
+    owner_id: string;
+    owner_queued_jobs: number;
+    owner_active_jobs: number;
+    owner_jobs_last_hour: number;
+    global_queued_jobs: number;
+  } | null;
+  storage: {
+    root: string;
+    exists: boolean;
+    artifact_bytes?: number | null;
+    disk_total_bytes?: number | null;
+    disk_used_bytes?: number | null;
+    disk_free_bytes?: number | null;
+    artifact_storage_max_bytes: number;
+    artifact_storage_reserve_bytes: number;
+  };
 };
 
 type MetricSummary = {
@@ -732,6 +761,7 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
   const recoveryTotal = (queueByState.recovery_required ?? 0) + (queueByState.cancelling ?? 0);
   const gpu = metrics?.gpu;
   const hostMemory = metrics?.host.memory;
+  const admission = status?.admission;
   const runtimeStateByName = Object.fromEntries((status?.runtime_states ?? []).map((runtime) => [runtime.runtime, runtime]));
   const gpuDetail = gpu?.available
     ? `${formatCount(gpu.utilization_gpu_percent_max)}% util, ${formatCount(gpu.temperature_c_max)}C max`
@@ -752,6 +782,8 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
           <Metric label="Peak VRAM" value={formatGibFromMib(metrics?.jobs.peak_vram_mib.max)} detail={`peak RAM ${formatGibFromMib(metrics?.jobs.peak_ram_mib.max)}`} />
           <Metric label="Host memory" value={hostMemory?.available ? `${formatHostBytes(hostMemory.used_bytes)} used` : "unavailable"} detail={hostMemoryDetail} />
           <Metric label="VRAM usable" value={`${policy.gpu_usable_vram_gib ?? 10.5} GiB`} detail={`${policy.gpu_reserve_vram_gib ?? 1.5} GiB reserved`} />
+          <Metric label="Admission" value={`${formatCount(admission?.queue?.owner_queued_jobs)} queued`} detail={`${formatCount(admission?.queue?.owner_jobs_last_hour)} jobs/hour, ${formatCount(admission?.queue?.global_queued_jobs)} global`} />
+          <Metric label="Artifact headroom" value={formatHostBytes(admission?.storage.disk_free_bytes)} detail={`${formatHostBytes(admission?.policy.artifact_storage_reserve_bytes)} reserved`} />
           <Metric label="Idle unload" value={`${status?.gpu_default_idle_timeout_seconds ?? 300}s`} detail="blank alias policy uses this default" />
           <Metric label="External providers" value={status?.external_providers_enabled ? "enabled" : "disabled"} detail="LAN-local default" />
         </div>
@@ -2036,6 +2068,7 @@ function Storage() {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
   const [artifactRetentionPlan, setArtifactRetentionPlan] = useState<ArtifactRetentionPlan | null>(null);
+  const [admissionReport, setAdmissionReport] = useState<AdmissionReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
   const [keepLast, setKeepLast] = useState("5");
   const [deleteOlderThanDays, setDeleteOlderThanDays] = useState("");
@@ -2072,9 +2105,16 @@ function Storage() {
       .catch((err: Error) => setMessage(`schedule ${err.message}`));
   };
 
+  const loadAdmission = () => {
+    apiJson<AdmissionReport>(`/admin/admission`)
+      .then(setAdmissionReport)
+      .catch((err: Error) => setMessage(`admission ${err.message}`));
+  };
+
   useEffect(() => {
     loadBackups();
     loadSchedule();
+    loadAdmission();
   }, []);
 
   const runAction = (action: "create" | "verify" | "restore-test" | "postgres-import", backup?: BackupSummary) => {
@@ -2153,6 +2193,7 @@ function Storage() {
       .then((payload: ArtifactRetentionPlan) => {
         setArtifactRetentionPlan(payload);
         setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} artifact candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
+        loadAdmission();
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -2207,6 +2248,7 @@ function Storage() {
       <SectionTitle icon={<HardDrive size={18} />} title="Storage" />
       <div className="toolbar job-filters">
         <button title="Refresh backups" onClick={loadBackups} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Refresh admission limits" onClick={loadAdmission} disabled={busy}><Gauge size={16} />Limits</button>
         <button title="Create backup" onClick={() => runAction("create")} disabled={busy}><Archive size={16} />Backup</button>
         <label>Keep<input aria-label="Backups to keep" inputMode="numeric" value={keepLast} onChange={(event) => setKeepLast(event.target.value)} /></label>
         <label>Older than<input aria-label="Delete older than days" inputMode="numeric" placeholder="days" value={deleteOlderThanDays} onChange={(event) => setDeleteOlderThanDays(event.target.value)} /></label>
@@ -2245,6 +2287,16 @@ function Storage() {
         <Trash2 size={16} />
         <h3>Generated Artifacts</h3>
       </div>
+      {admissionReport && (
+        <div className="metrics compact">
+          <Metric label="Owner queued" value={formatCount(admissionReport.queue?.owner_queued_jobs)} detail={`limit ${formatCount(admissionReport.policy.max_queued_jobs_per_owner)}`} />
+          <Metric label="Owner active" value={formatCount(admissionReport.queue?.owner_active_jobs)} detail={`limit ${formatCount(admissionReport.policy.max_active_jobs_per_owner)}`} />
+          <Metric label="Jobs/hour" value={formatCount(admissionReport.queue?.owner_jobs_last_hour)} detail={`limit ${formatCount(admissionReport.policy.max_jobs_per_hour_per_owner)}`} />
+          <Metric label="Global queued" value={formatCount(admissionReport.queue?.global_queued_jobs)} detail={`limit ${formatCount(admissionReport.policy.max_queued_jobs_global)}`} />
+          <Metric label="Artifact bytes" value={formatHostBytes(admissionReport.storage.artifact_bytes)} detail={admissionReport.policy.artifact_storage_max_bytes ? `cap ${formatHostBytes(admissionReport.policy.artifact_storage_max_bytes)}` : "cap disabled"} />
+          <Metric label="Filesystem free" value={formatHostBytes(admissionReport.storage.disk_free_bytes)} detail={`reserve ${formatHostBytes(admissionReport.policy.artifact_storage_reserve_bytes)}`} />
+        </div>
+      )}
       <div className="toolbar job-filters">
         <label>Older than<input aria-label="Delete artifacts older than days" inputMode="numeric" value={artifactDeleteOlderThanDays} onChange={(event) => setArtifactDeleteOlderThanDays(event.target.value)} /></label>
         <label>Namespaces<input aria-label="Artifact namespaces" placeholder="localai,comfyui" value={artifactNamespaces} onChange={(event) => setArtifactNamespaces(event.target.value)} /></label>
