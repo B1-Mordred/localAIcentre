@@ -126,7 +126,7 @@ type AuthStatus = {
 const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
 const API_TOKEN = import.meta.env.VITE_B1_API_TOKEN ?? "";
 const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
-const TERMINAL_STATES = new Set(["completed", "cancelled", "failed", "expired"]);
+const TERMINAL_STATES = new Set(["completed", "cancelled", "failed", "expired", "recovery_required"]);
 
 function apiUrl(path: string): string {
   return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;

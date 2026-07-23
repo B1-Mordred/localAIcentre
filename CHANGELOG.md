@@ -37,3 +37,4 @@
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
 - Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.
 - Added an administrator/operator job SSE route at `GET /admin/jobs/{job_id}/events` so Control Center can observe any durable job without weakening public owner-scoped media streams.
+- Aligned Control Center and Media Studio terminal-job handling with the backend so `recovery_required` jobs stop live progress/cancel affordances while remaining retryable.

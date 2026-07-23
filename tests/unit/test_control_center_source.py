@@ -18,6 +18,10 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("metrics?.jobs.recovery_required_last_hour", self.source)
         self.assertRegex(self.source, r"<Metric label=\"Jobs last hour\"[^>]+recovery")
 
+    def test_recovery_required_jobs_are_terminal_but_retryable(self) -> None:
+        self.assertRegex(self.source, r'TERMINAL_JOB_STATES = new Set\(\[[^\]]*"recovery_required"')
+        self.assertRegex(self.source, r'RETRYABLE_JOB_STATES = new Set\(\[[^\]]*"recovery_required"')
+
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 

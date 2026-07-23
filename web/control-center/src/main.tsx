@@ -1780,7 +1780,7 @@ function Runtimes() {
 const JOB_STATES = ["", "created", "validated", "queued", "waiting_for_gpu", "unloading", "verifying_vram", "loading", "warming", "running", "saving", "completed", "cancelling", "cancelled", "failed", "expired", "recovery_required"];
 const JOB_PRIORITIES = ["chat", "interactive_audio", "single_image", "image_batch", "video", "batch"];
 const RESERVATION_STATUSES = ["", "active", "cancelled", "expired"];
-const TERMINAL_JOB_STATES = new Set(["completed", "cancelled", "failed", "expired"]);
+const TERMINAL_JOB_STATES = new Set(["completed", "cancelled", "failed", "expired", "recovery_required"]);
 const RETRYABLE_JOB_STATES = new Set(["failed", "cancelled", "expired", "recovery_required"]);
 const PRIORITIZABLE_JOB_STATES = new Set(["created", "validated", "queued", "waiting_for_gpu"]);
 
