@@ -5,6 +5,7 @@ import sys
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -52,6 +53,7 @@ class FakeReservationDatabase:
         self.row = row or reservation_row()
         self.list_kwargs: dict[str, Any] | None = None
         self.cancelled: list[str] = []
+        self.inserted: list[dict[str, Any]] = []
 
     async def list_runtime_reservations(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.list_kwargs = dict(kwargs)
@@ -69,6 +71,33 @@ class FakeReservationDatabase:
         self.cancelled.append(reservation_id)
         self.row = {**row, "status": "cancelled", "cancelled_at": datetime.now(tz=UTC)}
         return dict(self.row)
+
+    async def insert_runtime_reservation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.inserted.append(dict(payload))
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+        self.row = {
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+            "cancelled_at": None,
+            **payload,
+        }
+        return dict(self.row)
+
+
+def fake_catalog_alias(*, runtimes: list[str] | None = None, model_id: str = "chat-model", version: str = "1.0.0") -> Any:
+    return SimpleNamespace(
+        runtimes=runtimes or ["localai"],
+        manifest=SimpleNamespace(id=model_id, version=version),
+    )
+
+
+def fake_runtime_registry(**adapters: Any) -> Any:
+    return SimpleNamespace(adapters=adapters)
+
+
+def fake_adapter(*, configured: bool = True, requires_gpu: bool = True, external: bool = False) -> Any:
+    return SimpleNamespace(configured=configured, requires_gpu=requires_gpu, external=external)
 
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
@@ -114,6 +143,64 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 403)
         self.assertIsNone(fake_database.list_kwargs)
+
+    def test_create_reservation_records_installed_gpu_alias_and_audit(self) -> None:
+        fake_database = FakeReservationDatabase()
+        audit_events: list[dict[str, Any]] = []
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_audit(audit_events)
+        self.patch_attr("require_catalog_alias", lambda *args, **kwargs: fake_catalog_alias())
+        self.patch_attr("runtime_registry_snapshot", lambda: fake_runtime_registry(localai=fake_adapter()))
+
+        result = asyncio.run(
+            main.runtime_reservation_create(
+                main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=600, reason="batch window")
+            )
+        )
+
+        self.assertEqual(result["runtime"], "localai")
+        self.assertEqual(result["model_alias"], "chat-default")
+        self.assertEqual(result["resolved_model_version"], "chat-model@1.0.0")
+        self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
+        self.assertEqual(fake_database.inserted[0]["duration_seconds"], 600)
+        self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.created")
+
+    def test_create_reservation_rejects_cpu_runtime_before_insert(self) -> None:
+        fake_database = FakeReservationDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_attr("require_catalog_alias", lambda *args, **kwargs: fake_catalog_alias(runtimes=["audio-cpu"]))
+        self.patch_attr("runtime_registry_snapshot", lambda: fake_runtime_registry(**{"audio-cpu": fake_adapter(requires_gpu=False)}))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.runtime_reservation_create(
+                    main.RuntimeReservationCreate(runtime="audio-cpu", model="tts-fast", duration_seconds=300, reason="cpu job")
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("does not participate in GPU scheduler reservations", str(caught.exception.detail))
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_create_reservation_rejects_unconfigured_runtime_before_insert(self) -> None:
+        fake_database = FakeReservationDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_attr("require_catalog_alias", lambda *args, **kwargs: fake_catalog_alias())
+        self.patch_attr("runtime_registry_snapshot", lambda: fake_runtime_registry(localai=fake_adapter(configured=False)))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.runtime_reservation_create(
+                    main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=300, reason="batch")
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("not configured", str(caught.exception.detail))
+        self.assertEqual(fake_database.inserted, [])
 
     def test_public_get_rejects_other_owner(self) -> None:
         self.patch_attr("database", FakeReservationDatabase(reservation_row(owner_id="other_client")))

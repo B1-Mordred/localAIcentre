@@ -7138,9 +7138,14 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
     registry = runtime_registry_snapshot()
     if payload.runtime not in registry.adapters:
         raise HTTPException(status_code=422, detail=f"unknown runtime adapter: {payload.runtime}")
+    adapter = registry.adapters[payload.runtime]
+    if not adapter.configured:
+        raise HTTPException(status_code=422, detail=f"runtime adapter {payload.runtime} is not configured")
+    if payload.runtime not in GPU_RUNTIMES or not adapter.requires_gpu:
+        raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} does not participate in GPU scheduler reservations")
     if payload.runtime not in alias.runtimes:
         raise HTTPException(status_code=422, detail=f"model alias {payload.model} is not compatible with runtime {payload.runtime}")
-    if registry.adapters[payload.runtime].external and not settings.allow_external_providers:
+    if adapter.external and not settings.allow_external_providers:
         raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} is external and external providers are disabled")
     reservation_id = f"reservation_{uuid.uuid4().hex}"
     row = await database.insert_runtime_reservation(
@@ -7149,7 +7154,7 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
             "owner_id": auth.subject_id,
             "runtime": payload.runtime,
             "model_alias": payload.model,
-            "resolved_model_version": f"{alias.manifest.id}@{alias.manifest.version}" if alias.manifest else "unresolved",
+            "resolved_model_version": f"{alias.manifest.id}@{alias.manifest.version}",
             "duration_seconds": payload.duration_seconds,
             "reason": payload.reason,
             "expires_at": datetime.now(tz=UTC) + timedelta(seconds=payload.duration_seconds),

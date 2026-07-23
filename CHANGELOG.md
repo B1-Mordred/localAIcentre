@@ -41,3 +41,4 @@
 - Wired the Control Center Jobs tab to the administrator job SSE endpoint so the selected job detail and row update live while non-terminal work is running.
 - Added a deliberate ComfyUI compatibility passthrough policy that allows native read routes and core mutating routes while blocking internal lifecycle hooks and unapproved custom-node management surfaces.
 - Tightened durable media-job idempotency so invalid keys are rejected, reused keys must match the original job identity, and image-edit replays avoid restaging upload data.
+- Restricted runtime reservation creation to configured GPU runtimes so CPU-only or external adapters cannot create scheduler records that the GPU lease will never enforce.
