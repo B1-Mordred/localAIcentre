@@ -547,6 +547,38 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(websocket.sent_bytes, [b"\x00\x01"])
         self.assertIn(1000, websocket.closed)
 
+    def test_voicebox_websocket_bridge_preserves_path_query_and_filters_headers(self) -> None:
+        websocket = FakeWebSocket(
+            query="session=abc",
+            headers={
+                "host": "voice.ai.b1.germering",
+                "authorization": "Bearer secret",
+                "sec-websocket-key": "browser-key",
+                "user-agent": "voicebox-client",
+                "x-b1-test": "forwarded",
+            },
+            receive_messages=[{"type": "websocket.disconnect", "code": 1000}],
+        )
+        upstream = FakeUpstream([b"voicebox-event"], block_when_empty=False)
+        connected: dict[str, Any] = {}
+        main.settings = replace(main.settings, voicebox_url="http://voicebox:17493")
+
+        def connect(url: str, **kwargs: Any) -> FakeConnect:
+            connected.update({"url": url, **kwargs})
+            return FakeConnect(upstream)
+
+        main.websocket_connect = connect  # type: ignore[assignment]
+
+        asyncio.run(main.bridge_voicebox_websocket(websocket, "/api/ws"))
+
+        self.assertTrue(websocket.accepted)
+        self.assertEqual(connected["url"], "ws://voicebox:17493/api/ws?session=abc")
+        self.assertEqual(connected["additional_headers"]["user-agent"], "voicebox-client")
+        self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
+        self.assertNotIn("authorization", {key.lower() for key in connected["additional_headers"]})
+        self.assertNotIn("sec-websocket-key", {key.lower() for key in connected["additional_headers"]})
+        self.assertEqual(websocket.sent_bytes, [b"voicebox-event"])
+
     def test_websocket_events_update_job_progress_and_artifacts(self) -> None:
         fake = FakeDatabase()
         fake.jobs["job_1"] = {

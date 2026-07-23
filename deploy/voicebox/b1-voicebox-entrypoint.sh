@@ -5,6 +5,8 @@ data_dir="${B1_VOICEBOX_DATA_DIR:-/srv/b1-ai-hub/voicebox}"
 models_dir="${B1_VOICEBOX_MODELS_DIR:-/srv/b1-ai-hub/models}"
 host="${B1_VOICEBOX_HOST:-0.0.0.0}"
 port="${B1_VOICEBOX_PORT:-17493}"
+upstream_host="${B1_VOICEBOX_UPSTREAM_HOST:-127.0.0.1}"
+upstream_port="${B1_VOICEBOX_UPSTREAM_PORT:-17494}"
 
 mkdir -p \
   "${data_dir}/generations" \
@@ -23,8 +25,8 @@ export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-/tmp/numba_cache}"
 export HF_HOME="${HF_HOME:-/srv/b1-ai-hub/cache/huggingface}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/srv/b1-ai-hub/cache/xdg}"
+export B1_VOICEBOX_UPSTREAM_HOST="${upstream_host}"
+export B1_VOICEBOX_UPSTREAM_PORT="${upstream_port}"
+export B1_VOICEBOX_UPSTREAM_URL="${B1_VOICEBOX_UPSTREAM_URL:-http://${upstream_host}:${upstream_port}}"
 
-exec uvicorn backend.main:app \
-  --host "${host}" \
-  --port "${port}" \
-  --log-level "${B1_VOICEBOX_LOG_LEVEL:-info}"
+exec python /usr/local/bin/b1_voicebox_proxy.py

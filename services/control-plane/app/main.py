@@ -1104,8 +1104,15 @@ async def persist_comfyui_ws_event(message: str) -> None:
         await database.update_job(job["id"], **update)
 
 
-async def bridge_comfyui_websocket(websocket: WebSocket) -> None:
-    upstream_url = websocket_runtime_url(settings.comfyui_url, "/ws", websocket.url.query)
+async def bridge_runtime_websocket(
+    websocket: WebSocket,
+    *,
+    base_url: str,
+    path: str,
+    log_name: str,
+    text_event_handler: Any | None = None,
+) -> None:
+    upstream_url = websocket_runtime_url(base_url, path, websocket.url.query)
     upstream_headers = websocket_forward_headers(websocket)
 
     async def close_browser(code: int) -> None:
@@ -1115,7 +1122,7 @@ async def bridge_comfyui_websocket(websocket: WebSocket) -> None:
     try:
         async with websocket_connect(upstream_url, additional_headers=upstream_headers, max_size=None, open_timeout=10.0) as upstream:
             await websocket.accept()
-            log_event("comfyui_ws_connected", upstream_url=upstream_url)
+            log_event(f"{log_name}_ws_connected", upstream_url=upstream_url)
 
             async def browser_to_runtime() -> None:
                 try:
@@ -1143,15 +1150,16 @@ async def bridge_comfyui_websocket(websocket: WebSocket) -> None:
                         else:
                             text = str(message)
                             await websocket.send_text(text)
-                            await persist_comfyui_ws_event(text)
+                            if text_event_handler is not None:
+                                await text_event_handler(text)
                 except (WebSocketDisconnect, ConnectionClosed):
                     return
                 finally:
                     await close_browser(1000)
 
             tasks = {
-                asyncio.create_task(browser_to_runtime(), name="b1-comfyui-ws-browser-to-runtime"),
-                asyncio.create_task(runtime_to_browser(), name="b1-comfyui-ws-runtime-to-browser"),
+                asyncio.create_task(browser_to_runtime(), name=f"b1-{log_name}-ws-browser-to-runtime"),
+                asyncio.create_task(runtime_to_browser(), name=f"b1-{log_name}-ws-runtime-to-browser"),
             }
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -1163,8 +1171,27 @@ async def bridge_comfyui_websocket(websocket: WebSocket) -> None:
                 with suppress(asyncio.CancelledError, ConnectionClosed, WebSocketDisconnect):
                     await task
     except Exception as exc:
-        log_event("comfyui_ws_bridge_failed", upstream_url=upstream_url, error=exc.__class__.__name__)
+        log_event(f"{log_name}_ws_bridge_failed", upstream_url=upstream_url, error=exc.__class__.__name__)
         await close_browser(1011)
+
+
+async def bridge_comfyui_websocket(websocket: WebSocket) -> None:
+    await bridge_runtime_websocket(
+        websocket,
+        base_url=settings.comfyui_url,
+        path="/ws",
+        log_name="comfyui",
+        text_event_handler=persist_comfyui_ws_event,
+    )
+
+
+async def bridge_voicebox_websocket(websocket: WebSocket, path: str) -> None:
+    await bridge_runtime_websocket(
+        websocket,
+        base_url=settings.voicebox_url,
+        path=path,
+        log_name="voicebox",
+    )
 
 
 def base_resource_policy() -> ResourcePolicy:
@@ -6100,8 +6127,33 @@ async def comfy_prompt(request: Request) -> Response:
 
 
 @app.websocket("/ws")
-async def comfy_ws(websocket: WebSocket) -> None:
-    await bridge_comfyui_websocket(websocket)
+async def native_ws(websocket: WebSocket) -> None:
+    compatibility = websocket.headers.get("x-b1-compatibility", "")
+    if compatibility.startswith("voicebox"):
+        await bridge_voicebox_websocket(websocket, "/ws")
+        return
+    if compatibility.startswith("comfyui") or not compatibility:
+        await bridge_comfyui_websocket(websocket)
+        return
+    await websocket.close(code=1008)
+
+
+@app.websocket("/{path:path}")
+async def compatibility_ws(path: str, websocket: WebSocket) -> None:
+    compatibility = websocket.headers.get("x-b1-compatibility", "")
+    if compatibility.startswith("voicebox"):
+        await bridge_voicebox_websocket(websocket, f"/{path}")
+        return
+    if compatibility.startswith("comfyui"):
+        await bridge_runtime_websocket(
+            websocket,
+            base_url=settings.comfyui_url,
+            path=f"/{path}",
+            log_name="comfyui",
+            text_event_handler=persist_comfyui_ws_event,
+        )
+        return
+    await websocket.close(code=1008)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], include_in_schema=False)

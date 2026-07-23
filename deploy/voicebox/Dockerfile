@@ -103,10 +103,11 @@ COPY --from=backend-builder /install /usr/local
 COPY --from=backend-builder --chown=b1:b1 /build/backend /app/backend
 COPY --from=frontend --chown=b1:b1 /build/web/dist /app/frontend
 COPY b1-voicebox-entrypoint.sh /usr/local/bin/b1-voicebox-entrypoint.sh
+COPY b1_voicebox_proxy.py /usr/local/bin/b1_voicebox_proxy.py
 
 RUN mkdir -p /srv/b1-ai-hub/voicebox /srv/b1-ai-hub/models /srv/b1-ai-hub/cache \
     && chown -R b1:b1 /srv/b1-ai-hub /app/backend /app/frontend \
-    && chmod 0755 /usr/local/bin/b1-voicebox-entrypoint.sh
+    && chmod 0755 /usr/local/bin/b1-voicebox-entrypoint.sh /usr/local/bin/b1_voicebox_proxy.py
 
 USER b1
 EXPOSE 17493

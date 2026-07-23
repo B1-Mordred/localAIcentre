@@ -143,6 +143,9 @@ The Voicebox override:
 - maps `$B1_DATA_ROOT/data/voicebox` to `/srv/b1-ai-hub/voicebox` for the SQLite DB, voice profiles, captures, and generations
 - maps `$B1_DATA_ROOT/cache/voicebox` to `/srv/b1-ai-hub/cache` for Hugging Face and application caches
 - health-checks `http://127.0.0.1:17493/health`
+- starts a B1 proxy on `:17493`, keeps upstream Voicebox on loopback `127.0.0.1:17494`, forwards native REST/web/WebSocket traffic, and implements `/b1/runtime/load`, `/warm`, `/smoke`, and `/unload`
+
+The hook defaults are conservative. `load` checks Voicebox-visible model roots and otherwise returns `unconfirmed`; `warm` and `smoke` return `unconfirmed` unless `B1_VOICEBOX_HOOK_WARM_ENABLED=true` or `B1_VOICEBOX_HOOK_SMOKE_ENABLED=true`; `unload` restarts the loopback upstream process only while the proxy sees no active native requests. Set `B1_VOICEBOX_HOOK_STRICT_MODEL_LIST=true` only when manifests use Voicebox-visible filenames or directories.
 
 External Voicebox UIs and REST/MCP clients must use `https://voice.ai.b1.germering/` through Caddy and the control-plane access policy. Do not publish `17493` directly. Add `voicebox` to `B1_RUNTIME_PRODUCTION_REQUIRED` only after the selected Voicebox engine/profile has passed a scheduler-managed smoke request, backup/export/delete tests for voice profiles, and unload/recovery validation on the target host.
 

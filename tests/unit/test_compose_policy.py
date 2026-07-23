@@ -362,9 +362,16 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIsNone(environment["B1_RUNTIME_NAME"])
         self.assertEqual(environment["B1_VOICEBOX_HOST"], "${B1_VOICEBOX_HOST:-0.0.0.0}")
         self.assertEqual(environment["B1_VOICEBOX_PORT"], "${B1_VOICEBOX_PORT:-17493}")
+        self.assertEqual(environment["B1_VOICEBOX_UPSTREAM_HOST"], "${B1_VOICEBOX_UPSTREAM_HOST:-127.0.0.1}")
+        self.assertEqual(environment["B1_VOICEBOX_UPSTREAM_PORT"], "${B1_VOICEBOX_UPSTREAM_PORT:-17494}")
         self.assertEqual(environment["B1_VOICEBOX_DATA_DIR"], "/srv/b1-ai-hub/voicebox")
         self.assertEqual(environment["B1_VOICEBOX_MODELS_DIR"], "/srv/b1-ai-hub/models")
         self.assertEqual(environment["VOICEBOX_MODELS_DIR"], "/srv/b1-ai-hub/models")
+        self.assertEqual(environment["B1_VOICEBOX_HOOK_STRICT_MODEL_LIST"], "${B1_VOICEBOX_HOOK_STRICT_MODEL_LIST:-false}")
+        self.assertEqual(environment["B1_VOICEBOX_HOOK_MODEL_ROOTS"], "${B1_VOICEBOX_HOOK_MODEL_ROOTS:-/srv/b1-ai-hub/models}")
+        self.assertEqual(environment["B1_VOICEBOX_HOOK_WARM_ENABLED"], "${B1_VOICEBOX_HOOK_WARM_ENABLED:-false}")
+        self.assertEqual(environment["B1_VOICEBOX_HOOK_SMOKE_ENABLED"], "${B1_VOICEBOX_HOOK_SMOKE_ENABLED:-false}")
+        self.assertEqual(environment["B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD"], "${B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD:-true}")
         self.assertEqual(environment["HF_HUB_DISABLE_TELEMETRY"], "1")
         self.assertEqual(environment["HF_HUB_OFFLINE"], "${B1_VOICEBOX_HF_HUB_OFFLINE:-1}")
         self.assertEqual(environment["TRANSFORMERS_OFFLINE"], "${B1_VOICEBOX_TRANSFORMERS_OFFLINE:-1}")
@@ -397,6 +404,19 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85", dockerfile)
         self.assertIn("torch==2.13.0", constraints)
         self.assertIn("chatterbox-tts==0.1.7", constraints)
+
+    def test_production_voicebox_build_includes_b1_runtime_proxy(self) -> None:
+        dockerfile = (ROOT / "deploy" / "voicebox" / "Dockerfile").read_text(encoding="utf-8")
+        entrypoint = (ROOT / "deploy" / "voicebox" / "b1-voicebox-entrypoint.sh").read_text(encoding="utf-8")
+        proxy = (ROOT / "deploy" / "voicebox" / "b1_voicebox_proxy.py").read_text(encoding="utf-8")
+
+        self.assertIn("COPY b1_voicebox_proxy.py /usr/local/bin/b1_voicebox_proxy.py", dockerfile)
+        self.assertIn("python /usr/local/bin/b1_voicebox_proxy.py", entrypoint)
+        self.assertIn("backend.main:app", proxy)
+        for route in ("load", "warm", "smoke", "unload"):
+            self.assertIn(f'if action == "{route}"', proxy)
+        self.assertIn("websocket_proxy", proxy)
+        self.assertIn("upstream_process_restart", proxy)
 
     def test_control_plane_mounts_workflow_seeds_read_only(self) -> None:
         service = self.compose["services"]["control-plane"]

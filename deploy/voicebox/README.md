@@ -23,6 +23,8 @@ docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voi
 
 Voicebox remains internal. External clients use `https://voice.ai.b1.germering/` through Caddy and B1 access policy; raw `17493` is not published.
 
+The production image starts a B1 proxy on `:17493` and starts upstream Voicebox on loopback `127.0.0.1:17494` by default. The proxy forwards native REST, web, MCP HTTP, and WebSocket traffic to upstream Voicebox while handling B1 scheduler lifecycle routes itself. This avoids patching upstream Voicebox source and keeps raw upstream traffic inside the container.
+
 ## Runtime Layout
 
 The production override resets the development placeholder environment and volume list. The Voicebox container receives only:
@@ -40,11 +42,19 @@ The image defaults to `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, so it doe
 
 The control plane is still the only service that may submit managed inference work. GPU Voicebox jobs are routed through the global lease and use `VOICEBOX_URL=http://voicebox:17493` when this override is active.
 
-The upstream Voicebox server exposes its native REST, web UI, and MCP HTTP server. It does not currently implement the optional B1 runtime hooks:
+The B1 proxy implements these runtime hooks:
 
 - `POST /b1/runtime/load`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
-The B1 adapter treats missing optional hooks as unsupported and relies on scheduler admission plus runtime-agent bounded restart/unload recovery. Production acceptance still requires measured smoke tests for the selected engine/profile on `ai.b1.germering`, including profile backup/export/delete and verification that a GPU Voicebox request cannot overlap with LocalAI or ComfyUI.
+Hook behavior is intentionally bounded:
+
+- `load` checks Voicebox-visible runtime model roots and returns `unconfirmed` because upstream engine/profile selection performs final validation and lazy model loading.
+- `warm` returns `unconfirmed` unless `B1_VOICEBOX_HOOK_WARM_ENABLED=true`.
+- `smoke` returns `unconfirmed` unless `B1_VOICEBOX_HOOK_SMOKE_ENABLED=true`.
+- enabled `warm`/`smoke` send a small `/v1/audio/speech` probe to upstream using `B1_VOICEBOX_HOOK_SMOKE_TEXT`, `B1_VOICEBOX_HOOK_SMOKE_VOICE`, and `B1_VOICEBOX_HOOK_SMOKE_ENDPOINT`; enable this only after the selected engine/profile has safe smoke parameters.
+- `unload` refuses to restart while native proxy requests are active; when idle and `B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD=true`, it restarts the loopback upstream process to release model memory.
+
+Use `B1_VOICEBOX_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or directories visible under `B1_VOICEBOX_HOOK_MODEL_ROOTS`. Production acceptance still requires measured smoke tests for the selected engine/profile on `ai.b1.germering`, including profile backup/export/delete and verification that a GPU Voicebox request cannot overlap with LocalAI or ComfyUI.
