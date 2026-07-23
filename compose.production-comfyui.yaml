@@ -1,0 +1,54 @@
+services:
+  control-plane:
+    environment:
+      COMFYUI_URL: http://comfyui:8188
+
+  comfyui:
+    image: ${B1_COMFYUI_IMAGE:-b1-ai-hub/comfyui:v0.3.77-b1}
+    build:
+      context: ./deploy/comfyui
+      args:
+        B1_COMFYUI_VERSION: ${B1_COMFYUI_VERSION:-v0.3.77}
+        B1_COMFYUI_COMMIT: ${B1_COMFYUI_COMMIT:-59afc3984868289f808d02fa5cd180edfb2de240}
+        B1_COMFYUI_TARBALL_SHA256: ${B1_COMFYUI_TARBALL_SHA256:-0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1}
+    read_only: true
+    environment:
+      B1_RUNTIME_KIND: !reset null
+      B1_RUNTIME_NAME: !reset null
+      B1_COMFYUI_LISTEN: ${B1_COMFYUI_LISTEN:-0.0.0.0}
+      B1_COMFYUI_PORT: ${B1_COMFYUI_PORT:-8188}
+      B1_COMFYUI_RESERVE_VRAM_GIB: ${B1_COMFYUI_RESERVE_VRAM_GIB:-1.5}
+      B1_COMFYUI_MAX_UPLOAD_MB: ${B1_COMFYUI_MAX_UPLOAD_MB:-256}
+      B1_COMFYUI_DISABLE_API_NODES: ${B1_COMFYUI_DISABLE_API_NODES:-true}
+      B1_COMFYUI_CACHE_NONE: ${B1_COMFYUI_CACHE_NONE:-true}
+      B1_COMFYUI_LOWVRAM: ${B1_COMFYUI_LOWVRAM:-false}
+      B1_COMFYUI_INPUT_DIR: /srv/b1-ai-hub/comfyui/input
+      B1_COMFYUI_OUTPUT_DIR: /srv/b1-ai-hub/comfyui/output
+      B1_COMFYUI_TEMP_DIR: /srv/b1-ai-hub/comfyui/temp
+      B1_COMFYUI_USER_DIR: /srv/b1-ai-hub/comfyui/user
+      B1_COMFYUI_EXTRA_MODEL_PATHS_CONFIG: /opt/b1/comfyui/extra_model_paths.yaml
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      XDG_CACHE_HOME: /srv/b1-ai-hub/cache/xdg
+      HF_HOME: /srv/b1-ai-hub/cache/huggingface
+      TORCH_HOME: /srv/b1-ai-hub/cache/torch
+    volumes: !override
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/comfyui:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/comfyui/input:/srv/b1-ai-hub/comfyui/input
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/comfyui/user:/srv/b1-ai-hub/comfyui/user
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/temporary/comfyui-output:/srv/b1-ai-hub/comfyui/output
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/temporary/comfyui-temp:/srv/b1-ai-hub/comfyui/temp
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/comfyui:/srv/b1-ai-hub/cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8188/system_stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 10m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: ${B1_COMFYUI_GPU_DRIVER:-nvidia.com/gpu}
+              count: ${B1_COMFYUI_GPU_COUNT:-1}
+              capabilities: [gpu]

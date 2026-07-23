@@ -1,0 +1,39 @@
+{
+  "description": "External ComfyUI sketch: submit a B1 text-to-image job, wait, list artifacts, then download one /artifacts/... URL.",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "B1TextToImage",
+      "inputs": {
+        "model": "image-default",
+        "prompt": "a clean product-style render of a LAN AI appliance control room",
+        "parameters_json": "{\"width\":768,\"height\":512,\"steps\":20}"
+      }
+    },
+    {
+      "id": 2,
+      "type": "B1WaitMediaJob",
+      "inputs": {
+        "job_id": "{{1.job_id}}",
+        "timeout_seconds": 1800,
+        "poll_interval_seconds": 2.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "B1ListJobArtifacts",
+      "inputs": {
+        "job_id": "{{1.job_id}}"
+      }
+    },
+    {
+      "id": 4,
+      "type": "B1DownloadArtifact",
+      "inputs": {
+        "artifact_url": "{{3.data[0].url}}",
+        "filename": "b1-text-to-image.png"
+      }
+    }
+  ],
+  "expected_server_side_comfyui_required": false
+}

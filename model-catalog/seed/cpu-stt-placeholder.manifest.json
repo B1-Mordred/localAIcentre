@@ -1,0 +1,39 @@
+{
+  "id": "b1-cpu-placeholder-stt",
+  "version": "0.1.0",
+  "display_name": "B1 CPU STT Placeholder",
+  "description": "Development-only CPU transcription placeholder used before installing a real lightweight STT engine.",
+  "modality": "stt",
+  "operations": ["transcription"],
+  "source": {
+    "type": "catalog",
+    "url": "https://models.ai.b1.germering/internal/placeholders",
+    "revision": "0.1.0",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "files": [
+    {
+      "path": "internal-placeholder-stt",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "format": "internal",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.2,
+    "disk_gib": 0.001,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "internal-placeholder",
+    "redistribution": "inference-only",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference"],
+  "aliases": ["stt-default"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
+}

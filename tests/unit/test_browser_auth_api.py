@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import unittest
+from dataclasses import replace
+from types import SimpleNamespace
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+try:
+    from app import main  # noqa: E402
+    from app.auth import hash_session_token  # noqa: E402
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
+    if exc.name not in {"fastapi", "httpx", "pydantic", "redis", "sqlalchemy"}:
+        raise
+    main = None
+    hash_session_token = None  # type: ignore[assignment]
+    MISSING_DEPENDENCY = exc.name
+else:
+    MISSING_DEPENDENCY = ""
+
+
+class FakeRequest:
+    def __init__(
+        self,
+        *,
+        method: str = "GET",
+        path: str = "/",
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.method = method
+        self.cookies = cookies or {}
+        self.headers = headers or {}
+        self.url = SimpleNamespace(path=path)
+        self.client = SimpleNamespace(host="127.0.0.1")
+
+
+class FakeDatabase:
+    def __init__(self) -> None:
+        self.users: dict[str, dict[str, Any]] = {}
+        self.sessions: dict[str, dict[str, Any]] = {}
+        self.api_clients: dict[str, dict[str, Any]] = {}
+        self.audit_events: list[dict[str, Any]] = []
+        self.login_marks: list[str] = []
+
+    async def active_user_count(self, role: str | None = None) -> int:
+        return sum(
+            1
+            for user in self.users.values()
+            if user.get("disabled_at") is None and (role is None or user["role"] == role)
+        )
+
+    async def insert_user(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {**payload, "disabled_at": None}
+        self.users[row["id"]] = row
+        return row
+
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.users.get(user_id)
+
+    async def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        normalized = username.strip().casefold()
+        for user in self.users.values():
+            if user["username"].casefold() == normalized and user.get("disabled_at") is None:
+                return user
+        return None
+
+    async def mark_user_login(self, user_id: str) -> None:
+        self.login_marks.append(user_id)
+
+    async def insert_browser_session(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.sessions[payload["session_hash"]] = dict(payload)
+        return dict(payload)
+
+    async def get_browser_session_by_hash(self, session_hash: str) -> dict[str, Any] | None:
+        return self.sessions.get(session_hash)
+
+    async def revoke_browser_session_by_hash(self, session_hash: str) -> dict[str, Any] | None:
+        row = self.sessions.get(session_hash)
+        if row is not None:
+            row["revoked_at"] = "now"
+        return row
+
+    async def insert_audit_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.audit_events.append(payload)
+        return {"id": f"audit_{len(self.audit_events)}", **payload}
+
+    async def upsert_api_client(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.api_clients[payload["id"]] = dict(payload)
+        return dict(payload)
+
+
+@unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
+class BrowserAuthApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.original_database = main.database
+        self.original_settings = main.settings
+        self.database = FakeDatabase()
+        main.database = self.database
+        main.settings = replace(
+            main.settings,
+            dev_auth_bypass=False,
+            admin_bootstrap_key="setup-key",
+            open_webui_api_key="",
+            session_cookie_secure=False,
+            session_ttl_seconds=3600,
+        )
+
+    def tearDown(self) -> None:
+        main.database = self.original_database
+        main.settings = self.original_settings
+
+    def request_context(self, request: FakeRequest):
+        token = main.current_request.set(request)
+        self.addCleanup(lambda: main.current_request.reset(token))
+
+    def response_json(self, response: Any) -> dict[str, Any]:
+        return json.loads(response.body.decode("utf-8"))
+
+    def setup_admin(self) -> tuple[str, dict[str, Any]]:
+        self.request_context(FakeRequest(method="POST", path="/auth/setup", headers={"user-agent": "test"}))
+        response = asyncio.run(
+            main.auth_setup(
+                main.AuthSetupRequest(
+                    username="admin",
+                    password="Correct-Horse-7",
+                    bootstrap_key="setup-key",
+                )
+            )
+        )
+        body = self.response_json(response)
+        cookie = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+        return cookie, body
+
+    def test_initial_admin_setup_issues_http_only_session(self) -> None:
+        session_token, body = self.setup_admin()
+
+        self.assertFalse(body["setup_required"])
+        self.assertTrue(body["authenticated"])
+        self.assertEqual(body["role"], "admin")
+        self.assertTrue(body["csrf_token"])
+        self.assertIn(hash_session_token(session_token), self.database.sessions)
+        self.assertIn("auth.initial_admin_created", [event["event_type"] for event in self.database.audit_events])
+
+    def test_status_authenticates_with_browser_session_cookie(self) -> None:
+        session_token, setup_body = self.setup_admin()
+        self.request_context(FakeRequest(cookies={main.settings.session_cookie_name: session_token}))
+
+        status = asyncio.run(main.auth_status())
+
+        self.assertTrue(status["authenticated"])
+        self.assertEqual(status["csrf_token"], setup_body["csrf_token"])
+
+    def test_csrf_required_for_cookie_backed_mutations(self) -> None:
+        session_token, setup_body = self.setup_admin()
+        missing = FakeRequest(
+            method="POST",
+            path="/admin/models/install",
+            cookies={main.settings.session_cookie_name: session_token},
+        )
+        valid = FakeRequest(
+            method="POST",
+            path="/admin/models/install",
+            cookies={main.settings.session_cookie_name: session_token},
+            headers={"X-B1-CSRF": setup_body["csrf_token"]},
+        )
+
+        failure = asyncio.run(main.csrf_failure_response(missing))
+        success = asyncio.run(main.csrf_failure_response(valid))
+
+        self.assertIsNotNone(failure)
+        self.assertEqual(failure.status_code, 403)
+        self.assertIsNone(success)
+
+    def test_setup_requires_bootstrap_key_when_configured(self) -> None:
+        self.request_context(FakeRequest(method="POST", path="/auth/setup"))
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(
+                main.auth_setup(
+                    main.AuthSetupRequest(
+                        username="admin",
+                        password="Correct-Horse-7",
+                        bootstrap_key="wrong",
+                    )
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 403)
+
+    def test_open_webui_api_client_is_provisioned_from_generated_secret(self) -> None:
+        main.settings = replace(main.settings, open_webui_api_key="b1k_openwebui.test-secret")
+
+        row = asyncio.run(main.ensure_open_webui_api_client())
+
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["id"], main.OPEN_WEBUI_CLIENT_ID)
+        self.assertEqual(row["role"], "service")
+        self.assertEqual(row["key_prefix"], "b1k_openwebui")
+        self.assertEqual(
+            set(row["scopes"]),
+            {"models:read", "inference:write", "jobs:read", "jobs:write", "workflows:read"},
+        )
+        self.assertIn(main.OPEN_WEBUI_CLIENT_ID, self.database.api_clients)
+
+
+if __name__ == "__main__":
+    unittest.main()

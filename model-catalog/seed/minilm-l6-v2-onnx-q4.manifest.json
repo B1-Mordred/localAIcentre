@@ -1,0 +1,111 @@
+{
+  "id": "b1-minilm-l6-v2-onnx-q4",
+  "version": "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f",
+  "display_name": "all-MiniLM-L6-v2 ONNX Q4",
+  "description": "Small local CPU sentence-embedding model for LAN-internal RAG smoke and lightweight retrieval. This is a catalog recommendation only; install it through Model Hub before assigning it to embedding-default.",
+  "modality": "embedding",
+  "operations": ["embedding"],
+  "source": {
+    "type": "direct-url",
+    "url": "https://huggingface.co/onnx-community/all-MiniLM-L6-v2-ONNX/resolve/aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f/",
+    "revision": "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f"
+  },
+  "files": [
+    {
+      "path": "config.json",
+      "sha256": "fe5da868b77bdb104140822a5af0837cb6450ad6de8ff3dfcc8dd44ddd3e3ae7",
+      "size_bytes": 794,
+      "format": "transformers-config",
+      "quantization": "none"
+    },
+    {
+      "path": "special_tokens_map.json",
+      "sha256": "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+      "size_bytes": 695,
+      "format": "tokenizer-config",
+      "quantization": "none"
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "07805d116826679de90b4edeb2222269c4b8753bc0981be4399f732b2708e904",
+      "size_bytes": 533808,
+      "format": "tokenizer-json",
+      "quantization": "none"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "e10bb633ba0d7f69ed342ae7de607f36b39ce53b455fbda69c71700bf57e6f66",
+      "size_bytes": 1463,
+      "format": "tokenizer-config",
+      "quantization": "none"
+    },
+    {
+      "path": "onnx/model_q4.onnx",
+      "sha256": "e4dcb918111189b7686147e309379832fce83d4ecbf17c395961749b5788c786",
+      "size_bytes": 69663,
+      "format": "onnx",
+      "quantization": "q4"
+    },
+    {
+      "path": "onnx/model_q4.onnx_data",
+      "sha256": "56fb7a55115e900196115a74e399beb45c2f41ae00b99525d46fb52935c4ee2a",
+      "size_bytes": 54429696,
+      "format": "onnx-external-data",
+      "quantization": "q4"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.8,
+    "disk_gib": 0.06,
+    "context_tokens": 256
+  },
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://huggingface.co/onnx-community/all-MiniLM-L6-v2-ONNX",
+    "redistribution": "downloadable",
+    "attribution": "ONNX Community conversion of sentence-transformers/all-MiniLM-L6-v2 for Transformers.js.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["embedding-default"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-07-23T04:05:00+00:00",
+    "source": "local docker smoke on b1-ai-hub-audio-cpu:latest",
+    "original_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.8,
+      "disk_gib": 0.06,
+      "context_tokens": 256
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.8,
+      "disk_gib": 0.06,
+      "context_tokens": 256
+    },
+    "runs": [
+      {
+        "id": "minilm-onnx-q4-local-smoke-20260723",
+        "type": "catalog-smoke",
+        "status": "ok",
+        "runtime": "audio-cpu",
+        "model_alias": "embedding-default",
+        "resolved_model_version": "b1-minilm-l6-v2-onnx-q4@aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f",
+        "peak_vram_mib": 0,
+        "hook": {
+          "embedding_dimensions": 384,
+          "requested_dimensions": 8,
+          "normalized": true,
+          "batch_size": 2,
+          "test_prompt": "B1 AI Hub local embedding test."
+        }
+      }
+    ]
+  }
+}

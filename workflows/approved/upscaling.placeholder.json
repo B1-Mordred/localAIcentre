@@ -1,0 +1,39 @@
+{
+  "id": "upscaling",
+  "version": "0.1.0",
+  "display_name": "Upscaling",
+  "description": "Safe placeholder workflow definition for image upscaling.",
+  "modality": "image",
+  "operation": "upscale",
+  "model_alias": "image-upscale",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["image/png"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["source_image"],
+    "properties": {
+      "source_image": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" },
+      "scale": { "type": "integer", "enum": [2, 4], "default": 2 }
+    },
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "images": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "comfyui" },
+    { "type": "model", "id": "image-upscale" }
+  ],
+  "limits": {
+    "max_width": 2048,
+    "max_height": 2048,
+    "max_batch_size": 1
+  },
+  "visibility_roles": ["admin", "operator", "creator", "user"]
+}

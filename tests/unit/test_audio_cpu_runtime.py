@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import importlib.util
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+AUDIO_CPU_APP_ROOT = ROOT / "services" / "audio-cpu" / "app"
+
+try:
+    audio_cpu_pkg_spec = importlib.util.spec_from_file_location(
+        "audio_cpu_app",
+        AUDIO_CPU_APP_ROOT / "__init__.py",
+        submodule_search_locations=[str(AUDIO_CPU_APP_ROOT)],
+    )
+    if audio_cpu_pkg_spec is None or audio_cpu_pkg_spec.loader is None:
+        raise ModuleNotFoundError("audio_cpu_app")
+    audio_cpu_pkg = importlib.util.module_from_spec(audio_cpu_pkg_spec)
+    sys.modules["audio_cpu_app"] = audio_cpu_pkg
+    audio_cpu_pkg_spec.loader.exec_module(audio_cpu_pkg)
+    audio_cpu_main_spec = importlib.util.spec_from_file_location("audio_cpu_app.main", AUDIO_CPU_APP_ROOT / "main.py")
+    if audio_cpu_main_spec is None or audio_cpu_main_spec.loader is None:
+        raise ModuleNotFoundError("audio_cpu_app.main")
+    audio_cpu_main = importlib.util.module_from_spec(audio_cpu_main_spec)
+    sys.modules["audio_cpu_app.main"] = audio_cpu_main
+    audio_cpu_main_spec.loader.exec_module(audio_cpu_main)
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
+    if exc.name != "fastapi":
+        raise
+    audio_cpu_main = None
+    MISSING_DEPENDENCY = exc.name
+else:
+    MISSING_DEPENDENCY = ""
+
+
+class FakeRequest:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    async def json(self) -> dict[str, Any]:
+        return self.payload
+
+
+@unittest.skipIf(audio_cpu_main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
+class AudioCpuRuntimeTests(unittest.TestCase):
+    def patch_env(self, values: dict[str, str | None]) -> None:
+        original = {key: os.environ.get(key) for key in values}
+        for key, value in values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+        def restore() -> None:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+
+    def patch_attr(self, name: str, value: Any) -> None:
+        original = getattr(audio_cpu_main, name)
+        setattr(audio_cpu_main, name, value)
+        self.addCleanup(lambda: setattr(audio_cpu_main, name, original))
+
+    def fake_piper(self, root: Path) -> Path:
+        binary = root / "fake-piper.py"
+        binary.write_text(
+            """#!/usr/bin/env python3
+import sys
+import wave
+from pathlib import Path
+
+output = Path(sys.argv[sys.argv.index("--output_file") + 1])
+sys.stdin.read()
+with wave.open(str(output), "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(16000)
+    wav.writeframes(b"\\x00\\x00" * 4000)
+""",
+            encoding="utf-8",
+        )
+        binary.chmod(0o700)
+        return binary
+
+    def test_health_exposes_placeholder_engine_policy(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+        health = asyncio.run(audio_cpu_main.healthz())
+
+        self.assertEqual(health["status"], "ok")
+        self.assertEqual(health["engine"], "scaffold")
+        self.assertTrue(health["placeholder"])
+        self.assertTrue(health["placeholder_enabled"])
+        self.assertEqual(health["capabilities"], {"speech": True, "transcription": True, "embeddings": True})
+
+    def test_speech_marks_scaffold_output_as_placeholder(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+        response = asyncio.run(audio_cpu_main.speech(FakeRequest({"input": "hello"})))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "audio/wav")
+        self.assertEqual(response.headers["X-B1-Placeholder"], "true")
+        self.assertEqual(response.headers["X-B1-CPU-Audio-Engine"], "scaffold")
+        self.assertGreater(len(response.body), 44)
+
+    def test_transcription_marks_scaffold_result_as_placeholder(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+        response = asyncio.run(audio_cpu_main.transcription(FakeRequest({"audio": "UklGRg=="})))
+
+        self.assertIn("CPU transcription scaffold", response["text"])
+        self.assertFalse(response["gpu_lease_required"])
+        self.assertEqual(response["b1_engine"], "scaffold")
+        self.assertTrue(response["b1_placeholder"])
+
+    def test_embeddings_are_deterministic_bounded_and_nonzero(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+        first = asyncio.run(audio_cpu_main.embeddings(FakeRequest({"model": "embedding-default", "input": ["hello", "world"], "dimensions": 16})))
+        second = asyncio.run(audio_cpu_main.embeddings(FakeRequest({"model": "embedding-default", "input": ["hello"], "dimensions": 16})))
+
+        self.assertEqual(first["object"], "list")
+        self.assertEqual(first["model"], "embedding-default")
+        self.assertFalse(first["gpu_lease_required"])
+        self.assertEqual(len(first["data"]), 2)
+        self.assertEqual(len(first["data"][0]["embedding"]), 16)
+        self.assertNotEqual(first["data"][0]["embedding"], [0.0] * 16)
+        self.assertEqual(first["data"][0]["embedding"], second["data"][0]["embedding"])
+        self.assertNotEqual(first["data"][0]["embedding"], first["data"][1]["embedding"])
+        self.assertTrue(first["b1_placeholder"])
+        self.assertEqual(first["b1_engine"], "scaffold")
+
+    def test_runtime_smoke_exercises_cpu_path_without_gpu_lease(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+
+        speech = asyncio.run(
+            audio_cpu_main.runtime_smoke(
+                FakeRequest(
+                    {
+                        "model": "b1-cpu-placeholder-tts",
+                        "model_alias": "tts-fast",
+                        "resolved_model_version": "b1-cpu-placeholder-tts@0.1.0",
+                        "modality": "tts",
+                    }
+                )
+            )
+        )
+        embedding = asyncio.run(audio_cpu_main.runtime_smoke(FakeRequest({"model": "b1-cpu-placeholder-embedding", "modality": "embedding"})))
+
+        self.assertEqual(speech["status"], "ok")
+        self.assertFalse(speech["gpu_lease_required"])
+        self.assertEqual(speech["measurements"]["peak_vram_mib"], 0)
+        self.assertGreater(speech["measurements"]["speech_bytes"], 44)
+        self.assertEqual(embedding["measurements"]["embedding_dimensions"], 16)
+        self.assertTrue(embedding["measurements"]["embedding_nonzero"])
+
+    def test_placeholder_endpoints_fail_when_policy_disables_them(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false"})
+
+        health = asyncio.run(audio_cpu_main.healthz())
+        speech = asyncio.run(audio_cpu_main.speech(FakeRequest({"input": "hello"})))
+        transcription = asyncio.run(audio_cpu_main.transcription(FakeRequest({"audio": "UklGRg=="})))
+        embeddings = asyncio.run(audio_cpu_main.embeddings(FakeRequest({"input": "hello"})))
+        smoke = asyncio.run(audio_cpu_main.runtime_smoke(FakeRequest({"model": "b1-cpu-placeholder-tts", "modality": "tts"})))
+
+        self.assertEqual(health["status"], "unconfigured")
+        self.assertFalse(health["capabilities"]["speech"])
+        for response in (speech, transcription, embeddings):
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers["X-B1-GPU-Lease-Required"], "false")
+            self.assertIn(b"engine_unavailable", response.body)
+        self.assertEqual(smoke["status"], "unconfigured")
+        self.assertEqual(smoke["reason"], "engine_unavailable")
+        self.assertFalse(smoke["gpu_lease_required"])
+
+    def test_piper_engine_exposes_real_tts_without_placeholder_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            model_root.mkdir()
+            model_path = model_root / "voice.onnx"
+            model_path.write_bytes(b"piper-model-placeholder-for-test")
+            binary = self.fake_piper(root)
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_PIPER_BINARY": str(binary),
+                    "B1_PIPER_MODEL_PATH": str(model_path),
+                }
+            )
+
+            health = asyncio.run(audio_cpu_main.healthz())
+            speech = asyncio.run(audio_cpu_main.speech(FakeRequest({"input": "hello from piper"})))
+            smoke = asyncio.run(audio_cpu_main.runtime_smoke(FakeRequest({"model": "tts-fast", "modality": "tts"})))
+            transcription = asyncio.run(audio_cpu_main.transcription(FakeRequest({"audio": "UklGRg=="})))
+
+        self.assertEqual(health["status"], "ok")
+        self.assertFalse(health["placeholder"])
+        self.assertEqual(health["engine"], "piper")
+        self.assertEqual(health["capabilities"], {"speech": True, "transcription": False, "embeddings": False})
+        self.assertEqual(speech.status_code, 200)
+        self.assertEqual(speech.headers["X-B1-Placeholder"], "false")
+        self.assertEqual(speech.headers["X-B1-CPU-Audio-Engine"], "piper")
+        self.assertGreater(len(speech.body), 44)
+        self.assertEqual(smoke["status"], "ok")
+        self.assertFalse(smoke["placeholder"])
+        self.assertGreater(smoke["measurements"]["speech_bytes"], 44)
+        self.assertEqual(transcription.status_code, 503)
+        self.assertIn(b"engine_unavailable", transcription.body)
+
+    def test_piper_engine_uses_resolved_model_version_runtime_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            view = model_root / "b1-piper-en-us-amy-low" / "v1.0.0"
+            view.mkdir(parents=True)
+            model_path = view / "en_US-amy-low.onnx"
+            config_path = view / "en_US-amy-low.onnx.json"
+            model_path.write_bytes(b"piper-model-placeholder-for-test")
+            config_path.write_text("{}", encoding="utf-8")
+            binary = self.fake_piper(root)
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_PIPER_BINARY": str(binary),
+                    "B1_PIPER_MODEL_PATH": None,
+                    "B1_PIPER_CONFIG_PATH": None,
+                }
+            )
+
+            health = asyncio.run(audio_cpu_main.healthz())
+            status = audio_cpu_main.piper_status({"b1_resolved_model_version": "b1-piper-en-us-amy-low@v1.0.0"})
+            speech = asyncio.run(
+                audio_cpu_main.speech(
+                    FakeRequest(
+                        {
+                            "model": "b1-piper-en-us-amy-low",
+                            "b1_resolved_model_version": "b1-piper-en-us-amy-low@v1.0.0",
+                            "input": "hello from model view",
+                        }
+                    )
+                )
+            )
+            smoke = asyncio.run(
+                audio_cpu_main.runtime_smoke(
+                    FakeRequest(
+                        {
+                            "model": "b1-piper-en-us-amy-low",
+                            "resolved_model_version": "b1-piper-en-us-amy-low@v1.0.0",
+                            "modality": "tts",
+                        }
+                    )
+                )
+            )
+
+        self.assertEqual(health["status"], "ok")
+        self.assertTrue(health["capabilities"]["speech"])
+        self.assertEqual(status["model_path"], str(model_path.resolve()))
+        self.assertEqual(status["config_path"], str(config_path.resolve()))
+        self.assertEqual(speech.status_code, 200)
+        self.assertEqual(speech.headers["X-B1-Placeholder"], "false")
+        self.assertEqual(smoke["status"], "ok")
+
+    def test_piper_engine_rejects_unsafe_resolved_model_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            model_root.mkdir()
+            binary = self.fake_piper(root)
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_PIPER_BINARY": str(binary),
+                    "B1_PIPER_MODEL_PATH": None,
+                    "B1_PIPER_CONFIG_PATH": None,
+                }
+            )
+
+            response = asyncio.run(
+                audio_cpu_main.speech(
+                    FakeRequest(
+                        {
+                            "model": "b1-piper-en-us-amy-low",
+                            "b1_resolved_model_version": "../escape@v1.0.0",
+                            "input": "hello",
+                        }
+                    )
+                )
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b"engine_unavailable", response.body)
+
+    def test_piper_engine_rejects_model_path_outside_model_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            model_root.mkdir()
+            outside = root / "outside.onnx"
+            outside.write_bytes(b"outside")
+            binary = self.fake_piper(root)
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_PIPER_BINARY": str(binary),
+                    "B1_PIPER_MODEL_PATH": str(outside),
+                }
+            )
+
+            health = asyncio.run(audio_cpu_main.healthz())
+            response = asyncio.run(audio_cpu_main.speech(FakeRequest({"input": "hello"})))
+
+        self.assertEqual(health["status"], "unconfigured")
+        self.assertFalse(health["capabilities"]["speech"])
+        self.assertEqual(health["details"]["reason"], "model_path_outside_allowed_root")
+        self.assertEqual(response.status_code, 503)
+
+    def test_onnx_embedding_engine_uses_resolved_model_version_runtime_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            view = model_root / "b1-minilm-l6-v2-onnx-q4" / "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f" / "onnx"
+            view.mkdir(parents=True)
+            (view / "model_q4.onnx").write_bytes(b"onnx-placeholder-for-test")
+            (model_root / "b1-minilm-l6-v2-onnx-q4" / "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f" / "tokenizer.json").write_text("{}", encoding="utf-8")
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_EMBEDDING_ENGINE": "onnx",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_ONNX_EMBEDDING_MODEL_ROOT": str(model_root),
+                }
+            )
+            self.patch_attr("onnx_embedding_dependency_status", lambda: [])
+            self.patch_attr("onnx_embedding_vectors", lambda texts, payload=None: [[0.25, 0.5, 0.75, 1.0] for _ in texts])
+
+            health = asyncio.run(audio_cpu_main.healthz())
+            response = asyncio.run(
+                audio_cpu_main.embeddings(
+                    FakeRequest(
+                        {
+                            "model": "b1-minilm-l6-v2-onnx-q4",
+                            "b1_resolved_model_version": "b1-minilm-l6-v2-onnx-q4@aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f",
+                            "input": ["hello", "world"],
+                        }
+                    )
+                )
+            )
+            smoke = asyncio.run(
+                audio_cpu_main.runtime_smoke(
+                    FakeRequest(
+                        {
+                            "model": "b1-minilm-l6-v2-onnx-q4",
+                            "resolved_model_version": "b1-minilm-l6-v2-onnx-q4@aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f",
+                            "modality": "embedding",
+                        }
+                    )
+                )
+            )
+
+        self.assertEqual(health["status"], "ok")
+        self.assertTrue(health["capabilities"]["embeddings"])
+        self.assertFalse(health["capabilities"]["speech"])
+        self.assertFalse(response["b1_placeholder"])
+        self.assertEqual(response["b1_embedding_engine"], "onnxruntime")
+        self.assertEqual(response["b1_embedding_dimensions"], 4)
+        self.assertEqual(len(response["data"]), 2)
+        self.assertEqual(response["data"][0]["embedding"], [0.25, 0.5, 0.75, 1.0])
+        self.assertEqual(smoke["status"], "ok")
+        self.assertEqual(smoke["engine"], "onnx")
+        self.assertFalse(smoke["placeholder"])
+        self.assertEqual(smoke["measurements"]["embedding_dimensions"], 4)
+
+    def test_vosk_stt_engine_uses_resolved_model_version_runtime_view(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_transcription(payload: dict[str, Any]) -> dict[str, Any]:
+            calls.append(payload)
+            return {
+                "text": "hello from vosk",
+                "duration_seconds": 0.25,
+                "language": "en-us",
+                "gpu_lease_required": False,
+                "b1_engine": "vosk",
+                "b1_stt_engine": "vosk",
+                "b1_placeholder": False,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            view = model_root / "b1-vosk-small-en-us-0.15" / "0.15" / "vosk-model-small-en-us-0.15"
+            (view / "am").mkdir(parents=True)
+            (view / "conf").mkdir()
+            (view / "graph").mkdir()
+            (view / "am" / "final.mdl").write_bytes(b"vosk-final-model-placeholder")
+            (view / "conf" / "model.conf").write_text("--sample-frequency=16000\n", encoding="utf-8")
+            (view / "graph" / "HCLr.fst").write_bytes(b"vosk-graph-placeholder")
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_STT_ENGINE": "vosk",
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_VOSK_STT_MODEL_ROOT": str(model_root),
+                }
+            )
+            self.patch_attr("vosk_stt_dependency_status", lambda: [])
+            self.patch_attr("vosk_transcription", fake_transcription)
+
+            payload = {
+                "model": "b1-vosk-small-en-us-0.15",
+                "b1_resolved_model_version": "b1-vosk-small-en-us-0.15@0.15",
+                "audio": base64.b64encode(audio_cpu_main.silence_wav(0.25)).decode("ascii"),
+            }
+            health = asyncio.run(audio_cpu_main.healthz())
+            status = audio_cpu_main.vosk_stt_status(payload)
+            response = asyncio.run(audio_cpu_main.transcription(FakeRequest(payload)))
+            smoke = asyncio.run(
+                audio_cpu_main.runtime_smoke(
+                    FakeRequest(
+                        {
+                            "model": "b1-vosk-small-en-us-0.15",
+                            "resolved_model_version": "b1-vosk-small-en-us-0.15@0.15",
+                            "modality": "stt",
+                        }
+                    )
+                )
+            )
+
+        self.assertEqual(health["status"], "ok")
+        self.assertFalse(health["capabilities"]["speech"])
+        self.assertTrue(health["capabilities"]["transcription"])
+        self.assertEqual(status["model_path"], str(view.resolve()))
+        self.assertFalse(response["b1_placeholder"])
+        self.assertEqual(response["b1_stt_engine"], "vosk")
+        self.assertEqual(response["text"], "hello from vosk")
+        self.assertEqual(smoke["status"], "ok")
+        self.assertEqual(smoke["engine"], "vosk")
+        self.assertFalse(smoke["placeholder"])
+        self.assertEqual(smoke["measurements"]["transcript_chars"], len("hello from vosk"))
+        self.assertEqual(len(calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

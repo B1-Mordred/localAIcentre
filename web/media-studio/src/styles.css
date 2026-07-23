@@ -1,0 +1,432 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f6f8;
+  color: #1f2328;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: #263238;
+  color: #f8fafc;
+  border-bottom: 3px solid #0f9f8a;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 17px;
+  letter-spacing: 0;
+}
+
+header span {
+  color: #c9d2d8;
+}
+
+.session-strip {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.session-strip button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.auth-shell {
+  min-height: calc(100vh - 75px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-panel {
+  width: min(420px, 100%);
+  background: #ffffff;
+  border: 1px solid #d6dde3;
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.auth-panel label {
+  display: grid;
+  gap: 6px;
+  color: #44515c;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.auth-panel button {
+  justify-self: start;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  padding: 14px 20px 0;
+  border-bottom: 1px solid #d6dde3;
+}
+
+.tabs button,
+button,
+select,
+input,
+textarea {
+  font: inherit;
+}
+
+.tabs button,
+button {
+  min-height: 36px;
+  border: 1px solid #c8d0d7;
+  border-radius: 6px;
+  background: #fff;
+  color: #20262d;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+button:disabled {
+  color: #87929d;
+  cursor: not-allowed;
+}
+
+.tabs button[data-state="active"],
+.workflow-list .selected {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+}
+
+.workbench {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 310px;
+  gap: 14px;
+  padding: 16px 20px 28px;
+}
+
+.toolpane,
+.formpane,
+.resultpane,
+.history {
+  background: #fff;
+  border: 1px solid #d6dde3;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.pane-title,
+.form-header,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.workflow-list button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  min-height: 62px;
+  text-align: left;
+}
+
+.workflow-list small,
+td small {
+  grid-column: 2;
+  color: #66727d;
+  display: block;
+  margin-top: 2px;
+}
+
+.workflow-list .selected small {
+  color: #dcefed;
+}
+
+.formpane {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.form-header > div:first-child {
+  min-width: 0;
+}
+
+.form-header span,
+.toolbar-status {
+  color: #66727d;
+  font-size: 13px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.status-pill.ready {
+  background: #e7f6ef;
+  color: #116149;
+}
+
+.status-pill.blocked {
+  background: #fff4dc;
+  color: #7b4d00;
+}
+
+.metadata-strip,
+.dependency-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.metadata-strip span,
+.dependency {
+  border: 1px solid #d6dde3;
+  border-radius: 999px;
+  color: #46515b;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.dependency.ready {
+  border-color: #b6e2d3;
+  color: #116149;
+}
+
+.dependency.blocked {
+  border-color: #f1cd84;
+  color: #7b4d00;
+}
+
+.schema-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+  color: #44515c;
+  font-size: 14px;
+}
+
+.field strong {
+  color: #b42318;
+  font-weight: 700;
+  margin-left: 3px;
+}
+
+.field-hint {
+  color: #66727d;
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.checkbox-field {
+  align-items: center;
+  border: 1px solid #d6dde3;
+  border-radius: 6px;
+  display: flex;
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+textarea,
+select,
+input {
+  width: 100%;
+  border: 1px solid #c8d0d7;
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #1f2328;
+}
+
+textarea {
+  min-height: 116px;
+  resize: vertical;
+}
+
+.file-input {
+  align-items: center;
+  border: 1px dashed #9aa8b4;
+  border-radius: 6px;
+  display: flex;
+  gap: 9px;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.file-input input {
+  border: 0;
+  padding: 0;
+}
+
+.preview {
+  align-items: center;
+  background: #f7f9fb;
+  border: 1px dashed #aab6c1;
+  display: flex;
+  justify-content: center;
+  min-height: 190px;
+  margin: 14px 0;
+  overflow: hidden;
+}
+
+.preview img,
+.preview video {
+  max-height: 260px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.preview audio {
+  width: calc(100% - 20px);
+}
+
+dl {
+  margin: 0 0 14px;
+}
+
+dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e9eef2;
+  padding: 8px 0;
+}
+
+dt {
+  color: #66727d;
+}
+
+dd {
+  margin: 0;
+  text-align: right;
+  word-break: break-word;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.artifact-list a {
+  align-items: center;
+  border: 1px solid #d6dde3;
+  border-radius: 6px;
+  color: #0f5f59;
+  display: inline-flex;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.history {
+  margin: 16px 20px 28px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+}
+
+th,
+td {
+  border-bottom: 1px solid #e9eef2;
+  padding: 9px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .schema-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  header {
+    padding: 14px 16px;
+  }
+
+  .tabs,
+  .workbench {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .form-header,
+  .pane-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

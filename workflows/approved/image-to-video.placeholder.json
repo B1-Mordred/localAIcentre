@@ -1,0 +1,45 @@
+{
+  "id": "image-to-video",
+  "version": "0.1.0",
+  "display_name": "Image to Video",
+  "description": "Safe placeholder workflow definition for short image-conditioned clips.",
+  "modality": "video",
+  "operation": "image-to-video",
+  "model_alias": "video-image",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["video/mp4"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["source_image", "prompt"],
+    "properties": {
+      "source_image": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" },
+      "prompt": { "type": "string", "minLength": 1, "maxLength": 2000 },
+      "frames": { "type": "integer", "minimum": 1, "maximum": 49, "default": 25 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 24, "default": 12 },
+      "seed": { "type": "integer", "minimum": 0, "default": 0 }
+    },
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "videos": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "comfyui" },
+    { "type": "model", "id": "video-image" }
+  ],
+  "limits": {
+    "max_width": 768,
+    "max_height": 768,
+    "max_frames": 49,
+    "max_steps": 24,
+    "max_batch_size": 1,
+    "max_duration_seconds": 4
+  },
+  "visibility_roles": ["admin", "operator", "creator"]
+}

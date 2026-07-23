@@ -1,0 +1,753 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+
+INTENDED_HOSTS = (
+    "ai.b1.germering",
+    "control.ai.b1.germering",
+    "media.ai.b1.germering",
+    "comfy.ai.b1.germering",
+    "voice.ai.b1.germering",
+    "models.ai.b1.germering",
+    "api.ai.b1.germering",
+)
+
+COMMANDS = {
+    "docker_ps_all": ["docker", "ps", "-a", "--format", "json"],
+    "docker_compose_ls": ["docker", "compose", "ls", "--format", "json"],
+    "docker_volume_ls": ["docker", "volume", "ls", "--format", "json"],
+    "docker_network_ls": ["docker", "network", "ls", "--format", "json"],
+    "docker_info": ["docker", "info", "--format", "{{json .}}"],
+    "docker_version": ["docker", "version", "--format", "{{json .}}"],
+    "listening_tcp": ["ss", "-ltnp"],
+    "nvidia_smi": [
+        "nvidia-smi",
+        "--query-gpu=index,name,driver_version,memory.total,memory.used,temperature.gpu,utilization.gpu",
+        "--format=csv,noheader,nounits",
+    ],
+    "nvidia_container_toolkit": ["nvidia-ctk", "--version"],
+    "free": ["free", "-m"],
+    "df": ["df", "-PT"],
+    "mounts": ["findmnt", "--json"],
+    "dns_hosts": ["getent", "hosts", *INTENDED_HOSTS],
+}
+
+AI_NAME_HINTS = (
+    "ollama",
+    "open-webui",
+    "open_webui",
+    "comfy",
+    "localai",
+    "voicebox",
+    "stable-diffusion",
+    "stable_diffusion",
+    "sd-webui",
+    "automatic1111",
+    "invokeai",
+    "a1111",
+)
+PRESERVE_HINTS = ("hermes", "yggy", "yggdrasil", "discord", "technitium", "n8n", "mysql", "mariadb", "bragi")
+B1_HINTS = ("b1-ai-hub", "b1_ai_hub", "b1-control-plane", "b1-runtime-agent")
+SECRET_PATTERNS = [
+    re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
+    re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bb1rt_[A-Za-z0-9_-]+\b"),
+    re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key)(=|:)[^\s,;]+"),
+]
+MODEL_FILE_SUFFIXES = {
+    ".bin",
+    ".ckpt",
+    ".engine",
+    ".ggml",
+    ".gguf",
+    ".model",
+    ".onnx",
+    ".pb",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".tflite",
+}
+OPEN_WEBUI_TABLE_COUNT_CANDIDATES = ("user", "chat", "document", "file", "folder", "tag", "model", "config", "feedback")
+REVIEW_PORTS = {
+    80: "production HTTP gateway",
+    443: "production HTTPS gateway",
+    3000: "common Open WebUI host port",
+    7860: "common Stable Diffusion WebUI host port",
+    8000: "common AI/API host port",
+    8080: "common web application host port",
+    8188: "ComfyUI native or legacy listener",
+    8443: "alternate HTTPS gateway",
+    11434: "Ollama native API",
+    11438: "Ollama/OpenAI-compatible proxy",
+}
+
+
+def redact_text(value: str) -> str:
+    redacted = value
+    for pattern in SECRET_PATTERNS:
+        redacted = pattern.sub(redact_match, redacted)
+    return redacted
+
+
+def redact_match(match: re.Match[str]) -> str:
+    if match.lastindex == 1:
+        return match.group(1) + "<redacted>"
+    if match.lastindex and match.lastindex >= 2:
+        return f"{match.group(1)}{match.group(2)}<redacted>"
+    return "<redacted>"
+
+
+def run(command: list[str]) -> dict[str, Any]:
+    if shutil.which(command[0]) is None:
+        return {"available": False, "command": command, "stdout": "", "stderr": "command not found", "returncode": 127}
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    return {
+        "available": True,
+        "command": command,
+        "stdout": redact_text(completed.stdout),
+        "stderr": redact_text(completed.stderr),
+        "returncode": completed.returncode,
+    }
+
+
+def parse_json_lines(output: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            rows.append({"raw": line})
+            continue
+        rows.append(item if isinstance(item, dict) else {"value": item})
+    return rows
+
+
+def parse_json_object(output: str) -> dict[str, Any]:
+    try:
+        item = json.loads(output)
+    except json.JSONDecodeError:
+        return {}
+    return item if isinstance(item, dict) else {}
+
+
+def classify_text(text: str) -> dict[str, Any]:
+    lowered = text.lower()
+    matched_b1 = [hint for hint in B1_HINTS if hint in lowered]
+    matched_preserve = [hint for hint in PRESERVE_HINTS if hint in lowered]
+    matched_ai = [hint for hint in AI_NAME_HINTS if hint in lowered]
+    if matched_b1:
+        return {
+            "classification": "b1-ai-hub-current-preserve",
+            "confidence": "high",
+            "reasons": [f"matches current B1 AI Hub hint: {hint}" for hint in matched_b1],
+        }
+    if matched_preserve:
+        return {
+            "classification": "preserve-unrelated",
+            "confidence": "high",
+            "reasons": [f"matches explicit preserve hint: {hint}" for hint in matched_preserve],
+        }
+    if matched_ai:
+        return {
+            "classification": "candidate-old-ai-stack-review-required",
+            "confidence": "medium",
+            "reasons": [f"matches AI-stack hint: {hint}" for hint in matched_ai],
+        }
+    return {
+        "classification": "unknown-preserve-by-default",
+        "confidence": "low",
+        "reasons": ["no AI-stack hint matched; preserve unless an operator explicitly marks it in scope"],
+    }
+
+
+def classify_container(row: dict[str, Any]) -> dict[str, Any]:
+    text = " ".join(str(row.get(key, "")) for key in ("Names", "Name", "Image", "Command", "Labels")).lower()
+    result = classify_text(text)
+    return {
+        "container": row.get("Names") or row.get("Name") or row.get("ID") or row,
+        "image": row.get("Image"),
+        "ports": row.get("Ports"),
+        **result,
+    }
+
+
+def classify_compose_project(row: dict[str, Any]) -> dict[str, Any]:
+    text = " ".join(str(row.get(key, "")) for key in ("Name", "Status", "ConfigFiles", "WorkingDir")).lower()
+    return {
+        "project": row.get("Name") or row,
+        "status": row.get("Status"),
+        "config_files": row.get("ConfigFiles"),
+        **classify_text(text),
+    }
+
+
+def parse_listening_tcp(output: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith("State"):
+            continue
+        parts = line.split(None, 5)
+        if len(parts) < 5:
+            continue
+        local = parts[3]
+        process = parts[5] if len(parts) > 5 else ""
+        host, port = split_host_port(local)
+        entries.append({"local_address": host, "port": port, "process": process})
+    return entries
+
+
+def split_host_port(value: str) -> tuple[str, int | None]:
+    if value.startswith("[") and "]:" in value:
+        host, raw_port = value.rsplit("]:", 1)
+        return host.lstrip("["), parse_int(raw_port)
+    if ":" in value:
+        host, raw_port = value.rsplit(":", 1)
+        return host, parse_int(raw_port)
+    return value, None
+
+
+def parse_int(value: Any) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_float(value: Any) -> float | None:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_nvidia_smi(output: str) -> list[dict[str, Any]]:
+    devices: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 7:
+            devices.append({"raw": line})
+            continue
+        devices.append(
+            {
+                "index": parse_int(parts[0]),
+                "name": parts[1],
+                "driver_version": parts[2],
+                "memory_total_mib": parse_int(parts[3]),
+                "memory_used_mib": parse_int(parts[4]),
+                "temperature_c": parse_int(parts[5]),
+                "utilization_percent": parse_int(parts[6]),
+            }
+        )
+    return devices
+
+
+def parse_free_mib(output: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        label = parts[0].rstrip(":").lower()
+        if label in {"mem", "swap"} and len(parts) >= 7:
+            result[label] = {
+                "total_mib": parse_int(parts[1]),
+                "used_mib": parse_int(parts[2]),
+                "free_mib": parse_int(parts[3]),
+                "available_mib": parse_int(parts[6]) if label == "mem" else None,
+            }
+    return result
+
+
+def parse_df(output: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for line in output.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        entries.append(
+            {
+                "filesystem": parts[0],
+                "type": parts[1],
+                "blocks_1k": parse_int(parts[2]),
+                "used_1k": parse_int(parts[3]),
+                "available_1k": parse_int(parts[4]),
+                "use_percent": parts[5],
+                "mountpoint": " ".join(parts[6:]),
+            }
+        )
+    return entries
+
+
+def parse_dns_hosts(output: str) -> dict[str, list[str]]:
+    records: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        address = parts[0]
+        for host in parts[1:]:
+            records.setdefault(host, []).append(address)
+    return records
+
+
+def parse_docker_info(output: str) -> dict[str, Any]:
+    info = parse_json_object(output)
+    runtimes = info.get("Runtimes") if isinstance(info.get("Runtimes"), dict) else {}
+    return {
+        "server_version": info.get("ServerVersion"),
+        "operating_system": info.get("OperatingSystem"),
+        "architecture": info.get("Architecture"),
+        "driver": info.get("Driver"),
+        "runtimes": sorted(runtimes.keys()),
+        "nvidia_runtime_available": "nvidia" in runtimes,
+        "default_runtime": info.get("DefaultRuntime"),
+    }
+
+
+def path_type(path: Path) -> str:
+    if path.is_symlink():
+        return "symlink"
+    if path.is_dir():
+        return "directory"
+    if path.is_file():
+        return "file"
+    return "other"
+
+
+def summarize_path(path: Path, *, sample_limit: int = 25) -> dict[str, Any]:
+    summary: dict[str, Any] = {"path": str(path), "exists": path.exists()}
+    if not path.exists():
+        return summary
+    try:
+        stat = path.lstat()
+        summary.update({"type": path_type(path), "mode": oct(stat.st_mode & 0o777), "uid": stat.st_uid, "gid": stat.st_gid})
+        if path.is_symlink():
+            summary["target"] = os.readlink(path)
+        if path.is_dir():
+            entries = sorted(path.iterdir(), key=lambda item: item.name.lower())
+            summary["entry_count"] = len(entries)
+            summary["sample_entries"] = [entry.name for entry in entries[:sample_limit]]
+        elif path.is_file():
+            summary["size_bytes"] = stat.st_size
+    except OSError as exc:
+        summary["error"] = f"{exc.__class__.__name__}: {exc}"
+    return summary
+
+
+def is_model_file(path: Path) -> bool:
+    if path.suffix.lower() in MODEL_FILE_SUFFIXES:
+        return True
+    lowered = path.as_posix().lower()
+    return "/blobs/sha256-" in lowered or lowered.endswith("/modelfile")
+
+
+def summarize_model_directory(path: Path, *, max_depth: int = 8, max_files: int = 20000, sample_limit: int = 25) -> dict[str, Any]:
+    summary = summarize_path(path, sample_limit=sample_limit)
+    if not summary.get("exists") or summary.get("type") != "directory":
+        return summary
+    root_depth = len(path.parts)
+    file_count = 0
+    directory_count = 0
+    symlink_count = 0
+    special_count = 0
+    total_size = 0
+    model_file_count = 0
+    model_size = 0
+    suffix_counts: dict[str, int] = {}
+    model_samples: list[dict[str, Any]] = []
+    errors: list[str] = []
+    truncated = False
+    try:
+        for current, dirs, files in os.walk(path, followlinks=False):
+            current_path = Path(current)
+            depth = len(current_path.parts) - root_depth
+            if depth >= max_depth:
+                if dirs:
+                    truncated = True
+                dirs[:] = []
+            safe_dirs: list[str] = []
+            for dirname in dirs:
+                child = current_path / dirname
+                if child.is_symlink():
+                    symlink_count += 1
+                    continue
+                safe_dirs.append(dirname)
+                directory_count += 1
+            dirs[:] = safe_dirs
+            for filename in files:
+                file_path = current_path / filename
+                try:
+                    if file_path.is_symlink():
+                        symlink_count += 1
+                        continue
+                    if not file_path.is_file():
+                        special_count += 1
+                        continue
+                    stat = file_path.stat()
+                except OSError as exc:
+                    errors.append(f"{file_path}: {exc.__class__.__name__}: {exc}")
+                    continue
+                file_count += 1
+                total_size += stat.st_size
+                suffix = file_path.suffix.lower() or "<none>"
+                suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
+                if is_model_file(file_path):
+                    model_file_count += 1
+                    model_size += stat.st_size
+                    if len(model_samples) < sample_limit:
+                        model_samples.append(
+                            {
+                                "relative_path": file_path.relative_to(path).as_posix(),
+                                "size_bytes": stat.st_size,
+                                "suffix": suffix,
+                            }
+                        )
+                if file_count >= max_files:
+                    truncated = True
+                    dirs[:] = []
+                    break
+            if file_count >= max_files:
+                break
+    except OSError as exc:
+        errors.append(f"{path}: {exc.__class__.__name__}: {exc}")
+    summary.update(
+        {
+            "scan": {
+                "max_depth": max_depth,
+                "max_files": max_files,
+                "truncated": truncated,
+                "file_count": file_count,
+                "directory_count": directory_count,
+                "symlink_count": symlink_count,
+                "special_count": special_count,
+                "total_size_bytes": total_size,
+                "model_file_count": model_file_count,
+                "model_size_bytes": model_size,
+                "suffix_counts": dict(sorted(suffix_counts.items())),
+                "model_file_samples": model_samples,
+                "errors": errors[:20],
+            }
+        }
+    )
+    return summary
+
+
+def sqlite_readonly_uri(path: Path) -> str:
+    return f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
+
+
+def quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def inspect_sqlite_database(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        return {"readable": False, "reason": "not_regular_file"}
+    try:
+        connection = sqlite3.connect(sqlite_readonly_uri(path), uri=True, timeout=1.0)
+    except sqlite3.Error as exc:
+        return {"readable": False, "error": f"{exc.__class__.__name__}: {exc}"}
+    try:
+        cursor = connection.cursor()
+        user_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+        page_count = cursor.execute("PRAGMA page_count").fetchone()[0]
+        page_size = cursor.execute("PRAGMA page_size").fetchone()[0]
+        rows = cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        tables = [str(row[0]) for row in rows if row and row[0] is not None]
+        table_counts: dict[str, int] = {}
+        for table in OPEN_WEBUI_TABLE_COUNT_CANDIDATES:
+            if table not in tables:
+                continue
+            count_row = cursor.execute(f"SELECT COUNT(*) FROM {quote_sqlite_identifier(table)}").fetchone()
+            table_counts[table] = int(count_row[0]) if count_row else 0
+        return {
+            "readable": True,
+            "user_version": int(user_version),
+            "page_count": int(page_count),
+            "page_size": int(page_size),
+            "estimated_size_bytes": int(page_count) * int(page_size),
+            "tables": tables,
+            "table_counts": table_counts,
+            "content_rows_read": False,
+        }
+    except sqlite3.Error as exc:
+        return {"readable": False, "error": f"{exc.__class__.__name__}: {exc}"}
+    finally:
+        connection.close()
+
+
+def summarize_open_webui_database(path: Path) -> dict[str, Any]:
+    summary = summarize_path(path, sample_limit=0)
+    if summary.get("exists") and summary.get("type") == "file":
+        summary["sqlite"] = inspect_sqlite_database(path)
+    return summary
+
+
+def analyze_listening_tcp(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    review: list[dict[str, Any]] = []
+    production_gateway_listeners: list[dict[str, Any]] = []
+    legacy_comfy_listeners: list[dict[str, Any]] = []
+    ai_service_listeners: list[dict[str, Any]] = []
+    for entry in entries:
+        port = entry.get("port")
+        process = str(entry.get("process") or "")
+        classification = classify_text(process)
+        purpose = REVIEW_PORTS.get(port)
+        if port in {80, 443}:
+            production_gateway_listeners.append(entry)
+        if port == 8188:
+            legacy_comfy_listeners.append(entry)
+        if purpose or classification["classification"] == "candidate-old-ai-stack-review-required":
+            row = {**entry, "purpose": purpose or "AI process hint", "classification": classification["classification"]}
+            review.append(row)
+            ai_service_listeners.append(row)
+    return {
+        "review_ports": REVIEW_PORTS,
+        "ports_requiring_review": sorted({item["port"] for item in review if item.get("port") is not None}),
+        "production_gateway_listeners": production_gateway_listeners,
+        "legacy_comfy_listeners": legacy_comfy_listeners,
+        "ai_service_listeners": ai_service_listeners,
+    }
+
+
+def summarize_model_storage(model_directories: list[dict[str, Any]]) -> dict[str, Any]:
+    existing = [item for item in model_directories if item.get("exists") and item.get("type") == "directory"]
+    total_model_size = 0
+    total_model_files = 0
+    truncated = False
+    for item in existing:
+        scan = item.get("scan") if isinstance(item.get("scan"), dict) else {}
+        total_model_size += int(scan.get("model_size_bytes") or 0)
+        total_model_files += int(scan.get("model_file_count") or 0)
+        truncated = truncated or bool(scan.get("truncated"))
+    return {
+        "existing_directory_count": len(existing),
+        "model_file_count": total_model_files,
+        "model_size_bytes": total_model_size,
+        "scan_truncated": truncated,
+    }
+
+
+def summarize_open_webui_inventory(databases: list[dict[str, Any]]) -> dict[str, Any]:
+    existing = [item for item in databases if item.get("exists") and item.get("type") == "file"]
+    readable = [item for item in existing if isinstance(item.get("sqlite"), dict) and item["sqlite"].get("readable")]
+    return {
+        "database_candidate_count": len(existing),
+        "readable_sqlite_count": len(readable),
+        "known_table_counts": {
+            Path(item["path"]).name: item["sqlite"].get("table_counts", {})
+            for item in readable
+            if isinstance(item.get("path"), str)
+        },
+        "content_rows_read": False,
+    }
+
+
+def default_model_path_candidates(b1_root: Path) -> list[Path]:
+    candidates = [
+        b1_root / "models",
+        Path("/usr/share/ollama/.ollama/models"),
+        Path("/var/lib/ollama/.ollama/models"),
+        Path("/var/lib/ollama/models"),
+        Path("/srv/models"),
+        Path("/srv/comfyui/models"),
+        Path("/opt/ComfyUI/models"),
+        Path("/opt/stable-diffusion-webui/models"),
+    ]
+    home_root = Path("/home")
+    if home_root.exists():
+        for home in sorted(home_root.iterdir(), key=lambda item: item.name.lower()):
+            candidates.append(home / ".ollama" / "models")
+            candidates.append(home / "ComfyUI" / "models")
+    return unique_paths(candidates)
+
+
+def default_open_webui_candidates(b1_root: Path) -> list[Path]:
+    return unique_paths(
+        [
+            b1_root / "data/open-webui",
+            Path("/srv/open-webui"),
+            Path("/srv/open-webui/data"),
+            Path("/opt/open-webui"),
+            Path("/app/backend/data"),
+        ]
+    )
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def find_named_files(roots: list[Path], names: set[str], *, max_depth: int = 5, max_results: int = 200) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    ignored_dirs = {".cache", ".git", "node_modules", "__pycache__", "backups", "cache"}
+    for root in roots:
+        if len(matches) >= max_results or not root.exists() or not root.is_dir():
+            continue
+        root_depth = len(root.parts)
+        for current, dirs, files in os.walk(root):
+            current_path = Path(current)
+            depth = len(current_path.parts) - root_depth
+            dirs[:] = [item for item in dirs if item not in ignored_dirs and depth < max_depth]
+            for filename in files:
+                if filename in names or any(filename.endswith(suffix[1:]) for suffix in names if suffix.startswith("*")):
+                    matches.append(summarize_path(current_path / filename, sample_limit=0))
+                    if len(matches) >= max_results:
+                        return matches
+    return matches
+
+
+def read_resolv_conf() -> dict[str, Any]:
+    path = Path("/etc/resolv.conf")
+    if not path.exists():
+        return {"path": str(path), "exists": False}
+    try:
+        lines = [redact_text(line.strip()) for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError as exc:
+        return {"path": str(path), "exists": True, "error": f"{exc.__class__.__name__}: {exc}"}
+    return {"path": str(path), "exists": True, "lines": [line for line in lines if line and not line.startswith("#")]}
+
+
+def build_inventory(
+    *,
+    b1_root: Path = Path("/srv/b1-ai-hub"),
+    scan_roots: list[Path] | None = None,
+    command_runner: Callable[[list[str]], dict[str, Any]] = run,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    captured = {name: command_runner(command) for name, command in COMMANDS.items()}
+    docker_rows = parse_json_lines(captured["docker_ps_all"]["stdout"])
+    compose_rows = parse_json_lines(captured["docker_compose_ls"]["stdout"])
+    volume_rows = parse_json_lines(captured["docker_volume_ls"]["stdout"])
+    network_rows = parse_json_lines(captured["docker_network_ls"]["stdout"])
+    roots = scan_roots if scan_roots is not None else [Path("/srv"), Path("/opt"), Path("/home")]
+    created_at = now or datetime.now(tz=UTC)
+
+    container_classifications = [classify_container(row) for row in docker_rows]
+    compose_classifications = [classify_compose_project(row) for row in compose_rows]
+    old_stack_candidates = [item for item in container_classifications if item["classification"] == "candidate-old-ai-stack-review-required"]
+    explicit_preserve = [item for item in container_classifications if item["classification"] in {"preserve-unrelated", "unknown-preserve-by-default"}]
+    listening_tcp = parse_listening_tcp(captured["listening_tcp"]["stdout"])
+    model_directories = [summarize_model_directory(path) for path in default_model_path_candidates(b1_root)]
+    open_webui_databases = [summarize_open_webui_database(Path(item["path"])) for item in find_named_files(default_open_webui_candidates(b1_root), {"webui.db", "database.sqlite", "*.db"})]
+
+    return {
+        "created_at": created_at.astimezone(UTC).isoformat(),
+        "format": "b1-ai-hub-host-inventory/v1",
+        "warning": "read-only inventory; review classifications before any migration or cutover; unknown resources are preserved by default",
+        "safety": {
+            "read_only": True,
+            "destructive_actions": False,
+            "unknown_preserve_by_default": True,
+            "old_stack_classification_requires_operator_review": True,
+        },
+        "commands": captured,
+        "docker": {
+            "containers": docker_rows,
+            "compose_projects": compose_rows,
+            "volumes": volume_rows,
+            "networks": network_rows,
+            "info": parse_docker_info(captured["docker_info"]["stdout"]),
+            "version": parse_json_object(captured["docker_version"]["stdout"]),
+        },
+        "host": {
+            "listening_tcp": listening_tcp,
+            "gpu": {
+                "devices": parse_nvidia_smi(captured["nvidia_smi"]["stdout"]),
+                "nvidia_smi_available": captured["nvidia_smi"]["available"] and captured["nvidia_smi"]["returncode"] == 0,
+            },
+            "nvidia_container_toolkit": {
+                "available": captured["nvidia_container_toolkit"]["available"],
+                "returncode": captured["nvidia_container_toolkit"]["returncode"],
+                "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
+            },
+            "memory": parse_free_mib(captured["free"]["stdout"]),
+            "disks": parse_df(captured["df"]["stdout"]),
+            "mounts": parse_json_object(captured["mounts"]["stdout"]),
+            "dns": {
+                "intended_hosts": list(INTENDED_HOSTS),
+                "records": parse_dns_hosts(captured["dns_hosts"]["stdout"]),
+                "resolv_conf": read_resolv_conf(),
+            },
+        },
+        "paths": {
+            "b1_root": summarize_path(b1_root),
+            "model_directories": model_directories,
+            "open_webui_data_candidates": [summarize_path(path) for path in default_open_webui_candidates(b1_root)],
+            "compose_file_candidates": find_named_files(roots, {"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}),
+            "open_webui_database_candidates": open_webui_databases,
+        },
+        "migration_readiness": {
+            "port_review": analyze_listening_tcp(listening_tcp),
+            "model_storage": summarize_model_storage(model_directories),
+            "open_webui": summarize_open_webui_inventory(open_webui_databases),
+            "notes": [
+                "Port listeners are review evidence only; do not stop services from the inventory report.",
+                "SQLite metadata reads schema and aggregate counts only, not Open WebUI row contents.",
+                "Model directory scans are bounded and preserve symlinks/special files for operator review.",
+            ],
+        },
+        "classification": {
+            "containers": container_classifications,
+            "compose_projects": compose_classifications,
+            "old_ai_stack_candidates": old_stack_candidates,
+            "preserve_by_default": explicit_preserve,
+            "volumes_with_ai_hints": [row for row in volume_rows if classify_text(json.dumps(row, sort_keys=True))["classification"] == "candidate-old-ai-stack-review-required"],
+            "networks_with_ai_hints": [row for row in network_rows if classify_text(json.dumps(row, sort_keys=True))["classification"] == "candidate-old-ai-stack-review-required"],
+        },
+        "operator_next_steps": [
+            "Review candidate-old-ai-stack-review-required containers and compose projects.",
+            "Mark unrelated Hermes, Yggdrasil, Discord, DNS, database, and automation services as out of scope.",
+            "Back up old Compose files, environment, volumes, Open WebUI data, model directories, and relevant configuration before cutover.",
+            "Do not stop or delete anything from this report automatically.",
+        ],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Produce a read-only B1 AI Hub migration inventory.")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--b1-root", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"))
+    parser.add_argument("--scan-root", action="append", default=None, help="Root to scan for Compose files. May be repeated.")
+    args = parser.parse_args()
+    output = Path(args.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    scan_roots = [Path(item).resolve() for item in args.scan_root] if args.scan_root else None
+    inventory = build_inventory(b1_root=Path(args.b1_root).resolve(), scan_roots=scan_roots)
+    output.write_text(json.dumps(inventory, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"wrote inventory: {output}")
+
+
+if __name__ == "__main__":
+    main()

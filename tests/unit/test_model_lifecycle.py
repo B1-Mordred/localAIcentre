@@ -1,0 +1,483 @@
+from __future__ import annotations
+
+import hashlib
+import io
+import os
+import stat
+import sys
+import tarfile
+import tempfile
+import unittest
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+from app import model_lifecycle  # noqa: E402
+from app.catalog import parse_manifest_payload  # noqa: E402
+from app.scheduler import ResourcePolicy  # noqa: E402
+
+
+def manifest_payload(sha256: str, size: int, source_url: str = "https://models.ai.b1.germering/test", source_type: str = "catalog") -> dict:
+    return {
+        "id": "chat-small",
+        "version": "1.0.0",
+        "display_name": "Chat Small",
+        "modality": "llm",
+        "operations": ["chat"],
+        "source": {"type": source_type, "url": source_url, "revision": "1.0.0"},
+        "files": [{"path": "chat-small.gguf", "sha256": sha256, "size_bytes": size}],
+        "runtimes": ["localai"],
+        "preferred_runtime": "localai",
+        "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+        "license": {"name": "test", "redistribution": "downloadable"},
+        "execution_modes": ["hosted-inference", "downloadable"],
+        "aliases": ["chat-default"],
+    }
+
+
+class ModelLifecycleTests(unittest.TestCase):
+    def test_safe_zip_archive_extracts_into_runtime_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "bundle.zip"
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr("weights/model.gguf", b"tiny model")
+                handle.writestr("tokenizer.json", b'{"model":"tiny"}')
+            archive_bytes = archive.read_bytes()
+            digest = hashlib.sha256(archive_bytes).hexdigest()
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(archive_bytes)
+            payload = manifest_payload(digest, len(archive_bytes))
+            payload["files"] = [{"path": "bundle.zip", "sha256": digest, "size_bytes": len(archive_bytes), "format": "zip"}]
+            manifest = parse_manifest_payload(payload)
+
+            plan = model_lifecycle.build_install_plan(manifest, root, ResourcePolicy(), known_aliases={"chat-default"})
+            self.assertTrue(plan["can_install"])
+            self.assertEqual(plan["archive_inspections"][0]["inspection_status"], "safe")
+
+            views = model_lifecycle.create_runtime_views(manifest, root)
+
+            view_root = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0"
+            self.assertEqual(views[0]["files"][0]["link_type"], "safe-archive-extract")
+            self.assertFalse((view_root / "bundle.zip").exists())
+            self.assertEqual((view_root / "weights" / "model.gguf").read_bytes(), b"tiny model")
+            self.assertEqual((view_root / "tokenizer.json").read_text(encoding="utf-8"), '{"model":"tiny"}')
+
+    def test_safe_zip_archive_rejects_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "bad.zip"
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr("../escape.gguf", b"nope")
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unsafe relative path"):
+                model_lifecycle.inspect_archive(archive)
+
+    def test_safe_zip_archive_rejects_symlink_members(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "bad.zip"
+            info = zipfile.ZipInfo("weights/link.gguf")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr(info, "target.gguf")
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "symlink"):
+                model_lifecycle.inspect_archive(archive)
+
+    def test_safe_tar_archive_rejects_links_devices_and_traversal(self) -> None:
+        cases = [
+            ("link.tar", tarfile.SYMTYPE, "weights/link.gguf", "not a regular file"),
+            ("device.tar", tarfile.CHRTYPE, "weights/device", "not a regular file"),
+            ("traversal.tar", tarfile.REGTYPE, "../../escape.gguf", "unsafe relative path"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for filename, member_type, member_name, expected in cases:
+                archive = root / filename
+                with tarfile.open(archive, "w") as handle:
+                    info = tarfile.TarInfo(member_name)
+                    info.type = member_type
+                    if member_type == tarfile.REGTYPE:
+                        data = b"bad"
+                        info.size = len(data)
+                        handle.addfile(info, io.BytesIO(data))
+                    else:
+                        info.linkname = "weights/model.gguf"
+                        handle.addfile(info)
+
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, expected):
+                    model_lifecycle.inspect_archive(archive)
+
+    def test_archive_limits_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "limited.zip"
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr("one.gguf", b"1234")
+                handle.writestr("two.json", b"56")
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "too many members"):
+                model_lifecycle.inspect_archive(archive, max_members=1)
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "maximum file size"):
+                model_lifecycle.inspect_archive(archive, max_file_size_bytes=3)
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "uncompressed size exceeds limit"):
+                model_lifecycle.inspect_archive(archive, max_total_size_bytes=5)
+
+    def test_archive_rejects_denied_file_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "bad.zip"
+            with zipfile.ZipFile(archive, "w") as handle:
+                handle.writestr("scripts/install.sh", b"#!/bin/sh\n")
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "denied file type"):
+                model_lifecycle.inspect_archive(archive)
+
+    def test_install_plan_verifies_content_addressed_blob(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+            plan = model_lifecycle.build_install_plan(
+                manifest,
+                root,
+                ResourcePolicy(),
+                known_aliases={"chat-default"},
+            )
+
+            self.assertTrue(plan["can_install"])
+            self.assertEqual(plan["files"][0]["status"], "verified")
+            model_lifecycle.require_installable(plan, confirmed=True)
+
+    def test_install_plan_blocks_missing_blobs_unknown_aliases_and_unsafe_urls(self) -> None:
+        manifest = parse_manifest_payload(manifest_payload("2" * 64, 12, source_url="https://127.0.0.1/model.bin"))
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_install_plan(
+                manifest,
+                Path(tmp),
+                ResourcePolicy(),
+                known_aliases=set(),
+            )
+
+            self.assertFalse(plan["can_install"])
+            self.assertIn("source URL is not allowed by import policy", plan["blockers"])
+            self.assertIn("one or more content-addressed blobs are missing or failed verification", plan["blockers"])
+            self.assertTrue(any("manifest aliases are not defined" in item for item in plan["blockers"]))
+            with self.assertRaises(model_lifecycle.ModelLifecycleError):
+                model_lifecycle.require_installable(plan, confirmed=True)
+
+    def test_download_plan_supports_direct_url_resume_metadata(self) -> None:
+        data = b"partial"
+        digest = hashlib.sha256(data + b"-rest").hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(data)
+            manifest = parse_manifest_payload(
+                manifest_payload(
+                    digest,
+                    len(data) + 5,
+                    source_url="https://downloads.example.org/model.gguf",
+                    source_type="direct-url",
+                )
+            )
+
+            plan = model_lifecycle.build_download_plan(manifest, root)
+
+            self.assertTrue(plan["can_download"])
+            self.assertEqual(plan["status"], "downloadable")
+            self.assertEqual(plan["existing_partial_bytes"], len(data))
+            self.assertEqual(plan["target_sha256"], digest)
+            self.assertEqual(plan["file_count"], 1)
+            self.assertEqual(len(plan["files"]), 1)
+
+    def test_download_plan_supports_multi_file_base_url(self) -> None:
+        first = b"first-model-file"
+        second_partial = b"token"
+        second_rest = b"izer"
+        first_digest = hashlib.sha256(first).hexdigest()
+        second_digest = hashlib.sha256(second_partial + second_rest).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / first_digest).write_bytes(first)
+            partial = blob_dir / ".partial" / f"{second_digest}.partial"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(second_partial)
+            payload = manifest_payload(
+                first_digest,
+                len(first),
+                source_url="https://downloads.example.org/models/",
+                source_type="direct-url",
+            )
+            payload["files"] = [
+                {"path": "weights/model.gguf", "sha256": first_digest, "size_bytes": len(first)},
+                {"path": "tokenizer.json", "sha256": second_digest, "size_bytes": len(second_partial) + len(second_rest)},
+            ]
+            manifest = parse_manifest_payload(payload)
+
+            plan = model_lifecycle.build_download_plan(manifest, root)
+
+            self.assertTrue(plan["can_download"])
+            self.assertEqual(plan["status"], "downloadable")
+            self.assertFalse(plan["already_available"])
+            self.assertEqual(plan["file_count"], 2)
+            self.assertEqual(plan["target_size_bytes"], len(first) + len(second_partial) + len(second_rest))
+            self.assertEqual(plan["existing_partial_bytes"], len(first) + len(second_partial))
+            self.assertEqual(plan["files"][0]["source_url"], "https://downloads.example.org/models/weights/model.gguf")
+            self.assertEqual(plan["files"][1]["source_url"], "https://downloads.example.org/models/tokenizer.json")
+            self.assertTrue(plan["files"][0]["already_available"])
+            self.assertFalse(plan["files"][1]["already_available"])
+
+    def test_download_plan_blocks_multi_file_without_base_url(self) -> None:
+        payload = manifest_payload("5" * 64, 12, source_url="https://downloads.example.org/model.gguf", source_type="direct-url")
+        payload["files"] = [
+            {"path": "first.gguf", "sha256": "5" * 64, "size_bytes": 12},
+            {"path": "second.gguf", "sha256": "6" * 64, "size_bytes": 13},
+        ]
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(manifest, Path(tmp))
+
+            self.assertFalse(plan["can_download"])
+            self.assertIn("multi-file direct-url manifests require source.url to end with /", plan["blockers"])
+
+    def test_download_plan_blocks_existing_bad_target_blob(self) -> None:
+        data = b"expected"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = parse_manifest_payload(
+            manifest_payload(
+                digest,
+                len(data),
+                source_url="https://downloads.example.org/model.gguf",
+                source_type="direct-url",
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(b"wrong")
+
+            plan = model_lifecycle.build_download_plan(manifest, root)
+
+            self.assertFalse(plan["can_download"])
+            self.assertIn("chat-small.gguf: target blob exists but does not verify", plan["blockers"])
+
+    def test_download_plan_blocks_non_direct_url_and_credentialed_url(self) -> None:
+        manifest = parse_manifest_payload(manifest_payload("3" * 64, 12))
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(model_lifecycle.ModelLifecycleError):
+                model_lifecycle.build_download_plan(manifest, Path(tmp))
+
+        credentialed = parse_manifest_payload(
+            manifest_payload(
+                "4" * 64,
+                12,
+                source_url="https://downloads.example.org/model.gguf?token=secret",
+                source_type="direct-url",
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(credentialed, Path(tmp))
+            self.assertFalse(plan["can_download"])
+            self.assertIn("source URL is not allowed by import policy", plan["blockers"])
+
+    def test_internal_placeholder_files_do_not_require_blob(self) -> None:
+        manifest = parse_manifest_payload(
+            {
+                **manifest_payload("0" * 64, 1),
+                "id": "placeholder",
+                "display_name": "Placeholder",
+                "source": {"type": "catalog", "url": "https://models.ai.b1.germering/internal/placeholders", "revision": "0.1.0"},
+                "files": [{"path": "internal-placeholder", "sha256": "0" * 64, "size_bytes": 1, "format": "internal"}],
+                "license": {"name": "internal", "redistribution": "inference-only"},
+                "execution_modes": ["hosted-inference"],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_install_plan(manifest, Path(tmp), ResourcePolicy(), known_aliases={"chat-default"})
+
+            self.assertTrue(plan["can_install"])
+            self.assertEqual(plan["files"][0]["status"], "internal-placeholder")
+
+    def test_runtime_views_hardlink_verified_blobs_and_quarantine_views(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            blob_path = blob_dir / digest
+            blob_path.write_bytes(data)
+            manifest = parse_manifest_payload(
+                {
+                    **manifest_payload(digest, len(data)),
+                    "runtimes": ["localai", "comfyui"],
+                    "preferred_runtime": "localai",
+                }
+            )
+
+            views = model_lifecycle.create_runtime_views(manifest, root)
+
+            self.assertEqual({view["runtime"] for view in views}, {"localai", "comfyui"})
+            local_file = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0" / "chat-small.gguf"
+            comfy_file = root / "models" / "runtime-views" / "comfyui" / "chat-small" / "1.0.0" / "chat-small.gguf"
+            self.assertTrue(local_file.is_file())
+            self.assertTrue(comfy_file.is_file())
+            self.assertTrue(os.path.samefile(blob_path, local_file))
+            self.assertTrue(os.path.samefile(blob_path, comfy_file))
+            self.assertFalse(local_file.is_symlink())
+            self.assertTrue((local_file.parent / "manifest.b1.json").is_file())
+
+            moved = model_lifecycle.quarantine_runtime_views(manifest, root, timestamp=datetime(2026, 7, 22, 12, 0, tzinfo=UTC))
+
+            self.assertEqual({item["status"] for item in moved}, {"quarantined"})
+            self.assertFalse(local_file.exists())
+            self.assertTrue(
+                (
+                    root
+                    / "models"
+                    / "quarantine"
+                    / "runtime-views"
+                    / "localai"
+                    / "chat-small"
+                    / "1.0.0-20260722T120000Z"
+                    / "chat-small.gguf"
+                ).is_file()
+            )
+            self.assertTrue(blob_path.is_file())
+
+    def test_blob_quarantine_requires_quarantined_model_and_refuses_shared_blobs(self) -> None:
+        data = b"shared blob"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            records = [
+                {"id": "chat-small", "version": "1.0.0", "status": "quarantined", "manifest": manifest.to_dict()},
+                {
+                    "id": "chat-other",
+                    "version": "1.0.0",
+                    "status": "installed",
+                    "manifest": {**manifest.to_dict(), "id": "chat-other", "aliases": []},
+                },
+            ]
+
+            installed_plan = model_lifecycle.build_blob_quarantine_plan(
+                manifest,
+                root,
+                records,
+                model_status="installed",
+                timestamp=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            )
+            self.assertFalse(installed_plan["can_quarantine"])
+            self.assertIn("model record must be quarantined before authoritative blobs can be quarantined", installed_plan["blockers"])
+
+            shared_plan = model_lifecycle.build_blob_quarantine_plan(
+                manifest,
+                root,
+                records,
+                model_status="quarantined",
+                timestamp=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            )
+            self.assertFalse(shared_plan["can_quarantine"])
+            self.assertEqual(shared_plan["blobs"][0]["referenced_by"], ["chat-other@1.0.0"])
+            self.assertTrue(any("referenced by other model records" in item for item in shared_plan["blockers"]))
+
+    def test_blob_quarantine_moves_unused_authoritative_blob(self) -> None:
+        data = b"unused blob"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            source = blob_dir / digest
+            source.write_bytes(data)
+            records = [{"id": "chat-small", "version": "1.0.0", "status": "quarantined", "manifest": manifest.to_dict()}]
+
+            result = model_lifecycle.quarantine_authoritative_blobs(
+                manifest,
+                root,
+                records,
+                model_status="quarantined",
+                confirmed=True,
+                timestamp=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            )
+
+            destination = root / "models" / "quarantine" / "blobs" / "chat-small" / "1.0.0-20260722T120000Z" / digest
+            self.assertEqual(result["status"], "quarantined")
+            self.assertFalse(source.exists())
+            self.assertEqual(destination.read_bytes(), data)
+            self.assertEqual(result["moved"][0]["quarantine_path"], str(destination))
+
+    def test_blob_quarantine_rechecks_blob_before_move(self) -> None:
+        data = b"tiny model"
+        changed = b"tiny MODEL"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            source = blob_dir / digest
+            source.write_bytes(data)
+            records = [{"id": "chat-small", "version": "1.0.0", "status": "quarantined", "manifest": manifest.to_dict()}]
+            original_sha256_file = model_lifecycle.sha256_file
+            calls = 0
+
+            def racing_sha256_file(path: Path) -> str:
+                nonlocal calls
+                result = original_sha256_file(path)
+                calls += 1
+                if calls == 1:
+                    path.write_bytes(changed)
+                return result
+
+            model_lifecycle.sha256_file = racing_sha256_file
+            try:
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "changed before quarantine move"):
+                    model_lifecycle.quarantine_authoritative_blobs(
+                        manifest,
+                        root,
+                        records,
+                        model_status="quarantined",
+                        confirmed=True,
+                    )
+            finally:
+                model_lifecycle.sha256_file = original_sha256_file
+            self.assertEqual(source.read_bytes(), changed)
+
+    def test_runtime_view_creation_refuses_existing_symlink(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            link_path = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0" / "chat-small.gguf"
+            link_path.parent.mkdir(parents=True)
+            link_path.symlink_to(root / "outside")
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+
+            with self.assertRaises(model_lifecycle.ModelLifecycleError):
+                model_lifecycle.create_runtime_views(manifest, root)
+
+
+if __name__ == "__main__":
+    unittest.main()

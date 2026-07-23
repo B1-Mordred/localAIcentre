@@ -1,0 +1,43 @@
+services:
+  control-plane:
+    environment:
+      LOCALAI_URL: http://localai:8080
+
+  localai:
+    image: ${B1_LOCALAI_IMAGE:-localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973}
+    build: !reset null
+    read_only: false
+    environment:
+      B1_RUNTIME_KIND: !reset null
+      B1_RUNTIME_NAME: !reset null
+      DEBUG: ${B1_LOCALAI_DEBUG:-false}
+      LOCALAI_CORS: ${B1_LOCALAI_CORS:-false}
+      LOCALAI_DISABLE_WEBUI: ${B1_LOCALAI_DISABLE_WEBUI:-true}
+      LOCALAI_MODELS_PATH: /srv/b1-ai-hub/models
+      LOCALAI_BACKENDS_PATH: /srv/b1-ai-hub/localai/backends
+      LOCALAI_CONFIG_DIR: /srv/b1-ai-hub/localai/configuration
+      LOCALAI_DATA_PATH: /srv/b1-ai-hub/localai/data
+      LOCALAI_MAX_ACTIVE_BACKENDS: ${B1_LOCALAI_MAX_ACTIVE_BACKENDS:-1}
+      LOCALAI_WATCHDOG_IDLE: ${B1_LOCALAI_WATCHDOG_IDLE:-true}
+      LOCALAI_WATCHDOG_IDLE_TIMEOUT: ${B1_LOCALAI_WATCHDOG_IDLE_TIMEOUT:-5m}
+      LOCALAI_WATCHDOG_INTERVAL: ${B1_LOCALAI_WATCHDOG_INTERVAL:-1s}
+      LOCALAI_FORCE_EVICTION_WHEN_BUSY: ${B1_LOCALAI_FORCE_EVICTION_WHEN_BUSY:-false}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/localai:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/backends:/srv/b1-ai-hub/localai/backends
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/configuration:/srv/b1-ai-hub/localai/configuration
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/data:/srv/b1-ai-hub/localai/data
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/localai:/srv/b1-ai-hub/cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/readyz"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 60m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: ${B1_LOCALAI_GPU_DRIVER:-nvidia.com/gpu}
+              count: ${B1_LOCALAI_GPU_COUNT:-1}
+              capabilities: [gpu]

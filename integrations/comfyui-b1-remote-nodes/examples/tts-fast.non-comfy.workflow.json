@@ -1,0 +1,18 @@
+{
+  "description": "External ComfyUI smoke workflow: call B1 AI Hub tts-fast through the unified API without using server-side ComfyUI.",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "B1TextToSpeech",
+      "inputs": {
+        "model": "tts-fast",
+        "text": "B1 AI Hub remote nodes are using the non-Comfy CPU audio path.",
+        "voice": "default",
+        "response_format": "wav",
+        "runtime_policy": "non_comfy_only",
+        "filename": "b1-tts-fast-smoke.wav"
+      }
+    }
+  ],
+  "expected_server_side_comfyui_required": false
+}

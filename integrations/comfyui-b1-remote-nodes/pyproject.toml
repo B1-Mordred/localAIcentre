@@ -1,0 +1,6 @@
+[project]
+name = "comfyui-b1-remote-nodes"
+version = "0.1.0"
+description = "ComfyUI nodes that call B1 AI Hub unified APIs."
+requires-python = ">=3.12"
+dependencies = []

@@ -1,0 +1,42 @@
+{
+  "id": "frame-interpolation",
+  "version": "0.1.0",
+  "display_name": "Frame Interpolation",
+  "description": "Safe placeholder workflow definition for short local interpolation jobs.",
+  "modality": "video",
+  "operation": "frame-interpolation",
+  "model_alias": "video-image",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["video/mp4"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["source_video"],
+    "properties": {
+      "source_video": { "type": "string", "contentEncoding": "base64", "contentMediaType": "video/mp4" },
+      "target_fps": { "type": "integer", "minimum": 12, "maximum": 60, "default": 24 },
+      "max_seconds": { "type": "integer", "minimum": 1, "maximum": 4, "default": 4 }
+    },
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "videos": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "comfyui" },
+    { "type": "model", "id": "video-image" }
+  ],
+  "limits": {
+    "max_width": 768,
+    "max_height": 768,
+    "max_frames": 49,
+    "max_batch_size": 1,
+    "max_duration_seconds": 4
+  },
+  "visibility_roles": ["admin", "operator", "creator"]
+}

@@ -1,0 +1,42 @@
+{
+  "id": "text-to-image",
+  "version": "0.1.0",
+  "display_name": "Text to Image",
+  "description": "Safe placeholder workflow definition. Install a validated image model before publication.",
+  "modality": "image",
+  "operation": "generation",
+  "model_alias": "image-default",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["image/png"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["prompt"],
+    "properties": {
+      "prompt": { "type": "string", "minLength": 1, "maxLength": 2000 },
+      "negative_prompt": { "type": "string", "maxLength": 2000 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 40, "default": 20 },
+      "seed": { "type": "integer", "minimum": 0, "default": 0 }
+    },
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "images": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "comfyui" },
+    { "type": "model", "id": "image-default" }
+  ],
+  "limits": {
+    "max_width": 1024,
+    "max_height": 1024,
+    "max_steps": 40,
+    "max_batch_size": 1
+  },
+  "visibility_roles": ["admin", "operator", "creator", "user"]
+}

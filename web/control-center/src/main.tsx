@@ -1,0 +1,2862 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import * as Tabs from "@radix-ui/react-tabs";
+import {
+  Activity,
+  Archive,
+  CheckCircle2,
+  Boxes,
+  Database,
+  Download,
+  Gauge,
+  HardDrive,
+  KeyRound,
+  ListChecks,
+  LogOut,
+  PauseCircle,
+  RefreshCw,
+  RotateCcw,
+  ScrollText,
+  ShieldCheck,
+  TerminalSquare,
+  Trash2,
+  Upload,
+  Workflow
+} from "lucide-react";
+import "./styles.css";
+
+type RuntimeMap = Record<string, string>;
+
+type SchedulerLease = {
+  owner?: string;
+  lease_expires_at?: string;
+  acquired?: boolean;
+};
+
+type RuntimeState = {
+  runtime: string;
+  status: string;
+  stage: string;
+  active_model?: string | null;
+  model_alias?: string | null;
+  resolved_model_version?: string | null;
+  job_id?: string | null;
+  updated_at?: string;
+};
+
+type AdminStatus = {
+  service: string;
+  resource_policy: Record<string, number>;
+  resource_policy_source?: string;
+  maintenance?: MaintenanceState;
+  external_providers_enabled: boolean;
+  gpu_default_idle_timeout_seconds?: number;
+  runtimes: RuntimeMap;
+  scheduler_lease?: SchedulerLease | null;
+  runtime_states?: RuntimeState[];
+};
+
+type MaintenanceState = {
+  id: string;
+  source: string;
+  enabled: boolean;
+  reason: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+};
+
+type ResourcePolicyValues = {
+  gpu_total_vram_gib: number;
+  gpu_usable_vram_gib: number;
+  gpu_reserve_vram_gib: number;
+  gpu_max_active_pipelines: number;
+  host_total_ram_gib: number;
+  host_reserve_ram_gib: number;
+  llm_default_context: number;
+  llm_maximum_context: number;
+  llm_default_parallel_requests: number;
+  comfyui_maximum_parallel_jobs: number;
+  comfyui_maximum_batch_size: number;
+};
+
+type ResourcePolicyPayload = {
+  source: string;
+  effective: ResourcePolicyValues;
+  default: ResourcePolicyValues;
+  bounds: Record<keyof ResourcePolicyValues, { minimum: number; maximum: number }>;
+};
+
+type BackupSummary = {
+  name: string;
+  created_at?: string;
+  archive?: { size_bytes?: number; sha256?: string };
+  file_count?: number;
+  contains_sensitive_data?: boolean;
+  postgres_dump_included?: boolean;
+  postgres_dumps?: { kind?: string; format?: string; path?: string }[];
+  postgres_native_dump?: { kind?: string; format?: string; path?: string } | null;
+  archive_encryption?: { mode?: string; scheme?: string; file?: string } | null;
+  status?: string;
+};
+
+type BackupRetentionPlan = {
+  status: string;
+  policy: { keep_last: number; delete_older_than_days?: number | null; cutoff?: string | null };
+  candidate_count: number;
+  kept_count: number;
+  invalid_preserved_count: number;
+  total_reclaimable_bytes: number;
+  candidates: { name: string; created_at?: string; total_size_bytes?: number; reason: string }[];
+  kept: { name: string; reason: string }[];
+  deleted?: { name: string; total_size_bytes?: number }[];
+  deleted_count?: number;
+};
+
+type BackupSchedule = {
+  source: string;
+  enabled: boolean;
+  interval_hours: number;
+  keep_last: number;
+  delete_older_than_days?: number | null;
+  label_prefix: string;
+  next_run_at?: string | null;
+  last_started_at?: string | null;
+  last_completed_at?: string | null;
+  last_status?: string;
+  last_backup_name?: string | null;
+  failure_message?: string | null;
+};
+
+type UpdatePlan = {
+  id: string;
+  target_version: string;
+  source_url: string;
+  status: string;
+  stage: string;
+  image_refs: { service: string; image: string }[];
+  image_stage?: { service?: string; image?: string; status?: string; action?: string; message?: string; error?: string }[];
+  compose_override?: { path?: string; ready_for_promotion?: boolean; requires_image_pull_before_promotion?: boolean; not_pulled_services?: string[] };
+  backup_name?: string | null;
+  self_test?: { status?: string; checks?: unknown[] };
+  rollback_result?: Record<string, unknown>;
+  notes?: string;
+  failure_message?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type SelfTestCheck = {
+  name: string;
+  status: string;
+  detail: string;
+  data?: Record<string, unknown>;
+};
+
+type SelfTestResult = {
+  status: string;
+  checks: SelfTestCheck[];
+};
+
+type AuditEvent = {
+  id: string;
+  created_at: string;
+  actor_id?: string;
+  actor_role?: string;
+  event_type: string;
+  target_type?: string;
+  target_id?: string;
+  summary: string;
+};
+
+type ServiceLogPayload = {
+  service: string;
+  lines: number;
+  entries: string[];
+};
+
+type AuthStatus = {
+  configured: boolean;
+  setup_required: boolean;
+  authenticated: boolean;
+  subject_id?: string | null;
+  role?: string | null;
+  scopes: string[];
+  csrf_token?: string | null;
+  session_id?: string | null;
+};
+
+type ApiClient = {
+  id: string;
+  display_name: string;
+  role: string;
+  scopes: string[];
+  key_prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+};
+
+type SecretCategory = "remote-provider" | "model-download" | "runtime" | "integration" | "other";
+
+type EncryptedSecret = {
+  name: string;
+  display_name: string;
+  category: SecretCategory;
+  description?: string;
+  scheme?: string;
+  key_id?: string;
+  encrypted: boolean;
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+};
+
+type SecretMasterKeyStatus = {
+  configured: boolean;
+  usable: boolean;
+  scheme: string;
+  key_id?: string | null;
+  error?: string;
+};
+
+type ModelHubClient = {
+  id: string;
+  display_name: string;
+  owner_id: string;
+  api_client_id: string;
+  key_prefix: string;
+  allowed_models: string[];
+  cidr_allowlist: string[];
+  allow_downloads: boolean;
+  created_at: string;
+  revoked_at?: string | null;
+};
+
+type ModelAlias = {
+  id: string;
+  modality: string;
+  status: string;
+  enabled?: boolean;
+  preferred_runtime: string;
+  preferred_runtime_override?: string | null;
+  runtimes?: string[];
+  idle_timeout_seconds?: number | null;
+  visibility_roles?: string[];
+  alias_policy_source?: string;
+  notes?: string;
+  resource_label: string;
+  cpu_resident_candidate?: boolean;
+  resolved_model?: { id: string; version: string; display_name: string } | null;
+};
+
+type ModelAliasPolicyForm = {
+  enabled: boolean;
+  preferred_runtime: string;
+  idle_timeout_seconds: string;
+  visibility_roles: string[];
+  notes: string;
+};
+
+type ModelRecord = {
+  id: string;
+  version: string;
+  display_name: string;
+  modality: string;
+  preferred_runtime: string;
+  status: string;
+  resource_label: string;
+  updated_at?: string;
+  runtime_views?: { runtime: string; host_path: string; container_path: string }[];
+};
+
+type CatalogModel = {
+  id: string;
+  version: string;
+  display_name: string;
+  modality: string;
+  status: string;
+  preferred_runtime: string;
+  aliases?: string[];
+  operations?: string[];
+  resource_label: string;
+  downloadable?: boolean;
+  execution_modes?: string[];
+  license?: { name: string; redistribution: string };
+};
+
+type RuntimeAdapterStatus = {
+  name: string;
+  status: string;
+  requires_gpu: boolean;
+  openai_compatible?: boolean;
+  native_api?: boolean;
+  external?: boolean;
+  error?: string;
+  details?: unknown;
+  runtime_state?: RuntimeState | null;
+};
+
+type ExternalRuntimeConfig = {
+  runtime: string;
+  source: string;
+  enabled: boolean;
+  configured: boolean;
+  eligible: boolean;
+  status: string;
+  base_url: string;
+  api_key_secret_name?: string | null;
+  api_key_configured: boolean;
+  external_data_acknowledged: boolean;
+  configuration_error?: string | null;
+  notes: string;
+  warning: string;
+  updated_at?: string | null;
+};
+
+type ExternalRuntimeConfigForm = {
+  enabled: boolean;
+  base_url: string;
+  api_key_secret_name: string;
+  confirm_external_data: boolean;
+  notes: string;
+};
+
+const detailRecord = (value: unknown): Record<string, unknown> => {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+};
+
+const booleanLabel = (value: unknown): string => {
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  return String(value);
+};
+
+const statusPillClass = (status: string): string => {
+  if (["ok", "ready", "healthy", "eligible", "completed", "configured"].includes(status)) return "status-pill ok";
+  if (["invalid", "failed", "error"].some((item) => status.includes(item))) return "status-pill invalid";
+  if (["warning", "disabled", "pending", "degraded"].some((item) => status.includes(item))) return "status-pill warning";
+  return "status-pill";
+};
+
+const capabilitySummary = (value: unknown): string => {
+  const capabilities = detailRecord(value);
+  return Object.entries(capabilities)
+    .map(([name, enabled]) => `${name}: ${booleanLabel(enabled)}`)
+    .join(", ");
+};
+
+type VoiceProfile = {
+  id: string;
+  display_name: string;
+  owner_id: string;
+  runtime: "voicebox" | "audio-cpu";
+  engine: string;
+  model_alias: string;
+  profile_type: "preset" | "reference" | "clone";
+  status: string;
+  visibility_roles: string[];
+  metadata: Record<string, unknown>;
+  sample_artifacts: { url: string; sha256: string; mime_type: string; bytes: number }[];
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+};
+
+type ModelInstallPlan = {
+  model_ref: string;
+  status: string;
+  can_install: boolean;
+  blockers: string[];
+  requires_license_acceptance: boolean;
+  total_size_bytes: number;
+  resource_decision: { label: string; reason: string };
+  model: { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
+  files: { path: string; status: string; size_bytes: number }[];
+  archive_inspections: {
+    path: string;
+    archive_format: string;
+    inspection_status: string;
+    reason?: string;
+    error?: string;
+    summary?: { member_count: number; file_count: number; total_uncompressed_bytes: number };
+  }[];
+  runtime_views: { runtime: string; host_path: string; container_path: string }[];
+};
+
+type ModelDownloadPlan = {
+  model_ref: string;
+  status: string;
+  can_download: boolean;
+  already_available: boolean;
+  blockers: string[];
+  source_url: string;
+  target_sha256: string;
+  target_size_bytes: number;
+  existing_partial_bytes: number;
+  file_count: number;
+  files: { path: string; source_url: string; status?: string; target_size_bytes: number; existing_partial_bytes: number; already_available: boolean; blockers: string[] }[];
+};
+
+type ModelDownloadRecord = {
+  id: string;
+  model_id: string;
+  model_version: string;
+  status: string;
+  stage: string;
+  credential_secret_name?: string | null;
+  authenticated?: boolean;
+  target_size_bytes: number;
+  bytes_downloaded: number;
+  progress_percent: number;
+  file_count: number;
+  error_category?: string | null;
+  error_message?: string | null;
+};
+
+type ModelBlobQuarantinePlan = {
+  model_ref: string;
+  model_status: string;
+  status: string;
+  can_quarantine: boolean;
+  blockers: string[];
+  total_size_bytes: number;
+  active_jobs?: unknown[];
+  dependent_workflows?: unknown[];
+  moved?: { path: string; sha256: string; quarantine_path: string; size_bytes: number }[];
+  blobs: {
+    path: string;
+    sha256: string;
+    blob_path?: string;
+    quarantine_path?: string;
+    status: string;
+    size_bytes: number;
+    can_quarantine: boolean;
+    referenced_by?: string[];
+    blockers?: string[];
+  }[];
+};
+
+type JobRecord = {
+  id: string;
+  correlation_id: string;
+  owner_id: string;
+  modality: string;
+  operation: string;
+  model_alias: string;
+  resolved_model_version: string;
+  runtime: string;
+  priority: string;
+  state: string;
+  stage?: string;
+  progress?: number;
+  retry_count?: number;
+  native_prompt_id?: string | null;
+  failure_category?: string | null;
+  failure_message?: string | null;
+  artifacts?: { url?: string; mime_type?: string; bytes?: number; sha256?: string }[];
+  redacted_request?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  load_time_ms?: number | null;
+  run_time_ms?: number | null;
+  peak_vram_mib?: number | null;
+  peak_ram_mib?: number | null;
+};
+
+type WorkflowDependency = {
+  type: string;
+  id: string;
+  version?: string;
+  ready?: boolean;
+  status?: string;
+  reason?: string;
+};
+
+type PublishedWorkflow = {
+  id: string;
+  version: string;
+  display_name: string;
+  description?: string;
+  modality: string;
+  operation: string;
+  model_alias: string;
+  backend_policy: string;
+  runtime_policy: string;
+  output_mime_types: string[];
+  resource_class: string;
+  dependencies: WorkflowDependency[];
+  visibility_roles: string[];
+  limits: Record<string, number>;
+  status: string;
+  publishable: boolean;
+  dependency_status?: {
+    ready?: boolean;
+    dependencies?: WorkflowDependency[];
+  };
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  workflow_json: Record<string, unknown>;
+};
+
+const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
+const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
+
+function apiUrl(path: string): string {
+  return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;
+}
+
+function storeAuthStatus(status: AuthStatus | null): void {
+  if (status?.csrf_token) {
+    window.sessionStorage.setItem(CSRF_STORAGE_KEY, status.csrf_token);
+  } else {
+    window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
+  }
+}
+
+function errorMessageFromBody(parsed: any, response: Response): string {
+  const detail = parsed?.detail;
+  if (typeof detail === "string") return detail;
+  if (detail?.message) return detail.message;
+  if (Array.isArray(detail)) return detail.map((item) => item.msg ?? item.message ?? String(item)).join("; ");
+  return `${response.status} ${response.statusText}`;
+}
+
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method) && !headers.has("X-B1-CSRF")) {
+    const csrf = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (csrf) headers.set("X-B1-CSRF", csrf);
+  }
+  return fetch(apiUrl(path), { ...init, credentials: "include", headers });
+}
+
+async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiFetch(path, init);
+  const body = await response.text();
+  const parsed = body ? JSON.parse(body) : null;
+  if (!response.ok) {
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+  return parsed as T;
+}
+
+function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <div className="section-title">
+      {icon}
+      <h2>{title}</h2>
+    </div>
+  );
+}
+
+const RESOURCE_POLICY_FIELDS: { key: keyof ResourcePolicyValues; label: string; step: string }[] = [
+  { key: "gpu_total_vram_gib", label: "GPU total", step: "0.1" },
+  { key: "gpu_usable_vram_gib", label: "GPU usable", step: "0.1" },
+  { key: "gpu_reserve_vram_gib", label: "GPU reserve", step: "0.1" },
+  { key: "gpu_max_active_pipelines", label: "GPU pipelines", step: "1" },
+  { key: "host_total_ram_gib", label: "RAM total", step: "0.5" },
+  { key: "host_reserve_ram_gib", label: "RAM reserve", step: "0.5" },
+  { key: "llm_default_context", label: "LLM context", step: "512" },
+  { key: "llm_maximum_context", label: "LLM max context", step: "512" },
+  { key: "llm_default_parallel_requests", label: "LLM parallel", step: "1" },
+  { key: "comfyui_maximum_parallel_jobs", label: "Comfy jobs", step: "1" },
+  { key: "comfyui_maximum_batch_size", label: "Comfy batch", step: "1" }
+];
+
+const INTEGER_POLICY_FIELDS = new Set<keyof ResourcePolicyValues>([
+  "gpu_max_active_pipelines",
+  "llm_default_context",
+  "llm_maximum_context",
+  "llm_default_parallel_requests",
+  "comfyui_maximum_parallel_jobs",
+  "comfyui_maximum_batch_size"
+]);
+
+const UPDATE_IMAGE_REFS_TEMPLATE = JSON.stringify(
+  [
+    {
+      service: "control-plane",
+      image: "ghcr.io/b1/b1-ai-hub-control-plane:0.2.0@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  null,
+  2
+);
+
+const SERVICE_LOG_OPTIONS = ["control-plane", "localai", "comfyui", "voicebox", "audio-cpu", "artifact-server", "open-webui", "gateway"];
+const RUNTIME_OPTIONS = ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"];
+const ROLE_OPTIONS = ["admin", "operator", "creator", "user", "service"];
+
+function Dashboard({ status }: { status: AdminStatus | null }) {
+  const policy = status?.resource_policy ?? {};
+  const lease = status?.scheduler_lease;
+  const leaseOwner = lease?.owner ?? "idle";
+  const leaseDetail = lease?.lease_expires_at ? `expires ${new Date(lease.lease_expires_at).toLocaleTimeString()}` : "one pipeline policy active";
+  return (
+    <div className="panel-grid">
+      <section className="panel wide">
+        <SectionTitle icon={<Activity size={18} />} title="Dashboard" />
+        <div className="metrics">
+          <Metric label="GPU lease" value={leaseOwner} detail={leaseDetail} />
+          <Metric label="VRAM usable" value={`${policy.gpu_usable_vram_gib ?? 10.5} GiB`} detail={`${policy.gpu_reserve_vram_gib ?? 1.5} GiB reserved`} />
+          <Metric label="Host RAM reserve" value={`${policy.host_reserve_ram_gib ?? 6} GiB`} detail="RTX 3060 / 32 GB profile" />
+          <Metric label="Idle unload" value={`${status?.gpu_default_idle_timeout_seconds ?? 300}s`} detail="blank alias policy uses this default" />
+          <Metric label="External providers" value={status?.external_providers_enabled ? "enabled" : "disabled"} detail="LAN-local default" />
+        </div>
+      </section>
+      <section className="panel">
+        <SectionTitle icon={<ListChecks size={18} />} title="Queue" />
+        <table>
+          <tbody>
+            <tr><td>Running</td><td>0</td></tr>
+            <tr><td>Queued</td><td>0</td></tr>
+            <tr><td>Recovery</td><td>0</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section className="panel">
+        <SectionTitle icon={<Database size={18} />} title="Services" />
+        <ul className="runtime-list">
+          {Object.entries(status?.runtimes ?? {}).map(([name, url]) => (
+            <li key={name}><span>{name}</span><code>{url}</code></li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function Models() {
+  const [aliases, setAliases] = useState<ModelAlias[]>([]);
+  const [aliasForms, setAliasForms] = useState<Record<string, ModelAliasPolicyForm>>({});
+  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
+  const [records, setRecords] = useState<ModelRecord[]>([]);
+  const [downloads, setDownloads] = useState<ModelDownloadRecord[]>([]);
+  const [downloadSecrets, setDownloadSecrets] = useState<EncryptedSecret[]>([]);
+  const [downloadCredentialSecretName, setDownloadCredentialSecretName] = useState("");
+  const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
+  const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
+  const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const modelVersionPath = (record: ModelRecord) => `${encodeURIComponent(record.id)}/versions/${encodeURIComponent(record.version)}`;
+  const aliasFormFromAlias = (alias: ModelAlias): ModelAliasPolicyForm => ({
+    enabled: alias.enabled ?? alias.status !== "disabled",
+    preferred_runtime: alias.preferred_runtime_override ?? "",
+    idle_timeout_seconds: alias.idle_timeout_seconds ? String(alias.idle_timeout_seconds) : "",
+    visibility_roles: alias.visibility_roles ?? [],
+    notes: alias.notes ?? ""
+  });
+
+  const loadModels = () => {
+    setMessage("loading");
+    Promise.all([
+      apiFetch(`/admin/models`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`models ${response.status}`))),
+      apiFetch(`/admin/models/downloads?limit=20`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`downloads ${response.status}`))),
+      apiFetch(`/admin/secrets?category=model-download`).then((response) => {
+        if (response.ok) return response.json();
+        if (response.status === 403) return { data: [] };
+        return Promise.reject(new Error(`download secrets ${response.status}`));
+      })
+    ])
+      .then(([modelPayload, downloadPayload, secretPayload]) => {
+        const loadedAliases = modelPayload.aliases ?? [];
+        setAliases(loadedAliases);
+        setAliasForms(Object.fromEntries(loadedAliases.map((alias: ModelAlias) => [alias.id, aliasFormFromAlias(alias)])));
+        setCatalog(modelPayload.catalog ?? []);
+        setRecords(modelPayload.records ?? []);
+        setDownloads(downloadPayload.data ?? []);
+        setDownloadSecrets(secretPayload.data ?? []);
+        setMessage("ready");
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  useEffect(loadModels, []);
+
+  const updateAliasForm = <K extends keyof ModelAliasPolicyForm>(aliasId: string, key: K, value: ModelAliasPolicyForm[K]) => {
+    setAliasForms((current) => ({
+      ...current,
+      [aliasId]: {
+        ...(current[aliasId] ?? { enabled: true, preferred_runtime: "", idle_timeout_seconds: "", visibility_roles: [], notes: "" }),
+        [key]: value
+      }
+    }));
+  };
+
+  const toggleAliasRole = (aliasId: string, role: string) => {
+    const currentRoles = aliasForms[aliasId]?.visibility_roles ?? [];
+    updateAliasForm(
+      aliasId,
+      "visibility_roles",
+      currentRoles.includes(role) ? currentRoles.filter((item) => item !== role) : [...currentRoles, role]
+    );
+  };
+
+  const saveAliasPolicy = (alias: ModelAlias) => {
+    const form = aliasForms[alias.id] ?? aliasFormFromAlias(alias);
+    setBusy(true);
+    setMessage("saving alias policy");
+    apiFetch(`/admin/models/aliases/${encodeURIComponent(alias.id)}/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: form.enabled,
+        preferred_runtime: form.preferred_runtime || null,
+        idle_timeout_seconds: form.idle_timeout_seconds ? Number(form.idle_timeout_seconds) : null,
+        visibility_roles: form.visibility_roles,
+        notes: form.notes
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setAliases((current) => current.map((item) => item.id === alias.id ? payload.alias : item));
+        setAliasForms((current) => ({ ...current, [alias.id]: aliasFormFromAlias(payload.alias) }));
+        setMessage(`saved ${alias.id}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const resetAliasPolicy = (alias: ModelAlias) => {
+    setBusy(true);
+    setMessage("resetting alias policy");
+    apiFetch(`/admin/models/aliases/${encodeURIComponent(alias.id)}/policy`, { method: "DELETE" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setAliases((current) => current.map((item) => item.id === alias.id ? payload.alias : item));
+        setAliasForms((current) => ({ ...current, [alias.id]: aliasFormFromAlias(payload.alias) }));
+        setMessage(`reset ${alias.id}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const planInstall = (model: string) => {
+    setBusy(true);
+    setMessage("planning");
+    apiFetch(`/admin/models/install-plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setPlan(payload);
+        setMessage(payload.status);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const installModel = (model: string) => {
+    setBusy(true);
+    setMessage("installing");
+    apiFetch(`/admin/models/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance) })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setPlan(payload.plan);
+        setMessage(`installed ${payload.model.id}@${payload.model.version}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const planDownload = (model: string) => {
+    setBusy(true);
+    setMessage("planning download");
+    apiFetch(`/admin/models/download-plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setDownloadPlan(payload);
+        setMessage(payload.status);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const queueDownload = (model: string) => {
+    setBusy(true);
+    setMessage("queueing download");
+    apiFetch(`/admin/models/downloads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        confirm: true,
+        credential_secret_name: downloadCredentialSecretName.trim() || null
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setDownloadPlan(payload.plan);
+        setMessage(`${payload.download.status} ${payload.download.id}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const cancelDownload = (download: ModelDownloadRecord) => {
+    setBusy(true);
+    setMessage("cancelling download");
+    apiFetch(`/admin/models/downloads/${download.id}`, { method: "DELETE" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then(() => {
+        setMessage(`cancelled ${download.id}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const quarantineModel = (record: ModelRecord) => {
+    setBusy(true);
+    setMessage("quarantining");
+    apiFetch(`/admin/models/${modelVersionPath(record)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then(() => {
+        setMessage(`quarantined ${record.id}@${record.version}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const planBlobQuarantine = (record: ModelRecord) => {
+    setBusy(true);
+    setMessage("planning blob quarantine");
+    apiFetch(`/admin/models/${modelVersionPath(record)}/blob-quarantine-plan`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setBlobPlan(payload);
+        setMessage(`blob quarantine ${payload.status}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const quarantineBlobs = (record: ModelRecord) => {
+    setBusy(true);
+    setMessage("quarantining blobs");
+    apiFetch(`/admin/models/${modelVersionPath(record)}/blobs/quarantine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setBlobPlan(payload);
+        setMessage(`${payload.moved?.length ?? 0} blob${payload.moved?.length === 1 ? "" : "s"} quarantined`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<Boxes size={18} />} title="Models" />
+      <div className="toolbar">
+        <button title="Refresh catalog" onClick={loadModels} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <label>
+          Download token
+          {downloadSecrets.length ? (
+            <select value={downloadCredentialSecretName} onChange={(event) => setDownloadCredentialSecretName(event.target.value)}>
+              <option value="">none</option>
+              {downloadSecrets.map((secret) => <option key={secret.name} value={secret.name}>{secret.display_name || secret.name}</option>)}
+            </select>
+          ) : (
+            <input value={downloadCredentialSecretName} onChange={(event) => setDownloadCredentialSecretName(event.target.value)} maxLength={128} placeholder="model-download secret" />
+          )}
+        </label>
+        <span className="toolbar-status">{message}</span>
+      </div>
+      {plan && (
+        <div className="one-time-key">
+          <strong>{plan.model_ref} {plan.status}</strong>
+          <span>{plan.model.display_name} / {plan.model.license.name} / {formatBytes(plan.total_size_bytes)}</span>
+          <small>{plan.resource_decision.label}: {plan.resource_decision.reason}</small>
+          <small>{plan.runtime_views.map((view) => `${view.runtime}: ${view.container_path}`).join(" / ")}</small>
+          {Boolean(plan.archive_inspections?.length) && <small>{plan.archive_inspections.map(formatArchiveInspection).join(" / ")}</small>}
+          {plan.blockers.length > 0 && <small>{plan.blockers.join("; ")}</small>}
+        </div>
+      )}
+      {downloadPlan && (
+        <div className="one-time-key">
+          <strong>{downloadPlan.model_ref} download {downloadPlan.status}</strong>
+          <span>{formatBytes(downloadPlan.existing_partial_bytes)} staged / {formatBytes(downloadPlan.target_size_bytes)} total</span>
+          <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
+          {downloadPlan.files.length > 1 && <small>{downloadPlan.files.map((file) => file.path).join(" / ")}</small>}
+          {downloadPlan.blockers.length > 0 && <small>{downloadPlan.blockers.join("; ")}</small>}
+        </div>
+      )}
+      {blobPlan && (
+        <div className="one-time-key">
+          <strong>{blobPlan.model_ref} blob quarantine {blobPlan.status}</strong>
+          <span>{formatBytes(blobPlan.total_size_bytes)} recoverable cleanup candidate / {blobPlan.model_status}</span>
+          <small>{blobPlan.blobs.map((blob) => `${blob.path}: ${blob.status}`).join(" / ")}</small>
+          {Boolean(blobPlan.active_jobs?.length) && <small>{blobPlan.active_jobs?.length} active job reference{blobPlan.active_jobs?.length === 1 ? "" : "s"}</small>}
+          {Boolean(blobPlan.dependent_workflows?.length) && <small>{blobPlan.dependent_workflows?.length} dependent workflow{blobPlan.dependent_workflows?.length === 1 ? "" : "s"}</small>}
+          {Boolean(blobPlan.moved?.length) && <small>{blobPlan.moved?.map((blob) => `${blob.sha256.slice(0, 12)} -> ${blob.quarantine_path}`).join(" / ")}</small>}
+          {blobPlan.blockers.length > 0 && <small>{blobPlan.blockers.join("; ")}</small>}
+        </div>
+      )}
+      <table>
+        <thead><tr><th>Alias</th><th>Status</th><th>Runtime</th><th>Policy</th><th>Actions</th></tr></thead>
+        <tbody>
+          {aliases.map((alias) => {
+            const form = aliasForms[alias.id] ?? aliasFormFromAlias(alias);
+            return (
+              <tr key={alias.id}>
+                <td><code>{alias.id}</code><small>{alias.resolved_model ? `${alias.resolved_model.id}@${alias.resolved_model.version}` : "no manifest"}</small></td>
+                <td>
+                  <label className="inline-check">
+                    <input type="checkbox" checked={form.enabled} onChange={(event) => updateAliasForm(alias.id, "enabled", event.target.checked)} />
+                    <span>{alias.status}</span>
+                  </label>
+                  <small>{alias.modality}</small>
+                </td>
+                <td>
+                  <select value={form.preferred_runtime} onChange={(event) => updateAliasForm(alias.id, "preferred_runtime", event.target.value)}>
+                    <option value="">manifest default</option>
+                    {RUNTIME_OPTIONS.map((runtime) => (
+                      <option key={runtime} value={runtime}>{runtime}</option>
+                    ))}
+                  </select>
+                  <small>{alias.preferred_runtime}{alias.runtimes?.length ? ` / ${alias.runtimes.join(", ")}` : ""}</small>
+                </td>
+                <td>
+                  <div className="alias-policy-cell">
+                    <input
+                      className="compact-number"
+                      type="number"
+                      min="30"
+                      max="86400"
+                      placeholder="idle seconds"
+                      value={form.idle_timeout_seconds}
+                      onChange={(event) => updateAliasForm(alias.id, "idle_timeout_seconds", event.target.value)}
+                    />
+                    <input
+                      className="compact-text"
+                      placeholder="operator notes"
+                      value={form.notes}
+                      onChange={(event) => updateAliasForm(alias.id, "notes", event.target.value)}
+                    />
+                    <div className="role-chips">
+                      {ROLE_OPTIONS.map((role) => (
+                        <label key={role} className="role-chip">
+                          <input type="checkbox" checked={form.visibility_roles.includes(role)} onChange={() => toggleAliasRole(alias.id, role)} />
+                          <span>{role}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <small>{alias.resource_label}{alias.cpu_resident_candidate ? " / CPU" : ""} / {alias.alias_policy_source ?? "seed"}</small>
+                </td>
+                <td>
+                  <div className="table-actions">
+                    <button title={`Save alias policy for ${alias.id}`} onClick={() => saveAliasPolicy(alias)} disabled={busy}><CheckCircle2 size={16} /></button>
+                    <button title={`Reset alias policy for ${alias.id}`} onClick={() => resetAliasPolicy(alias)} disabled={busy || alias.alias_policy_source !== "database"}><RotateCcw size={16} /></button>
+                    <button title={`Plan install for ${alias.id}`} onClick={() => planInstall(alias.id)} disabled={busy || !alias.resolved_model}><ListChecks size={16} /></button>
+                    <button title={`Install ${alias.id}`} onClick={() => installModel(alias.id)} disabled={busy || !alias.resolved_model}><Archive size={16} /></button>
+                    <button title={`Plan download for ${alias.id}`} onClick={() => planDownload(alias.id)} disabled={busy || !alias.resolved_model}><Download size={16} /></button>
+                    <button title={`Queue download for ${alias.id}`} onClick={() => queueDownload(alias.id)} disabled={busy || !alias.resolved_model}><Download size={16} /></button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {!aliases.length && <tr><td colSpan={5}>No model aliases loaded</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <Boxes size={16} />
+        <h3>Catalog Recommendations</h3>
+      </div>
+      <table>
+        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Policy</th><th>Actions</th></tr></thead>
+        <tbody>
+          {catalog.map((model) => (
+            <tr key={`${model.id}@${model.version}`}>
+              <td>
+                <code>{model.display_name}</code>
+                <small>{model.id}@{model.version}{model.aliases?.length ? ` / ${model.aliases.join(", ")}` : ""}</small>
+              </td>
+              <td>{model.status}<small>{model.modality}{model.operations?.length ? ` / ${model.operations.join(", ")}` : ""}</small></td>
+              <td>{model.preferred_runtime}</td>
+              <td>{model.resource_label}<small>{model.license?.name ?? "licence unknown"} / {model.license?.redistribution ?? "redistribution unknown"}</small></td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Plan install for ${model.display_name}`} onClick={() => planInstall(model.id)} disabled={busy || model.status === "installed"}><ListChecks size={16} /></button>
+                  <button title={`Install ${model.display_name}`} onClick={() => installModel(model.id)} disabled={busy || model.status === "installed"}><Archive size={16} /></button>
+                  <button title={`Plan download for ${model.display_name}`} onClick={() => planDownload(model.id)} disabled={busy || model.status === "installed"}><Download size={16} /></button>
+                  <button title={`Queue download for ${model.display_name}`} onClick={() => queueDownload(model.id)} disabled={busy || model.status === "installed"}><Download size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!catalog.length && <tr><td colSpan={5}>No catalog recommendations loaded</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <Database size={16} />
+        <h3>Installed Records</h3>
+      </div>
+      <table>
+        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Views</th><th>Policy</th><th>Actions</th></tr></thead>
+        <tbody>
+          {records.map((record) => (
+            <tr key={`${record.id}@${record.version}`}>
+              <td><code>{record.display_name}</code><small>{record.id}@{record.version}</small></td>
+              <td>{record.status}<small>{record.modality}</small></td>
+              <td>{record.preferred_runtime}</td>
+              <td>{(record.runtime_views ?? []).map((view) => view.runtime).join(", ") || "none"}</td>
+              <td>{record.resource_label}</td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Quarantine model record for ${record.display_name}`} onClick={() => quarantineModel(record)} disabled={busy || record.status !== "installed"}><Trash2 size={16} /></button>
+                  <button title={`Plan authoritative blob quarantine for ${record.display_name}`} onClick={() => planBlobQuarantine(record)} disabled={busy || record.status === "installed"}><Database size={16} /></button>
+                  <button title={`Quarantine authoritative blobs for ${record.display_name}`} onClick={() => quarantineBlobs(record)} disabled={busy || record.status === "installed"}><HardDrive size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!records.length && <tr><td colSpan={6}>No installed model records</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <Download size={16} />
+        <h3>Downloads</h3>
+      </div>
+      <table>
+        <thead><tr><th>Download</th><th>Status</th><th>Progress</th><th>Error</th><th>Actions</th></tr></thead>
+        <tbody>
+          {downloads.map((download) => (
+            <tr key={download.id}>
+              <td>
+                <code>{download.model_id}@{download.model_version}</code>
+                <small>{download.id}{download.authenticated ? ` / authenticated ${download.credential_secret_name ?? ""}` : ""}</small>
+              </td>
+              <td>{download.status}<small>{download.stage}</small></td>
+              <td>{download.progress_percent}%<small>{formatBytes(download.bytes_downloaded)} / {formatBytes(download.target_size_bytes)} across {download.file_count || 1} file{(download.file_count || 1) === 1 ? "" : "s"}</small></td>
+              <td>{download.error_category ?? ""}<small>{download.error_message ?? ""}</small></td>
+              <td><div className="table-actions"><button title={`Cancel ${download.id}`} onClick={() => cancelDownload(download)} disabled={busy || ["completed", "failed", "cancelled"].includes(download.status)}><Trash2 size={16} /></button></div></td>
+            </tr>
+          ))}
+          {!downloads.length && <tr><td colSpan={5}>No model downloads recorded</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function Runtimes() {
+  const [health, setHealth] = useState<RuntimeAdapterStatus[]>([]);
+  const [readiness, setReadiness] = useState<SelfTestCheck | null>(null);
+  const [deploymentMode, setDeploymentMode] = useState("unknown");
+  const [productionRequired, setProductionRequired] = useState<string[]>([]);
+  const [externalConfigs, setExternalConfigs] = useState<ExternalRuntimeConfig[]>([]);
+  const [externalConfigForms, setExternalConfigForms] = useState<Record<string, ExternalRuntimeConfigForm>>({});
+  const [externalProvidersAllowed, setExternalProvidersAllowed] = useState(false);
+  const [externalConfigMessage, setExternalConfigMessage] = useState("idle");
+  const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
+  const [profileExport, setProfileExport] = useState("");
+  const [profileMessage, setProfileMessage] = useState("idle");
+  const [profileForm, setProfileForm] = useState({
+    display_name: "",
+    runtime: "voicebox",
+    engine: "voicebox",
+    model_alias: "tts-quality",
+    profile_type: "preset",
+    status: "active",
+    visibility_roles: "admin,operator"
+  });
+  const [profileMetadata, setProfileMetadata] = useState("{}");
+  const [profileArtifacts, setProfileArtifacts] = useState("[]");
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const loadRuntimes = () => {
+    setMessage("loading");
+    apiFetch(`/admin/runtimes`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setHealth(payload.health ?? []);
+        setReadiness(payload.readiness ?? null);
+        setDeploymentMode(payload.runtime_deployment_mode ?? "unknown");
+        setProductionRequired(Array.isArray(payload.production_required_runtimes) ? payload.production_required_runtimes : []);
+        setMessage("ready");
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  const formFromExternalConfig = (config: ExternalRuntimeConfig): ExternalRuntimeConfigForm => ({
+    enabled: config.enabled,
+    base_url: config.base_url,
+    api_key_secret_name: config.api_key_secret_name ?? "",
+    confirm_external_data: config.external_data_acknowledged,
+    notes: config.notes ?? ""
+  });
+
+  const loadExternalConfigs = () => {
+    setExternalConfigMessage("loading");
+    apiJson<{ object: string; allow_external_providers: boolean; data: ExternalRuntimeConfig[] }>(`/admin/runtimes/external-config`)
+      .then((payload) => {
+        const data = payload.data ?? [];
+        setExternalConfigs(data);
+        setExternalProvidersAllowed(Boolean(payload.allow_external_providers));
+        setExternalConfigForms(Object.fromEntries(data.map((config) => [config.runtime, formFromExternalConfig(config)])));
+        setExternalConfigMessage("ready");
+      })
+      .catch((error: Error) => setExternalConfigMessage(error.message));
+  };
+
+  const loadVoiceProfiles = () => {
+    setProfileMessage("loading");
+    apiJson<{ object: string; data: VoiceProfile[] }>(`/admin/voicebox/profiles`)
+      .then((payload) => {
+        setProfiles(payload.data ?? []);
+        setProfileMessage("ready");
+      })
+      .catch((error: Error) => setProfileMessage(error.message));
+  };
+
+  useEffect(() => {
+    loadRuntimes();
+    loadExternalConfigs();
+    loadVoiceProfiles();
+  }, []);
+
+  const runtimeAction = (runtime: string, action: "unload" | "recover") => {
+    setBusy(true);
+    setMessage(`${action} ${runtime}`);
+    apiFetch(`/admin/runtimes/${runtime}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: `Control Center ${action}`, timeout_seconds: 10 })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setMessage(`${payload.action} ${payload.runtime}: ${payload.runtime_agent?.status ?? "requested"}`);
+        loadRuntimes();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateExternalConfigForm = (runtime: string, changes: Partial<ExternalRuntimeConfigForm>) => {
+    setExternalConfigForms((current) => ({
+      ...current,
+      [runtime]: {
+        ...(current[runtime] ?? {
+          enabled: false,
+          base_url: "",
+          api_key_secret_name: "",
+          confirm_external_data: false,
+          notes: ""
+        }),
+        ...changes
+      }
+    }));
+  };
+
+  const saveExternalConfig = (runtime: string) => {
+    const form = externalConfigForms[runtime];
+    if (!form) return;
+    setBusy(true);
+    setExternalConfigMessage(`saving ${runtime}`);
+    apiJson<ExternalRuntimeConfig>(`/admin/runtimes/external-config/${encodeURIComponent(runtime)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: form.enabled,
+        base_url: form.base_url,
+        api_key_secret_name: form.api_key_secret_name.trim() || null,
+        confirm_external_data: form.confirm_external_data,
+        notes: form.notes
+      })
+    })
+      .then((config) => {
+        setExternalConfigs((current) => current.map((item) => item.runtime === config.runtime ? config : item));
+        setExternalConfigForms((current) => ({ ...current, [config.runtime]: formFromExternalConfig(config) }));
+        setExternalConfigMessage(`${config.runtime} ${config.status}`);
+        loadRuntimes();
+      })
+      .catch((error: Error) => setExternalConfigMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateProfileForm = (field: string, value: string) => {
+    setProfileForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const createVoiceProfile = () => {
+    setBusy(true);
+    setProfileMessage("creating");
+    try {
+      const metadata = profileMetadata.trim() ? JSON.parse(profileMetadata) : {};
+      const sample_artifacts = profileArtifacts.trim() ? JSON.parse(profileArtifacts) : [];
+      if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") throw new Error("metadata must be an object");
+      if (!Array.isArray(sample_artifacts)) throw new Error("sample artifacts must be an array");
+      apiJson<VoiceProfile>(`/admin/voicebox/profiles`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...profileForm,
+          visibility_roles: profileForm.visibility_roles.split(",").map((role) => role.trim()).filter(Boolean),
+          metadata,
+          sample_artifacts
+        })
+      })
+        .then((profile) => {
+          setProfileMessage(`created ${profile.id}`);
+          setProfileExport("");
+          setProfileForm((current) => ({ ...current, display_name: "" }));
+          loadVoiceProfiles();
+        })
+        .catch((error: Error) => setProfileMessage(error.message))
+        .finally(() => setBusy(false));
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : "invalid profile payload");
+      setBusy(false);
+    }
+  };
+
+  const exportVoiceProfile = (profile: VoiceProfile) => {
+    setBusy(true);
+    setProfileMessage(`export ${profile.id}`);
+    apiJson<Record<string, unknown>>(`/admin/voicebox/profiles/${encodeURIComponent(profile.id)}/export`, { method: "POST" })
+      .then((payload) => {
+        setProfileExport(JSON.stringify(payload, null, 2));
+        setProfileMessage(`exported ${profile.id}`);
+      })
+      .catch((error: Error) => setProfileMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const deleteVoiceProfile = (profile: VoiceProfile) => {
+    setBusy(true);
+    setProfileMessage(`delete ${profile.id}`);
+    apiJson<VoiceProfile>(`/admin/voicebox/profiles/${encodeURIComponent(profile.id)}`, { method: "DELETE" })
+      .then((payload) => {
+        setProfileMessage(`${payload.id} ${payload.status}`);
+        loadVoiceProfiles();
+      })
+      .catch((error: Error) => setProfileMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const runtimes = health.length ? health : [
+    { name: "localai", status: "pending", requires_gpu: true },
+    { name: "comfyui", status: "pending", requires_gpu: true, native_api: true },
+    { name: "voicebox", status: "pending", requires_gpu: true, native_api: true },
+    { name: "audio-cpu", status: "pending", requires_gpu: false }
+  ];
+
+  return (
+    <div className="panel-grid">
+      <section className="panel wide">
+        <SectionTitle icon={<TerminalSquare size={18} />} title="Runtimes" />
+        <div className="toolbar">
+          <button title="Refresh runtimes" onClick={() => { loadRuntimes(); loadExternalConfigs(); }} disabled={busy}><RefreshCw size={16} />Refresh</button>
+          <span className="toolbar-status">{message}</span>
+        </div>
+        {readiness && (
+          <div className="one-time-key">
+            <strong>Runtime readiness: {readiness.status}</strong>
+            <small>{readiness.detail}</small>
+            <small>mode: {deploymentMode} / required: {productionRequired.length ? productionRequired.join(", ") : "none"}</small>
+          </div>
+        )}
+      </section>
+      {runtimes.map((runtime) => {
+        const details = detailRecord(runtime.details);
+        const capabilities = capabilitySummary(details.capabilities);
+        return (
+          <section className="panel" key={runtime.name}>
+            <SectionTitle icon={<TerminalSquare size={18} />} title={runtime.name} />
+            <table>
+              <tbody>
+                <tr><td>Health</td><td>{runtime.status}</td></tr>
+                <tr><td>Active model</td><td>{runtime.runtime_state?.active_model ?? "unknown"}</td></tr>
+                <tr><td>Scheduler state</td><td>{runtime.runtime_state ? `${runtime.runtime_state.stage} / ${runtime.runtime_state.status}` : "not observed"}</td></tr>
+                {runtime.runtime_state?.job_id && <tr><td>Last job</td><td>{runtime.runtime_state.job_id}</td></tr>}
+                <tr><td>GPU lease</td><td>{runtime.requires_gpu ? "required" : "not required"}</td></tr>
+                <tr><td>API</td><td>{runtime.openai_compatible ? "OpenAI" : runtime.native_api ? "native" : "internal"}</td></tr>
+                {details.engine !== undefined && <tr><td>Engine</td><td>{String(details.engine)}</td></tr>}
+                {details.placeholder !== undefined && <tr><td>Placeholder</td><td>{booleanLabel(details.placeholder)}</td></tr>}
+                {details.placeholder_enabled !== undefined && <tr><td>Placeholder enabled</td><td>{booleanLabel(details.placeholder_enabled)}</td></tr>}
+                {capabilities && <tr><td>Capabilities</td><td>{capabilities}</td></tr>}
+                {runtime.error && <tr><td>Error</td><td>{runtime.error}</td></tr>}
+              </tbody>
+            </table>
+            <div className="toolbar">
+              <button title={`Unload ${runtime.name}`} onClick={() => runtimeAction(runtime.name, "unload")} disabled={busy || Boolean(runtime.external)}><PauseCircle size={16} />Unload</button>
+              <button title={`Recover ${runtime.name}`} onClick={() => runtimeAction(runtime.name, "recover")} disabled={busy || Boolean(runtime.external)}><RotateCcw size={16} />Recover</button>
+            </div>
+          </section>
+        );
+      })}
+      <section className="panel wide">
+        <SectionTitle icon={<ShieldCheck size={18} />} title="External Runtime Configuration" />
+        <div className="toolbar">
+          <button title="Refresh external runtime configuration" onClick={loadExternalConfigs} disabled={busy}><RefreshCw size={16} />Refresh</button>
+          <span className="toolbar-status">{externalConfigMessage}</span>
+          <span className={statusPillClass(externalProvidersAllowed ? "eligible" : "disabled")}>global {externalProvidersAllowed ? "enabled" : "disabled"}</span>
+        </div>
+        <div className="table-scroll">
+          <table className="config-table">
+            <thead><tr><th>Runtime</th><th>Enabled</th><th>Base URL</th><th>Secret</th><th>Acknowledgement</th><th>Notes</th><th>Actions</th></tr></thead>
+            <tbody>
+              {externalConfigs.map((config) => {
+                const form = externalConfigForms[config.runtime] ?? formFromExternalConfig(config);
+                return (
+                  <tr key={config.runtime}>
+                    <td>
+                      <code>{config.runtime}</code>
+                      <small>{config.source} / <span className={statusPillClass(config.status)}>{config.status}</span></small>
+                      {config.configuration_error && <small>{config.configuration_error}</small>}
+                    </td>
+                    <td>
+                      <label className="inline-check">
+                        <input type="checkbox" checked={form.enabled} onChange={(event) => updateExternalConfigForm(config.runtime, { enabled: event.target.checked })} />
+                        Enabled
+                      </label>
+                    </td>
+                    <td>
+                      <input value={form.base_url} onChange={(event) => updateExternalConfigForm(config.runtime, { base_url: event.target.value })} maxLength={2048} placeholder="https://provider.example/v1" />
+                    </td>
+                    <td>
+                      <input value={form.api_key_secret_name} onChange={(event) => updateExternalConfigForm(config.runtime, { api_key_secret_name: event.target.value })} maxLength={128} placeholder="remote-provider secret" />
+                      <small>{config.api_key_configured ? "configured" : "none"}</small>
+                    </td>
+                    <td>
+                      <label className="inline-check">
+                        <input type="checkbox" checked={form.confirm_external_data} onChange={(event) => updateExternalConfigForm(config.runtime, { confirm_external_data: event.target.checked })} />
+                        External data
+                      </label>
+                      <small>{config.warning}</small>
+                    </td>
+                    <td>
+                      <textarea value={form.notes} onChange={(event) => updateExternalConfigForm(config.runtime, { notes: event.target.value })} maxLength={2000} />
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <button title={`Save ${config.runtime} configuration`} onClick={() => saveExternalConfig(config.runtime)} disabled={busy}><CheckCircle2 size={16} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!externalConfigs.length && <tr><td colSpan={7}>No external runtime adapters available</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="panel wide">
+        <SectionTitle icon={<TerminalSquare size={18} />} title="Voicebox Profiles" />
+        <div className="toolbar">
+          <button title="Refresh voice profiles" onClick={loadVoiceProfiles} disabled={busy}><RefreshCw size={16} />Refresh</button>
+          <span className="toolbar-status">{profileMessage}</span>
+        </div>
+        <div className="split voice-profile-admin">
+          <div className="stack">
+            <label>Display name<input value={profileForm.display_name} onChange={(event) => updateProfileForm("display_name", event.target.value)} /></label>
+            <label>Runtime
+              <select value={profileForm.runtime} onChange={(event) => updateProfileForm("runtime", event.target.value)}>
+                <option value="voicebox">voicebox</option>
+                <option value="audio-cpu">audio-cpu</option>
+              </select>
+            </label>
+            <label>Engine<input value={profileForm.engine} onChange={(event) => updateProfileForm("engine", event.target.value)} /></label>
+            <label>Model alias<input value={profileForm.model_alias} onChange={(event) => updateProfileForm("model_alias", event.target.value)} /></label>
+            <label>Profile type
+              <select value={profileForm.profile_type} onChange={(event) => updateProfileForm("profile_type", event.target.value)}>
+                <option value="preset">preset</option>
+                <option value="reference">reference</option>
+                <option value="clone">clone</option>
+              </select>
+            </label>
+            <label>Status
+              <select value={profileForm.status} onChange={(event) => updateProfileForm("status", event.target.value)}>
+                <option value="active">active</option>
+                <option value="disabled">disabled</option>
+              </select>
+            </label>
+            <label>Visibility roles<input value={profileForm.visibility_roles} onChange={(event) => updateProfileForm("visibility_roles", event.target.value)} /></label>
+            <label>Metadata JSON<textarea value={profileMetadata} onChange={(event) => setProfileMetadata(event.target.value)} /></label>
+            <label>Sample artifacts JSON<textarea value={profileArtifacts} onChange={(event) => setProfileArtifacts(event.target.value)} /></label>
+            <button title="Create voice profile" onClick={createVoiceProfile} disabled={busy || !profileForm.display_name.trim()}><Upload size={16} />Create</button>
+          </div>
+          <div className="stack">
+            <table>
+              <thead><tr><th>Profile</th><th>Runtime</th><th>Type</th><th>Roles</th><th>Samples</th><th>Actions</th></tr></thead>
+              <tbody>
+                {profiles.map((profile) => (
+                  <tr key={profile.id}>
+                    <td>{profile.display_name}<small>{profile.id}</small></td>
+                    <td>{profile.runtime}<small>{profile.engine} / {profile.model_alias}</small></td>
+                    <td>{profile.profile_type}<small>{profile.status}</small></td>
+                    <td>{profile.visibility_roles.join(", ")}</td>
+                    <td>{profile.sample_artifacts.length}</td>
+                    <td><div className="table-actions">
+                      <button title={`Export ${profile.id}`} onClick={() => exportVoiceProfile(profile)} disabled={busy}><Download size={16} /></button>
+                      <button title={`Delete ${profile.id}`} onClick={() => deleteVoiceProfile(profile)} disabled={busy}><Trash2 size={16} /></button>
+                    </div></td>
+                  </tr>
+                ))}
+                {!profiles.length && <tr><td colSpan={6}>No voice profiles registered</td></tr>}
+              </tbody>
+            </table>
+            {profileExport && <pre className="profile-export">{profileExport}</pre>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const JOB_STATES = ["", "created", "validated", "queued", "waiting_for_gpu", "unloading", "verifying_vram", "loading", "warming", "running", "saving", "completed", "cancelling", "cancelled", "failed", "expired", "recovery_required"];
+const JOB_PRIORITIES = ["chat", "interactive_audio", "single_image", "image_batch", "video", "batch"];
+const TERMINAL_JOB_STATES = new Set(["completed", "cancelled", "failed", "expired"]);
+const RETRYABLE_JOB_STATES = new Set(["failed", "cancelled", "expired", "recovery_required"]);
+const PRIORITIZABLE_JOB_STATES = new Set(["created", "validated", "queued", "waiting_for_gpu"]);
+
+function formatDateTime(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : "";
+}
+
+function formatMs(value?: number | null) {
+  if (typeof value !== "number") return "pending";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}s`;
+  return `${value}ms`;
+}
+
+function Jobs() {
+  const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [selected, setSelected] = useState<JobRecord | null>(null);
+  const [stateFilter, setStateFilter] = useState("");
+  const [runtimeFilter, setRuntimeFilter] = useState("");
+  const [modalityFilter, setModalityFilter] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("");
+  const [priorityByJob, setPriorityByJob] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const loadJobs = () => {
+    setMessage("loading");
+    const params = new URLSearchParams({ limit: "100" });
+    if (stateFilter) params.set("state", stateFilter);
+    if (runtimeFilter.trim()) params.set("runtime", runtimeFilter.trim());
+    if (modalityFilter.trim()) params.set("modality", modalityFilter.trim());
+    if (ownerFilter.trim()) params.set("owner_id", ownerFilter.trim());
+    apiJson<{ object: string; data: JobRecord[] }>(`/admin/jobs?${params.toString()}`)
+      .then((payload) => {
+        const rows = payload.data ?? [];
+        setJobs(rows);
+        setPriorityByJob(Object.fromEntries(rows.map((job) => [job.id, job.priority])));
+        if (selected) {
+          setSelected(rows.find((job) => job.id === selected.id) ?? rows[0] ?? null);
+        } else {
+          setSelected(rows[0] ?? null);
+        }
+        setMessage("ready");
+      })
+      .catch((error: Error) => setMessage(error.message));
+  };
+
+  useEffect(loadJobs, []);
+
+  const mutateJob = (job: JobRecord, action: "cancel" | "retry") => {
+    setBusy(true);
+    setMessage(`${action} ${job.id}`);
+    apiJson<JobRecord>(`/admin/jobs/${encodeURIComponent(job.id)}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: `Control Center ${action}` })
+    })
+      .then((payload) => {
+        setSelected(payload);
+        setMessage(`${payload.id} ${payload.state}`);
+        loadJobs();
+      })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updatePriority = (job: JobRecord) => {
+    const priority = priorityByJob[job.id] ?? job.priority;
+    setBusy(true);
+    setMessage(`priority ${job.id}`);
+    apiJson<JobRecord>(`/admin/jobs/${encodeURIComponent(job.id)}/priority`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority, reason: "Control Center priority update" })
+    })
+      .then((payload) => {
+        setSelected(payload);
+        setMessage(`${payload.id} priority ${payload.priority}`);
+        loadJobs();
+      })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<ListChecks size={18} />} title="Jobs" />
+      <div className="toolbar job-filters">
+        <select aria-label="State filter" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
+          {JOB_STATES.map((state) => <option key={state || "all"} value={state}>{state || "all states"}</option>)}
+        </select>
+        <input aria-label="Runtime filter" placeholder="runtime" value={runtimeFilter} onChange={(event) => setRuntimeFilter(event.target.value)} />
+        <input aria-label="Modality filter" placeholder="modality" value={modalityFilter} onChange={(event) => setModalityFilter(event.target.value)} />
+        <input aria-label="Owner filter" placeholder="owner" value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
+        <button title="Refresh jobs" onClick={loadJobs} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="toolbar-status">{message}</span>
+      </div>
+      <table>
+        <thead><tr><th>Job</th><th>State</th><th>Runtime</th><th>Priority</th><th>Measured</th><th>Actions</th></tr></thead>
+        <tbody>
+          {jobs.map((job) => {
+            const priority = priorityByJob[job.id] ?? job.priority;
+            return (
+              <tr key={job.id}>
+                <td><code>{job.id}</code><small>{job.modality} / {job.operation} / {formatDateTime(job.created_at)}</small></td>
+                <td><span className={`status-pill ${job.state}`}>{job.state}</span><small>{job.stage ?? ""} / {job.progress ?? 0}% / retry {job.retry_count ?? 0}</small></td>
+                <td>{job.runtime}<small>{job.model_alias} / {job.resolved_model_version}</small></td>
+                <td>
+                  <select aria-label={`Priority for ${job.id}`} value={priority} onChange={(event) => setPriorityByJob((current) => ({ ...current, [job.id]: event.target.value }))} disabled={busy || !PRIORITIZABLE_JOB_STATES.has(job.state)}>
+                    {JOB_PRIORITIES.map((item) => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                </td>
+                <td>{formatMs(job.run_time_ms)}<small>load {formatMs(job.load_time_ms)} / VRAM {job.peak_vram_mib ?? "pending"} MiB</small></td>
+                <td>
+                  <div className="table-actions">
+                    <button title={`Inspect ${job.id}`} onClick={() => setSelected(job)} disabled={busy}><ScrollText size={16} /></button>
+                    <button title={`Apply priority for ${job.id}`} onClick={() => updatePriority(job)} disabled={busy || !PRIORITIZABLE_JOB_STATES.has(job.state) || priority === job.priority}><ListChecks size={16} /></button>
+                    <button title={`Cancel ${job.id}`} onClick={() => mutateJob(job, "cancel")} disabled={busy || TERMINAL_JOB_STATES.has(job.state)}><Trash2 size={16} /></button>
+                    <button title={`Retry ${job.id}`} onClick={() => mutateJob(job, "retry")} disabled={busy || !RETRYABLE_JOB_STATES.has(job.state)}><RotateCcw size={16} /></button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {!jobs.length && <tr><td colSpan={6}>No jobs match the current filters</td></tr>}
+        </tbody>
+      </table>
+      {selected && (
+        <div className="job-detail">
+          <div>
+            <strong>{selected.id}</strong>
+            <small>{selected.correlation_id} / owner {selected.owner_id}</small>
+          </div>
+          <div>
+            <strong>{selected.state}</strong>
+            <small>{selected.failure_category ?? "no failure"} {selected.failure_message ?? ""}</small>
+          </div>
+          <div>
+            <strong>{selected.native_prompt_id ?? "no native prompt"}</strong>
+            <small>started {formatDateTime(selected.started_at)} / completed {formatDateTime(selected.completed_at)}</small>
+          </div>
+          <div>
+            <strong>{(selected.artifacts ?? []).length} artifact{(selected.artifacts ?? []).length === 1 ? "" : "s"}</strong>
+            <small>{(selected.artifacts ?? []).map((artifact) => artifact.url).filter(Boolean).join(" / ") || "none"}</small>
+          </div>
+          <pre>{JSON.stringify(selected.redacted_request ?? {}, null, 2)}</pre>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function parseCsv(value: string, fallback: string[] = []) {
+  const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+  return items.length ? items : fallback;
+}
+
+function ExternalAccess() {
+  const [apiClients, setApiClients] = useState<ApiClient[]>([]);
+  const [modelHubClients, setModelHubClients] = useState<ModelHubClient[]>([]);
+  const [encryptedSecrets, setEncryptedSecrets] = useState<EncryptedSecret[]>([]);
+  const [secretMasterKey, setSecretMasterKey] = useState<SecretMasterKeyStatus | null>(null);
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+  const [apiDisplayName, setApiDisplayName] = useState("");
+  const [apiRole, setApiRole] = useState("service");
+  const [apiScopes, setApiScopes] = useState("jobs:read,jobs:write,models:read,inference:write");
+  const [hubDisplayName, setHubDisplayName] = useState("");
+  const [hubAllowedModels, setHubAllowedModels] = useState("chat-default");
+  const [hubCidrs, setHubCidrs] = useState("192.168.2.0/24");
+  const [hubAllowDownloads, setHubAllowDownloads] = useState(true);
+  const [secretName, setSecretName] = useState("");
+  const [secretDisplayName, setSecretDisplayName] = useState("");
+  const [secretCategory, setSecretCategory] = useState<SecretCategory>("other");
+  const [secretDescription, setSecretDescription] = useState("");
+  const [secretValue, setSecretValue] = useState("");
+  const [oneTimeKey, setOneTimeKey] = useState<{ label: string; value: string } | null>(null);
+
+  const loadClients = () => {
+    setMessage("loading");
+    Promise.all([
+      apiFetch(`/admin/api-clients`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`api clients ${response.status}`))),
+      apiFetch(`/modelhub/v1/clients`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`model hub clients ${response.status}`))),
+      apiFetch(`/admin/secrets`).then((response) => {
+        if (response.ok) return response.json();
+        if (response.status === 403) return { data: [], master_key: { configured: false, usable: false, scheme: "", error: "administrator only" } };
+        return Promise.reject(new Error(`encrypted secrets ${response.status}`));
+      })
+    ])
+      .then(([apiPayload, hubPayload, secretPayload]) => {
+        setApiClients(apiPayload ?? []);
+        setModelHubClients(hubPayload.data ?? []);
+        setEncryptedSecrets(secretPayload.data ?? []);
+        setSecretMasterKey(secretPayload.master_key ?? null);
+        setMessage("ready");
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  useEffect(loadClients, []);
+
+  const createApiClient = (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("creating");
+    apiFetch(`/admin/api-clients`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        display_name: apiDisplayName,
+        role: apiRole,
+        scopes: apiScopes.trim() ? parseCsv(apiScopes) : null
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setOneTimeKey({ label: payload.display_name, value: payload.api_key });
+        setApiDisplayName("");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const createModelHubClient = (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("creating");
+    apiFetch(`/modelhub/v1/clients`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        display_name: hubDisplayName,
+        allowed_models: parseCsv(hubAllowedModels, ["*"]),
+        cidr_allowlist: parseCsv(hubCidrs),
+        allow_downloads: hubAllowDownloads
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setOneTimeKey({ label: payload.display_name, value: payload.api_key });
+        setHubDisplayName("");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const saveSecret = (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("storing encrypted value");
+    apiJson<EncryptedSecret>(`/admin/secrets/${encodeURIComponent(secretName.trim())}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        display_name: secretDisplayName,
+        category: secretCategory,
+        description: secretDescription,
+        value: secretValue
+      })
+    })
+      .then(() => {
+        setSecretName("");
+        setSecretDisplayName("");
+        setSecretDescription("");
+        setSecretValue("");
+        setMessage("encrypted value stored");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const verifySecret = (name: string) => {
+    setBusy(true);
+    setMessage("verifying encrypted value");
+    apiJson(`/admin/secrets/${encodeURIComponent(name)}/verify`, { method: "POST" })
+      .then(() => setMessage("verified"))
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const deleteSecret = (name: string) => {
+    setBusy(true);
+    setMessage("deleting encrypted value");
+    apiJson(`/admin/secrets/${encodeURIComponent(name)}`, { method: "DELETE" })
+      .then(() => {
+        setMessage("deleted");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const revoke = (kind: "api" | "modelhub", id: string) => {
+    setBusy(true);
+    const url = kind === "api" ? `${API_BASE}/admin/api-clients/${id}` : `${API_BASE}/modelhub/v1/clients/${id}`;
+    apiFetch(url, { method: "DELETE" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then(() => {
+        setMessage("revoked");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<KeyRound size={18} />} title="External Access" />
+      <div className="toolbar">
+        <button title="Refresh clients" onClick={loadClients} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="toolbar-status">{message}</span>
+      </div>
+      {oneTimeKey && (
+        <div className="one-time-key">
+          <strong>One-time key for {oneTimeKey.label}</strong>
+          <code>{oneTimeKey.value}</code>
+        </div>
+      )}
+      <div className="split">
+        <form className="stack" onSubmit={createApiClient}>
+          <h3>API Clients</h3>
+          <label>Display name<input value={apiDisplayName} onChange={(event) => setApiDisplayName(event.target.value)} required maxLength={256} /></label>
+          <label>Role
+            <select value={apiRole} onChange={(event) => setApiRole(event.target.value)}>
+              {["service", "user", "creator", "operator", "admin"].map((role) => <option key={role} value={role}>{role}</option>)}
+            </select>
+          </label>
+          <label>Scopes<input value={apiScopes} onChange={(event) => setApiScopes(event.target.value)} /></label>
+          <button title="Create API client" disabled={busy || !apiDisplayName.trim()}><KeyRound size={16} />Create</button>
+        </form>
+        <form className="stack" onSubmit={createModelHubClient}>
+          <h3>Model Hub Clients</h3>
+          <label>Display name<input value={hubDisplayName} onChange={(event) => setHubDisplayName(event.target.value)} required maxLength={256} /></label>
+          <label>Allowed models<input value={hubAllowedModels} onChange={(event) => setHubAllowedModels(event.target.value)} /></label>
+          <label>CIDR allowlist<input value={hubCidrs} onChange={(event) => setHubCidrs(event.target.value)} /></label>
+          <label className="inline-check"><input type="checkbox" checked={hubAllowDownloads} onChange={(event) => setHubAllowDownloads(event.target.checked)} />Downloads</label>
+          <button title="Create Model Hub client" disabled={busy || !hubDisplayName.trim()}><Archive size={16} />Create</button>
+        </form>
+      </div>
+      <div className="subsection-title">
+        <ShieldCheck size={16} />
+        <h3>Encrypted Secrets</h3>
+      </div>
+      <div className="toolbar">
+        <span className="toolbar-status">
+          master key {secretMasterKey?.usable ? `ready ${secretMasterKey.key_id}` : secretMasterKey?.error ?? "not ready"}
+        </span>
+      </div>
+      <form className="inline-form" onSubmit={saveSecret}>
+        <input placeholder="name" value={secretName} onChange={(event) => setSecretName(event.target.value)} required maxLength={128} />
+        <input placeholder="display name" value={secretDisplayName} onChange={(event) => setSecretDisplayName(event.target.value)} required maxLength={256} />
+        <select value={secretCategory} onChange={(event) => setSecretCategory(event.target.value as SecretCategory)}>
+          {["remote-provider", "model-download", "runtime", "integration", "other"].map((category) => <option key={category} value={category}>{category}</option>)}
+        </select>
+        <input placeholder="description" value={secretDescription} onChange={(event) => setSecretDescription(event.target.value)} maxLength={2048} />
+        <input type="password" placeholder="value" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} required maxLength={65536} />
+        <button title="Store encrypted value" disabled={busy || !secretName.trim() || !secretDisplayName.trim() || !secretValue}><ShieldCheck size={16} />Store</button>
+      </form>
+      <table>
+        <thead><tr><th>Name</th><th>Category</th><th>Envelope</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {encryptedSecrets.map((item) => (
+            <tr key={item.name}>
+              <td><code>{item.display_name}</code><small>{item.name}{item.description ? ` / ${item.description}` : ""}</small></td>
+              <td>{item.category}</td>
+              <td>{item.scheme ?? "unknown"}<small>{item.key_id ?? "no key id"}</small></td>
+              <td>{item.deleted_at ? "deleted" : item.encrypted ? "encrypted" : "empty"}<small>{item.updated_at ? new Date(item.updated_at).toLocaleString() : ""}</small></td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Verify ${item.display_name}`} onClick={() => verifySecret(item.name)} disabled={busy || Boolean(item.deleted_at)}><CheckCircle2 size={16} /></button>
+                  <button title={`Delete ${item.display_name}`} onClick={() => deleteSecret(item.name)} disabled={busy || Boolean(item.deleted_at)}><Trash2 size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!encryptedSecrets.length && <tr><td colSpan={5}>No encrypted values recorded</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <KeyRound size={16} />
+        <h3>API Clients</h3>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Role</th><th>Scopes</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {apiClients.map((client) => (
+            <tr key={client.id}>
+              <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
+              <td>{client.role}</td>
+              <td>{client.scopes.join(", ")}</td>
+              <td>{client.revoked_at ? "revoked" : "active"}<small>{client.last_used_at ? `last ${new Date(client.last_used_at).toLocaleString()}` : ""}</small></td>
+              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
+            </tr>
+          ))}
+          {!apiClients.length && <tr><td colSpan={5}>No API clients recorded</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <Archive size={16} />
+        <h3>Model Hub Clients</h3>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Allowed Models</th><th>CIDR</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {modelHubClients.map((client) => (
+            <tr key={client.id}>
+              <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
+              <td>{client.allowed_models.join(", ")}</td>
+              <td>{client.cidr_allowlist.join(", ") || "none"}</td>
+              <td>{client.revoked_at ? "revoked" : "active"}<small>{client.allow_downloads ? "downloads" : "catalog only"}</small></td>
+              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
+            </tr>
+          ))}
+          {!modelHubClients.length && <tr><td colSpan={5}>No Model Hub clients recorded</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function formatBytes(value?: number) {
+  if (!value) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatArchiveInspection(inspection: ModelInstallPlan["archive_inspections"][number]) {
+  const summary = inspection.summary;
+  if (inspection.inspection_status === "safe" && summary) {
+    return `${inspection.path}: ${inspection.archive_format} safe, ${summary.file_count} files, ${formatBytes(summary.total_uncompressed_bytes)}`;
+  }
+  return `${inspection.path}: ${inspection.archive_format} ${inspection.inspection_status}${inspection.error ? ` (${inspection.error})` : ""}${inspection.reason ? ` (${inspection.reason})` : ""}`;
+}
+
+function Storage() {
+  const [backups, setBackups] = useState<BackupSummary[]>([]);
+  const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
+  const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
+  const [keepLast, setKeepLast] = useState("5");
+  const [deleteOlderThanDays, setDeleteOlderThanDays] = useState("");
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleIntervalHours, setScheduleIntervalHours] = useState("24");
+  const [scheduleKeepLast, setScheduleKeepLast] = useState("7");
+  const [scheduleDeleteOlderThanDays, setScheduleDeleteOlderThanDays] = useState("30");
+  const [scheduleLabelPrefix, setScheduleLabelPrefix] = useState("scheduled");
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const applySchedule = (payload: BackupSchedule) => {
+    setBackupSchedule(payload);
+    setScheduleEnabled(payload.enabled);
+    setScheduleIntervalHours(String(payload.interval_hours));
+    setScheduleKeepLast(String(payload.keep_last));
+    setScheduleDeleteOlderThanDays(payload.delete_older_than_days ? String(payload.delete_older_than_days) : "");
+    setScheduleLabelPrefix(payload.label_prefix);
+  };
+
+  const loadBackups = () => {
+    apiFetch(`/admin/backups`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)))
+      .then((payload) => setBackups(payload.data ?? []))
+      .catch((err: Error) => setMessage(`backup list ${err.message}`));
+  };
+
+  const loadSchedule = () => {
+    apiJson<BackupSchedule>(`/admin/backups/schedule`)
+      .then(applySchedule)
+      .catch((err: Error) => setMessage(`schedule ${err.message}`));
+  };
+
+  useEffect(() => {
+    loadBackups();
+    loadSchedule();
+  }, []);
+
+  const runAction = (action: "create" | "verify" | "restore-test" | "postgres-import", backup?: BackupSummary) => {
+    setBusy(true);
+    setMessage(action);
+    const url = action === "create"
+      ? `${API_BASE}/admin/backups`
+      : `${API_BASE}/admin/backups/${backup?.name}/${action}`;
+    const body = action === "create"
+      ? {}
+      : action === "postgres-import"
+        ? { apply: false }
+        : { force: false };
+    apiFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setMessage(payload.status ? `${payload.status} ${payload.backup ?? payload.name}` : `created ${payload.name}`);
+        loadBackups();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const retentionPayload = (confirm: boolean) => {
+    const parsedKeepLast = Number.parseInt(keepLast, 10);
+    const parsedAge = deleteOlderThanDays.trim() ? Number.parseInt(deleteOlderThanDays, 10) : null;
+    return {
+      keep_last: Number.isFinite(parsedKeepLast) ? parsedKeepLast : 5,
+      delete_older_than_days: parsedAge && Number.isFinite(parsedAge) ? parsedAge : null,
+      confirm
+    };
+  };
+
+  const runRetention = (apply: boolean) => {
+    setBusy(true);
+    setMessage(apply ? "cleanup" : "retention plan");
+    apiFetch(`/admin/backups/${apply ? "cleanup" : "retention-plan"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(retentionPayload(apply))
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setRetentionPlan(payload);
+        setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
+        loadBackups();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const schedulePayload = (runImmediately = false) => {
+    const interval = Number.parseInt(scheduleIntervalHours, 10);
+    const keep = Number.parseInt(scheduleKeepLast, 10);
+    const age = scheduleDeleteOlderThanDays.trim() ? Number.parseInt(scheduleDeleteOlderThanDays, 10) : null;
+    return {
+      enabled: scheduleEnabled,
+      interval_hours: Number.isFinite(interval) ? interval : 24,
+      keep_last: Number.isFinite(keep) ? keep : 7,
+      delete_older_than_days: age && Number.isFinite(age) ? age : null,
+      label_prefix: scheduleLabelPrefix,
+      run_immediately: runImmediately
+    };
+  };
+
+  const saveSchedule = (runImmediately = false) => {
+    setBusy(true);
+    setMessage(runImmediately ? "saving schedule" : "saving schedule");
+    apiJson<BackupSchedule>(`/admin/backups/schedule`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(schedulePayload(runImmediately))
+    })
+      .then((payload) => {
+        applySchedule(payload);
+        setMessage(payload.enabled ? "schedule saved" : "schedule disabled");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const runScheduleNow = () => {
+    setBusy(true);
+    setMessage("scheduled backup");
+    apiJson<{ status: string; backup: BackupSummary; retention: BackupRetentionPlan; schedule: BackupSchedule }>(`/admin/backups/schedule/run`, { method: "POST" })
+      .then((payload) => {
+        applySchedule(payload.schedule);
+        setRetentionPlan(payload.retention);
+        setMessage(`created ${payload.backup.name}`);
+        loadBackups();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<HardDrive size={18} />} title="Storage" />
+      <div className="toolbar job-filters">
+        <button title="Refresh backups" onClick={loadBackups} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Create backup" onClick={() => runAction("create")} disabled={busy}><Archive size={16} />Backup</button>
+        <label>Keep<input aria-label="Backups to keep" inputMode="numeric" value={keepLast} onChange={(event) => setKeepLast(event.target.value)} /></label>
+        <label>Older than<input aria-label="Delete older than days" inputMode="numeric" placeholder="days" value={deleteOlderThanDays} onChange={(event) => setDeleteOlderThanDays(event.target.value)} /></label>
+        <button title="Plan backup cleanup" onClick={() => runRetention(false)} disabled={busy}><ListChecks size={16} />Plan</button>
+        <button title="Apply backup cleanup" onClick={() => runRetention(true)} disabled={busy || !retentionPlan?.candidate_count}><Trash2 size={16} />Cleanup</button>
+        <span className="toolbar-status">{message}</span>
+      </div>
+      <div className="subsection-title">
+        <RefreshCw size={16} />
+        <h3>Backup Schedule</h3>
+      </div>
+      <div className="toolbar job-filters">
+        <label className="inline-check"><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} />Enabled</label>
+        <label>Every<input aria-label="Schedule interval hours" inputMode="numeric" value={scheduleIntervalHours} onChange={(event) => setScheduleIntervalHours(event.target.value)} /></label>
+        <label>Keep<input aria-label="Scheduled backups to keep" inputMode="numeric" value={scheduleKeepLast} onChange={(event) => setScheduleKeepLast(event.target.value)} /></label>
+        <label>Older than<input aria-label="Scheduled cleanup age" inputMode="numeric" placeholder="days" value={scheduleDeleteOlderThanDays} onChange={(event) => setScheduleDeleteOlderThanDays(event.target.value)} /></label>
+        <label>Prefix<input aria-label="Scheduled backup prefix" value={scheduleLabelPrefix} onChange={(event) => setScheduleLabelPrefix(event.target.value)} maxLength={64} /></label>
+        <button title="Save backup schedule" onClick={() => saveSchedule(false)} disabled={busy}><ShieldCheck size={16} />Save</button>
+        <button title="Run scheduled backup now" onClick={runScheduleNow} disabled={busy}><Archive size={16} />Run</button>
+        <span className="toolbar-status">
+          {backupSchedule ? `${backupSchedule.source} / ${backupSchedule.last_status ?? "idle"}${backupSchedule.next_run_at ? ` / next ${new Date(backupSchedule.next_run_at).toLocaleString()}` : ""}` : "schedule loading"}
+        </span>
+      </div>
+      {backupSchedule?.failure_message && <div className="one-time-key"><strong>Schedule failure</strong><small>{backupSchedule.failure_message}</small></div>}
+      {retentionPlan && (
+        <div className="one-time-key">
+          <strong>Backup retention {retentionPlan.status}</strong>
+          <span>{retentionPlan.candidate_count} candidate{retentionPlan.candidate_count === 1 ? "" : "s"} / {formatBytes(retentionPlan.total_reclaimable_bytes)} reclaimable</span>
+          <small>Keep {retentionPlan.policy.keep_last}{retentionPlan.policy.delete_older_than_days ? ` / older than ${retentionPlan.policy.delete_older_than_days} days` : ""}</small>
+          {retentionPlan.candidates.length > 0 && <small>{retentionPlan.candidates.map((candidate) => `${candidate.name}: ${candidate.reason}`).join(" / ")}</small>}
+          {Boolean(retentionPlan.deleted?.length) && <small>{retentionPlan.deleted?.map((item) => `deleted ${item.name}`).join(" / ")}</small>}
+          {retentionPlan.invalid_preserved_count > 0 && <small>{retentionPlan.invalid_preserved_count} invalid entr{retentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
+        </div>
+      )}
+      <table>
+        <thead><tr><th>Backup</th><th>Files</th><th>Archive</th><th>Flags</th><th>Actions</th></tr></thead>
+        <tbody>
+          {backups.map((backup) => (
+            <tr key={backup.name}>
+              <td><code>{backup.name}</code><small>{backup.created_at ?? backup.status ?? ""}</small></td>
+              <td>{backup.file_count ?? 0}</td>
+              <td>{formatBytes(backup.archive?.size_bytes)}</td>
+              <td>
+                {backup.contains_sensitive_data ? "sensitive" : "standard"} / {backup.postgres_dump_included ? "db dump" : "fs only"}
+                <small>{backup.postgres_native_dump ? "native pg_dump" : (backup.postgres_dumps?.length ? backup.postgres_dumps.map((dump) => dump.kind ?? dump.format).join(", ") : "")}</small>
+                {backup.archive_encryption && <small>{backup.archive_encryption.mode === "encrypted-only" ? "encrypted-only archive" : "encrypted archive copy"}</small>}
+              </td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Verify ${backup.name}`} onClick={() => runAction("verify", backup)} disabled={busy || backup.status === "invalid"}><CheckCircle2 size={16} /></button>
+                  <button title={`Restore-test ${backup.name}`} onClick={() => runAction("restore-test", backup)} disabled={busy || backup.status === "invalid"}><RotateCcw size={16} /></button>
+                  <button title={`Plan DB import for ${backup.name}`} onClick={() => runAction("postgres-import", backup)} disabled={busy || backup.status === "invalid" || !backup.postgres_dump_included}><Database size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!backups.length && <tr><td colSpan={5}>No backups recorded</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function System() {
+  const [result, setResult] = useState<SelfTestResult | null>(null);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [resourcePolicy, setResourcePolicy] = useState<ResourcePolicyPayload | null>(null);
+  const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
+  const [maintenance, setMaintenance] = useState<MaintenanceState | null>(null);
+  const [maintenanceReason, setMaintenanceReason] = useState("");
+  const [updates, setUpdates] = useState<UpdatePlan[]>([]);
+  const [updateVersion, setUpdateVersion] = useState("0.2.0");
+  const [updateSourceUrl, setUpdateSourceUrl] = useState("");
+  const [updateNotes, setUpdateNotes] = useState("");
+  const [updateImageRefs, setUpdateImageRefs] = useState(UPDATE_IMAGE_REFS_TEMPLATE);
+  const [serviceLogService, setServiceLogService] = useState("control-plane");
+  const [serviceLogLines, setServiceLogLines] = useState("100");
+  const [serviceLogs, setServiceLogs] = useState<ServiceLogPayload | null>(null);
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const setPolicyPayload = (payload: ResourcePolicyPayload) => {
+    setResourcePolicy(payload);
+    setPolicyForm(Object.fromEntries(RESOURCE_POLICY_FIELDS.map((field) => [field.key, String(payload.effective[field.key])])));
+  };
+
+  const loadResourcePolicy = () => {
+    apiJson<ResourcePolicyPayload>(`/admin/resource-policy`)
+      .then(setPolicyPayload)
+      .catch(() => setResourcePolicy(null));
+  };
+
+  const loadMaintenance = () => {
+    apiJson<MaintenanceState>(`/admin/maintenance`)
+      .then((payload) => {
+        setMaintenance(payload);
+        setMaintenanceReason(payload.reason ?? "");
+      })
+      .catch(() => setMaintenance(null));
+  };
+
+  const loadAudit = () => {
+    apiFetch(`/admin/audit-log?limit=20`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)))
+      .then((payload) => setAuditEvents(payload.data ?? []))
+      .catch(() => setAuditEvents([]));
+  };
+
+  const loadUpdates = () => {
+    apiJson<{ object: string; data: UpdatePlan[] }>(`/admin/updates?limit=10`)
+      .then((payload) => setUpdates(payload.data ?? []))
+      .catch(() => setUpdates([]));
+  };
+
+  const loadServiceLogs = () => {
+    const parsedLines = Math.max(1, Math.min(500, Number.parseInt(serviceLogLines, 10) || 100));
+    setServiceLogLines(String(parsedLines));
+    setBusy(true);
+    setMessage(`loading ${serviceLogService} logs`);
+    apiJson<ServiceLogPayload>(`/admin/services/${encodeURIComponent(serviceLogService)}/logs?lines=${parsedLines}`)
+      .then((payload) => {
+        setServiceLogs(payload);
+        setMessage(`${payload.service} logs ready`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const runSelfTest = () => {
+    setBusy(true);
+    setMessage("running");
+    apiFetch(`/admin/self-test`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setResult(payload);
+        setMessage(payload.status);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const resourcePolicyBody = (): ResourcePolicyValues => {
+    const entries = RESOURCE_POLICY_FIELDS.map((field) => {
+      const raw = policyForm[field.key] ?? "";
+      const parsed = Number.parseFloat(raw);
+      return [field.key, INTEGER_POLICY_FIELDS.has(field.key) ? Math.trunc(parsed) : parsed];
+    });
+    return Object.fromEntries(entries) as ResourcePolicyValues;
+  };
+
+  const runPolicyAction = (action: "validate" | "save" | "reset") => {
+    setBusy(true);
+    setMessage(action === "reset" ? "resetting policy" : `${action} policy`);
+    const path = action === "validate" ? "/admin/resource-policy/validate" : "/admin/resource-policy";
+    const init: RequestInit = action === "reset"
+      ? { method: "DELETE" }
+      : {
+          method: action === "save" ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(resourcePolicyBody())
+        };
+    apiJson<any>(path, init)
+      .then((payload) => {
+        if (action === "validate") {
+          setMessage(payload.accepted ? "policy accepted" : payload.errors.join("; "));
+          return;
+        }
+        setPolicyPayload(payload);
+        setMessage(`policy ${action === "save" ? "saved" : "reset"}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const setMaintenanceMode = (enabled: boolean) => {
+    setBusy(true);
+    setMessage(enabled ? "enabling maintenance" : "disabling maintenance");
+    apiJson<MaintenanceState>(`/admin/maintenance`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, reason: maintenanceReason.trim() })
+    })
+      .then((payload) => {
+        setMaintenance(payload);
+        setMaintenanceReason(payload.reason ?? "");
+        setMessage(payload.enabled ? "maintenance active" : "maintenance disabled");
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const parseUpdateImageRefs = (): { service: string; image: string }[] => {
+    const parsed = JSON.parse(updateImageRefs);
+    if (!Array.isArray(parsed)) {
+      throw new Error("image refs must be a JSON array");
+    }
+    return parsed;
+  };
+
+  const createUpdatePlan = () => {
+    let image_refs: { service: string; image: string }[];
+    try {
+      image_refs = parseUpdateImageRefs();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "invalid image refs");
+      return;
+    }
+    setBusy(true);
+    setMessage("planning update");
+    apiJson<UpdatePlan>(`/admin/updates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_version: updateVersion.trim(), source_url: updateSourceUrl.trim(), image_refs, notes: updateNotes.trim() })
+    })
+      .then((payload) => {
+        setMessage(`update ${payload.status}`);
+        loadUpdates();
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateAction = (update: UpdatePlan, action: "stage" | "health-check" | "rollback") => {
+    setBusy(true);
+    setMessage(`${action} update`);
+    apiJson<UpdatePlan>(`/admin/updates/${encodeURIComponent(update.id)}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: `${action} from Control Center`, timeout_seconds: 30 })
+    })
+      .then((payload) => {
+        setMessage(`${payload.id} ${payload.status}`);
+        loadUpdates();
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  useEffect(() => {
+    runSelfTest();
+    loadAudit();
+    loadResourcePolicy();
+    loadMaintenance();
+    loadUpdates();
+  }, []);
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<ShieldCheck size={18} />} title="System" />
+      <div className="toolbar">
+        <button title="Run self-test" onClick={runSelfTest} disabled={busy}><RefreshCw size={16} />Self-test</button>
+        <button title="Refresh audit log" onClick={loadAudit} disabled={busy}><ScrollText size={16} />Audit</button>
+        <span className={`status-pill ${result?.status ?? "idle"}`}>{message}</span>
+      </div>
+      <div className="subsection-title">
+        <Gauge size={16} />
+        <h3>Resource Policy</h3>
+      </div>
+      <div className="toolbar">
+        <button title="Validate resource policy" onClick={() => runPolicyAction("validate")} disabled={busy || !resourcePolicy}><ListChecks size={16} />Validate</button>
+        <button title="Save resource policy" onClick={() => runPolicyAction("save")} disabled={busy || !resourcePolicy}><ShieldCheck size={16} />Save</button>
+        <button title="Reset resource policy" onClick={() => runPolicyAction("reset")} disabled={busy || !resourcePolicy}><RotateCcw size={16} />Reset</button>
+        <span className="toolbar-status">{resourcePolicy ? `${resourcePolicy.source} profile` : "policy unavailable"}</span>
+      </div>
+      {resourcePolicy && (
+        <div className="policy-grid">
+          {RESOURCE_POLICY_FIELDS.map((field) => {
+            const bounds = resourcePolicy.bounds[field.key];
+            return (
+              <label key={field.key}>
+                {field.label}
+                <input
+                  type="number"
+                  min={bounds.minimum}
+                  max={bounds.maximum}
+                  step={field.step}
+                  value={policyForm[field.key] ?? ""}
+                  onChange={(event) => setPolicyForm((current) => ({ ...current, [field.key]: event.target.value }))}
+                />
+                <small>{bounds.minimum}..{bounds.maximum}</small>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <div className="subsection-title">
+        <PauseCircle size={16} />
+        <h3>Maintenance</h3>
+      </div>
+      <div className="toolbar">
+        <button title="Enable maintenance mode" onClick={() => setMaintenanceMode(true)} disabled={busy || !maintenance || !maintenanceReason.trim()}><PauseCircle size={16} />Enable</button>
+        <button title="Disable maintenance mode" onClick={() => setMaintenanceMode(false)} disabled={busy || !maintenance}><CheckCircle2 size={16} />Disable</button>
+        <button title="Refresh maintenance state" onClick={loadMaintenance} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className={`status-pill ${maintenance?.enabled ? "warning" : "ok"}`}>{maintenance?.enabled ? "active" : "disabled"}</span>
+        <span className="toolbar-status">
+          {maintenance ? `${maintenance.source}${maintenance.updated_at ? ` / updated ${new Date(maintenance.updated_at).toLocaleString()}` : ""}` : "maintenance unavailable"}
+        </span>
+      </div>
+      <div className="stack">
+        <label>
+          Reason
+          <textarea rows={3} value={maintenanceReason} onChange={(event) => setMaintenanceReason(event.target.value)} maxLength={500} />
+        </label>
+      </div>
+      {maintenance?.enabled && <div className="one-time-key"><strong>Maintenance active</strong><small>{maintenance.reason}</small></div>}
+      <div className="subsection-title">
+        <Archive size={16} />
+        <h3>Updates</h3>
+      </div>
+      <div className="stack">
+        <div className="split">
+          <label>Target version<input value={updateVersion} onChange={(event) => setUpdateVersion(event.target.value)} /></label>
+          <label>Release URL<input value={updateSourceUrl} onChange={(event) => setUpdateSourceUrl(event.target.value)} placeholder="https://..." /></label>
+        </div>
+        <label>Notes<input value={updateNotes} onChange={(event) => setUpdateNotes(event.target.value)} /></label>
+        <label>Pinned image refs JSON<textarea rows={5} value={updateImageRefs} onChange={(event) => setUpdateImageRefs(event.target.value)} /></label>
+      </div>
+      <div className="toolbar">
+        <button title="Create update plan" onClick={createUpdatePlan} disabled={busy || !updateVersion.trim()}><ListChecks size={16} />Plan</button>
+        <button title="Refresh update plans" onClick={loadUpdates} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="toolbar-status">Stage, health-check, and rollback require maintenance mode</span>
+      </div>
+      <table>
+        <thead><tr><th>Update</th><th>Status</th><th>Backup</th><th>Images</th><th>Actions</th></tr></thead>
+        <tbody>
+          {updates.map((update) => (
+            <tr key={update.id}>
+              <td><code>{update.target_version}</code><small>{update.id}</small></td>
+              <td><span className={`status-pill ${update.status === "validated" || update.status === "staged" ? "ok" : update.status.includes("failed") ? "failed" : "planned"}`}>{update.status}</span><small>{update.stage}</small>{update.failure_message && <small>{update.failure_message}</small>}</td>
+              <td>{update.backup_name ?? "none"}<small>{update.self_test?.status ? `self-test ${update.self_test.status}` : ""}</small></td>
+              <td>
+                {update.image_refs.length}
+                <small>{update.image_refs.map((item) => item.service).join(", ")}</small>
+                {!!update.image_stage?.length && (
+                  <small>
+                    staged: {update.image_stage.map((item) => `${item.service ?? "image"}=${item.status ?? "unknown"}`).join(", ")}
+                  </small>
+                )}
+                {update.compose_override?.path && (
+                  <small>
+                    override: {update.compose_override.ready_for_promotion ? "ready" : "pending pull"} / {update.compose_override.path}
+                  </small>
+                )}
+              </td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Stage ${update.id}`} onClick={() => updateAction(update, "stage")} disabled={busy || !maintenance?.enabled}><Upload size={16} /></button>
+                  <button title={`Health-check ${update.id}`} onClick={() => updateAction(update, "health-check")} disabled={busy || !maintenance?.enabled}><CheckCircle2 size={16} /></button>
+                  <button title={`Rollback ${update.id}`} onClick={() => updateAction(update, "rollback")} disabled={busy || !maintenance?.enabled}><RotateCcw size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!updates.length && <tr><td colSpan={5}>No update plans recorded</td></tr>}
+        </tbody>
+      </table>
+      <table>
+        <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          {(result?.checks ?? []).map((item) => (
+            <tr key={item.name}>
+              <td><code>{item.name}</code></td>
+              <td><span className={`status-pill ${item.status}`}>{item.status}</span></td>
+              <td>{item.detail}</td>
+            </tr>
+          ))}
+          {!result?.checks?.length && <tr><td colSpan={3}>No self-test results</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <ScrollText size={16} />
+        <h3>Service Logs</h3>
+      </div>
+      <div className="toolbar job-filters">
+        <label>Service
+          <select value={serviceLogService} onChange={(event) => setServiceLogService(event.target.value)}>
+            {SERVICE_LOG_OPTIONS.map((service) => <option key={service} value={service}>{service}</option>)}
+          </select>
+        </label>
+        <label>Lines
+          <input inputMode="numeric" value={serviceLogLines} onChange={(event) => setServiceLogLines(event.target.value)} />
+        </label>
+        <button title="Fetch service logs" onClick={loadServiceLogs} disabled={busy}><ScrollText size={16} />Logs</button>
+        <span className="toolbar-status">{serviceLogs ? `${serviceLogs.service} / ${serviceLogs.entries.length} entries` : "no log snapshot"}</span>
+      </div>
+      <pre className="log-output">{serviceLogs?.entries.join("\n") || "No logs loaded"}</pre>
+      <div className="subsection-title">
+        <ScrollText size={16} />
+        <h3>Recent Audit</h3>
+      </div>
+      <table>
+        <thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr></thead>
+        <tbody>
+          {auditEvents.map((item) => (
+            <tr key={item.id}>
+              <td><code>{new Date(item.created_at).toLocaleString()}</code></td>
+              <td><code>{item.event_type}</code></td>
+              <td>{item.actor_role ?? "unknown"}<small>{item.actor_id ?? ""}</small></td>
+              <td>{item.target_type ?? ""}<small>{item.target_id ?? ""}</small></td>
+              <td>{item.summary}</td>
+            </tr>
+          ))}
+          {!auditEvents.length && <tr><td colSpan={5}>No audit events recorded</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+const WORKFLOW_TEMPLATE = JSON.stringify(
+  {
+    id: "custom-workflow",
+    version: "0.1.0",
+    display_name: "Custom Workflow",
+    description: "Draft workflow imported from native ComfyUI API JSON.",
+    modality: "image",
+    operation: "generation",
+    model_alias: "image-default",
+    backend_policy: "comfyui-only",
+    runtime_policy: "any",
+    output_mime_types: ["image/png"],
+    workflow_json: {},
+    input_schema: {
+      type: "object",
+      required: ["prompt"],
+      properties: {
+        prompt: { type: "string", minLength: 1, maxLength: 2000 },
+        steps: { type: "integer", minimum: 1, maximum: 40, default: 20 },
+        seed: { type: "integer", minimum: 0, default: 0 }
+      },
+      additionalProperties: false
+    },
+    output_schema: {
+      type: "object",
+      properties: {
+        images: { type: "array", items: { type: "string" } }
+      }
+    },
+    resource_class: "rtx3060-32gb",
+    dependencies: [
+      { type: "runtime", id: "comfyui" },
+      { type: "model", id: "image-default" }
+    ],
+    limits: {
+      max_width: 1024,
+      max_height: 1024,
+      max_steps: 40,
+      max_batch_size: 1
+    },
+    visibility_roles: ["admin", "operator", "creator"]
+  },
+  null,
+  2
+);
+
+function Workflows() {
+  const [workflows, setWorkflows] = useState<PublishedWorkflow[]>([]);
+  const [selected, setSelected] = useState<PublishedWorkflow | null>(null);
+  const [draft, setDraft] = useState(WORKFLOW_TEMPLATE);
+  const [validation, setValidation] = useState<PublishedWorkflow | null>(null);
+  const [message, setMessage] = useState("idle");
+  const [busy, setBusy] = useState(false);
+
+  const loadWorkflows = () => {
+    setMessage("loading");
+    apiFetch(`/workflows/v1/published`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        const rows = payload.data ?? [];
+        setWorkflows(rows);
+        if (!selected && rows.length) {
+          setSelected(rows[0]);
+        }
+        setMessage("ready");
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  useEffect(loadWorkflows, []);
+
+  const parseDraft = () => {
+    try {
+      return JSON.parse(draft);
+    } catch (error) {
+      throw new Error(error instanceof Error ? `invalid JSON: ${error.message}` : "invalid JSON");
+    }
+  };
+
+  const validateDraft = () => {
+    setBusy(true);
+    setMessage("validating");
+    let workflow: unknown;
+    try {
+      workflow = parseDraft();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "invalid JSON");
+      setBusy(false);
+      return;
+    }
+    apiFetch(`/workflows/v1/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setValidation(payload);
+        setMessage(`${payload.id}@${payload.version} ${payload.status}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const publishDraft = () => {
+    setBusy(true);
+    setMessage("publishing");
+    let workflow: unknown;
+    try {
+      workflow = parseDraft();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "invalid JSON");
+      setBusy(false);
+      return;
+    }
+    apiFetch(`/workflows/v1/published`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setSelected(payload);
+        setValidation(payload);
+        setMessage(`published ${payload.id}@${payload.version}`);
+        loadWorkflows();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const unpublishWorkflow = (workflow: PublishedWorkflow) => {
+    setBusy(true);
+    setMessage("unpublishing");
+    apiFetch(`/workflows/v1/published/${encodeURIComponent(workflow.id)}/versions/${encodeURIComponent(workflow.version)}`, { method: "DELETE" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setMessage(`unpublished ${payload.id}@${payload.version}`);
+        setSelected(null);
+        loadWorkflows();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const editWorkflow = (workflow: PublishedWorkflow) => {
+    setSelected(workflow);
+    setDraft(JSON.stringify(
+      {
+        id: workflow.id,
+        version: workflow.version,
+        display_name: workflow.display_name,
+        description: workflow.description,
+        modality: workflow.modality,
+        operation: workflow.operation,
+        model_alias: workflow.model_alias,
+        backend_policy: workflow.backend_policy,
+        runtime_policy: workflow.runtime_policy,
+        output_mime_types: workflow.output_mime_types,
+        workflow_json: workflow.workflow_json,
+        input_schema: workflow.input_schema,
+        output_schema: workflow.output_schema,
+        resource_class: workflow.resource_class,
+        dependencies: workflow.dependencies.map((dependency) => ({
+          type: dependency.type,
+          id: dependency.id,
+          ...(dependency.version ? { version: dependency.version } : {})
+        })),
+        limits: workflow.limits,
+        visibility_roles: workflow.visibility_roles
+      },
+      null,
+      2
+    ));
+    setValidation(null);
+  };
+
+  const loadDraftFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    file.text()
+      .then((text) => {
+        setDraft(text);
+        setValidation(null);
+        setMessage(`loaded ${file.name}`);
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  const dependencyRows = (validation?.dependency_status?.dependencies ?? selected?.dependency_status?.dependencies ?? []);
+
+  return (
+    <section className="panel wide">
+      <SectionTitle icon={<Workflow size={18} />} title="Workflows" />
+      <div className="toolbar">
+        <button title="Refresh workflows" onClick={loadWorkflows} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Validate draft" onClick={validateDraft} disabled={busy}><ListChecks size={16} />Validate</button>
+        <button title="Publish draft" onClick={publishDraft} disabled={busy}><Archive size={16} />Publish</button>
+        <label className="file-button">
+          <Upload size={16} />Import JSON
+          <input type="file" accept="application/json,.json" onChange={loadDraftFile} disabled={busy} />
+        </label>
+        <span className="toolbar-status">{message}</span>
+      </div>
+
+      {validation && (
+        <div className="one-time-key">
+          <strong>{validation.id}@{validation.version} {validation.status}</strong>
+          <span>{validation.display_name} / {validation.modality} / {validation.model_alias}</span>
+          <small>{validation.backend_policy} / {validation.runtime_policy} / {validation.output_mime_types.join(", ")}</small>
+        </div>
+      )}
+
+      <div className="split workflow-admin">
+        <div className="stack">
+          <h3>Published Workflows</h3>
+          <table>
+            <thead><tr><th>Workflow</th><th>Status</th><th>Backend</th><th>Actions</th></tr></thead>
+            <tbody>
+              {workflows.map((workflow) => (
+                <tr key={`${workflow.id}@${workflow.version}`}>
+                  <td><code>{workflow.display_name}</code><small>{workflow.id}@{workflow.version}</small></td>
+                  <td><span className={`status-pill ${workflow.status}`}>{workflow.status}</span><small>{workflow.publishable ? "ready" : "needs dependencies"}</small></td>
+                  <td>{workflow.backend_policy}<small>{workflow.modality} / {workflow.model_alias}</small></td>
+                  <td>
+                    <div className="table-actions">
+                      <button title={`Edit ${workflow.id}`} onClick={() => editWorkflow(workflow)} disabled={busy}><Workflow size={16} /></button>
+                      <button title={`Unpublish ${workflow.id}`} onClick={() => unpublishWorkflow(workflow)} disabled={busy}><Trash2 size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!workflows.length && <tr><td colSpan={4}>No published workflows recorded</td></tr>}
+            </tbody>
+          </table>
+          <div className="subsection-title">
+            <ListChecks size={16} />
+            <h3>Dependencies</h3>
+          </div>
+          <table>
+            <thead><tr><th>Type</th><th>ID</th><th>Status</th><th>Reason</th></tr></thead>
+            <tbody>
+              {dependencyRows.map((dependency) => (
+                <tr key={`${dependency.type}-${dependency.id}`}>
+                  <td>{dependency.type}</td>
+                  <td><code>{dependency.id}</code><small>{dependency.version ?? ""}</small></td>
+                  <td><span className={`status-pill ${dependency.ready ? "ok" : "warning"}`}>{dependency.status ?? (dependency.ready ? "ready" : "blocked")}</span></td>
+                  <td>{dependency.reason ?? ""}</td>
+                </tr>
+              ))}
+              {!dependencyRows.length && <tr><td colSpan={4}>No dependency report selected</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="stack">
+          <h3>Workflow Draft JSON</h3>
+          <textarea className="json-editor" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AuthGate({ children }: { children: (auth: AuthStatus, logout: () => void) => React.ReactNode }) {
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [bootstrapKey, setBootstrapKey] = useState("");
+  const [message, setMessage] = useState("checking session");
+  const [busy, setBusy] = useState(false);
+
+  const refreshAuth = () => {
+    apiJson<AuthStatus>("/auth/status")
+      .then((payload) => {
+        storeAuthStatus(payload);
+        setAuth(payload);
+        setMessage(payload.authenticated ? "authenticated" : payload.setup_required ? "setup required" : "login required");
+      })
+      .catch((error: Error) => {
+        storeAuthStatus(null);
+        setAuth(null);
+        setMessage(error.message);
+      });
+  };
+
+  useEffect(refreshAuth, []);
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage(auth?.setup_required ? "creating administrator" : "logging in");
+    apiJson<AuthStatus>(auth?.setup_required ? "/auth/setup" : "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+        ...(auth?.setup_required ? { bootstrap_key: bootstrapKey } : {})
+      })
+    })
+      .then((payload) => {
+        storeAuthStatus(payload);
+        setAuth(payload);
+        setPassword("");
+        setBootstrapKey("");
+        setMessage("authenticated");
+      })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const logout = () => {
+    setBusy(true);
+    apiJson<{ status: string }>("/auth/logout", { method: "POST" })
+      .catch(() => ({ status: "offline" }))
+      .finally(() => {
+        storeAuthStatus(null);
+        setAuth({ configured: true, setup_required: false, authenticated: false, scopes: [] });
+        setPassword("");
+        setBootstrapKey("");
+        setBusy(false);
+        setMessage("logged out");
+      });
+  };
+
+  if (auth?.authenticated) {
+    return <>{children(auth, logout)}</>;
+  }
+
+  return (
+    <main>
+      <header className="topbar">
+        <div>
+          <h1>B1 AI Control Center</h1>
+          <span>{message}</span>
+        </div>
+        <div className="status-strip">
+          <ShieldCheck size={16} /> LAN internal
+        </div>
+      </header>
+      <section className="auth-shell">
+        <form className="panel auth-panel" onSubmit={submit}>
+          <SectionTitle icon={<KeyRound size={18} />} title={auth?.setup_required ? "Initial Admin" : "Sign In"} />
+          <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" /></label>
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete={auth?.setup_required ? "new-password" : "current-password"} /></label>
+          {auth?.setup_required && (
+            <label>Bootstrap key<input type="password" value={bootstrapKey} onChange={(event) => setBootstrapKey(event.target.value)} required autoComplete="one-time-code" /></label>
+          )}
+          <button title={auth?.setup_required ? "Create administrator" : "Sign in"} disabled={busy || !username.trim() || !password}>
+            <KeyRound size={16} />{auth?.setup_required ? "Create Admin" : "Sign In"}
+          </button>
+          <span className="toolbar-status">{message}</span>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
+  const [status, setStatus] = useState<AdminStatus | null>(null);
+  const [error, setError] = useState<string>("");
+  const tabs = useMemo(() => ["dashboard", "models", "runtimes", "jobs", "workflows", "external", "storage", "system"], []);
+
+  useEffect(() => {
+    apiFetch(`/admin/status`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)))
+      .then(setStatus)
+      .catch((err: Error) => setError(err.message));
+  }, []);
+
+  return (
+    <main>
+      <header className="topbar">
+        <div>
+          <h1>B1 AI Control Center</h1>
+          <span>{status?.service ?? "control-plane"} {error ? `status ${error}` : "ready for setup"}</span>
+        </div>
+        <div className="status-strip">
+          <ShieldCheck size={16} /> {auth.role ?? "session"}
+          <button title="Sign out" onClick={onLogout}><LogOut size={16} /></button>
+        </div>
+      </header>
+
+      <Tabs.Root defaultValue="dashboard" className="tabs">
+        <Tabs.List className="tab-list" aria-label="Control Center sections">
+          {tabs.map((tab) => <Tabs.Trigger key={tab} value={tab}>{tab}</Tabs.Trigger>)}
+        </Tabs.List>
+        <Tabs.Content value="dashboard"><Dashboard status={status} /></Tabs.Content>
+        <Tabs.Content value="models"><Models /></Tabs.Content>
+        <Tabs.Content value="runtimes"><Runtimes /></Tabs.Content>
+        <Tabs.Content value="jobs"><Jobs /></Tabs.Content>
+        <Tabs.Content value="workflows"><Workflows /></Tabs.Content>
+        <Tabs.Content value="external"><ExternalAccess /></Tabs.Content>
+        <Tabs.Content value="storage"><Storage /></Tabs.Content>
+        <Tabs.Content value="system"><System /></Tabs.Content>
+      </Tabs.Root>
+    </main>
+  );
+}
+
+function App() {
+  return (
+    <AuthGate>
+      {(auth, logout) => <ControlCenterApp auth={auth} onLogout={logout} />}
+    </AuthGate>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);

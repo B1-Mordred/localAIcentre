@@ -1,0 +1,64 @@
+{
+	admin 0.0.0.0:2019
+	local_certs
+	servers {
+		protocols h1 h2
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+{$B1_HOST_CHAT:ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy open-webui:8080
+}
+
+{$B1_HOST_CONTROL:control.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy control-center:8080
+}
+
+{$B1_HOST_MEDIA:media.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy media-studio:8080
+}
+
+{$B1_HOST_API:api.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy control-plane:8000
+}
+
+{$B1_HOST_MODELS:models.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy control-plane:8000
+}
+
+{$B1_HOST_COMFY:comfy.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy control-plane:8000 {
+		header_up X-B1-Compatibility comfyui-native
+	}
+}
+
+{$B1_HOST_VOICE:voice.ai.b1.germering} {
+	tls internal
+	import security_headers
+	reverse_proxy control-plane:8000 {
+		header_up X-B1-Compatibility voicebox-native
+	}
+}

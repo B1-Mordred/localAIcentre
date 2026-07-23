@@ -1,0 +1,18 @@
+{
+  "aliases": [
+    { "alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled" },
+    { "alias": "chat-fast", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled" },
+    { "alias": "chat-quality", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled" },
+    { "alias": "chat-coding", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled" },
+    { "alias": "vision-default", "modality": "vlm", "preferred_runtime": "localai", "status": "uninstalled" },
+    { "alias": "embedding-default", "modality": "embedding", "preferred_runtime": "audio-cpu", "status": "cpu-placeholder" },
+    { "alias": "image-default", "modality": "image", "preferred_runtime": "comfyui", "status": "uninstalled" },
+    { "alias": "image-edit", "modality": "image", "preferred_runtime": "comfyui", "status": "uninstalled" },
+    { "alias": "image-upscale", "modality": "image", "preferred_runtime": "comfyui", "status": "uninstalled" },
+    { "alias": "video-text", "modality": "video", "preferred_runtime": "comfyui", "status": "uninstalled" },
+    { "alias": "video-image", "modality": "video", "preferred_runtime": "comfyui", "status": "uninstalled" },
+    { "alias": "tts-fast", "modality": "tts", "preferred_runtime": "audio-cpu", "status": "cpu-placeholder" },
+    { "alias": "tts-quality", "modality": "tts", "preferred_runtime": "voicebox", "status": "uninstalled" },
+    { "alias": "stt-default", "modality": "stt", "preferred_runtime": "audio-cpu", "status": "cpu-placeholder" }
+  ]
+}
