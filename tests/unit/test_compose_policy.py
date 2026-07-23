@@ -297,6 +297,15 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_COMFYUI_RESERVE_VRAM_GIB"], "${B1_COMFYUI_RESERVE_VRAM_GIB:-1.5}")
         self.assertEqual(environment["B1_COMFYUI_DISABLE_API_NODES"], "${B1_COMFYUI_DISABLE_API_NODES:-true}")
         self.assertEqual(environment["B1_COMFYUI_CACHE_NONE"], "${B1_COMFYUI_CACHE_NONE:-true}")
+        self.assertEqual(environment["B1_COMFYUI_HOOK_STRICT_MODEL_LIST"], "${B1_COMFYUI_HOOK_STRICT_MODEL_LIST:-false}")
+        self.assertEqual(
+            environment["B1_COMFYUI_HOOK_MODEL_FOLDERS"],
+            "${B1_COMFYUI_HOOK_MODEL_FOLDERS:-checkpoints,diffusion_models,text_encoders,clip_vision,vae,loras,controlnet,upscale_models,embeddings}",
+        )
+        self.assertEqual(environment["B1_COMFYUI_HOOK_WARM_ENABLED"], "${B1_COMFYUI_HOOK_WARM_ENABLED:-false}")
+        self.assertEqual(environment["B1_COMFYUI_HOOK_SMOKE_ENABLED"], "${B1_COMFYUI_HOOK_SMOKE_ENABLED:-false}")
+        self.assertEqual(environment["B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS"], "${B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS:-30}")
+        self.assertEqual(environment["B1_COMFYUI_HOOK_UNLOAD_IMMEDIATE_IDLE"], "${B1_COMFYUI_HOOK_UNLOAD_IMMEDIATE_IDLE:-true}")
         self.assertEqual(environment["HF_HUB_DISABLE_TELEMETRY"], "1")
         self.assertEqual(environment["DO_NOT_TRACK"], "1")
         self.assertEqual(service["healthcheck"]["test"], ["CMD", "curl", "-fsS", "http://127.0.0.1:8188/system_stats"])
@@ -309,6 +318,15 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(device["driver"], "${B1_COMFYUI_GPU_DRIVER:-nvidia.com/gpu}")
         self.assertEqual(device["count"], "${B1_COMFYUI_GPU_COUNT:-1}")
         self.assertEqual(device["capabilities"], ["gpu"])
+
+    def test_production_comfyui_build_includes_b1_runtime_hooks(self) -> None:
+        dockerfile = (ROOT / "deploy" / "comfyui" / "Dockerfile").read_text(encoding="utf-8")
+        hooks = (ROOT / "deploy" / "comfyui" / "b1_runtime_hooks" / "__init__.py").read_text(encoding="utf-8")
+
+        self.assertIn("COPY b1_runtime_hooks /opt/comfyui/custom_nodes/b1_runtime_hooks", dockerfile)
+        self.assertIn('@PromptServer.instance.routes.post("/b1/runtime/{action}")', hooks)
+        self.assertIn("model_management.unload_all_models()", hooks)
+        self.assertIn("B1RuntimeSmoke", hooks)
 
     def test_production_comfyui_override_points_control_plane_to_native_port(self) -> None:
         control_plane = self.production_comfyui_compose["services"]["control-plane"]

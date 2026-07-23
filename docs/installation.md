@@ -104,7 +104,10 @@ The ComfyUI override:
 - mounts `$B1_DATA_ROOT/models/runtime-views/comfyui` read-only at `/srv/b1-ai-hub/models`
 - maps ComfyUI input/user/output/temp/cache to B1-managed external paths
 - starts with `--disable-api-nodes`, `--cache-none`, `--reserve-vram 1.5`, no browser auto-launch, no CORS flag, and `HF_HUB_DISABLE_TELEMETRY=1`
+- installs B1 lifecycle hooks at `POST /b1/runtime/load`, `/warm`, `/smoke`, and `/unload` without proxying or wrapping native ComfyUI traffic
 - health-checks `http://127.0.0.1:8188/system_stats`
+
+The hook defaults are conservative. `load` checks ComfyUI-visible model folders when possible and otherwise returns `unconfirmed` because model dependencies are ultimately validated by the native workflow. `warm` and `smoke` return `unconfirmed` unless `B1_COMFYUI_HOOK_WARM_ENABLED=true` or `B1_COMFYUI_HOOK_SMOKE_ENABLED=true`; when enabled, they run a tiny B1 no-op output node through the native ComfyUI queue to prove the execution loop is alive, not to claim any model-specific workflow has passed. `unload` sets ComfyUI's native `unload_models` and `free_memory` flags and, when the queue is idle, immediately calls the native model/cache cleanup functions. Set `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when manifests use ComfyUI-visible filenames or paths. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only when approved custom nodes add additional model folder keys that should participate in lifecycle checks.
 
 Native clients still use `https://comfy.ai.b1.germering/` through the control-plane compatibility proxy. Do not publish ComfyUI `8188` directly; use `compose.legacy-comfy.yaml` only for the optional restricted legacy listener that still terminates at the scheduler-aware proxy.
 

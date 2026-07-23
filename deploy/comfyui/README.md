@@ -53,11 +53,23 @@ Health checks use native `GET /system_stats` on internal port `8188`. The contro
 
 Approved custom-node pins are tracked in `workflows/approved-node-pins.json`, not by editing workflow manifests alone. A published workflow that declares `{"type":"node","id":"...","version":"<commit>"}` becomes dependency-ready only when that exact commit appears in the registry with `status: approved`. Keep repository URLs HTTPS-only and record dependency-lock SHA-256 values when a node brings Python package changes.
 
-The GPU runner can call optional internal B1 hooks on the selected runtime before submission:
+## B1 Runtime Hooks
+
+The image installs the B1-owned `b1_runtime_hooks` custom-node package. It registers internal lifecycle routes directly in ComfyUI's native aiohttp server, so native REST, `/ws`, binary previews, uploads, `/history`, `/view`, and future safe ComfyUI routes are not wrapped by a second proxy.
+
+The GPU runner can call internal B1 hooks on the selected runtime before submission:
 
 - `POST /b1/runtime/load`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
-A pinned ComfyUI runtime can leave those hooks unimplemented and rely on native lazy loading, but production acceptance still requires measured smoke and unload behavior through native APIs or the runtime-agent bounded restart fallback.
+Hook behavior is intentionally bounded:
+
+- `load` checks ComfyUI-visible model folders when possible and returns `unconfirmed` because the native prompt/workflow still performs final dependency validation and lazy model loading.
+- `warm` returns `unconfirmed` unless `B1_COMFYUI_HOOK_WARM_ENABLED=true`.
+- `smoke` returns `unconfirmed` unless `B1_COMFYUI_HOOK_SMOKE_ENABLED=true`.
+- enabled `warm`/`smoke` run a tiny B1 no-op output node through ComfyUI's native queue; this proves the ComfyUI execution loop is responsive, but it is not a model-specific workflow acceptance test.
+- `unload` sets ComfyUI's native `unload_models` and `free_memory` flags and, when the queue is idle, immediately calls native model/cache cleanup.
+
+Use `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or relative paths visible in ComfyUI model folders. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only if approved custom nodes introduce additional model folder keys that should participate in lifecycle checks. Production acceptance still needs workflow-specific smoke tests and measured VRAM data for the exact published workflows and model manifests on the target RTX 3060/32 GB host.

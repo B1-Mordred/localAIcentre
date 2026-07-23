@@ -37,10 +37,11 @@ RUN grep -Ev '^(torch|torchvision|torchaudio)$' requirements.txt > /tmp/comfyui-
     && rm -f /tmp/comfyui-requirements.txt
 
 COPY extra_model_paths.yaml /opt/b1/comfyui/extra_model_paths.yaml
+COPY b1_runtime_hooks /opt/comfyui/custom_nodes/b1_runtime_hooks
 COPY b1-comfyui-entrypoint.sh /usr/local/bin/b1-comfyui-entrypoint.sh
 
 RUN mkdir -p /srv/b1-ai-hub/comfyui/input /srv/b1-ai-hub/comfyui/output /srv/b1-ai-hub/comfyui/temp /srv/b1-ai-hub/comfyui/user /srv/b1-ai-hub/cache \
-    && chown -R b1:b1 /srv/b1-ai-hub /opt/b1 \
+    && chown -R b1:b1 /srv/b1-ai-hub /opt/b1 /opt/comfyui/custom_nodes/b1_runtime_hooks \
     && chmod 0755 /usr/local/bin/b1-comfyui-entrypoint.sh
 
 USER b1
