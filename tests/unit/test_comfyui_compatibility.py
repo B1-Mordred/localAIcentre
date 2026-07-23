@@ -31,9 +31,8 @@ else:
 
 
 class FakeRequest:
-    method = "POST"
-
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], *, method: str = "POST") -> None:
+        self.method = method
         self._body = json.dumps(payload).encode("utf-8")
         self.headers = {"content-type": "application/json"}
         self.url = SimpleNamespace(query="")
@@ -215,6 +214,26 @@ class FakeDatabase:
             if any(artifact.get("url") == artifact_url for artifact in row.get("artifacts", [])):
                 return dict(row)
         return None
+
+    async def list_jobs(self, limit: int = 50, **filters: Any) -> list[dict[str, Any]]:
+        rows = list(self.jobs.values())
+        for key, value in filters.items():
+            if value is not None:
+                rows = [row for row in rows if row.get(key) == value]
+        return [dict(row) for row in rows[:limit]]
+
+    async def request_job_cancel(self, job_id: str) -> dict[str, Any] | None:
+        row = self.jobs.get(job_id)
+        if row is None:
+            return None
+        if row["state"] in main.TERMINAL_JOB_STATES:
+            return dict(row)
+        if row["state"] in {"created", "validated", "queued", "waiting_for_gpu"}:
+            row.update({"state": "cancelled", "stage": "cancelled", "progress": 100})
+        else:
+            row.update({"state": "cancelling", "stage": "cancelling"})
+        self.updates.append({"job_id": job_id, "state": row["state"], "stage": row["stage"]})
+        return dict(row)
 
     async def acquire_scheduler_owner(self, owner: str, ttl_seconds: int) -> dict[str, Any]:
         row = {"owner": owner, "ttl_seconds": ttl_seconds, "acquired": self.lease_acquired}
@@ -718,6 +737,55 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(fake.jobs["job_1"]["state"], "failed")
         self.assertEqual(fake.jobs["job_1"]["failure_category"], "comfyui_execution_error")
         self.assertEqual(fake.jobs["job_1"]["failure_message"], "model dependency missing")
+
+    def test_queue_delete_forwards_native_request_and_marks_matching_job_cancelling(self) -> None:
+        fake = FakeDatabase()
+        fake.jobs["job_1"] = {"id": "job_1", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_1", "artifacts": []}
+        fake.jobs["job_2"] = {"id": "job_2", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_2", "artifacts": []}
+        fake.jobs["job_3"] = {"id": "job_3", "state": "running", "runtime": "localai", "native_prompt_id": "prompt_native_1", "artifacts": []}
+        main.database = fake
+        proxied: dict[str, Any] = {}
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            proxied.update({"base_url": base_url, "path": path, "body": body, "method": request.method})
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+        request = FakeRequest({"delete": ["prompt_native_1"]}, method="POST")
+
+        response = asyncio.run(main.proxy_comfyui_compatibility("queue", request))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(proxied["base_url"], "http://comfyui:8000")
+        self.assertEqual(proxied["path"], "queue")
+        self.assertEqual(proxied["body"], awaitable_body(request))
+        self.assertEqual(fake.jobs["job_1"]["state"], "cancelling")
+        self.assertEqual(fake.jobs["job_2"]["state"], "running")
+        self.assertEqual(fake.jobs["job_3"]["state"], "running")
+
+    def test_interrupt_forwards_first_and_marks_all_active_native_jobs_cancelling(self) -> None:
+        fake = FakeDatabase()
+        fake.jobs["job_1"] = {"id": "job_1", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_1", "artifacts": []}
+        fake.jobs["job_2"] = {"id": "job_2", "state": "waiting_for_gpu", "runtime": "comfyui", "native_prompt_id": "prompt_native_2", "artifacts": []}
+        fake.jobs["job_3"] = {"id": "job_3", "state": "completed", "runtime": "comfyui", "native_prompt_id": "prompt_native_3", "artifacts": []}
+        main.database = fake
+        proxied: dict[str, Any] = {}
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            proxied.update({"base_url": base_url, "path": path, "body": body, "method": request.method})
+            self.assertEqual(fake.jobs["job_1"]["state"], "running")
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+        request = FakeRequest({}, method="POST")
+
+        response = asyncio.run(main.proxy_comfyui_compatibility("interrupt", request))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(proxied["path"], "interrupt")
+        self.assertEqual(fake.jobs["job_1"]["state"], "cancelling")
+        self.assertEqual(fake.jobs["job_2"]["state"], "cancelled")
+        self.assertEqual(fake.jobs["job_3"]["state"], "completed")
 
     def test_ingest_comfyui_artifact_streams_view_bytes_to_artifact_store(self) -> None:
         original_client = main.httpx.AsyncClient

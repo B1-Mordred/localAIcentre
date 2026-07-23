@@ -109,6 +109,7 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
 TERMINAL_JOB_STATES = {JobState.COMPLETED.value, JobState.CANCELLED.value, JobState.FAILED.value, JobState.EXPIRED.value}
+COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
 MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -2316,6 +2317,90 @@ async def interrupt_comfyui_prompt() -> None:
             await client.post(url)
     except httpx.HTTPError:
         return
+
+
+def add_comfyui_prompt_ids(value: Any, prompt_ids: set[str]) -> None:
+    if isinstance(value, str) and value.strip():
+        prompt_ids.add(value.strip())
+        return
+    if isinstance(value, list):
+        for item in value:
+            add_comfyui_prompt_ids(item, prompt_ids)
+        return
+    if isinstance(value, dict):
+        for key in ("prompt_id", "id"):
+            add_comfyui_prompt_ids(value.get(key), prompt_ids)
+
+
+def comfyui_queue_cancel_prompt_ids(body: bytes) -> set[str]:
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    prompt_ids: set[str] = set()
+    for key in COMFYUI_QUEUE_CANCEL_KEYS:
+        add_comfyui_prompt_ids(payload.get(key), prompt_ids)
+    return prompt_ids
+
+
+def comfyui_native_cancel_target(path: str, method: str, body: bytes) -> tuple[bool, set[str] | None]:
+    normalized_path = path.strip("/")
+    normalized_method = method.upper()
+    if normalized_path == "interrupt" and normalized_method in {"GET", "POST"}:
+        return True, None
+    if normalized_path != "queue" or normalized_method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False, set()
+    prompt_ids = comfyui_queue_cancel_prompt_ids(body)
+    if prompt_ids:
+        return True, prompt_ids
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False, set()
+    if isinstance(payload, dict) and any(payload.get(key) is True for key in ("clear", "clear_queue", "interrupt", "cancel_all")):
+        return True, None
+    return False, set()
+
+
+async def record_comfyui_native_cancel_request(prompt_ids: set[str] | None, reason: str) -> dict[str, Any]:
+    rows = await database.list_jobs(limit=500, runtime="comfyui")
+    matched: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("state") in TERMINAL_JOB_STATES:
+            continue
+        native_prompt_id = row.get("native_prompt_id")
+        if not isinstance(native_prompt_id, str) or not native_prompt_id:
+            continue
+        if prompt_ids is not None and native_prompt_id not in prompt_ids:
+            continue
+        updated = await database.request_job_cancel(str(row["id"]))
+        if updated is not None:
+            matched.append(updated)
+    log_event(
+        "comfyui_native_cancel_tracked",
+        reason=reason,
+        matched_jobs=len(matched),
+        prompt_ids=sorted(prompt_ids) if prompt_ids is not None else "all-active",
+    )
+    return {
+        "matched_jobs": len(matched),
+        "job_ids": [str(row["id"]) for row in matched],
+        "prompt_ids": sorted(prompt_ids) if prompt_ids is not None else None,
+    }
+
+
+async def proxy_comfyui_compatibility(path: str, request: Request) -> Response:
+    body = await request.body()
+    should_track_cancel, prompt_ids = comfyui_native_cancel_target(path, request.method, body)
+    response = await proxy_http_bytes(settings.comfyui_url, path, request, body=body)
+    if should_track_cancel and response.status_code < 400:
+        try:
+            await record_comfyui_native_cancel_request(prompt_ids, f"{request.method.upper()} /{path.strip('/')}")
+        except Exception as exc:
+            log_event("comfyui_native_cancel_tracking_failed", path=path, error=exc.__class__.__name__)
+    return response
 
 
 async def track_comfyui_prompt_completion(job_id: str, prompt_id: str, lease_owner: str) -> None:
@@ -7300,7 +7385,7 @@ async def compatibility_ws(path: str, websocket: WebSocket) -> None:
 async def compatibility_passthrough(path: str, request: Request) -> Response:
     compatibility = request.headers.get("x-b1-compatibility", "")
     if compatibility.startswith("comfyui"):
-        return await proxy_http(settings.comfyui_url, path, request)
+        return await proxy_comfyui_compatibility(path, request)
     if compatibility.startswith("voicebox"):
         return await proxy_http(settings.voicebox_url, path, request)
     raise HTTPException(status_code=404, detail="route not found")

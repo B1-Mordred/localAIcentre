@@ -29,3 +29,4 @@
 - Added CIDR allowlists for general API clients, enforced during bearer-token authentication and editable from the Control Center External Access tab for API and Model Hub clients.
 - Added editable Model Hub client download policy, allowing administrators to change allowed models and catalog-only/download mode without rotating client keys.
 - Added persisted network policy management for CORS origins and trusted proxy CIDRs, including live Control Center editing and dynamic credentialed CORS enforcement.
+- Added scheduler-aware tracking for native ComfyUI `/interrupt` and mutating `/queue` compatibility requests so accepted native cancellations update durable B1 job state while still forwarding immediately to ComfyUI.
