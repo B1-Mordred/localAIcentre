@@ -2349,6 +2349,25 @@ async def revoke_api_client(client_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+async def update_api_client_cidr_allowlist(client_id: str, cidr_allowlist: list[str]) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(api_clients).where(api_clients.c.id == client_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        if row["revoked_at"] is not None:
+            return dict(row)
+        await conn.execute(
+            update(api_clients)
+            .where(api_clients.c.id == client_id)
+            .values(cidr_allowlist=cidr_allowlist, updated_at=now)
+        )
+    return await get_api_client(client_id)
+
+
 async def insert_runtime_reservation(payload: dict[str, Any]) -> dict[str, Any]:
     if engine is None:
         raise RuntimeError("database engine is not configured")
@@ -2561,6 +2580,30 @@ async def revoke_modelhub_client(client_id: str) -> dict[str, Any] | None:
             update(api_clients)
             .where(api_clients.c.id == row["api_client_id"])
             .values(revoked_at=now, updated_at=now)
+        )
+    return await get_modelhub_client(client_id)
+
+
+async def update_modelhub_client_cidr_allowlist(client_id: str, cidr_allowlist: list[str]) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(modelhub_clients).where(modelhub_clients.c.id == client_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        if row["revoked_at"] is not None:
+            return dict(row)
+        await conn.execute(
+            update(modelhub_clients)
+            .where(modelhub_clients.c.id == client_id)
+            .values(cidr_allowlist=cidr_allowlist, updated_at=now)
+        )
+        await conn.execute(
+            update(api_clients)
+            .where(api_clients.c.id == row["api_client_id"])
+            .values(cidr_allowlist=cidr_allowlist, updated_at=now)
         )
     return await get_modelhub_client(client_id)
 

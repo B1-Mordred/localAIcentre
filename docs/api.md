@@ -27,6 +27,7 @@ POST /admin/updates/{update_id}/health-check
 POST /admin/updates/{update_id}/rollback
 GET  /admin/api-clients
 POST /admin/api-clients
+PUT  /admin/api-clients/{client_id}/cidr-allowlist
 DELETE /admin/api-clients/{client_id}
 GET  /admin/scheduler/lease
 POST /admin/scheduler/lease
@@ -101,6 +102,7 @@ HEAD /modelhub/v1/blobs/{sha256}
 POST /modelhub/v1/sync/plan
 GET  /modelhub/v1/clients
 POST /modelhub/v1/clients
+PUT  /modelhub/v1/clients/{client_id}/cidr-allowlist
 DELETE /modelhub/v1/clients/{client_id}
 ```
 
@@ -343,7 +345,7 @@ curl -s https://api.ai.b1.germering/admin/api-clients \
   -d '{"display_name":"external-comfy","role":"service","scopes":["jobs:read","jobs:write","models:read","modelhub:read","modelhub:sync","inference:write"],"cidr_allowlist":["192.168.2.0/24"]}'
 ```
 
-The full API key is returned once. The control plane stores only a salted PBKDF2 hash plus the public key prefix. Optional `cidr_allowlist` entries are canonicalized and enforced on bearer-token authentication using the trusted-proxy client-IP parser; leave the list empty only for keys that are intentionally unrestricted by source network. Local browser passwords are stored with scrypt hashes; browser session tokens are stored as server-side hashes, not plaintext.
+The full API key is returned once. The control plane stores only a salted PBKDF2 hash plus the public key prefix. Optional `cidr_allowlist` entries are canonicalized and enforced on bearer-token authentication using the trusted-proxy client-IP parser; leave the list empty only for keys that are intentionally unrestricted by source network. `PUT /admin/api-clients/{client_id}/cidr-allowlist` updates only that allowlist and refuses revoked clients. Local browser passwords are stored with scrypt hashes; browser session tokens are stored as server-side hashes, not plaintext.
 
 Initial scope use:
 
@@ -508,7 +510,7 @@ curl -s https://models.ai.b1.germering/modelhub/v1/clients \
   -d '{"display_name":"workstation-1","allowed_models":["chat-default"],"cidr_allowlist":["192.168.2.0/24"]}'
 ```
 
-The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{client_id}` is called. CIDR allowlists are canonicalized when the client is created and enforced on Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
+The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{client_id}` is called. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{client_id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
 
 The control plane derives the effective client IP from the direct peer address unless the peer matches `B1_TRUSTED_PROXY_CIDRS`. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The default Compose value trusts loopback and common Docker-internal proxy ranges; production operators can tighten it when they assign static Docker network ranges.
 

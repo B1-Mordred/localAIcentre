@@ -48,6 +48,7 @@ class FakeDatabase:
         self.users: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.api_clients: dict[str, dict[str, Any]] = {}
+        self.modelhub_clients: dict[str, dict[str, Any]] = {}
         self.audit_events: list[dict[str, Any]] = []
         self.login_marks: list[str] = []
 
@@ -108,6 +109,25 @@ class FakeDatabase:
                 client["last_used_at"] = "now"
                 return dict(client)
         return None
+
+    async def update_api_client_cidr_allowlist(self, client_id: str, cidr_allowlist: list[str]) -> dict[str, Any] | None:
+        row = self.api_clients.get(client_id)
+        if row is None:
+            return None
+        if row.get("revoked_at") is None:
+            row["cidr_allowlist"] = cidr_allowlist
+        return dict(row)
+
+    async def update_modelhub_client_cidr_allowlist(self, client_id: str, cidr_allowlist: list[str]) -> dict[str, Any] | None:
+        row = self.modelhub_clients.get(client_id)
+        if row is None:
+            return None
+        if row.get("revoked_at") is None:
+            row["cidr_allowlist"] = cidr_allowlist
+            api_row = self.api_clients.get(row["api_client_id"])
+            if api_row is not None:
+                api_row["cidr_allowlist"] = cidr_allowlist
+        return dict(row)
 
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
@@ -275,6 +295,67 @@ class BrowserAuthApiTests(unittest.TestCase):
             asyncio.run(main.authenticate(f"Bearer {api_key}"))
         self.assertEqual(caught.exception.status_code, 403)
         self.assertEqual(caught.exception.detail, "API client is not permitted from this network")
+
+    def test_api_client_cidr_allowlist_can_be_updated(self) -> None:
+        self.database.api_clients["client_worker"] = {
+            "id": "client_worker",
+            "display_name": "worker",
+            "role": "service",
+            "scopes": ["models:read"],
+            "key_prefix": "b1k_worker",
+            "key_salt": "salt",
+            "key_hash": "hash",
+            "cidr_allowlist": [],
+            "revoked_at": None,
+        }
+
+        updated = asyncio.run(
+            main.admin_api_client_cidr_update(
+                "client_worker",
+                main.CidrAllowlistUpdateRequest(cidr_allowlist=["10.0.1.42/24", "10.0.1.0/24"]),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(updated["cidr_allowlist"], ["10.0.1.0/24"])
+        self.assertEqual(self.database.api_clients["client_worker"]["cidr_allowlist"], ["10.0.1.0/24"])
+        self.assertIn("api_client.cidr_allowlist_updated", [event["event_type"] for event in self.database.audit_events])
+
+    def test_modelhub_client_cidr_allowlist_update_syncs_backing_api_client(self) -> None:
+        self.database.api_clients["client_hub"] = {
+            "id": "client_hub",
+            "display_name": "Model Hub: artist",
+            "role": "service",
+            "scopes": ["modelhub:read", "modelhub:sync"],
+            "key_prefix": "b1k_hub",
+            "key_salt": "salt",
+            "key_hash": "hash",
+            "cidr_allowlist": [],
+            "revoked_at": None,
+        }
+        self.database.modelhub_clients["mhc_artist"] = {
+            "id": "mhc_artist",
+            "display_name": "artist",
+            "owner_id": "admin_1",
+            "api_client_id": "client_hub",
+            "key_prefix": "b1k_hub",
+            "allowed_models": ["image-default"],
+            "cidr_allowlist": [],
+            "allow_downloads": True,
+            "revoked_at": None,
+        }
+
+        updated = asyncio.run(
+            main.modelhub_client_cidr_update(
+                "mhc_artist",
+                main.CidrAllowlistUpdateRequest(cidr_allowlist=["192.168.8.4/24"]),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(updated["cidr_allowlist"], ["192.168.8.0/24"])
+        self.assertEqual(self.database.api_clients["client_hub"]["cidr_allowlist"], ["192.168.8.0/24"])
+        self.assertIn("modelhub_client.cidr_allowlist_updated", [event["event_type"] for event in self.database.audit_events])
 
 
 if __name__ == "__main__":

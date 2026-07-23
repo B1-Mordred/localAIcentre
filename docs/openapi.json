@@ -390,6 +390,19 @@
         "title": "ChatCompletionRequest",
         "type": "object"
       },
+      "CidrAllowlistUpdateRequest": {
+        "properties": {
+          "cidr_allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cidr Allowlist",
+            "type": "array"
+          }
+        },
+        "title": "CidrAllowlistUpdateRequest",
+        "type": "object"
+      },
       "EmbeddingRequest": {
         "properties": {
           "input": {
@@ -1914,6 +1927,73 @@
           }
         },
         "summary": "Admin Api Client Revoke"
+      }
+    },
+    "/admin/api-clients/{client_id}/cidr-allowlist": {
+      "put": {
+        "operationId": "admin_api_client_cidr_update_admin_api_clients__client_id__cidr_allowlist_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CidrAllowlistUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Api Client Cidr Update Admin Api Clients  Client Id  Cidr Allowlist Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Api Client Cidr Update"
       }
     },
     "/admin/artifacts/cleanup": {
@@ -7145,6 +7225,73 @@
           }
         },
         "summary": "Modelhub Client Delete"
+      }
+    },
+    "/modelhub/v1/clients/{client_id}/cidr-allowlist": {
+      "put": {
+        "operationId": "modelhub_client_cidr_update_modelhub_v1_clients__client_id__cidr_allowlist_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CidrAllowlistUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Modelhub Client Cidr Update Modelhub V1 Clients  Client Id  Cidr Allowlist Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Modelhub Client Cidr Update"
       }
     },
     "/modelhub/v1/models/{model_id}": {

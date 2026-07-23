@@ -204,6 +204,10 @@ class ApiClientCreate(BaseModel):
     cidr_allowlist: list[str] = Field(default_factory=list)
 
 
+class CidrAllowlistUpdateRequest(BaseModel):
+    cidr_allowlist: list[str] = Field(default_factory=list)
+
+
 class BlobState(BaseModel):
     sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     size_bytes: int = Field(ge=0)
@@ -4176,6 +4180,37 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
     return {**public_api_client(row), "api_key": api_key, "one_time_display": True}
 
 
+@app.put("/admin/api-clients/{client_id}/cidr-allowlist")
+async def admin_api_client_cidr_update(
+    client_id: str,
+    payload: CidrAllowlistUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
+    row = await database.update_api_client_cidr_allowlist(client_id, cidr_allowlist)
+    if row is None:
+        raise HTTPException(status_code=404, detail="API client not found")
+    if row.get("revoked_at") is not None:
+        raise HTTPException(status_code=409, detail="revoked API clients cannot be modified")
+    log_event("api_client_cidr_updated", client_id=client_id, cidr_count=len(cidr_allowlist))
+    await record_audit_event(
+        auth,
+        "api_client.cidr_allowlist_updated",
+        target_type="api_client",
+        target_id=client_id,
+        summary=f"Updated API client CIDR allowlist for {row['display_name']}",
+        metadata={
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "key_prefix": row["key_prefix"],
+            "cidr_allowlist": cidr_allowlist,
+        },
+    )
+    return public_api_client(row)
+
+
 @app.delete("/admin/api-clients/{client_id}")
 async def admin_api_client_revoke(client_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -6823,6 +6858,37 @@ async def modelhub_client_create(payload: ModelHubClientCreate, authorization: s
         "scopes": sorted(scopes),
         "one_time_display": True,
     }
+
+
+@app.put("/modelhub/v1/clients/{client_id}/cidr-allowlist")
+async def modelhub_client_cidr_update(
+    client_id: str,
+    payload: CidrAllowlistUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
+    row = await database.update_modelhub_client_cidr_allowlist(client_id, cidr_allowlist)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Model Hub client not found")
+    if row.get("revoked_at") is not None:
+        raise HTTPException(status_code=409, detail="revoked Model Hub clients cannot be modified")
+    log_event("modelhub_client_cidr_updated", client_id=client_id, cidr_count=len(cidr_allowlist))
+    await record_audit_event(
+        auth,
+        "modelhub_client.cidr_allowlist_updated",
+        target_type="modelhub_client",
+        target_id=client_id,
+        summary=f"Updated Model Hub client CIDR allowlist for {row['display_name']}",
+        metadata={
+            "display_name": row["display_name"],
+            "api_client_id": row["api_client_id"],
+            "key_prefix": row["key_prefix"],
+            "cidr_allowlist": cidr_allowlist,
+        },
+    )
+    return public_modelhub_client(row)
 
 
 @app.delete("/modelhub/v1/clients/{client_id}")

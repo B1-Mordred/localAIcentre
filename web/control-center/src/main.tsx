@@ -2042,6 +2042,8 @@ function ExternalAccess() {
   const [hubAllowedModels, setHubAllowedModels] = useState("chat-default");
   const [hubCidrs, setHubCidrs] = useState("192.168.2.0/24");
   const [hubAllowDownloads, setHubAllowDownloads] = useState(true);
+  const [apiClientCidrs, setApiClientCidrs] = useState<Record<string, string>>({});
+  const [modelHubClientCidrs, setModelHubClientCidrs] = useState<Record<string, string>>({});
   const [secretName, setSecretName] = useState("");
   const [secretDisplayName, setSecretDisplayName] = useState("");
   const [secretCategory, setSecretCategory] = useState<SecretCategory>("other");
@@ -2061,8 +2063,12 @@ function ExternalAccess() {
       })
     ])
       .then(([apiPayload, hubPayload, secretPayload]) => {
-        setApiClients(apiPayload ?? []);
-        setModelHubClients(hubPayload.data ?? []);
+        const apiData = apiPayload ?? [];
+        const hubData = hubPayload.data ?? [];
+        setApiClients(apiData);
+        setModelHubClients(hubData);
+        setApiClientCidrs(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
+        setModelHubClientCidrs(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
         setEncryptedSecrets(secretPayload.data ?? []);
         setSecretMasterKey(secretPayload.master_key ?? null);
         setMessage("ready");
@@ -2115,6 +2121,24 @@ function ExternalAccess() {
       .then((payload) => {
         setOneTimeKey({ label: payload.display_name, value: payload.api_key });
         setHubDisplayName("");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateClientCidrs = (kind: "api" | "modelhub", id: string) => {
+    setBusy(true);
+    setMessage("updating CIDR allowlist");
+    const value = kind === "api" ? apiClientCidrs[id] ?? "" : modelHubClientCidrs[id] ?? "";
+    const url = kind === "api" ? `/admin/api-clients/${id}/cidr-allowlist` : `/modelhub/v1/clients/${id}/cidr-allowlist`;
+    apiJson(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cidr_allowlist: parseCsv(value) })
+    })
+      .then(() => {
+        setMessage("CIDR allowlist updated");
         loadClients();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -2267,7 +2291,16 @@ function ExternalAccess() {
               <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
               <td>{client.role}</td>
               <td>{client.scopes.join(", ")}</td>
-              <td>{(client.cidr_allowlist ?? []).join(", ") || "none"}</td>
+              <td>
+                <div className="inline-form">
+                  <input
+                    value={apiClientCidrs[client.id] ?? ""}
+                    onChange={(event) => setApiClientCidrs((current) => ({ ...current, [client.id]: event.target.value }))}
+                    disabled={busy || Boolean(client.revoked_at)}
+                  />
+                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                </div>
+              </td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.last_used_at ? `last ${new Date(client.last_used_at).toLocaleString()}` : ""}</small></td>
               <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
@@ -2286,7 +2319,16 @@ function ExternalAccess() {
             <tr key={client.id}>
               <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
               <td>{client.allowed_models.join(", ")}</td>
-              <td>{client.cidr_allowlist.join(", ") || "none"}</td>
+              <td>
+                <div className="inline-form">
+                  <input
+                    value={modelHubClientCidrs[client.id] ?? ""}
+                    onChange={(event) => setModelHubClientCidrs((current) => ({ ...current, [client.id]: event.target.value }))}
+                    disabled={busy || Boolean(client.revoked_at)}
+                  />
+                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                </div>
+              </td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.allow_downloads ? "downloads" : "catalog only"}</small></td>
               <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>

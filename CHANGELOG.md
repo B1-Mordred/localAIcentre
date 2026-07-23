@@ -26,4 +26,4 @@
 - Added Redis-coordinated Model Hub blob download rate limiting with per-subject `X-RateLimit-*` headers and a bounded in-process fallback before proxying blob requests to internal storage.
 - Added Voicebox voice-profile dependency checks to model removal and blob quarantine planning so active profiles block unsafe cleanup and disabled profiles remain visible in dependency reports.
 - Added licence/source/resource metadata to Model Hub sync plans and made `b1-model-client` and Model Hub blob downloads require explicit licence acknowledgement before synchronising acceptance-gated models.
-- Added CIDR allowlists for general API clients, enforced during bearer-token authentication and manageable from the Control Center External Access tab.
+- Added CIDR allowlists for general API clients, enforced during bearer-token authentication and editable from the Control Center External Access tab for API and Model Hub clients.
