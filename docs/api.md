@@ -35,6 +35,8 @@ POST /admin/voicebox/profiles/{profile_id}/export
 DELETE /admin/voicebox/profiles/{profile_id}
 GET  /admin/self-test
 GET  /admin/audit-log
+POST /admin/artifacts/retention-plan
+POST /admin/artifacts/cleanup
 GET  /admin/jobs
 GET  /admin/jobs/{job_id}
 POST /admin/jobs/{job_id}/priority
@@ -191,6 +193,8 @@ Optional filters are `event_type`, `actor_id`, and `target_type`. Audit events r
 `POST /admin/backups` requires `storage:write` and creates a constrained backup under `$B1_BACKUP_ROOT`. Each backup includes the logical JSON export at `data/control-plane/postgres-logical-export.json` plus a native `pg_dump` custom-format file at `data/control-plane/postgres-native.dump`; public summaries expose `postgres_dump`, `postgres_dumps[]`, `postgres_native_dump`, and `archive_encryption` metadata but never database credentials or encryption keys. `POST /admin/backups/{backup_name}/verify` checks the archive manifest, decrypts encrypted-only payloads with the configured master key when required, and verifies the native dump archive member checksum. `POST /admin/backups/{backup_name}/restore-test` extracts to `$B1_RESTORE_TEST_ROOT/<backup_name>` and runs `pg_restore --list` against the extracted native dump when present.
 
 Backup retention is available through `POST /admin/backups/retention-plan` with `storage:read` and `POST /admin/backups/cleanup` with `storage:write`. Both accept `keep_last` and optional `delete_older_than_days`; cleanup also requires `confirm=true`. The cleanup endpoint re-runs the plan and deletes only validated direct child backup directories under `$B1_BACKUP_ROOT`, while symlinked or invalid entries are reported and preserved.
+
+Generated artifact retention is available through `POST /admin/artifacts/retention-plan` with `storage:read` and `POST /admin/artifacts/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, optional generated-output `namespaces` such as `localai`, `comfyui`, `audio-cpu`, or `voicebox`, a bounded `limit`, and `confirm=true` for cleanup. The planner considers only artifacts recorded on terminal jobs older than the cutoff, refuses staged input/temporary/secret namespaces, preserves active or newer jobs, preserves Voicebox profile sample artifacts, rejects symlinks, missing files, non-files, metadata size mismatches, traversal, and artifacts whose path is not scoped to the job ID or native ComfyUI prompt ID. Cleanup re-runs the plan, unlinks only accepted files under `$B1_ARTIFACT_ROOT`, marks the affected job artifact metadata with `retention_status=deleted`, and writes an audit event. Later downloads of a deleted artifact return HTTP 410.
 
 Scheduled backups are managed through:
 

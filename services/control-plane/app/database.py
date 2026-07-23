@@ -1535,6 +1535,22 @@ async def list_jobs(
     return [dict(row) for row in rows]
 
 
+async def list_artifact_retention_jobs(cutoff: datetime, limit: int = 5000) -> list[dict[str, Any]]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    bounded_limit = max(1, min(int(limit), 50000))
+    query = (
+        select(jobs)
+        .where(and_(jobs.c.state.in_(TERMINAL_JOB_STATES), jobs.c.completed_at.is_not(None), jobs.c.completed_at < cutoff))
+        .order_by(jobs.c.completed_at.asc(), jobs.c.created_at.asc())
+        .limit(bounded_limit)
+    )
+    async with engine.connect() as conn:
+        result = await conn.execute(query)
+        rows = result.mappings().all()
+    return [dict(row) for row in rows]
+
+
 async def list_recent_jobs(limit: int = 50) -> list[dict[str, Any]]:
     return await list_jobs(limit=limit)
 

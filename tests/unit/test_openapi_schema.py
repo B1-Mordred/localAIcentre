@@ -52,6 +52,8 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/admin/voicebox/profiles", paths)
         self.assertIn("/admin/voicebox/profiles/{profile_id}", paths)
         self.assertIn("/admin/voicebox/profiles/{profile_id}/export", paths)
+        self.assertIn("/admin/artifacts/retention-plan", paths)
+        self.assertIn("/admin/artifacts/cleanup", paths)
         self.assertIn("/admin/backups/retention-plan", paths)
         self.assertIn("/admin/backups/cleanup", paths)
         self.assertIn("/admin/backups/schedule", paths)

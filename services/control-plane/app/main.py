@@ -28,6 +28,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from . import database
+from . import artifact_retention
 from . import audit as audit_policy
 from . import artifacts as artifact_policy
 from . import backup_restore
@@ -293,6 +294,13 @@ class BackupRestoreTestRequest(BaseModel):
 class BackupRetentionRequest(BaseModel):
     keep_last: int = Field(default=5, ge=0, le=365)
     delete_older_than_days: int | None = Field(default=None, ge=1, le=3650)
+    confirm: bool = False
+
+
+class ArtifactRetentionRequest(BaseModel):
+    delete_older_than_days: int = Field(default=30, ge=1, le=3650)
+    namespaces: list[str] = Field(default_factory=list, max_length=16)
+    limit: int = Field(default=5000, ge=1, le=50000)
     confirm: bool = False
 
 
@@ -1372,6 +1380,21 @@ def backup_root_path() -> Path:
 
 def restore_test_root_path() -> Path:
     return Path(settings.restore_test_root)
+
+
+def artifact_root_path() -> Path:
+    return Path(settings.artifact_root)
+
+
+async def protected_artifact_urls() -> set[str]:
+    protected: set[str] = set()
+    for profile in await database.list_voice_profiles(include_deleted=True):
+        for sample in profile.get("sample_artifacts") or []:
+            if not isinstance(sample, dict) or not isinstance(sample.get("url"), str):
+                continue
+            with suppress(HTTPException):
+                protected.add(validate_voice_profile_artifact_url(sample["url"]))
+    return protected
 
 
 def catalog_snapshot() -> ModelCatalog:
@@ -3451,6 +3474,10 @@ def backup_error_response(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def artifact_retention_error_response(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(exc))
+
+
 def backup_schedule_from_payload(payload: BackupScheduleUpdateRequest, auth: AuthContext, now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now(tz=UTC)
     try:
@@ -4862,6 +4889,71 @@ async def admin_backup_cleanup(payload: BackupRetentionRequest, authorization: s
     return report
 
 
+@app.post("/admin/artifacts/retention-plan")
+async def admin_artifact_retention_plan(payload: ArtifactRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:read")
+    now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(days=payload.delete_older_than_days)
+    jobs = await database.list_artifact_retention_jobs(cutoff, limit=payload.limit)
+    try:
+        return await asyncio.to_thread(
+            artifact_retention.build_artifact_retention_plan,
+            artifact_root_path(),
+            jobs,
+            delete_older_than_days=payload.delete_older_than_days,
+            protected_urls=await protected_artifact_urls(),
+            namespaces=payload.namespaces,
+            now=now,
+            limit=payload.limit,
+        )
+    except artifact_retention.ArtifactRetentionError as exc:
+        raise artifact_retention_error_response(exc) from exc
+
+
+@app.post("/admin/artifacts/cleanup")
+async def admin_artifact_cleanup(payload: ArtifactRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:write")
+    now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(days=payload.delete_older_than_days)
+    jobs = await database.list_artifact_retention_jobs(cutoff, limit=payload.limit)
+    try:
+        report = await asyncio.to_thread(
+            artifact_retention.apply_artifact_retention_plan,
+            artifact_root_path(),
+            jobs,
+            delete_older_than_days=payload.delete_older_than_days,
+            protected_urls=await protected_artifact_urls(),
+            namespaces=payload.namespaces,
+            confirmed=payload.confirm,
+            now=now,
+            limit=payload.limit,
+        )
+    except artifact_retention.ArtifactRetentionError as exc:
+        raise artifact_retention_error_response(exc) from exc
+    for update in report.get("job_updates", []):
+        if isinstance(update, dict) and update.get("job_id") and isinstance(update.get("artifacts"), list):
+            await database.update_job(str(update["job_id"]), artifacts=update["artifacts"])
+    public_report = {key: value for key, value in report.items() if key != "job_updates"}
+    log_event("artifact_cleanup_completed", deleted=public_report["deleted_count"], reclaimable=public_report["total_reclaimable_bytes"])
+    await record_audit_event(
+        auth,
+        "artifact.cleanup",
+        target_type="artifact",
+        summary="Applied generated artifact retention cleanup",
+        metadata={
+            "policy": public_report["policy"],
+            "deleted_count": public_report["deleted_count"],
+            "deleted_paths": [item["path"] for item in public_report["deleted"]],
+            "total_reclaimable_bytes": public_report["total_reclaimable_bytes"],
+            "invalid_preserved_count": public_report["invalid_preserved_count"],
+            "job_update_count": public_report.get("job_update_count"),
+        },
+    )
+    return public_report
+
+
 @app.post("/admin/backups")
 async def admin_backup_create(payload: BackupCreateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -5817,6 +5909,8 @@ async def artifact_download(artifact_path: str, request: Request, authorization:
     if not artifact_policy.subject_can_read_job_artifact(auth.subject_id, auth.scopes, job):
         raise HTTPException(status_code=403, detail="artifact belongs to a different owner")
     artifact = job_artifact_by_url(job, artifact_url)
+    if artifact and (artifact.get("deleted_at") or artifact.get("retention_status") == "deleted"):
+        raise HTTPException(status_code=410, detail="artifact was removed by retention cleanup")
     comfyui_view_path = comfyui_view_path_for_artifact(artifact or {})
     if comfyui_view_path:
         return await proxy_http_bytes(settings.comfyui_url, comfyui_view_path, request, b"")

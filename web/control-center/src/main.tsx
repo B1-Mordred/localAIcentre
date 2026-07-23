@@ -189,6 +189,21 @@ type BackupRetentionPlan = {
   deleted_count?: number;
 };
 
+type ArtifactRetentionPlan = {
+  status: string;
+  policy: { delete_older_than_days: number; cutoff?: string | null; namespaces?: string[]; limit?: number };
+  candidate_count: number;
+  kept_count: number;
+  invalid_preserved_count: number;
+  total_reclaimable_bytes: number;
+  candidates: { job_id?: string; path: string; namespace?: string; size_bytes?: number; reason: string }[];
+  kept: { job_id?: string; path?: string; reason: string }[];
+  invalid_preserved: { job_id?: string; path?: string; reason: string }[];
+  deleted?: { job_id?: string; path: string; size_bytes?: number; status?: string }[];
+  deleted_count?: number;
+  job_update_count?: number;
+};
+
 type BackupSchedule = {
   source: string;
   enabled: boolean;
@@ -2020,9 +2035,13 @@ function formatArchiveInspection(inspection: ModelInstallPlan["archive_inspectio
 function Storage() {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
+  const [artifactRetentionPlan, setArtifactRetentionPlan] = useState<ArtifactRetentionPlan | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
   const [keepLast, setKeepLast] = useState("5");
   const [deleteOlderThanDays, setDeleteOlderThanDays] = useState("");
+  const [artifactDeleteOlderThanDays, setArtifactDeleteOlderThanDays] = useState("30");
+  const [artifactNamespaces, setArtifactNamespaces] = useState("");
+  const [artifactLimit, setArtifactLimit] = useState("5000");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState("24");
   const [scheduleKeepLast, setScheduleKeepLast] = useState("7");
@@ -2111,6 +2130,34 @@ function Storage() {
       .finally(() => setBusy(false));
   };
 
+  const artifactRetentionPayload = (confirm: boolean) => {
+    const age = Number.parseInt(artifactDeleteOlderThanDays, 10);
+    const limit = Number.parseInt(artifactLimit, 10);
+    return {
+      delete_older_than_days: Number.isFinite(age) ? age : 30,
+      namespaces: artifactNamespaces.split(",").map((item) => item.trim()).filter(Boolean),
+      limit: Number.isFinite(limit) ? limit : 5000,
+      confirm
+    };
+  };
+
+  const runArtifactRetention = (apply: boolean) => {
+    setBusy(true);
+    setMessage(apply ? "artifact cleanup" : "artifact retention plan");
+    apiFetch(`/admin/artifacts/${apply ? "cleanup" : "retention-plan"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(artifactRetentionPayload(apply))
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload: ArtifactRetentionPlan) => {
+        setArtifactRetentionPlan(payload);
+        setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} artifact candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const schedulePayload = (runImmediately = false) => {
     const interval = Number.parseInt(scheduleIntervalHours, 10);
     const keep = Number.parseInt(scheduleKeepLast, 10);
@@ -2192,6 +2239,28 @@ function Storage() {
           {retentionPlan.candidates.length > 0 && <small>{retentionPlan.candidates.map((candidate) => `${candidate.name}: ${candidate.reason}`).join(" / ")}</small>}
           {Boolean(retentionPlan.deleted?.length) && <small>{retentionPlan.deleted?.map((item) => `deleted ${item.name}`).join(" / ")}</small>}
           {retentionPlan.invalid_preserved_count > 0 && <small>{retentionPlan.invalid_preserved_count} invalid entr{retentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
+        </div>
+      )}
+      <div className="subsection-title">
+        <Trash2 size={16} />
+        <h3>Generated Artifacts</h3>
+      </div>
+      <div className="toolbar job-filters">
+        <label>Older than<input aria-label="Delete artifacts older than days" inputMode="numeric" value={artifactDeleteOlderThanDays} onChange={(event) => setArtifactDeleteOlderThanDays(event.target.value)} /></label>
+        <label>Namespaces<input aria-label="Artifact namespaces" placeholder="localai,comfyui" value={artifactNamespaces} onChange={(event) => setArtifactNamespaces(event.target.value)} /></label>
+        <label>Scan<input aria-label="Artifact cleanup scan limit" inputMode="numeric" value={artifactLimit} onChange={(event) => setArtifactLimit(event.target.value)} /></label>
+        <button title="Plan artifact cleanup" onClick={() => runArtifactRetention(false)} disabled={busy}><ListChecks size={16} />Plan</button>
+        <button title="Apply artifact cleanup" onClick={() => runArtifactRetention(true)} disabled={busy || artifactRetentionPlan?.status !== "planned" || !artifactRetentionPlan?.candidate_count}><Trash2 size={16} />Cleanup</button>
+      </div>
+      {artifactRetentionPlan && (
+        <div className="one-time-key">
+          <strong>Artifact retention {artifactRetentionPlan.status}</strong>
+          <span>{artifactRetentionPlan.candidate_count} candidate{artifactRetentionPlan.candidate_count === 1 ? "" : "s"} / {formatBytes(artifactRetentionPlan.total_reclaimable_bytes)} reclaimable</span>
+          <small>Older than {artifactRetentionPlan.policy.delete_older_than_days} days{artifactRetentionPlan.policy.namespaces?.length ? ` / ${artifactRetentionPlan.policy.namespaces.join(", ")}` : ""}</small>
+          {artifactRetentionPlan.candidates.length > 0 && <small>{artifactRetentionPlan.candidates.slice(0, 6).map((candidate) => `${candidate.path}: ${formatBytes(candidate.size_bytes)}`).join(" / ")}</small>}
+          {Boolean(artifactRetentionPlan.deleted?.length) && <small>{artifactRetentionPlan.deleted?.slice(0, 6).map((item) => `deleted ${item.path}`).join(" / ")}</small>}
+          {artifactRetentionPlan.invalid_preserved_count > 0 && <small>{artifactRetentionPlan.invalid_preserved_count} invalid artifact entr{artifactRetentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
+          {artifactRetentionPlan.job_update_count !== undefined && <small>{artifactRetentionPlan.job_update_count} job record{artifactRetentionPlan.job_update_count === 1 ? "" : "s"} updated</small>}
         </div>
       )}
       <table>
