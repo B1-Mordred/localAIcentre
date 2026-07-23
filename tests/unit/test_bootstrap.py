@@ -37,6 +37,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue(open_webui_key.startswith("b1k_"))
             self.assertEqual(token_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(open_webui_key_path.stat().st_mode & 0o777, 0o640)
+            self.assertTrue((root / "secrets" / "caddy-certs").is_dir())
+            self.assertEqual((root / "secrets" / "caddy-certs").stat().st_mode & 0o777, 0o750)
             for filename in bootstrap.RUNTIME_AGENT_MTLS_FILES.values():
                 cert_path = root / "secrets" / filename
                 self.assertTrue(cert_path.exists(), filename)

@@ -17,38 +17,42 @@
 	}
 }
 
+(b1_tls) {
+	tls {$B1_CADDY_TLS_ARGS:internal}
+}
+
 {$B1_HOST_CHAT:ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy open-webui:8080
 }
 
 {$B1_HOST_CONTROL:control.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy control-center:8080
 }
 
 {$B1_HOST_MEDIA:media.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy media-studio:8080
 }
 
 {$B1_HOST_API:api.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy control-plane:8000
 }
 
 {$B1_HOST_MODELS:models.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy control-plane:8000
 }
 
 {$B1_HOST_COMFY:comfy.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy control-plane:8000 {
 		header_up X-B1-Compatibility comfyui-native
@@ -56,7 +60,7 @@
 }
 
 {$B1_HOST_VOICE:voice.ai.b1.germering} {
-	tls internal
+	import b1_tls
 	import security_headers
 	reverse_proxy control-plane:8000 {
 		header_up X-B1-Compatibility voicebox-native

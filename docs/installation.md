@@ -171,8 +171,26 @@ External Voicebox UIs and REST/MCP clients must use `https://voice.ai.b1.germeri
 
 ## Caddy Internal CA
 
-The default Caddyfile uses `tls internal`. Export the Caddy root certificate from `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` after first boot and install it only on trusted LAN clients.
+The default Caddyfile uses `B1_CADDY_TLS_ARGS=internal`, which expands to Caddy's `tls internal` mode for every B1 virtual host. Export the Caddy root certificate from `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` after first boot and install it only on trusted LAN clients.
 
 The control-plane self-test uses the same root certificate path by default for its `https://$B1_HOST_API/healthz` routing probe. If you replace Caddy certificates or test through a different internal URL, set `B1_SELF_TEST_TLS_URLS` and `B1_SELF_TEST_TLS_CA_FILE` in `.env` before restarting the control plane.
 
-Externally supplied certificates can be used by replacing the Caddy TLS directives through configuration, without changing application source code.
+Externally supplied certificates can be used without source changes:
+
+```bash
+install -d -m 0750 /srv/b1-ai-hub/secrets/caddy-certs
+install -m 0640 fullchain.pem /srv/b1-ai-hub/secrets/caddy-certs/fullchain.pem
+install -m 0640 privkey.pem /srv/b1-ai-hub/secrets/caddy-certs/privkey.pem
+```
+
+Then set this in `.env` and restart only the gateway:
+
+```env
+B1_CADDY_TLS_ARGS="/etc/caddy/external-certs/fullchain.pem /etc/caddy/external-certs/privkey.pem"
+```
+
+```bash
+docker compose up -d gateway
+```
+
+The gateway mounts `$B1_DATA_ROOT/secrets/caddy-certs` read-only at `/etc/caddy/external-certs`. Leave `B1_CADDY_TLS_ARGS=internal` when using the LAN internal CA.

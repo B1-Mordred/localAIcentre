@@ -61,6 +61,7 @@ DIRS = [
     "cache/comfyui",
     "cache/voicebox",
     "secrets",
+    "secrets/caddy-certs",
     "logs/caddy",
     "logs/control-plane",
     "logs/runtime-agent",
@@ -312,6 +313,7 @@ def bootstrap(root: Path) -> dict[str, list[str]]:
     for relative in APP_WRITABLE_DIRS:
         secure_app_path(root / relative)
     secure_secret_path(root / "secrets", 0o750)
+    secure_secret_path(root / "secrets" / "caddy-certs", 0o750)
     (root / "backups").chmod(0o770)
     (root / "restore-tests").chmod(0o770)
 

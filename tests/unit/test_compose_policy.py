@@ -162,6 +162,27 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(self.compose["services"]["control-center"]["build"]["args"]["VITE_B1_API_BASE"], expected)
         self.assertEqual(self.compose["services"]["media-studio"]["build"]["args"]["VITE_B1_API_BASE"], expected)
 
+    def test_gateway_tls_can_use_internal_ca_or_supplied_certificates(self) -> None:
+        gateway = self.compose["services"]["gateway"]
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        self.assertEqual(gateway["environment"]["B1_CADDY_TLS_ARGS"], "${B1_CADDY_TLS_ARGS:-internal}")
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/caddy-certs:/etc/caddy/external-certs:ro", gateway["volumes"])
+        self.assertIn("tls {$B1_CADDY_TLS_ARGS:internal}", caddyfile)
+        self.assertNotIn("\ttls internal", caddyfile)
+        for host_var in (
+            "B1_HOST_CHAT",
+            "B1_HOST_CONTROL",
+            "B1_HOST_MEDIA",
+            "B1_HOST_API",
+            "B1_HOST_MODELS",
+            "B1_HOST_COMFY",
+            "B1_HOST_VOICE",
+        ):
+            block_start = caddyfile.index("{$" + host_var)
+            block_end = caddyfile.find("\n}\n", block_start)
+            self.assertIn("import b1_tls", caddyfile[block_start:block_end], host_var)
+        self.assertEqual(self.production_env["B1_CADDY_TLS_ARGS"], "internal")
+
     def test_control_plane_mounts_artifacts_for_job_runner(self) -> None:
         service = self.compose["services"]["control-plane"]
         volumes = service.get("volumes", [])

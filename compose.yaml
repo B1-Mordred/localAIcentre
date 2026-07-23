@@ -58,8 +58,10 @@ services:
       B1_HOST_VOICE: ${B1_HOST_VOICE:-voice.ai.b1.germering}
       B1_HOST_MODELS: ${B1_HOST_MODELS:-models.ai.b1.germering}
       B1_HOST_API: ${B1_HOST_API:-api.ai.b1.germering}
+      B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/caddy-certs:/etc/caddy/external-certs:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:/data
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/logs/caddy:/var/log/caddy
     networks:
