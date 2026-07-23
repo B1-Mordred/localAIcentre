@@ -24,3 +24,4 @@
 - Added an opt-in live smoke test target for deployed health, authenticated model listing, async TTS media jobs, SSE event delivery, artifact download, and optional admin self-test.
 - Added Makefile targets for smoke, integration, compatibility, and security tests, with an opt-in live `/admin/runtimes` integration check and offline Compose exposure/privilege security checks.
 - Added Redis-coordinated Model Hub blob download rate limiting with per-subject `X-RateLimit-*` headers and a bounded in-process fallback before proxying blob requests to internal storage.
+- Added Voicebox voice-profile dependency checks to model removal and blob quarantine planning so active profiles block unsafe cleanup and disabled profiles remain visible in dependency reports.

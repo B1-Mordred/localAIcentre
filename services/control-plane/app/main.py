@@ -3704,6 +3704,31 @@ async def dependent_workflows_for_model(model_id: str, aliases: list[str]) -> li
     return dependencies
 
 
+async def dependent_voice_profiles_for_model(model_id: str, aliases: list[str]) -> list[dict[str, Any]]:
+    candidates = {model_id, *aliases}
+    profiles: list[dict[str, Any]] = []
+    for row in await database.list_voice_profiles(include_deleted=False):
+        model_alias = row.get("model_alias")
+        if model_alias not in candidates:
+            continue
+        profiles.append(
+            {
+                "id": row["id"],
+                "display_name": row.get("display_name"),
+                "runtime": row.get("runtime"),
+                "engine": row.get("engine"),
+                "model_alias": model_alias,
+                "profile_type": row.get("profile_type"),
+                "status": row.get("status"),
+            }
+        )
+    return profiles
+
+
+def active_voice_profile_dependencies(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [profile for profile in profiles if profile.get("status") == "active"]
+
+
 def manifest_is_downloadable(record: dict[str, Any]) -> bool:
     return modelhub_policy.manifest_is_downloadable(record)
 
@@ -6061,10 +6086,29 @@ async def admin_model_remove(
     model_ref = f"{model_id}@{version}"
     active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
+    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
+    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
     if active_jobs:
         raise HTTPException(
             status_code=409,
-            detail={"message": "model is referenced by active jobs", "active_jobs": active_jobs, "dependent_workflows": dependent_workflows},
+            detail={
+                "message": "model is referenced by active jobs",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+            },
+        )
+    if active_voice_profiles:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "model is referenced by active voice profiles",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+            },
         )
     if not request.confirm:
         raise HTTPException(
@@ -6073,6 +6117,8 @@ async def admin_model_remove(
                 "message": "model removal requires explicit confirmation",
                 "active_jobs": active_jobs,
                 "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
                 "quarantine": "database record will be marked quarantined; runtime views will be moved to recoverable quarantine; blobs remain recoverable under the authoritative blob store",
             },
         )
@@ -6094,6 +6140,7 @@ async def admin_model_remove(
         metadata={
             "aliases": manifest.aliases,
             "dependent_workflows": dependent_workflows,
+            "dependent_voice_profiles": dependent_voice_profiles,
             "runtime_view_quarantine": view_quarantine,
             "workflow_dependencies_refreshed": workflows["count"],
         },
@@ -6102,6 +6149,8 @@ async def admin_model_remove(
         "model": public_model_record(updated),
         "active_jobs": active_jobs,
         "dependent_workflows": dependent_workflows,
+        "dependent_voice_profiles": dependent_voice_profiles,
+        "active_voice_profiles": active_voice_profiles,
         "runtime_view_quarantine": view_quarantine,
         "workflow_refresh": workflows,
     }
@@ -6118,6 +6167,8 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
     model_ref = f"{model_id}@{version}"
     active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
+    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
+    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
     records = await database.list_model_records()
     plan = model_lifecycle.build_blob_quarantine_plan(manifest, data_root_path(), records, model_status=row["status"])
     if active_jobs:
@@ -6127,10 +6178,19 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
             "can_quarantine": False,
             "blockers": [*plan.get("blockers", []), "model is referenced by active jobs"],
         }
+    if active_voice_profiles:
+        plan = {
+            **plan,
+            "status": "blocked",
+            "can_quarantine": False,
+            "blockers": [*plan.get("blockers", []), "model is referenced by active voice profiles"],
+        }
     return {
         **jsonable_encoder(plan),
         "active_jobs": active_jobs,
         "dependent_workflows": dependent_workflows,
+        "dependent_voice_profiles": dependent_voice_profiles,
+        "active_voice_profiles": active_voice_profiles,
     }
 
 
@@ -6150,10 +6210,29 @@ async def admin_model_blob_quarantine(
     model_ref = f"{model_id}@{version}"
     active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
+    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
+    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
     if active_jobs:
         raise HTTPException(
             status_code=409,
-            detail={"message": "model is referenced by active jobs", "active_jobs": active_jobs, "dependent_workflows": dependent_workflows},
+            detail={
+                "message": "model is referenced by active jobs",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+            },
+        )
+    if active_voice_profiles:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "model is referenced by active voice profiles",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+            },
         )
     records = await database.list_model_records()
     try:
@@ -6178,12 +6257,15 @@ async def admin_model_blob_quarantine(
             "moved": [{"sha256": item["sha256"], "quarantine_path": item["quarantine_path"], "size_bytes": item["size_bytes"]} for item in result["moved"]],
             "total_size_bytes": result["total_size_bytes"],
             "dependent_workflows": dependent_workflows,
+            "dependent_voice_profiles": dependent_voice_profiles,
         },
     )
     return {
         **jsonable_encoder(result),
         "active_jobs": active_jobs,
         "dependent_workflows": dependent_workflows,
+        "dependent_voice_profiles": dependent_voice_profiles,
+        "active_voice_profiles": active_voice_profiles,
     }
 
 

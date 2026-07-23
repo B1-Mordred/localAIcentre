@@ -47,10 +47,18 @@ def manifest_payload(sha256: str, size: int) -> dict[str, Any]:
 
 
 class FakeDatabase:
-    def __init__(self, row: dict[str, Any], records: list[dict[str, Any]], *, active_jobs: int = 0) -> None:
+    def __init__(
+        self,
+        row: dict[str, Any],
+        records: list[dict[str, Any]],
+        *,
+        active_jobs: int = 0,
+        voice_profiles: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.row = row
         self.records = records
         self.active_jobs = active_jobs
+        self.voice_profiles = voice_profiles or []
         self.alias_policies: dict[str, dict[str, Any]] = {}
         self.encrypted_secrets: dict[str, dict[str, Any]] = {}
         self.model_downloads: list[dict[str, Any]] = []
@@ -86,6 +94,14 @@ class FakeDatabase:
 
     async def count_active_jobs_for_model(self, model_ref: str, aliases: list[str]) -> int:
         return self.active_jobs
+
+    async def list_voice_profiles(self, include_deleted: bool = False, **kwargs: Any) -> list[dict[str, Any]]:
+        rows = []
+        for row in self.voice_profiles:
+            if row.get("deleted_at") is not None and not include_deleted:
+                continue
+            rows.append(dict(row))
+        return rows
 
     async def list_model_alias_policies(self) -> list[dict[str, Any]]:
         return [dict(policy) for _, policy in sorted(self.alias_policies.items())]
@@ -240,6 +256,111 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(result["active_jobs"], 2)
             self.assertIn("model is referenced by active jobs", result["blockers"])
             self.assertEqual(result["dependent_workflows"][0]["id"], "workflow-text")
+
+    def test_blob_quarantine_plan_blocks_active_voice_profile_dependency(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            row = {
+                "id": "chat-small",
+                "version": "1.0.0",
+                "status": "quarantined",
+                "manifest": manifest_payload(digest, len(data)),
+            }
+            voice_profiles = [
+                {
+                    "id": "vp_chat",
+                    "display_name": "Chat voice",
+                    "runtime": "voicebox",
+                    "engine": "voicebox",
+                    "model_alias": "chat-default",
+                    "profile_type": "clone",
+                    "status": "active",
+                    "deleted_at": None,
+                }
+            ]
+            self.patch_common(root, FakeDatabase(row, [row], voice_profiles=voice_profiles))
+
+            result = asyncio.run(main.admin_model_blob_quarantine_plan("chat-small", "1.0.0"))
+
+            self.assertEqual(result["status"], "blocked")
+            self.assertFalse(result["can_quarantine"])
+            self.assertIn("model is referenced by active voice profiles", result["blockers"])
+            self.assertEqual(result["dependent_voice_profiles"][0]["id"], "vp_chat")
+            self.assertEqual(result["active_voice_profiles"][0]["model_alias"], "chat-default")
+
+    def test_model_remove_blocks_active_voice_profile_dependency(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        row = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "status": "installed",
+            "manifest": manifest_payload(digest, len(data)),
+        }
+        voice_profiles = [
+            {
+                "id": "vp_active",
+                "display_name": "Active voice",
+                "runtime": "voicebox",
+                "engine": "voicebox",
+                "model_alias": "chat-default",
+                "profile_type": "reference",
+                "status": "active",
+                "deleted_at": None,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase(row, [row], voice_profiles=voice_profiles))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_remove(
+                        "chat-small",
+                        "1.0.0",
+                        main.ModelRemoveRequest(confirm=True),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "model is referenced by active voice profiles")
+        self.assertEqual(raised.exception.detail["dependent_voice_profiles"][0]["id"], "vp_active")
+
+    def test_model_remove_reports_disabled_voice_profile_dependency_before_confirmation(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        row = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "status": "installed",
+            "manifest": manifest_payload(digest, len(data)),
+        }
+        voice_profiles = [
+            {
+                "id": "vp_disabled",
+                "display_name": "Disabled voice",
+                "runtime": "voicebox",
+                "engine": "voicebox",
+                "model_alias": "chat-default",
+                "profile_type": "preset",
+                "status": "disabled",
+                "deleted_at": None,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase(row, [row], voice_profiles=voice_profiles))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_model_remove("chat-small", "1.0.0", main.ModelRemoveRequest(confirm=False)))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "model removal requires explicit confirmation")
+        self.assertEqual(raised.exception.detail["dependent_voice_profiles"][0]["id"], "vp_disabled")
+        self.assertEqual(raised.exception.detail["active_voice_profiles"], [])
 
     def test_blob_quarantine_endpoint_moves_blob_and_records_audit(self) -> None:
         data = b"tiny model"
