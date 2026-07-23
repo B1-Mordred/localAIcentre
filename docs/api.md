@@ -174,7 +174,7 @@ curl -X PUT https://models.ai.b1.germering/modelhub/v1/clients/mhc_123/policy \
   -d '{"allowed_models":["image-default","image-upscale"],"allow_downloads":true}'
 ```
 
-`allowed_models` accepts explicit aliases/model IDs or `["*"]`. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
+`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, sync-plan, and blob access. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
 
 ## Maintenance Mode
 

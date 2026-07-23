@@ -4218,6 +4218,23 @@ def model_allowed_by_client(client: dict[str, Any] | None, model_id: str, record
     return modelhub_policy.model_allowed_by_allowed_set(client.get("allowed_models") or [], model_id, candidate)
 
 
+def modelhub_catalog_for_client(client: dict[str, Any] | None) -> dict[str, Any]:
+    catalog = catalog_snapshot().to_catalog()
+    if client is None:
+        return catalog
+    aliases = [
+        record
+        for record in catalog.get("aliases", [])
+        if isinstance(record, dict) and model_allowed_by_client(client, str(record.get("id") or ""), record)
+    ]
+    models = [
+        record
+        for record in catalog.get("models", [])
+        if isinstance(record, dict) and model_allowed_by_client(client, str(record.get("id") or ""), record)
+    ]
+    return {**catalog, "aliases": aliases, "models": models}
+
+
 def require_modelhub_client_network_allowed(client: dict[str, Any] | None, request: Request | None) -> None:
     if client is None:
         return
@@ -7217,8 +7234,8 @@ async def runtime_reservation_delete(reservation_id: str, authorization: str | N
 async def modelhub_catalog(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
-    await modelhub_client_for_auth(auth)
-    return catalog_snapshot().to_catalog()
+    client = await modelhub_client_for_auth(auth)
+    return modelhub_catalog_for_client(client)
 
 
 def modelhub_model_record(model_id: str) -> dict[str, Any]:

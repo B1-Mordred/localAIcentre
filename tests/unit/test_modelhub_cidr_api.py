@@ -4,6 +4,7 @@ import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -77,6 +78,44 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as raised:
             main.require_modelhub_client_network_allowed(allowed, request_for("172.18.0.10", {"X-Forwarded-For": "10.10.10.10"}))
         self.assertEqual(raised.exception.status_code, 403)
+
+    def test_modelhub_catalog_filters_by_client_allowlist(self) -> None:
+        catalog_payload = {
+            "object": "catalog",
+            "aliases": [
+                {"id": "chat-default", "root": "downloadable-llm", "resolved_model": {"id": "downloadable-llm"}},
+                {"id": "image-default", "root": "image-model", "resolved_model": {"id": "image-model"}},
+                {"id": "tts-fast", "root": "tts-model", "resolved_model": {"id": "tts-model"}},
+            ],
+            "models": [
+                {"id": "downloadable-llm", "aliases": ["chat-default"]},
+                {"id": "image-model", "aliases": ["image-default"]},
+                {"id": "tts-model", "aliases": ["tts-fast"]},
+            ],
+        }
+
+        original_catalog = main.catalog_snapshot
+        main.catalog_snapshot = lambda: SimpleNamespace(to_catalog=lambda: catalog_payload)  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+
+        filtered = main.modelhub_catalog_for_client({"allowed_models": ["chat-default", "image-model"]})
+
+        self.assertEqual([record["id"] for record in filtered["aliases"]], ["chat-default", "image-default"])
+        self.assertEqual([record["id"] for record in filtered["models"]], ["downloadable-llm", "image-model"])
+        self.assertEqual(catalog_payload["aliases"][2]["id"], "tts-fast")
+
+    def test_modelhub_catalog_admin_wildcard_returns_unfiltered_catalog(self) -> None:
+        catalog_payload = {
+            "object": "catalog",
+            "aliases": [{"id": "chat-default"}, {"id": "tts-fast"}],
+            "models": [{"id": "downloadable-llm"}, {"id": "tts-model"}],
+        }
+
+        original_catalog = main.catalog_snapshot
+        main.catalog_snapshot = lambda: SimpleNamespace(to_catalog=lambda: catalog_payload)  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+
+        self.assertIs(main.modelhub_catalog_for_client(None), catalog_payload)
 
     async def test_modelhub_client_lookup_enforces_cidr_allowlist(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:read", "modelhub:sync"}))
