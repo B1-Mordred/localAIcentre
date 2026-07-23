@@ -92,7 +92,6 @@ class ComposePolicyTests(unittest.TestCase):
             image = service.get("image")
             if not image:
                 continue
-            self.assertIn("@sha256:", image, name)
             self.assertNotIn(":latest", image, name)
         for name, service in self.production_comfyui_compose["services"].items():
             image = service.get("image")
@@ -205,21 +204,30 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_PIPER_BINARY"], "${B1_PIPER_BINARY:-/opt/piper/piper}")
         self.assertEqual(environment["B1_PIPER_MODEL_PATH"], "${B1_PIPER_MODEL_PATH:-}")
 
-    def test_production_localai_override_uses_pinned_official_image(self) -> None:
+    def test_production_localai_override_builds_b1_wrapper_image(self) -> None:
         service = self.production_localai_compose["services"]["localai"]
+        build_args = service["build"]["args"]
         environment = service["environment"]
         volumes = service["volumes"]
         device = service["deploy"]["resources"]["reservations"]["devices"][0]
 
-        self.assertIsNone(service["build"])
-        self.assertEqual(
-            service["image"],
-            "${B1_LOCALAI_IMAGE:-localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973}",
-        )
+        self.assertEqual(service["build"]["context"], "./deploy/localai")
+        self.assertEqual(service["image"], "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}")
+        self.assertEqual(build_args["B1_LOCALAI_UPSTREAM_VERSION"], "${B1_LOCALAI_UPSTREAM_VERSION:-v4.7.1-gpu-nvidia-cuda-12}")
+        self.assertEqual(build_args["B1_LOCALAI_UPSTREAM_COMMIT"], "${B1_LOCALAI_UPSTREAM_COMMIT:-b224c96db6f4b87306a33a808650bfce63b12588}")
         self.assertNotIn("ports", service)
         self.assertFalse(service["read_only"])
         self.assertIsNone(environment["B1_RUNTIME_KIND"])
         self.assertIsNone(environment["B1_RUNTIME_NAME"])
+        self.assertEqual(environment["B1_LOCALAI_PUBLIC_HOST"], "${B1_LOCALAI_PUBLIC_HOST:-0.0.0.0}")
+        self.assertEqual(environment["B1_LOCALAI_PUBLIC_PORT"], "${B1_LOCALAI_PUBLIC_PORT:-8080}")
+        self.assertEqual(environment["B1_LOCALAI_UPSTREAM_ADDRESS"], "${B1_LOCALAI_UPSTREAM_ADDRESS:-127.0.0.1:18080}")
+        self.assertEqual(environment["B1_LOCALAI_UPSTREAM_URL"], "${B1_LOCALAI_UPSTREAM_URL:-http://127.0.0.1:18080}")
+        self.assertEqual(environment["B1_LOCALAI_HOOK_STRICT_MODEL_LIST"], "${B1_LOCALAI_HOOK_STRICT_MODEL_LIST:-false}")
+        self.assertEqual(environment["B1_LOCALAI_HOOK_WARM_ENABLED"], "${B1_LOCALAI_HOOK_WARM_ENABLED:-false}")
+        self.assertEqual(environment["B1_LOCALAI_HOOK_SMOKE_ENABLED"], "${B1_LOCALAI_HOOK_SMOKE_ENABLED:-false}")
+        self.assertEqual(environment["B1_LOCALAI_VIDEO_SMOKE_ENABLED"], "${B1_LOCALAI_VIDEO_SMOKE_ENABLED:-false}")
+        self.assertEqual(environment["LOCALAI_ADDRESS"], "${B1_LOCALAI_UPSTREAM_ADDRESS:-127.0.0.1:18080}")
         self.assertEqual(environment["LOCALAI_MODELS_PATH"], "/srv/b1-ai-hub/models")
         self.assertEqual(environment["LOCALAI_BACKENDS_PATH"], "/srv/b1-ai-hub/localai/backends")
         self.assertEqual(environment["LOCALAI_CONFIG_DIR"], "/srv/b1-ai-hub/localai/configuration")
@@ -240,13 +248,28 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(device["count"], "${B1_LOCALAI_GPU_COUNT:-1}")
         self.assertEqual(device["capabilities"], ["gpu"])
 
+    def test_production_localai_wrapper_uses_pinned_upstream_image_and_hooks(self) -> None:
+        dockerfile = (ROOT / "deploy" / "localai" / "Dockerfile").read_text(encoding="utf-8")
+        entrypoint = (ROOT / "deploy" / "localai" / "b1-localai-entrypoint.sh").read_text(encoding="utf-8")
+        proxy = (ROOT / "deploy" / "localai" / "b1_localai_proxy.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "FROM localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+            dockerfile,
+        )
+        self.assertIn("B1_LOCALAI_UPSTREAM_COMMIT=b224c96db6f4b87306a33a808650bfce63b12588", dockerfile)
+        self.assertIn("python3 /usr/local/bin/b1_localai_proxy.py", entrypoint)
+        self.assertIn('export LOCALAI_ADDRESS="${LOCALAI_ADDRESS:-${upstream_address}}"', entrypoint)
+        for route in ("load", "warm", "smoke", "unload"):
+            self.assertIn(f'if action == "{route}"', proxy)
+        self.assertIn('"/backend/shutdown"', proxy)
+
     def test_production_localai_override_points_control_plane_to_official_port(self) -> None:
         control_plane = self.production_localai_compose["services"]["control-plane"]
 
         self.assertEqual(control_plane["environment"]["LOCALAI_URL"], "http://localai:8080")
 
     def test_production_localai_override_resets_development_mock_fields(self) -> None:
-        self.assertIn("build: !reset null", self.production_localai_text)
         self.assertIn("B1_RUNTIME_KIND: !reset null", self.production_localai_text)
         self.assertIn("B1_RUNTIME_NAME: !reset null", self.production_localai_text)
 

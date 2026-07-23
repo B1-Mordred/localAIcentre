@@ -32,11 +32,25 @@ DOCKERFILES = (
     "web/control-center/Dockerfile",
     "web/media-studio/Dockerfile",
     "deploy/open-webui/Dockerfile",
+    "deploy/localai/Dockerfile",
     "deploy/comfyui/Dockerfile",
     "deploy/voicebox/Dockerfile",
     "integrations/b1-model-client/Dockerfile",
 )
 PINNED_RELEASE_ARTIFACTS = (
+    {
+        "type": "application",
+        "name": "mudler/LocalAI",
+        "version": "v4.7.1-gpu-nvidia-cuda-12",
+        "purl": "pkg:github/mudler/LocalAI@v4.7.1-gpu-nvidia-cuda-12",
+        "properties": [
+            {"name": "b1:source", "value": "deploy/localai/Dockerfile"},
+            {"name": "b1:commit", "value": "b224c96db6f4b87306a33a808650bfce63b12588"},
+            {"name": "b1:upstream_image", "value": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973"},
+            {"name": "b1:linux_amd64_manifest", "value": "sha256:1b27b2469dcd78b21c33034eb3503efcb07330380b9ade00c14c48b2b09b641d"},
+            {"name": "b1:image_config", "value": "sha256:b471c58b8d8897369346189e774ff7e21dfcd51e35dd8f5a5da14300ac44586a"},
+        ],
+    },
     {
         "type": "application",
         "name": "rhasspy/piper",

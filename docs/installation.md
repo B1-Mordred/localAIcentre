@@ -60,19 +60,22 @@ docker compose -f compose.yaml -f compose.production-localai.yaml up -d
 
 The override:
 
-- replaces the mock build with the official pinned CUDA 12 image `localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973`
-- switches `LOCALAI_URL` from `http://localai:8000` to LocalAI's native `http://localai:8080`
+- replaces the mock build with the B1 LocalAI wrapper image `b1-ai-hub/localai:v4.7.1-b1`, built from official LocalAI CUDA 12 image `localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973`
+- switches `LOCALAI_URL` from `http://localai:8000` to the B1 wrapper on `http://localai:8080`, which forwards normal LocalAI API traffic to the private upstream LocalAI listener on `127.0.0.1:18080`
 - keeps LocalAI on the internal `runtime` network with no published backend port
 - mounts `$B1_DATA_ROOT/models/runtime-views/localai` read-only at `/srv/b1-ai-hub/models`
 - creates writable LocalAI state at `$B1_DATA_ROOT/data/localai/{configuration,backends,data}` and `$B1_DATA_ROOT/cache/localai`
 - reserves one GPU by default through `B1_LOCALAI_GPU_DRIVER=nvidia.com/gpu` and `B1_LOCALAI_GPU_COUNT=1`
 - sets LocalAI's own backend guard rails with `LOCALAI_MAX_ACTIVE_BACKENDS=1`, `LOCALAI_WATCHDOG_IDLE=true`, `LOCALAI_WATCHDOG_IDLE_TIMEOUT=5m`, `LOCALAI_WATCHDOG_INTERVAL=1s`, and `LOCALAI_FORCE_EVICTION_WHEN_BUSY=false`
 - disables LocalAI's web UI and CORS by default because B1 gateway/control-plane UIs are the managed surfaces
+- implements `POST /b1/runtime/load`, `POST /b1/runtime/warm`, `POST /b1/runtime/smoke`, and `POST /b1/runtime/unload` for scheduler-aware readiness and unload probes
 - health-checks `http://127.0.0.1:8080/readyz`
 
 Use `B1_LOCALAI_GPU_DRIVER=nvidia` only if the installed NVIDIA Container Toolkit still requires the legacy Compose driver name. The first LocalAI startup can take a long time while the image initializes or downloads runtime backends; the health check allows a one-hour start period for that reason.
 
-Do not set `B1_RUNTIME_DEPLOYMENT_MODE=production` for cutover until LocalAI is healthy through the gateway, at least one installed model smoke test has passed, unload/recovery has been exercised through runtime-agent, and the remaining required runtimes are also real rather than placeholders.
+By default the B1 lifecycle hooks are conservative: model-list misses return `unconfirmed`, warm and smoke inference are disabled, and video smoke is disabled. For acceptance testing with installed model manifests, set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` and `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`; set `B1_LOCALAI_HOOK_WARM_ENABLED=true` only when a tiny warm inference is acceptable before the real request. The unload hook calls LocalAI's native `/backend/shutdown` endpoint for the resolved model.
+
+Do not set `B1_RUNTIME_DEPLOYMENT_MODE=production` for cutover until LocalAI is healthy through the gateway, at least one installed model smoke test has passed with strict hooks enabled, unload/recovery has been exercised through runtime-agent and the LocalAI hook, and the remaining required runtimes are also real rather than placeholders.
 
 ## Production ComfyUI Override
 

@@ -62,6 +62,18 @@ class SbomGenerationTests(unittest.TestCase):
             piper["properties"],
         )
 
+        localai = next(component for component in components if component["name"] == "mudler/LocalAI")
+        self.assertEqual(localai["type"], "application")
+        self.assertEqual(localai["version"], "v4.7.1-gpu-nvidia-cuda-12")
+        self.assertEqual(localai["purl"], "pkg:github/mudler/LocalAI@v4.7.1-gpu-nvidia-cuda-12")
+        self.assertIn(
+            {
+                "name": "b1:upstream_image",
+                "value": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+            },
+            localai["properties"],
+        )
+
         comfyui = next(component for component in components if component["name"] == "Comfy-Org/ComfyUI")
         self.assertEqual(comfyui["type"], "application")
         self.assertEqual(comfyui["version"], "v0.3.77")

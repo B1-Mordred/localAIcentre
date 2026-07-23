@@ -1,6 +1,12 @@
 # LocalAI Deployment
 
-LocalAI is the first GPU runtime with a production Compose override. The base `compose.yaml` keeps a mock `localai` runtime for development, while `compose.production-localai.yaml` replaces it with the official upstream CUDA 12 image:
+LocalAI is the first GPU runtime with a production Compose override. The base `compose.yaml` keeps a mock `localai` runtime for development, while `compose.production-localai.yaml` replaces it with the B1 wrapper image:
+
+```text
+b1-ai-hub/localai:v4.7.1-b1
+```
+
+The wrapper image is intentionally thin. It starts the official upstream CUDA 12 image on a private in-container listener and exposes a small stdlib proxy on `:8080` for native LocalAI/OpenAI-compatible traffic plus B1 scheduler lifecycle hooks. The upstream base image is:
 
 ```text
 localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973
@@ -12,13 +18,19 @@ The verified linux/amd64 platform manifest for that image is:
 sha256:1b27b2469dcd78b21c33034eb3503efcb07330380b9ade00c14c48b2b09b641d
 ```
 
+The upstream image config digest inspected during pinning is:
+
+```text
+sha256:b471c58b8d8897369346189e774ff7e21dfcd51e35dd8f5a5da14300ac44586a
+```
+
 Use it with:
 
 ```bash
 docker compose -f compose.yaml -f compose.production-localai.yaml up -d
 ```
 
-The override uses Docker Compose `!reset` tags to remove the inherited mock `build`, `B1_RUNTIME_KIND`, and `B1_RUNTIME_NAME` fields. Validate the merged service before starting:
+The override uses Docker Compose `!reset` tags to remove the inherited mock `B1_RUNTIME_KIND` and `B1_RUNTIME_NAME` fields. Validate the merged service before starting:
 
 ```bash
 docker compose -f compose.yaml -f compose.production-localai.yaml config --quiet
@@ -69,14 +81,21 @@ No LocalAI port is published to the LAN. All user and external-client traffic mu
 
 ## Adapter Hooks
 
-The control plane may call optional internal B1 runtime hooks before GPU media submission:
+The B1 wrapper handles optional internal runtime hooks before GPU submission:
 
 - `POST /b1/runtime/load`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
-The placeholder service implements these hooks for smoke testing. A real LocalAI image must either implement model-aware load/warm/smoke behavior or return 404/405 so the control plane treats the hooks as unsupported.
+Normal LocalAI requests are proxied unchanged to the private upstream listener. Hook behavior is intentionally bounded and does not log request prompts or user media:
+
+- `load` verifies `/v1/models` when available and returns `unconfirmed` because LocalAI loads models lazily on first inference.
+- `warm` can run the same tiny operation-specific smoke request when `B1_LOCALAI_HOOK_WARM_ENABLED=true`; otherwise it returns `unconfirmed`.
+- `smoke` runs a tiny chat, embedding, image, or TTS request only when `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`. Video smoke remains disabled unless `B1_LOCALAI_VIDEO_SMOKE_ENABLED=true`.
+- `unload` calls LocalAI's native `POST /backend/shutdown` with the resolved model name.
+
+Set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` for cutover acceptance so a requested model missing from `/v1/models` becomes a hard preparation failure instead of an `unconfirmed` staging result.
 
 The control-plane adapter currently submits:
 
@@ -87,4 +106,4 @@ The control-plane adapter currently submits:
 
 Media responses are expected to use an OpenAI-style `data` array with `b64_json`, `b64`, `base64`, `data:` URL, or same-origin `url` entries plus an optional `mime_type`.
 
-Current limitation: the official LocalAI image is not modified by B1 yet, so it does not implement the optional B1 load/warm/smoke hooks. The scheduler still controls submissions and the adapter treats 404/405 hook responses as unsupported, but production acceptance still needs real model-specific smoke, unload, and measured VRAM tests before cutover.
+Production acceptance still needs model-specific smoke results and measured VRAM data for the exact installed model manifests. The wrapper provides the hook surface for those tests; it does not bundle weights or guarantee that every LocalAI backend implements every OpenAI-compatible media route.
