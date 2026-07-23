@@ -22,6 +22,12 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertRegex(self.source, r'TERMINAL_JOB_STATES = new Set\(\[[^\]]*"recovery_required"')
         self.assertRegex(self.source, r'RETRYABLE_JOB_STATES = new Set\(\[[^\]]*"recovery_required"')
 
+    def test_jobs_tab_streams_selected_job_events(self) -> None:
+        self.assertIn('/admin/jobs/${encodeURIComponent(jobId)}/events', self.source)
+        self.assertIn('Accept: "text/event-stream"', self.source)
+        self.assertIn('setJobs((current) => current.map((row) => (row.id === job.id ? job : row)))', self.source)
+        self.assertIn('if (!selected || TERMINAL_JOB_STATES.has(selected.state)) return;', self.source)
+
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 

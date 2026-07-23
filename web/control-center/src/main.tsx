@@ -768,6 +768,63 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parsed as T;
 }
 
+function parseSseEvent(raw: string): { event: string; data: string } | null {
+  let event = "message";
+  const data: string[] = [];
+  raw.split("\n").forEach((line) => {
+    if (!line || line.startsWith(":")) return;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    if (field === "data") data.push(value);
+  });
+  return data.length ? { event, data: data.join("\n") } : null;
+}
+
+async function streamAdminJobEvents(
+  jobId: string,
+  signal: AbortSignal,
+  onJob: (job: JobRecord) => void
+): Promise<void> {
+  const response = await apiFetch(`/admin/jobs/${encodeURIComponent(jobId)}/events`, {
+    headers: { Accept: "text/event-stream" },
+    signal
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const chunks = buffer.replace(/\r\n/g, "\n").split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      const parsed = parseSseEvent(chunk);
+      if (!parsed) continue;
+      if (parsed.event === "job") {
+        onJob(JSON.parse(parsed.data) as JobRecord);
+      } else if (parsed.event === "error" || parsed.event === "timeout") {
+        const payload = JSON.parse(parsed.data);
+        throw new Error(payload.error ?? parsed.event);
+      }
+    }
+    if (done) break;
+  }
+}
+
 function formatCount(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "unavailable";
 }
@@ -1854,6 +1911,26 @@ function Jobs() {
     loadJobs();
     loadReservations();
   }, []);
+
+  useEffect(() => {
+    if (!selected || TERMINAL_JOB_STATES.has(selected.state)) return;
+    const controller = new AbortController();
+    setMessage(`watching ${selected.id}`);
+    streamAdminJobEvents(selected.id, controller.signal, (job) => {
+      setSelected(job);
+      setJobs((current) => current.map((row) => (row.id === job.id ? job : row)));
+      setMessage(`${job.id} ${job.state}`);
+      if (TERMINAL_JOB_STATES.has(job.state)) {
+        loadJobs();
+        loadReservations();
+      }
+    }).catch((error: Error) => {
+      if (controller.signal.aborted) return;
+      setMessage(error.message);
+      loadJobs();
+    });
+    return () => controller.abort();
+  }, [selected?.id]);
 
   const mutateJob = (job: JobRecord, action: "cancel" | "retry") => {
     setBusy(true);
