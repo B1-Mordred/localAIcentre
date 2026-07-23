@@ -5837,6 +5837,32 @@ async def admin_model_download_cancel(download_id: str, authorization: str | Non
     return public_model_download(row)
 
 
+@app.post("/admin/models/downloads/{download_id}/retry")
+async def admin_model_download_retry(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    try:
+        row = await database.retry_model_download(download_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="model download not found")
+    await record_audit_event(
+        auth,
+        "model_download.retry_requested",
+        target_type="model_download",
+        target_id=download_id,
+        summary=f"Requeued model download {download_id}",
+        metadata={
+            "status": row["status"],
+            "model_ref": f"{row['model_id']}@{row['model_version']}",
+            "bytes_downloaded": row.get("bytes_downloaded"),
+            "target_size_bytes": row.get("target_size_bytes"),
+        },
+    )
+    return public_model_download(row)
+
+
 @app.post("/admin/models/install")
 async def admin_model_install(payload: ModelInstallRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)

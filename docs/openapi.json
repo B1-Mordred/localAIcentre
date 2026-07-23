@@ -3761,6 +3761,63 @@
         "summary": "Admin Model Download Get"
       }
     },
+    "/admin/models/downloads/{download_id}/retry": {
+      "post": {
+        "operationId": "admin_model_download_retry_admin_models_downloads__download_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "download_id",
+            "required": true,
+            "schema": {
+              "title": "Download Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Download Retry Admin Models Downloads  Download Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Download Retry"
+      }
+    },
     "/admin/models/install": {
       "post": {
         "operationId": "admin_model_install_admin_models_install_post",

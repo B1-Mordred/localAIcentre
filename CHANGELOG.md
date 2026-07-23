@@ -18,3 +18,4 @@
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.
+- Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.

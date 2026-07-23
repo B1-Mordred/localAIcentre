@@ -1336,6 +1336,43 @@ async def request_model_download_cancel(download_id: str) -> dict[str, Any] | No
     return await get_model_download(download_id)
 
 
+async def retry_model_download(download_id: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(model_downloads).where(model_downloads.c.id == download_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        current_status = str(row["status"])
+        if current_status not in {"failed", "cancelled"}:
+            raise ValueError(f"model download cannot be retried from status {current_status}")
+        await conn.execute(
+            update(model_downloads)
+            .where(model_downloads.c.id == download_id)
+            .values(
+                status="queued",
+                stage="queued",
+                error_category=None,
+                error_message=None,
+                cancelled_at=None,
+                completed_at=None,
+                updated_at=now,
+            )
+        )
+        return {
+            **dict(row),
+            "status": "queued",
+            "stage": "queued",
+            "error_category": None,
+            "error_message": None,
+            "cancelled_at": None,
+            "completed_at": None,
+            "updated_at": now,
+        }
+
+
 async def get_job(job_id: str) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")

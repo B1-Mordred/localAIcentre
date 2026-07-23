@@ -124,6 +124,26 @@ class FakeDatabase:
         self.model_downloads.append(row)
         return dict(row)
 
+    async def retry_model_download(self, download_id: str) -> dict[str, Any] | None:
+        for row in self.model_downloads:
+            if row["id"] != download_id:
+                continue
+            if row["status"] not in {"failed", "cancelled"}:
+                raise ValueError(f"model download cannot be retried from status {row['status']}")
+            row.update(
+                {
+                    "status": "queued",
+                    "stage": "queued",
+                    "error_category": None,
+                    "error_message": None,
+                    "cancelled_at": None,
+                    "completed_at": None,
+                    "updated_at": datetime.now(tz=UTC),
+                }
+            )
+            return dict(row)
+        return None
+
     async def runtime_reservation_gate(self, owner_id: str, runtime: str, resolved_model_version: str, gpu_runtimes: list[str]) -> dict[str, Any]:
         return {"allowed": True}
 
@@ -388,6 +408,83 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 422)
             self.assertIn("category model-download", str(raised.exception.detail))
             self.assertEqual(fake_database.model_downloads, [])
+
+    def test_model_download_retry_requeues_failed_download_and_records_audit(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_failed",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": "a" * 64,
+                    "target_size_bytes": 10,
+                    "bytes_downloaded": 4,
+                    "status": "failed",
+                    "stage": "failed",
+                    "manifest": manifest_payload("a" * 64, 10),
+                    "credential_secret_name": None,
+                    "error_category": "ModelLifecycleError",
+                    "error_message": "network interrupted",
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database, audit_events)
+
+            result = asyncio.run(main.admin_model_download_retry("modeldl_failed"))
+
+            self.assertEqual(result["status"], "queued")
+            self.assertEqual(result["stage"], "queued")
+            self.assertEqual(result["bytes_downloaded"], 4)
+            self.assertIsNone(result["error_category"])
+            self.assertEqual(fake_database.model_downloads[0]["status"], "queued")
+            self.assertEqual(audit_events[0]["event_type"], "model_download.retry_requested")
+            self.assertEqual(audit_events[0]["metadata"]["bytes_downloaded"], 4)
+
+    def test_model_download_retry_rejects_active_or_missing_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_running",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": "a" * 64,
+                    "target_size_bytes": 10,
+                    "bytes_downloaded": 4,
+                    "status": "running",
+                    "stage": "downloading",
+                    "manifest": manifest_payload("a" * 64, 10),
+                    "credential_secret_name": None,
+                    "error_category": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database)
+
+            with self.assertRaises(main.HTTPException) as active:
+                asyncio.run(main.admin_model_download_retry("modeldl_running"))
+            self.assertEqual(active.exception.status_code, 409)
+
+            with self.assertRaises(main.HTTPException) as missing:
+                asyncio.run(main.admin_model_download_retry("modeldl_missing"))
+            self.assertEqual(missing.exception.status_code, 404)
 
     def test_model_install_persists_available_manifest_as_installed(self) -> None:
         data = b"tiny model"
