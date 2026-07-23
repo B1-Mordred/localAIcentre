@@ -36,12 +36,17 @@ class ComposePolicyTests(unittest.TestCase):
         cls.legacy_compose = yaml.load((ROOT / "compose.legacy-comfy.yaml").read_text(encoding="utf-8"), Loader=ComposePolicyLoader)
         cls.production_localai_text = (ROOT / "compose.production-localai.yaml").read_text(encoding="utf-8")
         cls.production_comfyui_text = (ROOT / "compose.production-comfyui.yaml").read_text(encoding="utf-8")
+        cls.production_voicebox_text = (ROOT / "compose.production-voicebox.yaml").read_text(encoding="utf-8")
         cls.production_localai_compose = yaml.load(
             cls.production_localai_text,
             Loader=ComposePolicyLoader,
         )
         cls.production_comfyui_compose = yaml.load(
             cls.production_comfyui_text,
+            Loader=ComposePolicyLoader,
+        )
+        cls.production_voicebox_compose = yaml.load(
+            cls.production_voicebox_text,
             Loader=ComposePolicyLoader,
         )
 
@@ -90,6 +95,11 @@ class ComposePolicyTests(unittest.TestCase):
             self.assertIn("@sha256:", image, name)
             self.assertNotIn(":latest", image, name)
         for name, service in self.production_comfyui_compose["services"].items():
+            image = service.get("image")
+            if not image:
+                continue
+            self.assertNotIn(":latest", image, name)
+        for name, service in self.production_voicebox_compose["services"].items():
             image = service.get("image")
             if not image:
                 continue
@@ -286,6 +296,66 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("B1_RUNTIME_KIND: !reset null", self.production_comfyui_text)
         self.assertIn("B1_RUNTIME_NAME: !reset null", self.production_comfyui_text)
         self.assertIn("volumes: !override", self.production_comfyui_text)
+
+    def test_production_voicebox_override_builds_pinned_b1_image(self) -> None:
+        service = self.production_voicebox_compose["services"]["voicebox"]
+        build_args = service["build"]["args"]
+        environment = service["environment"]
+        volumes = service["volumes"]
+        device = service["deploy"]["resources"]["reservations"]["devices"][0]
+
+        self.assertEqual(service["image"], "${B1_VOICEBOX_IMAGE:-b1-ai-hub/voicebox:v0.5.0-b1}")
+        self.assertEqual(service["build"]["context"], "./deploy/voicebox")
+        self.assertEqual(build_args["B1_VOICEBOX_VERSION"], "${B1_VOICEBOX_VERSION:-v0.5.0}")
+        self.assertEqual(build_args["B1_VOICEBOX_COMMIT"], "${B1_VOICEBOX_COMMIT:-2bcb98d1a8b6fe05e15fbc1559e3085669e4035d}")
+        self.assertEqual(
+            build_args["B1_VOICEBOX_TARBALL_SHA256"],
+            "${B1_VOICEBOX_TARBALL_SHA256:-d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083}",
+        )
+        self.assertEqual(build_args["B1_QWEN3_TTS_COMMIT"], "${B1_QWEN3_TTS_COMMIT:-022e286b98fbec7e1e916cb940cdf532cd9f488e}")
+        self.assertEqual(build_args["B1_LINACODEC_COMMIT"], "${B1_LINACODEC_COMMIT:-c0ae7c7285e121475c27592cfbb600624b714290}")
+        self.assertEqual(build_args["B1_LUXTTS_COMMIT"], "${B1_LUXTTS_COMMIT:-28ae6a61151684fffc9d1a7aa15eafa02286fe0b}")
+        self.assertNotIn("ports", service)
+        self.assertTrue(service["read_only"])
+        self.assertIsNone(environment["B1_RUNTIME_KIND"])
+        self.assertIsNone(environment["B1_RUNTIME_NAME"])
+        self.assertEqual(environment["B1_VOICEBOX_HOST"], "${B1_VOICEBOX_HOST:-0.0.0.0}")
+        self.assertEqual(environment["B1_VOICEBOX_PORT"], "${B1_VOICEBOX_PORT:-17493}")
+        self.assertEqual(environment["B1_VOICEBOX_DATA_DIR"], "/srv/b1-ai-hub/voicebox")
+        self.assertEqual(environment["B1_VOICEBOX_MODELS_DIR"], "/srv/b1-ai-hub/models")
+        self.assertEqual(environment["VOICEBOX_MODELS_DIR"], "/srv/b1-ai-hub/models")
+        self.assertEqual(environment["HF_HUB_DISABLE_TELEMETRY"], "1")
+        self.assertEqual(environment["HF_HUB_OFFLINE"], "${B1_VOICEBOX_HF_HUB_OFFLINE:-1}")
+        self.assertEqual(environment["TRANSFORMERS_OFFLINE"], "${B1_VOICEBOX_TRANSFORMERS_OFFLINE:-1}")
+        self.assertEqual(environment["DO_NOT_TRACK"], "1")
+        self.assertEqual(service["healthcheck"]["test"], ["CMD", "curl", "-fsS", "http://127.0.0.1:17493/health"])
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox", volumes)
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro", volumes)
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache", volumes)
+        self.assertEqual(device["driver"], "${B1_VOICEBOX_GPU_DRIVER:-nvidia.com/gpu}")
+        self.assertEqual(device["count"], "${B1_VOICEBOX_GPU_COUNT:-1}")
+        self.assertEqual(device["capabilities"], ["gpu"])
+
+    def test_production_voicebox_override_points_control_plane_to_native_port(self) -> None:
+        control_plane = self.production_voicebox_compose["services"]["control-plane"]
+
+        self.assertEqual(control_plane["environment"]["VOICEBOX_URL"], "http://voicebox:17493")
+
+    def test_production_voicebox_override_resets_development_mock_fields_and_volumes(self) -> None:
+        self.assertIn("B1_RUNTIME_KIND: !reset null", self.production_voicebox_text)
+        self.assertIn("B1_RUNTIME_NAME: !reset null", self.production_voicebox_text)
+        self.assertIn("volumes: !override", self.production_voicebox_text)
+
+    def test_production_voicebox_build_uses_resolved_constraints(self) -> None:
+        dockerfile = (ROOT / "deploy" / "voicebox" / "Dockerfile").read_text(encoding="utf-8")
+        constraints = (ROOT / "deploy" / "voicebox" / "constraints.txt").read_text(encoding="utf-8")
+
+        self.assertIn("COPY constraints.txt /tmp/voicebox-constraints.txt", dockerfile)
+        self.assertIn("-c /tmp/voicebox-constraints.txt", dockerfile)
+        self.assertIn("qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@", dockerfile)
+        self.assertIn("#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85", dockerfile)
+        self.assertIn("torch==2.13.0", constraints)
+        self.assertIn("chatterbox-tts==0.1.7", constraints)
 
     def test_control_plane_mounts_workflow_seeds_read_only(self) -> None:
         service = self.compose["services"]["control-plane"]

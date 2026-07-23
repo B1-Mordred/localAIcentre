@@ -1,0 +1,52 @@
+services:
+  control-plane:
+    environment:
+      VOICEBOX_URL: http://voicebox:17493
+
+  voicebox:
+    image: ${B1_VOICEBOX_IMAGE:-b1-ai-hub/voicebox:v0.5.0-b1}
+    build:
+      context: ./deploy/voicebox
+      args:
+        B1_VOICEBOX_VERSION: ${B1_VOICEBOX_VERSION:-v0.5.0}
+        B1_VOICEBOX_COMMIT: ${B1_VOICEBOX_COMMIT:-2bcb98d1a8b6fe05e15fbc1559e3085669e4035d}
+        B1_VOICEBOX_TARBALL_SHA256: ${B1_VOICEBOX_TARBALL_SHA256:-d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083}
+        B1_QWEN3_TTS_COMMIT: ${B1_QWEN3_TTS_COMMIT:-022e286b98fbec7e1e916cb940cdf532cd9f488e}
+        B1_LINACODEC_COMMIT: ${B1_LINACODEC_COMMIT:-c0ae7c7285e121475c27592cfbb600624b714290}
+        B1_LUXTTS_COMMIT: ${B1_LUXTTS_COMMIT:-28ae6a61151684fffc9d1a7aa15eafa02286fe0b}
+    read_only: true
+    environment:
+      B1_RUNTIME_KIND: !reset null
+      B1_RUNTIME_NAME: !reset null
+      B1_VOICEBOX_HOST: ${B1_VOICEBOX_HOST:-0.0.0.0}
+      B1_VOICEBOX_PORT: ${B1_VOICEBOX_PORT:-17493}
+      B1_VOICEBOX_DATA_DIR: /srv/b1-ai-hub/voicebox
+      B1_VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
+      VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
+      VOICEBOX_CORS_ORIGINS: ${B1_VOICEBOX_CORS_ORIGINS:-https://voice.ai.b1.germering,https://control.ai.b1.germering,https://media.ai.b1.germering}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_OFFLINE: ${B1_VOICEBOX_HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${B1_VOICEBOX_TRANSFORMERS_OFFLINE:-1}
+      DO_NOT_TRACK: "1"
+      HF_HOME: /srv/b1-ai-hub/cache/huggingface
+      XDG_CACHE_HOME: /srv/b1-ai-hub/cache/xdg
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+    volumes: !override
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17493/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${B1_VOICEBOX_MEMORY_LIMIT:-12g}
+        reservations:
+          devices:
+            - driver: ${B1_VOICEBOX_GPU_DRIVER:-nvidia.com/gpu}
+              count: ${B1_VOICEBOX_GPU_COUNT:-1}
+              capabilities: [gpu]

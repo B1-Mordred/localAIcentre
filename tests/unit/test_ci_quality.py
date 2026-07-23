@@ -102,6 +102,7 @@ class CiQualityGateTests(unittest.TestCase):
             ("b1-ai-hub/media-studio:ci", "web/media-studio"),
             ("b1-ai-hub/open-webui-wrapper:ci", "deploy/open-webui"),
             ("b1-ai-hub/comfyui:ci", "deploy/comfyui"),
+            ("b1-ai-hub/voicebox:ci", "deploy/voicebox"),
             ("b1-ai-hub/model-client:ci", "integrations/b1-model-client"),
         ):
             self.assertIn(f"docker build -t {image} {context}", commands)
@@ -113,8 +114,10 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed", commands)
         self.assertNotIn("b1-ai-hub/open-webui-wrapper:ci", strict_image_scan)
         self.assertNotIn("b1-ai-hub/comfyui:ci", strict_image_scan)
+        self.assertNotIn("b1-ai-hub/voicebox:ci", strict_image_scan)
         self.assertIn("b1-ai-hub/open-webui-wrapper:ci", upstream_inventory)
         self.assertIn("b1-ai-hub/comfyui:ci", upstream_inventory)
+        self.assertIn("b1-ai-hub/voicebox:ci", upstream_inventory)
         self.assertIn("image --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed", upstream_inventory)
         self.assertIn('report="$(echo "$image" | tr \'/:\' \'--\').trivy.json"', upstream_inventory)
         self.assertIn("actions/upload-artifact@v4", steps["Upload upstream-heavy vulnerability inventory"]["uses"])

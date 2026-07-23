@@ -10,12 +10,12 @@ B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config unit openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config unit openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
 
-validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config unit
+validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config unit
 
 compose-config:
 	docker compose config --quiet
@@ -28,6 +28,9 @@ production-localai-compose-config:
 
 production-comfyui-compose-config:
 	docker compose -f compose.yaml -f compose.production-comfyui.yaml config --quiet
+
+production-voicebox-compose-config:
+	docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox config --quiet
 
 unit:
 	python3 -m unittest discover -s tests/unit -v

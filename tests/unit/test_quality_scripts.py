@@ -74,6 +74,21 @@ class SbomGenerationTests(unittest.TestCase):
             comfyui["properties"],
         )
 
+        voicebox = next(component for component in components if component["name"] == "jamiepine/voicebox")
+        self.assertEqual(voicebox["type"], "application")
+        self.assertEqual(voicebox["version"], "v0.5.0")
+        self.assertEqual(voicebox["purl"], "pkg:github/jamiepine/voicebox@v0.5.0")
+        self.assertIn(
+            {
+                "name": "b1:sha256",
+                "value": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            },
+            voicebox["properties"],
+        )
+        chatterbox = next(component for component in components if component["name"] == "chatterbox-tts")
+        self.assertEqual(chatterbox["version"], "0.1.7")
+        self.assertIn({"name": "b1:source", "value": "deploy/voicebox/constraints.txt"}, chatterbox["properties"])
+
     def test_npm_package_name_is_inferred_from_lockfile_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

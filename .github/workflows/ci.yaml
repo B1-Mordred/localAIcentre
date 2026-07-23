@@ -112,6 +112,7 @@ jobs:
           docker build -t b1-ai-hub/media-studio:ci web/media-studio
           docker build -t b1-ai-hub/open-webui-wrapper:ci deploy/open-webui
           docker build -t b1-ai-hub/comfyui:ci deploy/comfyui
+          docker build -t b1-ai-hub/voicebox:ci deploy/voicebox
           docker build -t b1-ai-hub/model-client:ci integrations/b1-model-client
       - name: Prepare vulnerability scan cache and reports
         run: mkdir -p "$RUNNER_TEMP/trivy-cache" artifacts/trivy
@@ -142,7 +143,8 @@ jobs:
         run: |
           for image in \
             b1-ai-hub/open-webui-wrapper:ci \
-            b1-ai-hub/comfyui:ci
+            b1-ai-hub/comfyui:ci \
+            b1-ai-hub/voicebox:ci
           do
             report="$(echo "$image" | tr '/:' '--').trivy.json"
             docker run --rm \

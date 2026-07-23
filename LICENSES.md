@@ -40,6 +40,19 @@ The production ComfyUI override builds a B1 image from pinned upstream source be
 - base image: `pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime@sha256:e05438443ae3c407e8d04447091a959dbb6757b6290b128770c3c787d4bd442b`
 - upstream license: GPL-3.0 as declared by the ComfyUI project
 
+The production Voicebox override builds a B1 image from pinned Jamie Pine Voicebox source because the upstream Dockerfile uses floating base images and unpinned Git dependency references:
+
+- source: `https://github.com/jamiepine/voicebox`
+- version: `v0.5.0`
+- commit: `2bcb98d1a8b6fe05e15fbc1559e3085669e4035d`
+- source archive: `https://github.com/jamiepine/voicebox/archive/2bcb98d1a8b6fe05e15fbc1559e3085669e4035d.tar.gz`
+- source archive SHA-256: `d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083`
+- frontend base image: `oven/bun:1.3.8@sha256:371d30538b69303ced927bb5915697ac7e2fa8cb409ee332c66009de64de5aa3`
+- backend/runtime base image: `python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93`
+- pinned Git dependency commits: `QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e`, `ysharma3501/LinaCodec@c0ae7c7285e121475c27592cfbb600624b714290`, and `ysharma3501/LuxTTS@28ae6a61151684fffc9d1a7aa15eafa02286fe0b`
+- resolved Python dependency constraints: `deploy/voicebox/constraints.txt`
+- upstream license: MIT as declared by the Voicebox project
+
 The `audio-cpu` image can install the rhasspy/piper Linux x86_64 release asset during build when `B1_INSTALL_PIPER=true`:
 
 - release: `2023.11.14-2`

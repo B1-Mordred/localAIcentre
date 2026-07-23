@@ -105,6 +105,41 @@ The ComfyUI override:
 
 Native clients still use `https://comfy.ai.b1.germering/` through the control-plane compatibility proxy. Do not publish ComfyUI `8188` directly; use `compose.legacy-comfy.yaml` only for the optional restricted legacy listener that still terminates at the scheduler-aware proxy.
 
+## Production Voicebox Override
+
+Voicebox is optional in the base topology. For managed Voicebox server/web/API validation, start the stack with the production Voicebox override and the `voicebox` profile:
+
+```bash
+docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox up -d
+```
+
+To validate all current real GPU runtime overlays together:
+
+```bash
+docker compose -f compose.yaml \
+  -f compose.production-localai.yaml \
+  -f compose.production-comfyui.yaml \
+  -f compose.production-voicebox.yaml \
+  --profile voicebox \
+  up -d
+```
+
+The Voicebox override:
+
+- builds a B1 image from Jamie Pine Voicebox `v0.5.0` commit `2bcb98d1a8b6fe05e15fbc1559e3085669e4035d`
+- verifies the downloaded source archive SHA-256 `d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083`
+- uses pinned base images `oven/bun:1.3.8@sha256:371d30538b69303ced927bb5915697ac7e2fa8cb409ee332c66009de64de5aa3` and `python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93`
+- pins upstream Git dependencies used by the Docker build to `QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e`, `ysharma3501/LinaCodec@c0ae7c7285e121475c27592cfbb600624b714290`, and `ysharma3501/LuxTTS@28ae6a61151684fffc9d1a7aa15eafa02286fe0b`
+- constrains upstream's broad Python dependency ranges with `deploy/voicebox/constraints.txt`, generated from the validated B1 image resolution
+- switches `VOICEBOX_URL` from `http://voicebox:8000` to native `http://voicebox:17493`
+- keeps Voicebox on the internal `runtime` network with no published backend port
+- mounts `$B1_DATA_ROOT/models/runtime-views/voicebox` read-only at `/srv/b1-ai-hub/models`
+- maps `$B1_DATA_ROOT/data/voicebox` to `/srv/b1-ai-hub/voicebox` for the SQLite DB, voice profiles, captures, and generations
+- maps `$B1_DATA_ROOT/cache/voicebox` to `/srv/b1-ai-hub/cache` for Hugging Face and application caches
+- health-checks `http://127.0.0.1:17493/health`
+
+External Voicebox UIs and REST/MCP clients must use `https://voice.ai.b1.germering/` through Caddy and the control-plane access policy. Do not publish `17493` directly. Add `voicebox` to `B1_RUNTIME_PRODUCTION_REQUIRED` only after the selected Voicebox engine/profile has passed a scheduler-managed smoke request, backup/export/delete tests for voice profiles, and unload/recovery validation on the target host.
+
 ## Caddy Internal CA
 
 The default Caddyfile uses `tls internal`. Export the Caddy root certificate from `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` after first boot and install it only on trusted LAN clients.

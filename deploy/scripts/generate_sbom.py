@@ -17,6 +17,7 @@ REQUIREMENTS_FILES = (
     "services/artifact-server/requirements.txt",
     "services/audio-cpu/requirements.txt",
     "services/mock-runtime/requirements.txt",
+    "deploy/voicebox/constraints.txt",
 )
 PACKAGE_LOCKS = (
     "web/control-center/package-lock.json",
@@ -32,6 +33,7 @@ DOCKERFILES = (
     "web/media-studio/Dockerfile",
     "deploy/open-webui/Dockerfile",
     "deploy/comfyui/Dockerfile",
+    "deploy/voicebox/Dockerfile",
     "integrations/b1-model-client/Dockerfile",
 )
 PINNED_RELEASE_ARTIFACTS = (
@@ -64,6 +66,21 @@ PINNED_RELEASE_ARTIFACTS = (
             {"name": "b1:commit", "value": "59afc3984868289f808d02fa5cd180edfb2de240"},
             {"name": "b1:download_url", "value": "https://github.com/Comfy-Org/ComfyUI/archive/59afc3984868289f808d02fa5cd180edfb2de240.tar.gz"},
             {"name": "b1:sha256", "value": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1"},
+        ],
+    },
+    {
+        "type": "application",
+        "name": "jamiepine/voicebox",
+        "version": "v0.5.0",
+        "purl": "pkg:github/jamiepine/voicebox@v0.5.0",
+        "properties": [
+            {"name": "b1:source", "value": "deploy/voicebox/Dockerfile"},
+            {"name": "b1:commit", "value": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d"},
+            {"name": "b1:download_url", "value": "https://github.com/jamiepine/voicebox/archive/2bcb98d1a8b6fe05e15fbc1559e3085669e4035d.tar.gz"},
+            {"name": "b1:sha256", "value": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083"},
+            {"name": "b1:qwen3_tts_commit", "value": "022e286b98fbec7e1e916cb940cdf532cd9f488e"},
+            {"name": "b1:linacodec_commit", "value": "c0ae7c7285e121475c27592cfbb600624b714290"},
+            {"name": "b1:luxtts_commit", "value": "28ae6a61151684fffc9d1a7aa15eafa02286fe0b"},
         ],
     },
 )
