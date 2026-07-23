@@ -239,6 +239,104 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertTrue(plan["files"][0]["already_available"])
             self.assertFalse(plan["files"][1]["already_available"])
 
+    def test_download_plan_supports_huggingface_repository_files(self) -> None:
+        first = b"readme"
+        second_partial = b"token"
+        second_rest = b"izer"
+        first_digest = hashlib.sha256(first).hexdigest()
+        second_digest = hashlib.sha256(second_partial + second_rest).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / first_digest).write_bytes(first)
+            partial = blob_dir / ".partial" / f"{second_digest}.partial"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(second_partial)
+            payload = manifest_payload(
+                first_digest,
+                len(first),
+                source_url="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+                source_type="huggingface",
+            )
+            payload["source"]["revision"] = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+            payload["files"] = [
+                {"path": "README.md", "sha256": first_digest, "size_bytes": len(first)},
+                {"path": "onnx/model_q4.onnx", "sha256": second_digest, "size_bytes": len(second_partial) + len(second_rest)},
+            ]
+            manifest = parse_manifest_payload(payload)
+
+            plan = model_lifecycle.build_download_plan(manifest, root)
+
+            self.assertTrue(plan["can_download"])
+            self.assertEqual(plan["status"], "downloadable")
+            self.assertEqual(plan["file_count"], 2)
+            self.assertEqual(plan["files"][0]["source_type"], "huggingface")
+            self.assertEqual(
+                plan["files"][0]["source_url"],
+                "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md",
+            )
+            self.assertEqual(
+                plan["files"][1]["source_url"],
+                "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_q4.onnx",
+            )
+
+    def test_download_plan_blocks_unsafe_huggingface_source(self) -> None:
+        payload = manifest_payload(
+            "5" * 64,
+            12,
+            source_url="https://evil.example.org/sentence-transformers/all-MiniLM-L6-v2",
+            source_type="huggingface",
+        )
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(manifest, Path(tmp))
+
+            self.assertFalse(plan["can_download"])
+            self.assertIn("source URL is not allowed by import policy", plan["blockers"])
+            self.assertTrue(any("huggingface source must use https://huggingface.co" in item for item in plan["blockers"]))
+
+        payload["source"]["url"] = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/blob/main/model.safetensors"
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(manifest, Path(tmp))
+
+            self.assertFalse(plan["can_download"])
+            self.assertTrue(any("not a file" in item for item in plan["blockers"]))
+
+    def test_download_redirect_policy_allows_only_safe_expected_hosts(self) -> None:
+        self.assertEqual(
+            model_lifecycle.redirect_url_allowed(
+                "https://downloads.example.org/model.gguf",
+                "https://downloads.example.org/model.gguf",
+                "/cache/model.gguf",
+                source_type="direct-url",
+            ),
+            "https://downloads.example.org/cache/model.gguf",
+        )
+        with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "original source host"):
+            model_lifecycle.redirect_url_allowed(
+                "https://downloads.example.org/model.gguf",
+                "https://downloads.example.org/model.gguf",
+                "https://cdn.example.org/model.gguf",
+                source_type="direct-url",
+            )
+
+        redirected = model_lifecycle.redirect_url_allowed(
+            "https://huggingface.co/org/model/resolve/main/model.safetensors",
+            "https://huggingface.co/org/model/resolve/main/model.safetensors",
+            "https://us.aws.cdn.hf.co/xet-bridge-us/model?Signature=temporary",
+            source_type="huggingface",
+        )
+        self.assertTrue(redirected.startswith("https://us.aws.cdn.hf.co/"))
+        with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unapproved host"):
+            model_lifecycle.redirect_url_allowed(
+                "https://huggingface.co/org/model/resolve/main/model.safetensors",
+                "https://huggingface.co/org/model/resolve/main/model.safetensors",
+                "https://example.org/model.safetensors",
+                source_type="huggingface",
+            )
+
     def test_download_plan_blocks_multi_file_without_base_url(self) -> None:
         payload = manifest_payload("5" * 64, 12, source_url="https://downloads.example.org/model.gguf", source_type="direct-url")
         payload["files"] = [

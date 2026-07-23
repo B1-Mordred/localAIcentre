@@ -1435,6 +1435,117 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hf_read_token")
             self.assertNotIn("hf_read_token", repr(fake.model_download))
 
+    def test_model_download_runner_follows_safe_huggingface_redirect_without_forwarding_token(self) -> None:
+        if secret_store is None or secret_store.AESGCM is None:
+            self.skipTest("cryptography is not installed in this lightweight test environment")
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"hf model bytes"
+        digest = hashlib.sha256(payload).hexdigest()
+        master_key = "m" * 64
+        now = datetime.now(tz=UTC)
+        fake.encrypted_secrets["model-download:hf"] = {
+            "name": "model-download:hf",
+            "display_name": "Hugging Face token",
+            "category": "model-download",
+            "description": "test token",
+            "secret_envelope": secret_store.encrypt_value(master_key, "model-download:hf", "hf_read_token", created_at=now),
+            "created_at": now,
+            "updated_at": now,
+            "deleted_at": None,
+        }
+        manifest = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "display_name": "Chat Small",
+            "modality": "llm",
+            "operations": ["chat"],
+            "source": {
+                "type": "huggingface",
+                "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+                "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            },
+            "files": [{"path": "model.safetensors", "sha256": digest, "size_bytes": len(payload)}],
+            "runtimes": ["localai"],
+            "preferred_runtime": "localai",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+            "license": {"name": "test", "redistribution": "downloadable"},
+            "execution_modes": ["hosted-inference", "downloadable"],
+            "aliases": ["chat-default"],
+        }
+        fake.model_download = {
+            "id": "modeldl_hf",
+            "status": "queued",
+            "stage": "queued",
+            "manifest": manifest,
+            "target_size_bytes": len(payload),
+            "target_sha256": digest,
+            "bytes_downloaded": 0,
+            "credential_secret_name": "model-download:hf",
+        }
+
+        class FakeResponse:
+            def __init__(self, status_code: int, headers: dict[str, str] | None = None, chunks: list[bytes] | None = None) -> None:
+                self.status_code = status_code
+                self.headers = headers or {}
+                self.chunks = chunks or []
+
+            async def aiter_bytes(self, chunk_size: int):
+                for chunk in self.chunks:
+                    yield chunk
+
+        class FakeStreamContext:
+            def __init__(self, response: FakeResponse) -> None:
+                self.response = response
+
+            async def __aenter__(self) -> FakeResponse:
+                return self.response
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+            responses: list[FakeResponse] = [
+                FakeResponse(302, {"location": "https://us.aws.cdn.hf.co/xet-bridge-us/model?Signature=temporary"}),
+                FakeResponse(200, chunks=[payload]),
+            ]
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return FakeStreamContext(self.responses.pop(0))
+
+        original_client = executor.httpx.AsyncClient
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = executor.ModelDownloadRunner(root, master_key=master_key)
+            processed = asyncio.run(runner.run_once())
+
+            self.assertTrue(processed)
+            self.assertEqual(fake.model_download["status"], "completed")
+            self.assertEqual((root / "models" / "blobs" / digest).read_bytes(), payload)
+            self.assertEqual(len(FakeAsyncClient.calls), 2)
+            self.assertEqual(
+                FakeAsyncClient.calls[0]["url"],
+                "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/model.safetensors",
+            )
+            self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hf_read_token")
+            self.assertTrue(FakeAsyncClient.calls[1]["url"].startswith("https://us.aws.cdn.hf.co/"))
+            self.assertNotIn("Authorization", FakeAsyncClient.calls[1]["headers"])
+
 
 if __name__ == "__main__":
     unittest.main()

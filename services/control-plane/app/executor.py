@@ -1476,33 +1476,49 @@ class ModelDownloadRunner:
         existing = partial.stat().st_size if partial.exists() else 0
         if existing > file_plan["target_size_bytes"]:
             raise model_lifecycle.ModelLifecycleError("partial download is larger than expected")
-        headers = dict(auth_headers or {})
-        if existing:
-            headers["Range"] = f"bytes={existing}-"
         mode = "ab" if existing else "wb"
         timeout = httpx.Timeout(self.request_timeout_seconds)
+        source_url = str(file_plan["source_url"])
+        request_url = source_url
+        redirect_count = 0
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            async with client.stream("GET", file_plan["source_url"], headers=headers) as response:
-                if response.status_code in {301, 302, 303, 307, 308}:
-                    raise model_lifecycle.ModelLifecycleError("download redirects are disabled by policy")
-                if existing and response.status_code == 200:
-                    existing = 0
-                    mode = "wb"
-                elif response.status_code not in {200, 206}:
-                    raise model_lifecycle.ModelLifecycleError(f"download returned HTTP {response.status_code}")
-                downloaded = existing
-                await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
-                with partial.open(mode) as handle:
-                    async for chunk in response.aiter_bytes(self.chunk_size):
-                        if not chunk:
-                            continue
-                        if await self.cancel_if_requested(download_id):
-                            return False
-                        downloaded += len(chunk)
-                        if downloaded > file_plan["target_size_bytes"]:
-                            raise model_lifecycle.ModelLifecycleError("download exceeded expected size")
-                        handle.write(chunk)
-                        await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
+            while True:
+                headers: dict[str, str] = {}
+                if model_lifecycle.send_download_authorization(source_url, request_url):
+                    headers.update(auth_headers or {})
+                if existing:
+                    headers["Range"] = f"bytes={existing}-"
+                async with client.stream("GET", request_url, headers=headers) as response:
+                    if response.status_code in model_lifecycle.DOWNLOAD_REDIRECT_STATUS_CODES:
+                        redirect_count += 1
+                        if redirect_count > 5:
+                            raise model_lifecycle.ModelLifecycleError("download exceeded maximum redirect count")
+                        request_url = model_lifecycle.redirect_url_allowed(
+                            source_url,
+                            request_url,
+                            response.headers.get("location", ""),
+                            source_type=str(file_plan.get("source_type") or "direct-url"),
+                        )
+                        continue
+                    if existing and response.status_code == 200:
+                        existing = 0
+                        mode = "wb"
+                    elif response.status_code not in {200, 206}:
+                        raise model_lifecycle.ModelLifecycleError(f"download returned HTTP {response.status_code}")
+                    downloaded = existing
+                    await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
+                    with partial.open(mode) as handle:
+                        async for chunk in response.aiter_bytes(self.chunk_size):
+                            if not chunk:
+                                continue
+                            if await self.cancel_if_requested(download_id):
+                                return False
+                            downloaded += len(chunk)
+                            if downloaded > file_plan["target_size_bytes"]:
+                                raise model_lifecycle.ModelLifecycleError("download exceeded expected size")
+                            handle.write(chunk)
+                            await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
+                    break
         actual_size = partial.stat().st_size
         if actual_size != file_plan["target_size_bytes"]:
             raise model_lifecycle.ModelLifecycleError(f"downloaded size {actual_size} does not match expected {file_plan['target_size_bytes']}")

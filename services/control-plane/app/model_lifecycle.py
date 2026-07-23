@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urljoin, urlparse, urlunparse
 
 from .catalog import ModelManifest, parse_manifest_payload
 from .scheduler import ResourcePolicy, classify_resource_fit
@@ -69,6 +69,17 @@ DENIED_ARCHIVE_FILE_SUFFIXES = {
     ".wsf",
     ".zsh",
 }
+DOWNLOAD_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+HUGGINGFACE_HOSTS = {"huggingface.co"}
+HUGGINGFACE_CDN_HOSTS = {
+    "cdn-lfs.huggingface.co",
+    "cdn-lfs-us-1.huggingface.co",
+    "cdn-lfs-eu-1.huggingface.co",
+}
+HUGGINGFACE_CDN_SUFFIXES = (".cdn.hf.co", ".hf.co", ".xethub.hf.co")
+HUGGINGFACE_REPO_MARKERS = {"tree", "blob", "resolve"}
+HUGGINGFACE_REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+HUGGINGFACE_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def parse_uploaded_manifest(payload: dict[str, Any]) -> ModelManifest:
@@ -885,6 +896,12 @@ def quarantine_authoritative_blobs(
 def source_url_allowed(manifest: ModelManifest) -> bool:
     if manifest.source.type == "upload":
         return True
+    if manifest.source.type == "huggingface":
+        try:
+            huggingface_repo_source(manifest.source.url, manifest.source.revision)
+        except ModelLifecycleError:
+            return False
+        return True
     parsed = urlparse(manifest.source.url)
     if parsed.username or parsed.password:
         return False
@@ -894,9 +911,9 @@ def source_url_allowed(manifest: ModelManifest) -> bool:
     return is_safe_public_import_url(manifest.source.url)
 
 
-def direct_download_files(manifest: ModelManifest) -> list[Any]:
-    if manifest.source.type != "direct-url":
-        raise ModelLifecycleError("download worker currently supports only direct-url manifests")
+def downloadable_manifest_files(manifest: ModelManifest) -> list[Any]:
+    if manifest.source.type not in {"direct-url", "huggingface"}:
+        raise ModelLifecycleError("download worker currently supports only direct-url and huggingface manifests")
     return list(manifest.files)
 
 
@@ -910,6 +927,120 @@ def direct_download_source_url(manifest: ModelManifest, file: Any) -> str:
         raise ModelLifecycleError("multi-file direct-url manifests cannot use query strings or fragments on source.url")
     encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(file.path).parts)
     return urlunparse((parsed.scheme, parsed.netloc, f"{parsed.path}{encoded_path}", "", "", ""))
+
+
+def _validate_huggingface_component(value: str, context: str) -> str:
+    if not HUGGINGFACE_REPO_COMPONENT_RE.match(value):
+        raise ModelLifecycleError(f"{context} has invalid Hugging Face repository component: {value}")
+    if value.endswith(".git"):
+        raise ModelLifecycleError(f"{context} must not end with .git")
+    if "--" in value or ".." in value:
+        raise ModelLifecycleError(f"{context} must not contain repeated separators")
+    return value
+
+
+def _validate_huggingface_revision(value: str) -> str:
+    if not HUGGINGFACE_REVISION_RE.match(value):
+        raise ModelLifecycleError("Hugging Face manifests require a simple branch, tag, or commit revision")
+    if value in {".", ".."}:
+        raise ModelLifecycleError("Hugging Face revision is unsafe")
+    return value
+
+
+def huggingface_repo_source(source_url: str, revision: str) -> dict[str, str]:
+    parsed = urlparse(source_url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or hostname not in HUGGINGFACE_HOSTS:
+        raise ModelLifecycleError("huggingface source must use https://huggingface.co")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ModelLifecycleError("huggingface source URL must not contain credentials, query, or fragment")
+    segments = [part for part in parsed.path.split("/") if part]
+    if not segments:
+        raise ModelLifecycleError("huggingface source URL must include a repository")
+
+    repo_type = "model"
+    prefix: list[str] = []
+    if segments[0] in {"datasets", "spaces"}:
+        repo_type = segments[0][:-1]
+        prefix = [segments[0]]
+        segments = segments[1:]
+    elif segments[0] == "models":
+        segments = segments[1:]
+
+    marker_index = next((index for index, segment in enumerate(segments) if segment in HUGGINGFACE_REPO_MARKERS), len(segments))
+    repo_parts = segments[:marker_index]
+    if not repo_parts or len(repo_parts) > 2:
+        raise ModelLifecycleError("huggingface source URL must identify a model, dataset, or space repository")
+    for index, part in enumerate(repo_parts):
+        _validate_huggingface_component(part, f"huggingface repository component {index + 1}")
+    validated_revision = _validate_huggingface_revision(revision)
+    if marker_index < len(segments):
+        marker = segments[marker_index]
+        if marker != "tree":
+            raise ModelLifecycleError("huggingface source URL must identify a repository, not a file")
+        marker_tail = segments[marker_index + 1 :]
+        if len(marker_tail) > 1:
+            raise ModelLifecycleError("huggingface source URL tree path must not include file paths")
+        if marker_tail and _validate_huggingface_revision(marker_tail[0]) != validated_revision:
+            raise ModelLifecycleError("huggingface source URL revision conflicts with source.revision")
+    repo_path = "/".join([*prefix, *repo_parts])
+    return {"host": hostname, "repo_type": repo_type, "repo_id": "/".join(repo_parts), "repo_path": repo_path, "revision": validated_revision}
+
+
+def huggingface_download_source_url(manifest: ModelManifest, file: Any) -> str:
+    source = huggingface_repo_source(manifest.source.url, manifest.source.revision)
+    relative = PurePosixPath(file.path)
+    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ModelLifecycleError(f"unsafe Hugging Face file path: {file.path}")
+    encoded_file_path = "/".join(quote(part, safe="") for part in relative.parts)
+    encoded_revision = quote(source["revision"], safe="")
+    return f"https://huggingface.co/{source['repo_path']}/resolve/{encoded_revision}/{encoded_file_path}"
+
+
+def download_source_url(manifest: ModelManifest, file: Any) -> str:
+    if manifest.source.type == "direct-url":
+        return direct_download_source_url(manifest, file)
+    if manifest.source.type == "huggingface":
+        return huggingface_download_source_url(manifest, file)
+    raise ModelLifecycleError("download worker currently supports only direct-url and huggingface manifests")
+
+
+def _download_hostname(url: str) -> str:
+    return (urlparse(url).hostname or "").lower().rstrip(".")
+
+
+def _is_huggingface_download_host(hostname: str) -> bool:
+    return (
+        hostname in HUGGINGFACE_HOSTS
+        or hostname in HUGGINGFACE_CDN_HOSTS
+        or any(hostname.endswith(suffix) for suffix in HUGGINGFACE_CDN_SUFFIXES)
+    )
+
+
+def redirect_url_allowed(source_url: str, current_url: str, location: str, *, source_type: str) -> str:
+    if not location:
+        raise ModelLifecycleError("download redirect is missing a Location header")
+    redirected = urljoin(current_url, location)
+    parsed = urlparse(redirected)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ModelLifecycleError("download redirect target is not a public HTTPS URL")
+    if parsed.username or parsed.password:
+        raise ModelLifecycleError("download redirect target contains credentials")
+    hostname = _download_hostname(redirected)
+    if not is_safe_public_import_url(redirected):
+        raise ModelLifecycleError("download redirect target is not allowed by import policy")
+    if source_type == "huggingface":
+        if not _is_huggingface_download_host(hostname):
+            raise ModelLifecycleError("huggingface download redirected to an unapproved host")
+        return redirected
+    source_hostname = _download_hostname(source_url)
+    if hostname != source_hostname:
+        raise ModelLifecycleError("download redirect target host is not the original source host")
+    return redirected
+
+
+def send_download_authorization(source_url: str, request_url: str) -> bool:
+    return _download_hostname(source_url) == _download_hostname(request_url)
 
 
 def download_file_plan(manifest: ModelManifest, file: Any, verification: dict[str, Any], data_root: Path) -> dict[str, Any]:
@@ -926,7 +1057,8 @@ def download_file_plan(manifest: ModelManifest, file: Any, verification: dict[st
         blockers.append("partial blob path is a symlink")
     return {
         **file.to_dict(),
-        "source_url": direct_download_source_url(manifest, file),
+        "source_type": manifest.source.type,
+        "source_url": download_source_url(manifest, file),
         "target_sha256": file.sha256,
         "target_size_bytes": file.size_bytes,
         "target_path": str(target_path),
@@ -939,7 +1071,7 @@ def download_file_plan(manifest: ModelManifest, file: Any, verification: dict[st
 
 
 def build_download_plan(manifest: ModelManifest, data_root: Path) -> dict[str, Any]:
-    files = direct_download_files(manifest)
+    files = downloadable_manifest_files(manifest)
     source_allowed = source_url_allowed(manifest)
     verification_by_path = {item["path"]: item for item in verify_manifest_files(manifest, data_root)}
     blockers: list[str] = []
