@@ -1356,10 +1356,13 @@ class ModelDownloadRunner:
         self.pause_check = pause_check
         self._stopped = asyncio.Event()
 
-    async def cancel_if_requested(self, download_id: str) -> bool:
+    async def stop_if_requested(self, download_id: str) -> bool:
         current = await database.get_model_download(download_id)
         if current and current["status"] == "cancelling":
             await database.update_model_download(download_id, status="cancelled", stage="cancelled")
+            return True
+        if current and current["status"] == "pausing":
+            await database.update_model_download(download_id, status="paused", stage="paused")
             return True
         return False
 
@@ -1371,7 +1374,7 @@ class ModelDownloadRunner:
             return False
         download_id = download["id"]
         try:
-            if await self.cancel_if_requested(download_id):
+            if await self.stop_if_requested(download_id):
                 return True
             manifest = model_lifecycle.parse_uploaded_manifest(download["manifest"])
             plan = model_lifecycle.build_download_plan(manifest, self.data_root)
@@ -1434,7 +1437,7 @@ class ModelDownloadRunner:
                 completed_bytes += int(file_plan["target_size_bytes"])
             else:
                 return
-        if await self.cancel_if_requested(download_id):
+        if await self.stop_if_requested(download_id):
             return
         await database.update_model_download(
             download_id,
@@ -1454,7 +1457,7 @@ class ModelDownloadRunner:
         *,
         auth_headers: dict[str, str] | None = None,
     ) -> bool:
-        if await self.cancel_if_requested(download_id):
+        if await self.stop_if_requested(download_id):
             return False
         target = Path(file_plan["target_path"])
         partial = Path(file_plan["partial_path"])
@@ -1511,7 +1514,7 @@ class ModelDownloadRunner:
                         async for chunk in response.aiter_bytes(self.chunk_size):
                             if not chunk:
                                 continue
-                            if await self.cancel_if_requested(download_id):
+                            if await self.stop_if_requested(download_id):
                                 return False
                             downloaded += len(chunk)
                             if downloaded > file_plan["target_size_bytes"]:

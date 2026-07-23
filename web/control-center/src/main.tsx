@@ -14,6 +14,7 @@ import {
   ListChecks,
   LogOut,
   PauseCircle,
+  PlayCircle,
   RefreshCw,
   Rocket,
   RotateCcw,
@@ -1112,6 +1113,32 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
+  const pauseDownload = (download: ModelDownloadRecord) => {
+    setBusy(true);
+    setMessage("pausing download");
+    apiFetch(`/admin/models/downloads/${download.id}/pause`, { method: "POST" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: ModelDownloadRecord) => {
+        setMessage(`${payload.status} ${payload.id}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const resumeDownload = (download: ModelDownloadRecord) => {
+    setBusy(true);
+    setMessage("resuming download");
+    apiFetch(`/admin/models/downloads/${download.id}/resume`, { method: "POST" })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: ModelDownloadRecord) => {
+        setMessage(`queued ${payload.id}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const quarantineModel = (record: ModelRecord) => {
     setBusy(true);
     setMessage("quarantining");
@@ -1348,6 +1375,8 @@ function Models() {
               <td>{download.progress_percent}%<small>{formatBytes(download.bytes_downloaded)} / {formatBytes(download.target_size_bytes)} across {download.file_count || 1} file{(download.file_count || 1) === 1 ? "" : "s"}</small></td>
               <td>{download.error_category ?? ""}<small>{download.error_message ?? ""}</small></td>
               <td><div className="table-actions">
+                <button title={`Pause ${download.id}`} onClick={() => pauseDownload(download)} disabled={busy || !["queued", "running"].includes(download.status)}><PauseCircle size={16} /></button>
+                <button title={`Resume ${download.id}`} onClick={() => resumeDownload(download)} disabled={busy || download.status !== "paused"}><PlayCircle size={16} /></button>
                 <button title={`Retry ${download.id}`} onClick={() => retryDownload(download)} disabled={busy || !["failed", "cancelled"].includes(download.status)}><RotateCcw size={16} /></button>
                 <button title={`Cancel ${download.id}`} onClick={() => cancelDownload(download)} disabled={busy || ["completed", "failed", "cancelled"].includes(download.status)}><Trash2 size={16} /></button>
               </div></td>

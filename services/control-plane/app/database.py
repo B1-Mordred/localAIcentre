@@ -1291,7 +1291,7 @@ async def claim_next_model_download() -> dict[str, Any] | None:
     async with engine.begin() as conn:
         result = await conn.execute(
             select(model_downloads)
-            .where(model_downloads.c.status.in_(["queued", "running"]))
+            .where(model_downloads.c.status.in_(["queued", "running", "pausing", "cancelling"]))
             .order_by(model_downloads.c.created_at.asc())
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -1299,7 +1299,10 @@ async def claim_next_model_download() -> dict[str, Any] | None:
         row = result.mappings().first()
         if row is None:
             return None
-        values = {"status": "running", "stage": "downloading", "updated_at": now}
+        if row["status"] in {"pausing", "cancelling"}:
+            values = {"stage": row["status"], "updated_at": now}
+        else:
+            values = {"status": "running", "stage": "downloading", "updated_at": now}
         await conn.execute(update(model_downloads).where(model_downloads.c.id == row["id"]).values(**values))
         return {**dict(row), **values}
 
@@ -1315,7 +1318,7 @@ async def request_model_download_cancel(download_id: str) -> dict[str, Any] | No
             return None
         if row["status"] in {"completed", "failed", "cancelled"}:
             return dict(row)
-        if row["status"] == "queued":
+        if row["status"] in {"queued", "paused"}:
             await conn.execute(
                 update(model_downloads)
                 .where(model_downloads.c.id == download_id)
@@ -1334,6 +1337,70 @@ async def request_model_download_cancel(download_id: str) -> dict[str, Any] | No
             .values(status="cancelling", stage="cancelling", updated_at=now)
         )
     return await get_model_download(download_id)
+
+
+async def request_model_download_pause(download_id: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(model_downloads).where(model_downloads.c.id == download_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        current_status = str(row["status"])
+        if current_status in {"completed", "failed", "cancelled", "paused"}:
+            return dict(row)
+        if current_status == "queued":
+            await conn.execute(
+                update(model_downloads)
+                .where(model_downloads.c.id == download_id)
+                .values(status="paused", stage="paused", updated_at=now)
+            )
+            return {
+                **dict(row),
+                "status": "paused",
+                "stage": "paused",
+                "updated_at": now,
+            }
+        if current_status in {"running", "pausing"}:
+            await conn.execute(
+                update(model_downloads)
+                .where(model_downloads.c.id == download_id)
+                .values(status="pausing", stage="pausing", updated_at=now)
+            )
+            return {
+                **dict(row),
+                "status": "pausing",
+                "stage": "pausing",
+                "updated_at": now,
+            }
+        raise ValueError(f"model download cannot be paused from status {current_status}")
+
+
+async def resume_model_download(download_id: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(model_downloads).where(model_downloads.c.id == download_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        current_status = str(row["status"])
+        if current_status != "paused":
+            raise ValueError(f"model download cannot be resumed from status {current_status}")
+        await conn.execute(
+            update(model_downloads)
+            .where(model_downloads.c.id == download_id)
+            .values(status="queued", stage="queued", updated_at=now)
+        )
+        return {
+            **dict(row),
+            "status": "queued",
+            "stage": "queued",
+            "updated_at": now,
+        }
 
 
 async def retry_model_download(download_id: str) -> dict[str, Any] | None:

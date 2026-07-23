@@ -90,8 +90,11 @@ class FakeDatabase:
 
     async def claim_next_model_download(self) -> dict[str, Any] | None:
         self.model_download_claims += 1
-        if self.model_download is None or self.model_download["status"] not in {"queued", "running"}:
+        if self.model_download is None or self.model_download["status"] not in {"queued", "running", "pausing", "cancelling"}:
             return None
+        if self.model_download["status"] in {"pausing", "cancelling"}:
+            self.model_download.update({"stage": self.model_download["status"]})
+            return dict(self.model_download)
         self.model_download.update({"status": "running", "stage": "downloading"})
         return dict(self.model_download)
 
@@ -168,6 +171,31 @@ class ExecutorTests(unittest.TestCase):
 
         self.assertFalse(processed)
         self.assertEqual(fake.model_download_claims, 0)
+
+    def test_model_download_runner_marks_pausing_download_paused(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        fake.model_download = {"id": "modeldl_pause", "status": "pausing", "stage": "pausing", "manifest": {}, "bytes_downloaded": 8}
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.ModelDownloadRunner(Path(tmp))
+            stopped = asyncio.run(runner.stop_if_requested("modeldl_pause"))
+
+        self.assertTrue(stopped)
+        self.assertEqual(fake.model_download["status"], "paused")
+        self.assertEqual(fake.model_download["stage"], "paused")
+
+    def test_model_download_runner_recovers_persisted_pausing_download(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        fake.model_download = {"id": "modeldl_pause", "status": "pausing", "stage": "pausing", "manifest": {}, "bytes_downloaded": 8}
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.ModelDownloadRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertEqual(fake.model_download_claims, 1)
+        self.assertEqual(fake.model_download["status"], "paused")
+        self.assertEqual(fake.model_download["stage"], "paused")
 
     def test_cpu_runner_submits_tts_job_and_stores_audio_artifact(self) -> None:
         fake = FakeDatabase(runtime="audio-cpu")

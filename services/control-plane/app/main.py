@@ -5837,6 +5837,48 @@ async def admin_model_download_cancel(download_id: str, authorization: str | Non
     return public_model_download(row)
 
 
+@app.post("/admin/models/downloads/{download_id}/pause")
+async def admin_model_download_pause(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    try:
+        row = await database.request_model_download_pause(download_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="model download not found")
+    await record_audit_event(
+        auth,
+        "model_download.pause_requested",
+        target_type="model_download",
+        target_id=download_id,
+        summary=f"Requested pause for model download {download_id}",
+        metadata={"status": row["status"], "model_ref": f"{row['model_id']}@{row['model_version']}", "bytes_downloaded": row.get("bytes_downloaded")},
+    )
+    return public_model_download(row)
+
+
+@app.post("/admin/models/downloads/{download_id}/resume")
+async def admin_model_download_resume(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    try:
+        row = await database.resume_model_download(download_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="model download not found")
+    await record_audit_event(
+        auth,
+        "model_download.resume_requested",
+        target_type="model_download",
+        target_id=download_id,
+        summary=f"Resumed model download {download_id}",
+        metadata={"status": row["status"], "model_ref": f"{row['model_id']}@{row['model_version']}", "bytes_downloaded": row.get("bytes_downloaded")},
+    )
+    return public_model_download(row)
+
+
 @app.post("/admin/models/downloads/{download_id}/retry")
 async def admin_model_download_retry(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)

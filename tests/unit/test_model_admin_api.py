@@ -124,6 +124,31 @@ class FakeDatabase:
         self.model_downloads.append(row)
         return dict(row)
 
+    async def request_model_download_pause(self, download_id: str) -> dict[str, Any] | None:
+        for row in self.model_downloads:
+            if row["id"] != download_id:
+                continue
+            if row["status"] in {"completed", "failed", "cancelled", "paused"}:
+                return dict(row)
+            if row["status"] == "queued":
+                row.update({"status": "paused", "stage": "paused", "updated_at": datetime.now(tz=UTC)})
+                return dict(row)
+            if row["status"] in {"running", "pausing"}:
+                row.update({"status": "pausing", "stage": "pausing", "updated_at": datetime.now(tz=UTC)})
+                return dict(row)
+            raise ValueError(f"model download cannot be paused from status {row['status']}")
+        return None
+
+    async def resume_model_download(self, download_id: str) -> dict[str, Any] | None:
+        for row in self.model_downloads:
+            if row["id"] != download_id:
+                continue
+            if row["status"] != "paused":
+                raise ValueError(f"model download cannot be resumed from status {row['status']}")
+            row.update({"status": "queued", "stage": "queued", "updated_at": datetime.now(tz=UTC)})
+            return dict(row)
+        return None
+
     async def retry_model_download(self, download_id: str) -> dict[str, Any] | None:
         for row in self.model_downloads:
             if row["id"] != download_id:
@@ -408,6 +433,85 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 422)
             self.assertIn("category model-download", str(raised.exception.detail))
             self.assertEqual(fake_database.model_downloads, [])
+
+    def test_model_download_pause_and_resume_are_audited(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_queued",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": "a" * 64,
+                    "target_size_bytes": 10,
+                    "bytes_downloaded": 4,
+                    "status": "queued",
+                    "stage": "queued",
+                    "manifest": manifest_payload("a" * 64, 10),
+                    "credential_secret_name": None,
+                    "error_category": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database, audit_events)
+
+            paused = asyncio.run(main.admin_model_download_pause("modeldl_queued"))
+            resumed = asyncio.run(main.admin_model_download_resume("modeldl_queued"))
+
+            self.assertEqual(paused["status"], "paused")
+            self.assertEqual(resumed["status"], "queued")
+            self.assertEqual([event["event_type"] for event in audit_events], ["model_download.pause_requested", "model_download.resume_requested"])
+            self.assertEqual(audit_events[0]["metadata"]["bytes_downloaded"], 4)
+
+    def test_model_download_pause_running_and_reject_invalid_resume(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_running",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": "a" * 64,
+                    "target_size_bytes": 10,
+                    "bytes_downloaded": 4,
+                    "status": "running",
+                    "stage": "downloading",
+                    "manifest": manifest_payload("a" * 64, 10),
+                    "credential_secret_name": None,
+                    "error_category": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database, audit_events)
+
+            paused = asyncio.run(main.admin_model_download_pause("modeldl_running"))
+
+            self.assertEqual(paused["status"], "pausing")
+            with self.assertRaises(main.HTTPException) as resume_active:
+                asyncio.run(main.admin_model_download_resume("modeldl_running"))
+            self.assertEqual(resume_active.exception.status_code, 409)
+
+            with self.assertRaises(main.HTTPException) as missing:
+                asyncio.run(main.admin_model_download_pause("modeldl_missing"))
+            self.assertEqual(missing.exception.status_code, 404)
 
     def test_model_download_retry_requeues_failed_download_and_records_audit(self) -> None:
         audit_events: list[dict[str, Any]] = []
