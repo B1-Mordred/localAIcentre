@@ -78,6 +78,7 @@ class Settings:
     max_queued_jobs_global: int
     artifact_storage_max_bytes: int
     artifact_storage_reserve_bytes: int
+    modelhub_blob_requests_per_minute: int
     model_catalog_dir: str
     workflow_seed_dir: str
     comfyui_node_pin_registry: str
@@ -191,6 +192,7 @@ def load_settings() -> Settings:
         max_queued_jobs_global=_int("B1_MAX_QUEUED_JOBS_GLOBAL", 100),
         artifact_storage_max_bytes=_int("B1_ARTIFACT_STORAGE_MAX_BYTES", 0),
         artifact_storage_reserve_bytes=_int("B1_ARTIFACT_STORAGE_RESERVE_BYTES", 10 * 1024 * 1024 * 1024),
+        modelhub_blob_requests_per_minute=_int("B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE", 120),
         model_catalog_dir=os.getenv("B1_MODEL_CATALOG_DIR", "/opt/b1/model-catalog"),
         workflow_seed_dir=os.getenv("B1_WORKFLOW_SEED_DIR", "/opt/b1/workflows/approved"),
         comfyui_node_pin_registry=os.getenv("B1_COMFYUI_NODE_PIN_REGISTRY", "/opt/b1/workflows/approved-node-pins.json"),

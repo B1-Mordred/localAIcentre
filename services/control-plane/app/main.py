@@ -89,6 +89,7 @@ job_runners: list[Any] = []
 job_runner_tasks: list[asyncio.Task[None]] = []
 backup_operation_lock = asyncio.Lock()
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("b1_current_request", default=None)
+modelhub_blob_rate_windows: dict[str, tuple[int, float]] = {}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 CSRF_EXEMPT_PATHS = {"/auth/login", "/auth/setup"}
 OPEN_WEBUI_CLIENT_ID = "client_open_webui_internal"
@@ -108,6 +109,8 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
 TERMINAL_JOB_STATES = {JobState.COMPLETED.value, JobState.CANCELLED.value, JobState.FAILED.value, JobState.EXPIRED.value}
+MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
+MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
 
 app = FastAPI(
     title="B1 AI Hub Control Plane",
@@ -404,6 +407,71 @@ def elapsed_milliseconds(start: float) -> int:
 def log_event(event: str, **fields: Any) -> None:
     safe_fields = {key: value for key, value in fields.items() if key.lower() not in {"authorization", "token", "secret"}}
     LOG.info(json.dumps({"event": event, "service": settings.service_name, "ts": now_iso(), **safe_fields}, default=str))
+
+
+def rate_limit_headers(limit: int, remaining: int, reset_seconds: int) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(limit),
+        "X-RateLimit-Remaining": str(max(0, remaining)),
+        "X-RateLimit-Reset": str(max(0, reset_seconds)),
+    }
+
+
+def modelhub_blob_rate_subject(auth: AuthContext) -> str:
+    remote_addr = client_host(current_request.get()) or "unknown"
+    subject = f"{auth.subject_id}:{auth.key_prefix or auth.role.value}:{remote_addr}"
+    return hashlib.sha256(subject.encode("utf-8")).hexdigest()
+
+
+def prune_modelhub_blob_rate_windows(now: float) -> None:
+    expired = [subject for subject, (_count, expires_at) in modelhub_blob_rate_windows.items() if now >= expires_at]
+    for subject in expired:
+        modelhub_blob_rate_windows.pop(subject, None)
+    while len(modelhub_blob_rate_windows) >= MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS:
+        oldest_subject = next(iter(modelhub_blob_rate_windows))
+        modelhub_blob_rate_windows.pop(oldest_subject, None)
+
+
+def modelhub_blob_rate_limit_fallback(subject: str, limit: int) -> dict[str, str]:
+    now = monotonic()
+    prune_modelhub_blob_rate_windows(now)
+    count, expires_at = modelhub_blob_rate_windows.get(subject, (0, now + MODELHUB_BLOB_RATE_WINDOW_SECONDS))
+    if now >= expires_at:
+        count = 0
+        expires_at = now + MODELHUB_BLOB_RATE_WINDOW_SECONDS
+    count += 1
+    modelhub_blob_rate_windows[subject] = (count, expires_at)
+    reset_seconds = max(1, int(expires_at - now))
+    headers = rate_limit_headers(limit, limit - count, reset_seconds)
+    if count > limit:
+        raise HTTPException(status_code=429, detail="Model Hub blob download rate limit exceeded", headers=headers)
+    return headers
+
+
+async def enforce_modelhub_blob_rate_limit(auth: AuthContext) -> dict[str, str]:
+    limit = int(settings.modelhub_blob_requests_per_minute)
+    if limit <= 0:
+        return {}
+    subject = modelhub_blob_rate_subject(auth)
+    key = f"b1:modelhub:blob-rate:{subject}"
+    if redis_client is None:
+        return modelhub_blob_rate_limit_fallback(subject, limit)
+    try:
+        count = int(await redis_client.incr(key))
+        if count == 1:
+            await redis_client.expire(key, MODELHUB_BLOB_RATE_WINDOW_SECONDS)
+        ttl = int(await redis_client.ttl(key))
+    except Exception as exc:  # pragma: no cover - Redis failures fall back to local process protection
+        log_event("modelhub_blob_rate_limit_redis_failed", error=exc.__class__.__name__)
+        return modelhub_blob_rate_limit_fallback(subject, limit)
+    if ttl < 0:
+        ttl = MODELHUB_BLOB_RATE_WINDOW_SECONDS
+        with suppress(Exception):
+            await redis_client.expire(key, MODELHUB_BLOB_RATE_WINDOW_SECONDS)
+    headers = rate_limit_headers(limit, limit - count, ttl)
+    if count > limit:
+        raise HTTPException(status_code=429, detail="Model Hub blob download rate limit exceeded", headers=headers)
+    return headers
 
 
 async def record_audit_event(
@@ -6546,7 +6614,11 @@ async def modelhub_blob(sha256: str, request: Request, authorization: str | None
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:sync")
     await require_modelhub_blob_authorized(auth, sha256)
-    return await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request)
+    rate_headers = await enforce_modelhub_blob_rate_limit(auth)
+    response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request)
+    for key, value in rate_headers.items():
+        response.headers[key] = value
+    return response
 
 
 @app.post("/modelhub/v1/sync/plan")

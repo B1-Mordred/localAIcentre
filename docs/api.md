@@ -461,7 +461,7 @@ When `POST /v1/media/jobs` includes `input.workflow_id` and `input.workflow_vers
 
 ## Model Hub Blobs
 
-Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable.
+Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
 
 Supported blob response behaviour:
 
@@ -469,6 +469,7 @@ Supported blob response behaviour:
 - `X-Checksum-SHA256`
 - `Content-Length`
 - `Accept-Ranges: bytes`
+- `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`
 - single-range `Range: bytes=start-end`, `bytes=start-`, and `bytes=-suffix`
 - `206 Partial Content` with `Content-Range`
 - `304 Not Modified` for matching `If-None-Match`

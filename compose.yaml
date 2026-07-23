@@ -137,6 +137,7 @@ services:
       B1_BACKUP_ENCRYPTION_MODE: ${B1_BACKUP_ENCRYPTION_MODE:-copy}
       B1_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
       B1_UPLOAD_MAX_BYTES: ${B1_UPLOAD_MAX_BYTES:-268435456}
+      B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE: ${B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE:-120}
       B1_MODEL_CATALOG_DIR: /opt/b1/model-catalog
       B1_WORKFLOW_SEED_DIR: /opt/b1/workflows/approved
       B1_COMFYUI_NODE_PIN_REGISTRY: /opt/b1/workflows/approved-node-pins.json
