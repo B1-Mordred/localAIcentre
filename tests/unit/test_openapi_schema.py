@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "scripts" / "generate_openapi.py"
 OPENAPI = ROOT / "docs" / "openapi.json"
+MAIN = ROOT / "services" / "control-plane" / "app" / "main.py"
 
 try:
     spec = importlib.util.spec_from_file_location("generate_openapi", SCRIPT)
@@ -26,6 +28,37 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test e
     MISSING_DEPENDENCY = exc.name
 else:
     MISSING_DEPENDENCY = ""
+
+
+class ApiRouteSourceTests(unittest.TestCase):
+    def test_fastapi_routes_do_not_repeat_the_same_method_and_path(self) -> None:
+        tree = ast.parse(MAIN.read_text(encoding="utf-8"))
+        registrations: dict[tuple[str, str], list[str]] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                func = decorator.func
+                if not (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "app"
+                    and func.attr in {"get", "post", "put", "patch", "delete", "head"}
+                ):
+                    continue
+                if not decorator.args or not isinstance(decorator.args[0], ast.Constant) or not isinstance(decorator.args[0].value, str):
+                    continue
+                key = (func.attr.upper(), decorator.args[0].value)
+                registrations.setdefault(key, []).append(node.name)
+
+        duplicates = [
+            f"{method} {path}: {', '.join(functions)}"
+            for (method, path), functions in sorted(registrations.items())
+            if len(functions) > 1
+        ]
+        self.assertEqual(duplicates, [])
 
 
 @unittest.skipIf(GENERATED is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")

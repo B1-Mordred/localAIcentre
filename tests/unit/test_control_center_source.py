@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CONTROL_CENTER = ROOT / "web" / "control-center" / "src" / "main.tsx"
+
+
+class ControlCenterSourceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = CONTROL_CENTER.read_text(encoding="utf-8")
+
+    def test_dashboard_surfaces_recovery_required_job_metric(self) -> None:
+        self.assertIn("recovery_required_last_hour: number;", self.source)
+        self.assertIn("metrics?.jobs.recovery_required_last_hour", self.source)
+        self.assertRegex(self.source, r"<Metric label=\"Jobs last hour\"[^>]+recovery")
+
+    def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
+        self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -35,3 +35,4 @@
 - Added an opt-in external ComfyUI remote-node compatibility harness that stops/restores the server-side B1 ComfyUI service before proving a `non_comfy_only` TTS operation succeeds through the unified API.
 - Added offline runtime-agent security policy tests that lock down its route surface, mutation guards, pinned-image requirement, and absence of arbitrary Docker passthrough APIs.
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
+- Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.

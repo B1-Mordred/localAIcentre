@@ -117,6 +117,7 @@ type AdminMetrics = {
     completed_last_hour: number;
     failed_last_hour: number;
     cancelled_last_hour: number;
+    recovery_required_last_hour: number;
     load_seconds: MetricSummary;
     run_seconds: MetricSummary;
     peak_vram_mib: MetricSummary;
@@ -885,7 +886,7 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
           <Metric label="GPU lease" value={leaseOwner} detail={leaseDetail} />
           <Metric label="GPU memory" value={gpu?.available ? `${formatGibFromMib(gpu.memory_used_mib)} / ${formatGibFromMib(gpu.memory_total_mib)}` : "unavailable"} detail={gpuDetail} />
           <Metric label="Queue depth" value={formatCount(queuedTotal)} detail={`${formatCount(activeTotal)} active, oldest wait ${formatSeconds(metrics?.queue.oldest_wait_seconds)}`} />
-          <Metric label="Jobs last hour" value={`${formatCount(metrics?.jobs.completed_last_hour)} done`} detail={`${formatCount(metrics?.jobs.failed_last_hour)} failed, ${formatCount(metrics?.jobs.cancelled_last_hour)} cancelled`} />
+          <Metric label="Jobs last hour" value={`${formatCount(metrics?.jobs.completed_last_hour)} done`} detail={`${formatCount(metrics?.jobs.failed_last_hour)} failed, ${formatCount(metrics?.jobs.recovery_required_last_hour)} recovery, ${formatCount(metrics?.jobs.cancelled_last_hour)} cancelled`} />
           <Metric label="Model switches" value={formatCount(metrics?.model_switches_per_hour.last_hour)} detail={`${formatCount(metrics?.model_switches_per_hour.sampled_started_jobs)} started jobs sampled`} />
           <Metric label="Peak VRAM" value={formatGibFromMib(metrics?.jobs.peak_vram_mib.max)} detail={`peak RAM ${formatGibFromMib(metrics?.jobs.peak_ram_mib.max)}`} />
           <Metric label="Host memory" value={hostMemory?.available ? `${formatHostBytes(hostMemory.used_bytes)} used` : "unavailable"} detail={hostMemoryDetail} />
