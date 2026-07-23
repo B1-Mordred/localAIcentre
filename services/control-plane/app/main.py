@@ -111,6 +111,42 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
+COMFYUI_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+COMFYUI_MUTATING_CORE_ROUTES: dict[str, set[str]] = {
+    "interrupt": {"POST"},
+    "queue": {"POST", "PUT", "PATCH", "DELETE"},
+    "upload/image": {"POST"},
+    "upload/mask": {"POST"},
+    "api/userdata": {"POST", "PUT", "PATCH", "DELETE"},
+}
+COMFYUI_MUTATING_CORE_PREFIXES: dict[str, set[str]] = {
+    "api/userdata/": {"POST", "PUT", "PATCH", "DELETE"},
+}
+COMFYUI_DENIED_PREFIXES = (
+    "b1/",
+    "manager",
+    "manager/",
+    "customnode",
+    "customnode/",
+    "custom-node",
+    "custom-node/",
+    "custom_nodes",
+    "custom_nodes/",
+    "api/manager",
+    "api/manager/",
+    "api/customnode",
+    "api/customnode/",
+)
+COMFYUI_DENIED_MUTATION_TOKENS = {
+    "git",
+    "install",
+    "pip",
+    "requirements",
+    "snapshot",
+    "uninstall",
+    "update",
+    "upgrade",
+}
 MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
 MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -2365,6 +2401,53 @@ def comfyui_native_cancel_target(path: str, method: str, body: bytes) -> tuple[b
     return False, set()
 
 
+def normalize_comfyui_passthrough_path(path: str) -> str:
+    if "\\" in path or "\x00" in path:
+        raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
+    parts = [part for part in path.strip("/").split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
+    return "/".join(parts)
+
+
+def path_matches_prefix(normalized_path: str, prefix: str) -> bool:
+    normalized_prefix = normalize_comfyui_passthrough_path(prefix).lower()
+    path_lower = normalized_path.lower()
+    if not normalized_prefix:
+        return False
+    return path_lower == normalized_prefix or path_lower.startswith(f"{normalized_prefix}/")
+
+
+def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
+    normalized_path = normalize_comfyui_passthrough_path(path)
+    path_lower = normalized_path.lower()
+    method_upper = method.upper()
+    if any(path_lower.startswith(prefix) for prefix in COMFYUI_DENIED_PREFIXES):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility route is blocked by policy", "path": normalized_path},
+        )
+    if method_upper in COMFYUI_READ_METHODS:
+        return
+    if method_upper in COMFYUI_MUTATING_CORE_ROUTES.get(path_lower, set()):
+        return
+    if any(method_upper in methods and path_lower.startswith(prefix) for prefix, methods in COMFYUI_MUTATING_CORE_PREFIXES.items()):
+        return
+    tokens = {part for part in path_lower.replace("-", "/").replace("_", "/").split("/") if part}
+    if tokens & COMFYUI_DENIED_MUTATION_TOKENS:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "comfyui_route_denied", "message": "ComfyUI custom-node management route is blocked by policy", "path": normalized_path},
+        )
+    for prefix in settings.comfyui_trusted_route_prefixes:
+        if path_matches_prefix(normalized_path, prefix):
+            return
+    raise HTTPException(
+        status_code=403,
+        detail={"code": "comfyui_route_denied", "message": "ComfyUI mutating compatibility route is not approved", "path": normalized_path},
+    )
+
+
 async def record_comfyui_native_cancel_request(prompt_ids: set[str] | None, reason: str) -> dict[str, Any]:
     rows = await database.list_jobs(limit=500, runtime="comfyui")
     matched: list[dict[str, Any]] = []
@@ -2393,6 +2476,7 @@ async def record_comfyui_native_cancel_request(prompt_ids: set[str] | None, reas
 
 
 async def proxy_comfyui_compatibility(path: str, request: Request) -> Response:
+    require_comfyui_passthrough_allowed(path, request.method)
     body = await request.body()
     should_track_cancel, prompt_ids = comfyui_native_cancel_target(path, request.method, body)
     response = await proxy_http_bytes(settings.comfyui_url, path, request, body=body)

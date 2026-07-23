@@ -738,6 +738,56 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(fake.jobs["job_1"]["failure_category"], "comfyui_execution_error")
         self.assertEqual(fake.jobs["job_1"]["failure_message"], "model dependency missing")
 
+    def test_comfyui_passthrough_allows_native_read_and_core_mutating_routes(self) -> None:
+        proxied: list[dict[str, Any]] = []
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            proxied.append({"base_url": base_url, "path": path, "method": request.method})
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        read_response = asyncio.run(main.proxy_comfyui_compatibility("models/checkpoints", FakeRequest({}, method="GET")))
+        upload_response = asyncio.run(main.proxy_comfyui_compatibility("upload/image", FakeRequest({}, method="POST")))
+        user_data_response = asyncio.run(main.proxy_comfyui_compatibility("api/userdata/workflows/example.json", FakeRequest({}, method="POST")))
+
+        self.assertEqual(read_response.status_code, 200)
+        self.assertEqual(upload_response.status_code, 200)
+        self.assertEqual(user_data_response.status_code, 200)
+        self.assertEqual([item["path"] for item in proxied], ["models/checkpoints", "upload/image", "api/userdata/workflows/example.json"])
+
+    def test_comfyui_passthrough_blocks_internal_and_custom_node_management_routes(self) -> None:
+        async def proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("blocked ComfyUI route must not be proxied")
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        for path in ("b1/runtime/unload", "manager/queue/start", "customnode/install", "api/customnode/update"):
+            with self.subTest(path=path):
+                with self.assertRaises(main.HTTPException) as raised:
+                    asyncio.run(main.proxy_comfyui_compatibility(path, FakeRequest({}, method="POST")))
+                self.assertEqual(raised.exception.status_code, 403)
+                self.assertEqual(raised.exception.detail["code"], "comfyui_route_denied")
+
+    def test_comfyui_passthrough_blocks_unknown_mutation_unless_prefix_is_trusted(self) -> None:
+        proxied: list[str] = []
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            proxied.append(path)
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        with self.assertRaises(main.HTTPException) as raised:
+            asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
+        self.assertEqual(raised.exception.status_code, 403)
+
+        main.settings = replace(main.settings, comfyui_trusted_route_prefixes=("trusted/custom",))
+        response = asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(proxied, ["trusted/custom/render"])
+
     def test_queue_delete_forwards_native_request_and_marks_matching_job_cancelling(self) -> None:
         fake = FakeDatabase()
         fake.jobs["job_1"] = {"id": "job_1", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_1", "artifacts": []}

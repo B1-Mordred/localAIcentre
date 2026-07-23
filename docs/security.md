@@ -45,6 +45,8 @@ Workflow-backed media jobs are not trusted just because they came from Media Stu
 
 Custom ComfyUI node code is fail-closed. Workflow manifests may declare `node` dependencies only with lowercase 40-character git commit pins, and dependency readiness checks those pins against the read-only `$B1_COMFYUI_NODE_PIN_REGISTRY`. Registry entries must use HTTPS repository URLs without credentials, must be explicitly `approved`, and may include dependency-lock SHA-256 metadata so dependency changes are visible before operators publish workflows that require custom code.
 
+The native ComfyUI compatibility catch-all denies internal B1 runtime hooks, ComfyUI Manager/custom-node management prefixes, and install/update/pip/git/snapshot-style mutating paths before proxying. Only core ComfyUI mutating routes and explicitly approved `B1_COMFYUI_TRUSTED_ROUTE_PREFIXES` are forwarded.
+
 Browser authentication is backed by PostgreSQL user records and hashed session tokens. The initial administrator can be created only while no active admin exists, and the generated bootstrap key is required when configured. Session cookies are HttpOnly, SameSite=Lax, secure by default, and time-limited by `B1_SESSION_TTL_SECONDS`. The API rejects unsafe cookie-backed requests unless `X-B1-CSRF` matches the token issued for that session. Bearer-token API clients do not use cookies and are not subject to browser CSRF checks.
 
 Open WebUI does not use the administrator bootstrap key for upstream inference. Bootstrap generates a dedicated internal OpenAI-compatible service key under `$B1_DATA_ROOT/secrets`; Compose passes it to Open WebUI through a local env file, and the control plane stores only its salted hash and bounded service scopes.

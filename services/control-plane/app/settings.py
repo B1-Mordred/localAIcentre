@@ -82,6 +82,7 @@ class Settings:
     model_catalog_dir: str
     workflow_seed_dir: str
     comfyui_node_pin_registry: str
+    comfyui_trusted_route_prefixes: tuple[str, ...]
     job_runner_enabled: bool
     job_runner_interval_seconds: int
     gpu_job_runner_enabled: bool
@@ -196,6 +197,7 @@ def load_settings() -> Settings:
         model_catalog_dir=os.getenv("B1_MODEL_CATALOG_DIR", "/opt/b1/model-catalog"),
         workflow_seed_dir=os.getenv("B1_WORKFLOW_SEED_DIR", "/opt/b1/workflows/approved"),
         comfyui_node_pin_registry=os.getenv("B1_COMFYUI_NODE_PIN_REGISTRY", "/opt/b1/workflows/approved-node-pins.json"),
+        comfyui_trusted_route_prefixes=_words("B1_COMFYUI_TRUSTED_ROUTE_PREFIXES", ""),
         job_runner_enabled=_bool("B1_JOB_RUNNER_ENABLED", True),
         job_runner_interval_seconds=_int("B1_JOB_RUNNER_INTERVAL_SECONDS", 1),
         gpu_job_runner_enabled=_bool("B1_GPU_JOB_RUNNER_ENABLED", True),
