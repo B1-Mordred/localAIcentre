@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import urllib.error
+from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,13 @@ def normalize_model_list(models: list[str]) -> list[str]:
     return sorted({model.strip() for model in models if model.strip()})
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def catalog_default_models(base_url: str, token: str | None) -> list[str]:
     aliases = request_json(base_url, "/modelhub/v1/catalog", token).get("aliases", [])
     models: list[str] = []
@@ -105,6 +113,69 @@ def model_record(base_url: str, token: str | None, model_id: str) -> dict[str, A
             raise RuntimeError(f"{model_id}: alias has no manifest versions")
         return versions[0]
     return record
+
+
+def redacted_source_metadata(source: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    metadata = {key: value for key, value in source.items() if key != "url"}
+    url = source.get("url")
+    if isinstance(url, str) and url:
+        try:
+            parsed = urlsplit(url)
+            hostname = parsed.hostname or ""
+            netloc = hostname
+            if parsed.port is not None:
+                netloc = f"{netloc}:{parsed.port}"
+            safe_url = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except ValueError:
+            metadata["url"] = ""
+            metadata["url_redacted"] = True
+            return metadata
+        metadata["url"] = safe_url
+        metadata["url_redacted"] = safe_url != url
+    return metadata
+
+
+def plan_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    resolved = record.get("resolved_model") if isinstance(record.get("resolved_model"), dict) else {}
+    license_info = dict(record.get("license") or {})
+    model_id = record.get("id") or resolved.get("id") or record.get("root")
+    version = record.get("version") or resolved.get("version")
+    display_name = record.get("display_name") or resolved.get("display_name") or model_id
+    return without_none(
+        {
+            "id": model_id,
+            "version": version,
+            "display_name": display_name,
+            "modality": record.get("modality"),
+            "operations": list(record.get("operations") or []),
+            "preferred_runtime": record.get("preferred_runtime"),
+            "source": redacted_source_metadata(record.get("source")),
+            "license": license_info,
+            "execution_modes": list(record.get("execution_modes") or []),
+            "resource_estimate": record.get("resource_estimate") or {},
+            "resource_label": record.get("resource_label"),
+            "downloadable": bool(record.get("downloadable")),
+            "requires_license_acceptance": bool(license_info.get("acceptance_required")),
+            "aliases": list(record.get("aliases") or []),
+        }
+    )
+
+
+def without_none(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def plan_action_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    metadata = plan_model_metadata(record)
+    return {
+        "model_metadata": metadata,
+        "license": metadata.get("license", {}),
+        "source": metadata.get("source", {}),
+        "resource_estimate": metadata.get("resource_estimate", {}),
+        "requires_license_acceptance": bool(metadata.get("requires_license_acceptance")),
+    }
 
 
 def local_blob_inventory(cache: Path) -> list[dict[str, Any]]:
@@ -162,14 +233,15 @@ def planned_actions(base_url: str, token: str | None, cache: Path, models: list[
     actions: list[dict[str, Any]] = []
     for model_id in models:
         record = model_record(base_url, token, model_id)
+        metadata = plan_action_metadata(record)
         if not record.get("downloadable"):
-            actions.append({"model": model_id, "action": "skip", "reason": "model is not downloadable"})
+            actions.append({"model": model_id, "action": "skip", "reason": "model is not downloadable", **metadata})
             continue
         for file_record in record.get("files", []):
             sha256 = file_record["sha256"].lower()
             target = cache / "blobs" / sha256
             if target.exists() and sha256_file(target) == sha256:
-                actions.append({"model": model_id, "blob": sha256, "action": "keep", "path": str(target)})
+                actions.append({"model": model_id, "blob": sha256, "action": "keep", "path": str(target), **metadata})
                 continue
             partial = target.with_suffix(".partial")
             resume_from = partial.stat().st_size if partial.exists() else 0
@@ -182,6 +254,7 @@ def planned_actions(base_url: str, token: str | None, cache: Path, models: list[
                     "partial": str(partial),
                     "expected_size": file_record["size_bytes"],
                     "resume_from": resume_from,
+                    **metadata,
                 }
             )
     return actions
@@ -292,11 +365,13 @@ def pin(args: argparse.Namespace) -> int:
     pins = state.setdefault("pins", {})
     for model_id in models:
         record = model_record(args.base_url, args.token, model_id)
+        metadata = plan_model_metadata(record)
         pins[model_id] = {
             "model": model_id,
-            "display_name": record.get("display_name") or model_id,
+            "display_name": metadata.get("display_name") or model_id,
             "pinned_at": utc_now(),
             "downloadable": bool(record.get("downloadable")),
+            "model_metadata": metadata,
         }
     save_state(cache, state)
     print(json.dumps({"action": "pin", "cache": str(cache), "models": models, "pins": pins}, indent=2, sort_keys=True))
@@ -321,15 +396,54 @@ def unpin(args: argparse.Namespace) -> int:
 def sync(args: argparse.Namespace) -> int:
     cache = Path(args.cache).resolve()
     models = selected_models(args.base_url, args.token, cache, args.model)
-    payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run)
+    payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False))
     print(json.dumps(payload, indent=2))
     return 0
 
 
-def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], *, dry_run: bool = False) -> dict[str, Any]:
+def action_requires_license_acceptance(action: dict[str, Any]) -> bool:
+    metadata = action.get("model_metadata") if isinstance(action.get("model_metadata"), dict) else {}
+    license_info = action.get("license") if isinstance(action.get("license"), dict) else metadata.get("license", {})
+    return bool(action.get("requires_license_acceptance") or metadata.get("requires_license_acceptance") or license_info.get("acceptance_required"))
+
+
+def license_acceptance_required_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        action
+        for action in actions
+        if action.get("action") in {"keep", "download", "replace"} and action_requires_license_acceptance(action)
+    ]
+
+
+def model_label_for_action(action: dict[str, Any]) -> str:
+    metadata = action.get("model_metadata") if isinstance(action.get("model_metadata"), dict) else {}
+    display_name = metadata.get("display_name") or action.get("model")
+    model_id = metadata.get("id") or action.get("model")
+    version = metadata.get("version")
+    if version:
+        return f"{display_name} ({model_id}@{version})"
+    return str(display_name or model_id)
+
+
+def require_license_acceptance(actions: list[dict[str, Any]], *, accepted: bool) -> None:
+    if accepted:
+        return
+    required = license_acceptance_required_actions(actions)
+    if not required:
+        return
+    labels = sorted({model_label_for_action(action) for action in required})
+    raise RuntimeError(
+        "licence acceptance required for model(s): "
+        + ", ".join(labels)
+        + "; run `b1-model-client plan` to review terms, then rerun sync with --accept-license"
+    )
+
+
+def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], *, dry_run: bool = False, accept_licenses: bool = False) -> dict[str, Any]:
     actions = planned_actions(base_url, token, cache, models)
     if dry_run:
         return {"action": "sync", "dry_run": True, "cache": str(cache), "models": models, "changes": actions}
+    require_license_acceptance(actions, accepted=accept_licenses)
     cache.mkdir(parents=True, exist_ok=True)
     state = load_state(cache)
     results = []
@@ -425,7 +539,7 @@ def daemon(args: argparse.Namespace) -> int:
     interval = max(1, int(args.interval_seconds))
     while True:
         models = selected_models(args.base_url, args.token, cache, args.model)
-        sync_payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run)
+        sync_payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False))
         prune_payload = None
         if args.prune:
             prune_payload = prune_plan(args.base_url, args.token, cache, models)
@@ -485,6 +599,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cmd.add_argument("model", nargs="*")
     sync_cmd.add_argument("--cache", default=os.getenv("B1_MODEL_CACHE", "./b1-model-cache"))
     sync_cmd.add_argument("--dry-run", action="store_true")
+    sync_cmd.add_argument(
+        "--accept-license",
+        action="store_true",
+        default=env_bool("B1_MODEL_CLIENT_ACCEPT_LICENSES"),
+        help="Allow syncing models whose manifests require licence acceptance after reviewing the plan.",
+    )
     sync_cmd.set_defaults(func=sync)
 
     prune_cmd = sub.add_parser("prune")
@@ -498,6 +618,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_cmd.add_argument("--cache", default=os.getenv("B1_MODEL_CACHE", "./b1-model-cache"))
     daemon_cmd.add_argument("--interval-seconds", type=int, default=int(os.getenv("B1_MODEL_CLIENT_INTERVAL_SECONDS", "3600")))
     daemon_cmd.add_argument("--dry-run", action="store_true")
+    daemon_cmd.add_argument(
+        "--accept-license",
+        action="store_true",
+        default=env_bool("B1_MODEL_CLIENT_ACCEPT_LICENSES"),
+        help="Allow daemon sync of models whose manifests require licence acceptance.",
+    )
     daemon_cmd.add_argument("--prune", action="store_true", help="Remove managed blobs no longer required after each sync cycle.")
     daemon_cmd.add_argument("--once", action="store_true", help="Run one cycle and exit; useful for cron and smoke tests.")
     daemon_cmd.set_defaults(func=daemon)

@@ -54,7 +54,7 @@ def write_catalog(root: Path) -> None:
     common = {
         "source": {
             "type": "catalog",
-            "url": "https://models.ai.b1.germering/internal/test",
+            "url": "https://models.ai.b1.germering/internal/test?token=secret",
             "revision": "test",
         },
         "resource_estimate": {"vram_gib": 1, "ram_gib": 1, "disk_gib": 1},
@@ -72,7 +72,13 @@ def write_catalog(root: Path) -> None:
                 "files": [{"path": "llm/model.gguf", "sha256": DOWNLOADABLE_SHA, "size_bytes": 12}],
                 "runtimes": ["localai"],
                 "preferred_runtime": "localai",
-                "license": {"name": "Test", "redistribution": "downloadable"},
+                "license": {
+                    "name": "Test",
+                    "url": "https://license.example.test/model",
+                    "redistribution": "downloadable",
+                    "attribution": "Test attribution",
+                    "acceptance_required": True,
+                },
                 "execution_modes": ["hosted-inference", "downloadable"],
                 "aliases": ["chat-default"],
             }
@@ -116,6 +122,9 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertEqual(first["total_download_bytes"], 12)
         self.assertEqual(first["actions"][0]["action"], "download")
         self.assertEqual(first["actions"][0]["blob"], DOWNLOADABLE_SHA)
+        self.assertTrue(first["actions"][0]["requires_license_acceptance"])
+        self.assertEqual(first["actions"][0]["license"]["name"], "Test")
+        self.assertEqual(first["actions"][0]["resource_estimate"], {"vram_gib": 1.0, "ram_gib": 1.0, "disk_gib": 1.0})
 
         second = build_sync_plan(self.catalog, ["chat-default"], {DOWNLOADABLE_SHA: 12})
         self.assertEqual(second["actions"][0]["action"], "keep")
@@ -123,7 +132,18 @@ class ModelHubPlanTests(unittest.TestCase):
 
     def test_sync_plan_skips_inference_only_model(self) -> None:
         response = build_sync_plan(self.catalog, ["tts-fast"], {})
-        self.assertEqual(response["actions"], [{"model": "tts-fast", "action": "skip", "reason": "model is not downloadable"}])
+        self.assertEqual(response["actions"][0]["model"], "tts-fast")
+        self.assertEqual(response["actions"][0]["action"], "skip")
+        self.assertEqual(response["actions"][0]["reason"], "model is not downloadable")
+        self.assertEqual(response["actions"][0]["license"]["redistribution"], "inference-only")
+        self.assertFalse(response["actions"][0]["requires_license_acceptance"])
+
+    def test_sync_plan_redacts_source_metadata_for_external_clients(self) -> None:
+        response = build_sync_plan(self.catalog, ["chat-default"], {})
+        action = response["actions"][0]
+        self.assertEqual(action["source"]["url"], "https://models.ai.b1.germering/internal/test")
+        self.assertTrue(action["source"]["url_redacted"])
+        self.assertEqual(action["model_metadata"]["source"]["url"], "https://models.ai.b1.germering/internal/test")
 
     def test_blob_policy_only_lists_downloadable_catalog_records(self) -> None:
         self.assertEqual(downloadable_records_for_blob(self.catalog, DOWNLOADABLE_SHA)[0]["id"], "downloadable-llm")

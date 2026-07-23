@@ -2,12 +2,78 @@ from __future__ import annotations
 
 import ipaddress
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from .catalog import CatalogError, ModelCatalog
 
 
 def manifest_is_downloadable(record: dict[str, Any]) -> bool:
     return bool(record.get("downloadable"))
+
+
+def redacted_source_metadata(source: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    metadata = {key: value for key, value in source.items() if key != "url"}
+    url = source.get("url")
+    if isinstance(url, str) and url:
+        try:
+            parsed = urlsplit(url)
+            hostname = parsed.hostname or ""
+            netloc = hostname
+            if parsed.port is not None:
+                netloc = f"{netloc}:{parsed.port}"
+            safe_url = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except ValueError:
+            metadata["url"] = ""
+            metadata["url_redacted"] = True
+            return metadata
+        metadata["url"] = safe_url
+        metadata["url_redacted"] = safe_url != url
+    return metadata
+
+
+def sync_plan_model_metadata(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    resolved = record.get("resolved_model") if isinstance(record.get("resolved_model"), dict) else {}
+    license_info = dict(record.get("license") or {})
+    model_id = record.get("id") or resolved.get("id") or record.get("root")
+    version = record.get("version") or resolved.get("version")
+    display_name = record.get("display_name") or resolved.get("display_name") or model_id
+    return _without_none(
+        {
+            "id": model_id,
+            "version": version,
+            "display_name": display_name,
+            "modality": record.get("modality"),
+            "operations": list(record.get("operations") or []),
+            "preferred_runtime": record.get("preferred_runtime"),
+            "source": redacted_source_metadata(record.get("source")),
+            "license": license_info,
+            "execution_modes": list(record.get("execution_modes") or []),
+            "resource_estimate": record.get("resource_estimate") or {},
+            "resource_label": record.get("resource_label"),
+            "downloadable": manifest_is_downloadable(record),
+            "requires_license_acceptance": bool(license_info.get("acceptance_required")),
+            "aliases": list(record.get("aliases") or []),
+        }
+    )
+
+
+def _without_none(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def sync_plan_action_metadata(record: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = sync_plan_model_metadata(record)
+    return {
+        "model_metadata": metadata,
+        "license": metadata.get("license", {}),
+        "source": metadata.get("source", {}),
+        "resource_estimate": metadata.get("resource_estimate", {}),
+        "requires_license_acceptance": bool(metadata.get("requires_license_acceptance")),
+    }
 
 
 def downloadable_versions_for(catalog: ModelCatalog, model_id: str) -> list[dict[str, Any]]:
@@ -111,13 +177,23 @@ def build_sync_plan(catalog: ModelCatalog, models: list[str], installed_blob_siz
     actions: list[dict[str, Any]] = []
     total_download_bytes = 0
     for model_id in models:
-        if catalog.model_or_alias_record(model_id) is None:
+        record = catalog.model_or_alias_record(model_id)
+        if record is None:
             raise CatalogError(f"model not found: {model_id}")
         versions = downloadable_versions_for(catalog, model_id)
         if not versions:
-            actions.append({"model": model_id, "action": "skip", "reason": "model is not downloadable"})
+            version_records = catalog.versions_for(model_id)
+            actions.append(
+                {
+                    "model": model_id,
+                    "action": "skip",
+                    "reason": "model is not downloadable",
+                    **sync_plan_action_metadata(version_records[0] if version_records else record),
+                }
+            )
             continue
         version = versions[0]
+        model_metadata = sync_plan_action_metadata(version)
         for file in version["files"]:
             digest = file["sha256"].lower()
             expected_size = int(file["size_bytes"])
@@ -145,6 +221,7 @@ def build_sync_plan(catalog: ModelCatalog, models: list[str], installed_blob_siz
                     "download_bytes": bytes_to_download,
                     "url": f"/modelhub/v1/blobs/{digest}",
                     "etag": f"\"sha256:{digest}\"",
+                    **model_metadata,
                 }
             )
     return {

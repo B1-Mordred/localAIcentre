@@ -30,12 +30,21 @@ class ModelClientTests(unittest.TestCase):
         self.force_local_planner()
         original = client.model_record
         try:
-            client.model_record = lambda base_url, token, model_id: {"downloadable": False, "files": []}
+            client.model_record = lambda base_url, token, model_id: {
+                "id": "tts-fast",
+                "downloadable": False,
+                "files": [],
+                "license": {"name": "Test", "redistribution": "inference-only"},
+                "execution_modes": ["hosted-inference"],
+            }
             with tempfile.TemporaryDirectory() as tmp:
                 actions = client.planned_actions("http://modelhub", None, Path(tmp), ["tts-fast"])
         finally:
             client.model_record = original
-        self.assertEqual(actions, [{"model": "tts-fast", "action": "skip", "reason": "model is not downloadable"}])
+        self.assertEqual(actions[0]["model"], "tts-fast")
+        self.assertEqual(actions[0]["action"], "skip")
+        self.assertEqual(actions[0]["reason"], "model is not downloadable")
+        self.assertEqual(actions[0]["license"]["redistribution"], "inference-only")
 
     def test_planned_actions_keep_verified_blob_and_download_missing_blob(self) -> None:
         self.force_local_planner()
@@ -45,7 +54,18 @@ class ModelClientTests(unittest.TestCase):
 
         def fake_model_record(base_url: str, token: str | None, model_id: str) -> dict[str, object]:
             return {
+                "id": model_id,
+                "version": "1.0.0",
+                "display_name": "Downloadable Model",
                 "downloadable": True,
+                "source": {
+                    "type": "direct-url",
+                    "url": "https://models.example.test/model.gguf?token=secret",
+                    "revision": "test",
+                },
+                "license": {"name": "Test", "redistribution": "downloadable", "acceptance_required": False},
+                "resource_estimate": {"vram_gib": 1, "ram_gib": 1, "disk_gib": 1},
+                "execution_modes": ["hosted-inference", "downloadable"],
                 "files": [
                     {"sha256": digest, "size_bytes": len(payload)},
                     {"sha256": missing_digest, "size_bytes": 7},
@@ -67,6 +87,8 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(by_blob[digest]["action"], "keep")
         self.assertEqual(by_blob[missing_digest]["action"], "download")
         self.assertEqual(by_blob[missing_digest]["expected_size"], 7)
+        self.assertEqual(by_blob[missing_digest]["source"]["url"], "https://models.example.test/model.gguf")
+        self.assertFalse(by_blob[missing_digest]["requires_license_acceptance"])
 
     def test_planned_actions_prefers_server_sync_plan_and_adds_local_paths(self) -> None:
         digest = "a" * 64
@@ -231,6 +253,52 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(seen["base_url"], "http://modelhub")
         self.assertEqual(seen["token"], "sync-token")
         self.assertIn(digest, state["managed_blobs"])
+
+    def test_sync_once_requires_explicit_license_acceptance(self) -> None:
+        digest = "6" * 64
+        seen: dict[str, object] = {}
+
+        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "action": "download",
+                    "model": "chat-default",
+                    "blob": digest,
+                    "expected_size": 7,
+                    "path": str(cache / "blobs" / digest),
+                    "requires_license_acceptance": True,
+                    "model_metadata": {
+                        "id": "licenced-model",
+                        "version": "1.0.0",
+                        "display_name": "Licenced Model",
+                        "license": {"name": "Example", "acceptance_required": True},
+                    },
+                }
+            ]
+
+        def fake_download(base_url: str, token: str | None, sha256: str, expected_size: int, target: Path, *, source: dict[str, Any] | None = None) -> dict[str, Any]:
+            seen["downloaded"] = True
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"payload")
+            return {"blob": sha256, "status": "downloaded", "path": str(target), "size_bytes": expected_size}
+
+        original_plan = client.planned_actions
+        original_download = client.download_blob
+        try:
+            client.planned_actions = fake_actions
+            client.download_blob = fake_download
+            with tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp)
+                with self.assertRaisesRegex(RuntimeError, "licence acceptance required"):
+                    client.sync_once("http://modelhub", "sync-token", cache, ["chat-default"])
+                self.assertNotIn("downloaded", seen)
+                payload = client.sync_once("http://modelhub", "sync-token", cache, ["chat-default"], accept_licenses=True)
+        finally:
+            client.planned_actions = original_plan
+            client.download_blob = original_download
+
+        self.assertEqual(payload["changes"][0]["status"], "downloaded")
+        self.assertTrue(seen["downloaded"])
 
     def test_download_blob_validates_etag_content_length_and_range_metadata(self) -> None:
         payload = b"hello-world"

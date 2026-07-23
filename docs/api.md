@@ -490,7 +490,9 @@ Inference-only model manifests remain visible in the catalog but are not downloa
 }
 ```
 
-The response contains deterministic `keep`, `download`, `replace`, or `skip` actions. Download actions include the blob URL, expected byte size, and ETag. Inference-only models return a `skip` action instead of a blob URL.
+The response contains deterministic `keep`, `download`, `replace`, or `skip` actions. Download actions include the blob URL, expected byte size, ETag, licence metadata, redacted source metadata, execution modes, resource estimate, and the resolved immutable model version. Inference-only models return a `skip` action instead of a blob URL, with the same policy metadata so clients can explain why the model must be consumed through hosted inference.
+
+Official `b1-model-client sync` runs refuse `keep`, `download`, or `replace` actions whose manifest sets `license.acceptance_required=true` unless the operator reruns with `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` after reviewing `b1-model-client plan`.
 
 ## Model Hub Clients
 

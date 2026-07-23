@@ -18,6 +18,7 @@ b1-model-client pin chat-default image-default --cache ~/.cache/b1-ai-hub/models
 b1-model-client plan --cache ~/.cache/b1-ai-hub/models
 b1-model-client sync --cache ~/.cache/b1-ai-hub/models --dry-run
 b1-model-client sync --cache ~/.cache/b1-ai-hub/models
+b1-model-client sync --cache ~/.cache/b1-ai-hub/models --accept-license
 b1-model-client prune --cache ~/.cache/b1-ai-hub/models --dry-run
 ```
 
@@ -35,6 +36,8 @@ When no model arguments are supplied, `plan`, `sync`, and `daemon` use locally p
 
 Downloaded blobs are stored under `CACHE/blobs/{sha256}` and are written through `CACHE/blobs/{sha256}.partial` before atomic publication. The client sends the local blob inventory to `POST /modelhub/v1/sync/plan`, keeps existing verified blobs, resumes partial files with `Range`, validates `ETag`, `X-Checksum-SHA256`, `Content-Length`, `Content-Range`, final byte count, and final SHA-256, then records the blob as managed. Model Hub blob responses also include `X-RateLimit-*` headers from the server's per-client download window; slow or split large syncs if a workstation key exhausts its configured rate. Inference-only or restricted models are skipped by the client and must be consumed through hosted inference.
 
+Sync plans include the resolved immutable model version, licence terms, attribution where declared, redacted source URL, execution modes, and resource estimate for each action. If a manifest declares `license.acceptance_required=true`, `b1-model-client sync` and `daemon` refuse to synchronize the model until the operator reviews `b1-model-client plan` and reruns with `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true`.
+
 The same package can run as a small containerized daemon on an external machine:
 
 ```bash
@@ -48,7 +51,7 @@ docker run -d --name b1-model-client \
   b1-model-client daemon --cache /cache --prune
 ```
 
-For cron or scheduled tasks, use `daemon --once` to run exactly one sync cycle. Use `daemon --dry-run` first when testing a new workstation or allowlist.
+For cron or scheduled tasks, use `daemon --once` to run exactly one sync cycle. Use `daemon --dry-run` first when testing a new workstation or allowlist. Only set `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` for unattended daemon runs after the administrator has confirmed that the selected pinned models' terms allow that workstation cache.
 
 Administrators can create a dedicated Model Hub client key for a workstation:
 
