@@ -204,6 +204,109 @@ async function uploadMediaInput(file: File, fieldName: string): Promise<StagedUp
   return reference as StagedUploadReference;
 }
 
+function artifactFileName(artifact: Artifact): string {
+  const fallback = `${artifact.kind || "artifact"}-${artifact.id || "download"}`;
+  const path = artifact.url.split("?", 1)[0];
+  const last = path.split("/").filter(Boolean).pop();
+  try {
+    return decodeURIComponent(last || fallback).replace(/[\\/:*?"<>|]/g, "_").slice(0, 160) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function downloadArtifact(artifact: Artifact): Promise<string> {
+  const headers = new Headers();
+  attachAuthHeaders(headers, "GET");
+  const response = await fetch(apiUrl(artifact.url), {
+    credentials: "include",
+    headers
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const filename = artifactFileName(artifact);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return filename;
+}
+
+function parseSseEvent(raw: string): { event: string; data: string } | null {
+  let event = "message";
+  const data: string[] = [];
+  raw.split("\n").forEach((line) => {
+    if (!line || line.startsWith(":")) return;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    if (field === "data") data.push(value);
+  });
+  return data.length ? { event, data: data.join("\n") } : null;
+}
+
+async function streamJobEvents(
+  jobId: string,
+  signal: AbortSignal,
+  onJob: (job: MediaJob) => void
+): Promise<void> {
+  const headers = new Headers();
+  headers.set("Accept", "text/event-stream");
+  attachAuthHeaders(headers, "GET");
+  const response = await fetch(apiUrl(`/v1/media/jobs/${encodeURIComponent(jobId)}/events`), {
+    credentials: "include",
+    headers,
+    signal
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const normalized = buffer.replace(/\r\n/g, "\n");
+    const chunks = normalized.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      const parsed = parseSseEvent(chunk);
+      if (!parsed) continue;
+      if (parsed.event === "job") {
+        onJob(JSON.parse(parsed.data) as MediaJob);
+      } else if (parsed.event === "error" || parsed.event === "timeout") {
+        const payload = JSON.parse(parsed.data);
+        throw new Error(payload.error ?? parsed.event);
+      }
+    }
+    if (done) break;
+  }
+}
+
 function workflowIcon(workflow: PublishedWorkflow) {
   if (workflow.modality === "video") return <FileVideo size={17} />;
   if (workflow.modality === "tts" || workflow.modality === "stt") return <FileAudio size={17} />;
@@ -433,14 +536,18 @@ function JobSummary({
   artifacts,
   values,
   uploadPreviews,
-  onCancel
+  eventStatus,
+  onCancel,
+  onDownload
 }: {
   workflow: PublishedWorkflow | null;
   job: MediaJob | null;
   artifacts: Artifact[];
   values: Record<string, JsonValue>;
   uploadPreviews: Record<string, UploadPreview>;
+  eventStatus: string;
   onCancel: () => void;
+  onDownload: (artifact: Artifact) => void;
 }) {
   const preview = previewSource(workflow, values, uploadPreviews);
   return (
@@ -460,15 +567,16 @@ function JobSummary({
       <dl>
         <div><dt>Status</dt><dd>{job?.state ?? "idle"}</dd></div>
         <div><dt>Progress</dt><dd>{job?.progress ?? 0}%</dd></div>
+        <div><dt>Events</dt><dd>{eventStatus || "idle"}</dd></div>
         <div><dt>Backend</dt><dd>{workflow ? backendLabel(workflow) : "none"}</dd></div>
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>
       <div className="artifact-list">
         {artifacts.map((artifact) => (
-          <a key={artifact.id} href={`${API_BASE}${artifact.url}`} target="_blank" rel="noreferrer">
+          <button key={artifact.id} type="button" onClick={() => onDownload(artifact)}>
             <Download size={16} />{artifact.kind} / {formatBytes(artifact.bytes)}
-          </a>
+          </button>
         ))}
       </div>
     </aside>
@@ -486,6 +594,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
   const [currentJob, setCurrentJob] = useState<MediaJob | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [message, setMessage] = useState("loading");
+  const [eventStatus, setEventStatus] = useState("idle");
   const [busy, setBusy] = useState(false);
 
   const selectedWorkflow = useMemo(
@@ -534,23 +643,38 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     setValues(initialValues(selectedWorkflow));
     setUploadStatus({});
     setArtifacts([]);
+    setEventStatus("idle");
   }, [selectedWorkflow?.id, selectedWorkflow?.version]);
 
   useEffect(() => {
     if (!currentJob || TERMINAL_STATES.has(currentJob.state)) return;
-    const timer = window.setInterval(() => {
+    const controller = new AbortController();
+    setEventStatus("streaming");
+    streamJobEvents(currentJob.id, controller.signal, (job) => {
+      setCurrentJob(job);
+      setArtifacts(job.artifacts ?? []);
+      setMessage(`${job.state} ${job.id}`);
+      if (TERMINAL_STATES.has(job.state)) {
+        setEventStatus("complete");
+        loadArtifacts(job.id);
+        loadJobs();
+      }
+    }).catch((error: Error) => {
+      if (controller.signal.aborted) return;
+      setEventStatus("refreshing");
       apiJson<MediaJob>(`/v1/media/jobs/${currentJob.id}`)
         .then((job) => {
           setCurrentJob(job);
+          setArtifacts(job.artifacts ?? []);
           if (TERMINAL_STATES.has(job.state)) {
             loadArtifacts(job.id);
             loadJobs();
           }
         })
-        .catch((error: Error) => setMessage(error.message));
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [currentJob?.id, currentJob?.state]);
+        .catch((refreshError: Error) => setMessage(refreshError.message || error.message));
+    });
+    return () => controller.abort();
+  }, [currentJob?.id]);
 
   const loadJobs = () => {
     apiJson<MediaJob[]>("/v1/media/jobs")
@@ -571,6 +695,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     setSelectedId(workflow.id);
     setCurrentJob(null);
     setArtifacts([]);
+    setEventStatus("idle");
   };
 
   const uploadWorkflowFile = (name: string, schema: JsonSchemaProperty, file: File) => {
@@ -636,6 +761,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
       .then((job) => {
         setCurrentJob(job);
         setArtifacts(job.artifacts ?? []);
+        setEventStatus(TERMINAL_STATES.has(job.state) ? "complete" : "streaming");
         setMessage(`${job.state} ${job.id}`);
         loadJobs();
       })
@@ -649,9 +775,20 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     apiJson<MediaJob>(`/v1/media/jobs/${currentJob.id}`, { method: "DELETE" })
       .then((job) => {
         setCurrentJob(job);
+        setArtifacts(job.artifacts ?? []);
+        setEventStatus(TERMINAL_STATES.has(job.state) ? "complete" : "streaming");
         setMessage(`${job.state} ${job.id}`);
         loadJobs();
       })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const downloadCurrentArtifact = (artifact: Artifact) => {
+    setBusy(true);
+    setMessage(`downloading ${artifact.kind}`);
+    downloadArtifact(artifact)
+      .then((filename) => setMessage(`downloaded ${filename}`))
       .catch((error: Error) => setMessage(error.message))
       .finally(() => setBusy(false));
   };
@@ -714,7 +851,16 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
         <span className="toolbar-status">{message}</span>
       </form>
 
-      <JobSummary workflow={selectedWorkflow} job={currentJob} artifacts={artifacts} values={values} uploadPreviews={uploadPreviews} onCancel={cancelCurrentJob} />
+      <JobSummary
+        workflow={selectedWorkflow}
+        job={currentJob}
+        artifacts={artifacts}
+        values={values}
+        uploadPreviews={uploadPreviews}
+        eventStatus={eventStatus}
+        onCancel={cancelCurrentJob}
+        onDownload={downloadCurrentArtifact}
+      />
     </section>
   );
 }

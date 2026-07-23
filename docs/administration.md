@@ -195,7 +195,7 @@ Seed placeholders can remain published with `status: needs_dependencies`; that s
 
 ## Media Studio
 
-Media Studio reads `GET /workflows/v1/published`, renders each workflow's input JSON Schema as a form, submits `POST /v1/media/jobs` with the workflow's modality, operation, model alias, runtime policy, and parameter payload, polls job state, supports cancellation, and lists durable artifacts. File fields declared with `contentEncoding=base64` are uploaded first through `POST /v1/media/uploads`; the returned staged reference is stored in the job parameters and shown with a local preview. The control plane revalidates workflow ID/version, visibility, dependency readiness, modality, operation, model alias, runtime policy, JSON Schema fields, inline base64 media or staged-upload references, MIME type, staged size, and workflow resource limits before a workflow-backed job is queued.
+Media Studio reads `GET /workflows/v1/published`, renders each workflow's input JSON Schema as a form, submits `POST /v1/media/jobs` with the workflow's modality, operation, model alias, runtime policy, and parameter payload, streams job state from `GET /v1/media/jobs/{job_id}/events`, supports cancellation, and downloads durable artifacts through authenticated requests. File fields declared with `contentEncoding=base64` are uploaded first through `POST /v1/media/uploads`; the returned staged reference is stored in the job parameters and shown with a local preview. The control plane revalidates workflow ID/version, visibility, dependency readiness, modality, operation, model alias, runtime policy, JSON Schema fields, inline base64 media or staged-upload references, MIME type, staged size, and workflow resource limits before a workflow-backed job is queued.
 
 ## Backups
 

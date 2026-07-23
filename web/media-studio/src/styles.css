@@ -364,16 +364,19 @@ dd {
   gap: 8px;
 }
 
-.artifact-list a {
+.artifact-list a,
+.artifact-list button {
   align-items: center;
   border: 1px solid #d6dde3;
   border-radius: 6px;
   color: #0f5f59;
   display: inline-flex;
   gap: 7px;
+  justify-content: flex-start;
   min-height: 36px;
   padding: 0 10px;
   text-decoration: none;
+  width: 100%;
 }
 
 .history {
