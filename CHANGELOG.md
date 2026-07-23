@@ -33,3 +33,4 @@
 - Added Media Studio fetch-based SSE job progress and authenticated artifact downloads, keeping browser-session and service-token access aligned with the control-plane authorization model.
 - Added `.env.production.example` plus Compose validation coverage so the real LocalAI, ComfyUI, Voicebox, and audio-cpu production posture can still be started with the documented `docker compose up -d` command after bootstrap.
 - Added an opt-in external ComfyUI remote-node compatibility harness that stops/restores the server-side B1 ComfyUI service before proving a `non_comfy_only` TTS operation succeeds through the unified API.
+- Added offline runtime-agent security policy tests that lock down its route surface, mutation guards, pinned-image requirement, and absence of arbitrary Docker passthrough APIs.
