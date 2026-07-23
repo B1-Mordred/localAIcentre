@@ -13,16 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.sql import insert, select, update
 
 from . import audit
+from .job_states import (
+    CANCEL_IMMEDIATE_STATES,
+    MODEL_BLOCKING_JOB_STATES,
+    PRIORITIZABLE_JOB_STATES,
+    RETRYABLE_JOB_STATES,
+    TERMINAL_JOB_STATES,
+)
 from .scheduler import JobState, PriorityClass, QueueItem, select_next_job
 
 metadata = MetaData()
 engine: AsyncEngine | None = None
 scheduler_redis_client: Any | None = None
 SCHEDULER_REDIS_LEASE_KEY = "b1-ai-hub:scheduler:gpu"
-TERMINAL_JOB_STATES = {state.value for state in {JobState.COMPLETED, JobState.CANCELLED, JobState.FAILED, JobState.EXPIRED}}
-CANCEL_IMMEDIATE_STATES = {JobState.CREATED.value, JobState.VALIDATED.value, JobState.QUEUED.value, JobState.WAITING_FOR_GPU.value}
-RETRYABLE_JOB_STATES = {JobState.FAILED.value, JobState.CANCELLED.value, JobState.EXPIRED.value, JobState.RECOVERY_REQUIRED.value}
-PRIORITIZABLE_JOB_STATES = {JobState.CREATED.value, JobState.VALIDATED.value, JobState.QUEUED.value, JobState.WAITING_FOR_GPU.value}
 VALID_JOB_PRIORITIES = {priority.value for priority in PriorityClass}
 
 jobs = Table(
@@ -1758,7 +1761,7 @@ async def update_job(job_id: str, **changes: Any) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")
     changes["updated_at"] = datetime.now(tz=UTC)
-    if changes.get("state") in {"completed", "cancelled", "failed", "expired"} and "completed_at" not in changes:
+    if changes.get("state") in TERMINAL_JOB_STATES and "completed_at" not in changes:
         changes["completed_at"] = changes["updated_at"]
     async with engine.begin() as conn:
         await conn.execute(update(jobs).where(jobs.c.id == job_id).values(**changes))
@@ -1923,20 +1926,6 @@ async def retry_job(job_id: str) -> dict[str, Any] | None:
 async def count_active_jobs_for_model(model_ref: str, aliases: list[str]) -> int:
     if engine is None:
         raise RuntimeError("database engine is not configured")
-    active_states = [
-        "created",
-        "validated",
-        "queued",
-        "waiting_for_gpu",
-        "unloading",
-        "verifying_vram",
-        "loading",
-        "warming",
-        "running",
-        "saving",
-        "cancelling",
-        "recovery_required",
-    ]
     filters = [jobs.c.resolved_model_version == model_ref]
     if aliases:
         filters.append(jobs.c.model_alias.in_(aliases))
@@ -1944,7 +1933,7 @@ async def count_active_jobs_for_model(model_ref: str, aliases: list[str]) -> int
         result = await conn.execute(
             select(func.count().label("count"))
             .select_from(jobs)
-            .where(and_(jobs.c.state.in_(active_states), or_(*filters)))
+            .where(and_(jobs.c.state.in_(MODEL_BLOCKING_JOB_STATES), or_(*filters)))
         )
         row = result.mappings().first()
     return int(row["count"] if row else 0)
@@ -2096,7 +2085,7 @@ async def requeue_recovery_jobs(runtime_names: list[str]) -> int:
         result = await conn.execute(
             update(jobs)
             .where(and_(jobs.c.runtime.in_(runtime_names), jobs.c.state == "recovery_required"))
-            .values(state="queued", stage="queued", progress=10, updated_at=now)
+            .values(state="queued", stage="queued", progress=10, completed_at=None, updated_at=now)
         )
     return int(result.rowcount or 0)
 

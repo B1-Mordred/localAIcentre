@@ -127,6 +127,8 @@ The Jobs tab uses `GET /admin/jobs` and is limited to administrators and operato
 
 Operators can update priority while a job is still in `created`, `validated`, `queued`, or `waiting_for_gpu`. Valid priorities are `chat`, `interactive_audio`, `single_image`, `image_batch`, `video`, and `batch`. Cancelling a queued/pre-run job marks it `cancelled`; cancelling an active job marks it `cancelling` so the runner or adapter can interrupt at a safe point. Retrying is available only for `failed`, `cancelled`, `expired`, or `recovery_required` jobs and requeues the same durable job with an incremented retry count and cleared failure/artifact/measurement fields.
 
+Media Studio and API clients follow `GET /v1/media/jobs/{job_id}/events` for live progress. Event streams close after `completed`, `cancelled`, `failed`, `expired`, or `recovery_required`; a recovery-required job therefore stops progress polling immediately and remains visible for operator retry or diagnosis instead of timing out as an active job.
+
 Ordinary `/v1/media/jobs` access is owner-scoped. Service clients, creators, and users with `jobs:read` see only jobs they own unless they have wildcard administrative scope. The admin queue API is the intended surface for whole-system queue management.
 
 ## Runtimes

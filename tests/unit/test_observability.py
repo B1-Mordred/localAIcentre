@@ -69,6 +69,34 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(report["queue"]["wait_seconds_by_priority"]["chat"]["max"], 120)
         self.assertFalse(report["runtime_agent"]["available"])
 
+    def test_report_counts_recovery_required_as_terminal_recovery_outcome(self) -> None:
+        now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        jobs = [
+            {
+                "id": "job_recovery",
+                "state": "recovery_required",
+                "runtime": "comfyui",
+                "priority": "single_image",
+                "created_at": now - timedelta(minutes=15),
+                "completed_at": now - timedelta(minutes=14),
+                "updated_at": now - timedelta(minutes=14),
+            }
+        ]
+        report = build_observability_report(
+            jobs,
+            state_counts=[{"state": "recovery_required", "count": 1}],
+            runtime_states=[],
+            scheduler_lease=None,
+            agent_metrics=None,
+            agent_error=None,
+            now=now,
+        )
+
+        self.assertEqual(report["queue"]["depth_total"], 0)
+        self.assertEqual(report["queue"]["active_total"], 0)
+        self.assertEqual(report["jobs"]["recovery_required_last_hour"], 1)
+        self.assertEqual(report["jobs"]["by_runtime"]["comfyui"]["recovery_required"], 1)
+
     def test_report_summarizes_recent_jobs_switches_runtime_and_gpu(self) -> None:
         now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
         jobs = [

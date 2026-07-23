@@ -100,6 +100,27 @@ class ArtifactRetentionPolicyTests(unittest.TestCase):
             self.assertEqual(plan["kept"][0]["reason"], "protected_by_voice_profile")
             self.assertEqual(plan["invalid_preserved"][0]["reason"], "artifact path contains a symlink")
 
+    def test_recovery_required_job_artifacts_age_like_terminal_outputs(self) -> None:
+        now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "comfyui" / "job_recovery" / "0.png"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"data")
+            jobs = [
+                self.make_job(
+                    job_id="job_recovery",
+                    state="recovery_required",
+                    completed_at=now - timedelta(days=40),
+                    artifact_path="comfyui/job_recovery/0.png",
+                )
+            ]
+
+            plan = artifact_retention.build_artifact_retention_plan(root, jobs, delete_older_than_days=30, now=now)
+
+            self.assertEqual(plan["candidate_count"], 1)
+            self.assertEqual(plan["candidates"][0]["state"], "recovery_required")
+
     def test_apply_requires_confirmation_deletes_files_and_marks_job_artifacts(self) -> None:
         now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
         with tempfile.TemporaryDirectory() as tmp:

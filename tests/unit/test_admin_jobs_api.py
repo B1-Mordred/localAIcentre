@@ -85,7 +85,7 @@ class FakeJobsDatabase:
         if job is None:
             return None
         self.cancelled.append(job_id)
-        if job["state"] in {"completed", "cancelled", "failed", "expired"}:
+        if job["state"] in main.TERMINAL_JOB_STATES:
             return job
         return {**job, "state": "cancelled", "stage": "cancelled", "progress": 100}
 
@@ -249,6 +249,37 @@ class AdminJobsApiTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "completed")
         self.assertEqual(audit_events, [])
+
+    def test_admin_cancel_recovery_required_job_is_idempotent_without_audit(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(state="recovery_required", stage="recovery_required", progress=0))
+        audit_events: list[dict[str, Any]] = []
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:write"})))
+        self.patch_audit(audit_events)
+
+        result = asyncio.run(main.admin_job_cancel("job_1", main.JobMutationRequest(reason="already needs recovery")))
+
+        self.assertEqual(result["state"], "recovery_required")
+        self.assertEqual(audit_events, [])
+
+    def test_public_events_end_immediately_for_recovery_required_job(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(state="recovery_required", stage="recovery_required", progress=0))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        async def collect_events() -> str:
+            response = await main.media_job_events("job_1")
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn("event: job", body)
+        self.assertIn("retry: 1000", body)
+        self.assertIn('"state":"recovery_required"', body)
+        self.assertNotIn("event: timeout", body)
 
 
 if __name__ == "__main__":

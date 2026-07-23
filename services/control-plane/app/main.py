@@ -34,6 +34,8 @@ from . import artifacts as artifact_policy
 from . import backup_restore
 from . import backup_schedule
 from . import compose_override as compose_override_policy
+from .job_events import format_sse_event, job_event_id
+from .job_states import TERMINAL_JOB_STATES
 from . import media_artifacts
 from . import model_lifecycle
 from . import modelhub as modelhub_policy
@@ -108,7 +110,6 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "<redacted>"),
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
-TERMINAL_JOB_STATES = {JobState.COMPLETED.value, JobState.CANCELLED.value, JobState.FAILED.value, JobState.EXPIRED.value}
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
 MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
@@ -6882,20 +6883,19 @@ async def media_job_events(job_id: str, authorization: str | None = Header(defau
     require_job_owner_or_admin(auth, initial_job)
 
     async def events():
-        terminal_states = {JobState.COMPLETED.value, JobState.CANCELLED.value, JobState.FAILED.value, JobState.EXPIRED.value}
         for _ in range(120):
             job = await database.get_job(job_id)
             if job is None:
-                yield "event: error\ndata: {\"error\":\"job not found\"}\n\n"
+                yield format_sse_event("error", {"error": "job not found"})
                 return
             if not subject_can_read_job(auth, job):
-                yield "event: error\ndata: {\"error\":\"job belongs to a different owner\"}\n\n"
+                yield format_sse_event("error", {"error": "job belongs to a different owner"})
                 return
-            yield f"event: job\ndata: {json.dumps(jsonable_encoder(job))}\n\n"
-            if job["state"] in terminal_states:
+            yield format_sse_event("job", jsonable_encoder(job), event_id=job_event_id(job), retry_ms=1000)
+            if job["state"] in TERMINAL_JOB_STATES:
                 return
             await asyncio.sleep(1)
-        yield "event: timeout\ndata: {\"error\":\"job event stream timed out\"}\n\n"
+        yield format_sse_event("timeout", {"error": "job event stream timed out"})
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

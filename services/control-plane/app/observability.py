@@ -4,18 +4,7 @@ from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any
 
-
-PENDING_JOB_STATES = {"created", "validated", "queued", "waiting_for_gpu"}
-ACTIVE_JOB_STATES = {
-    "unloading",
-    "verifying_vram",
-    "loading",
-    "warming",
-    "running",
-    "saving",
-    "cancelling",
-}
-TERMINAL_JOB_STATES = {"completed", "cancelled", "failed", "expired"}
+from .job_states import ACTIVE_JOB_STATES, PENDING_JOB_STATES
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -157,6 +146,7 @@ def build_job_metrics(jobs: list[dict[str, Any]], now: datetime) -> dict[str, An
     completed = [job for job in recent if job.get("state") == "completed"]
     failed = [job for job in recent if job.get("state") == "failed"]
     cancelled = [job for job in recent if job.get("state") == "cancelled"]
+    recovery_required = [job for job in recent if job.get("state") == "recovery_required"]
     load_seconds = [milliseconds_to_seconds(job.get("load_time_ms")) for job in recent]
     run_seconds = [milliseconds_to_seconds(job.get("run_time_ms")) for job in recent]
     peak_vram = [job.get("peak_vram_mib") for job in recent]
@@ -171,6 +161,7 @@ def build_job_metrics(jobs: list[dict[str, Any]], now: datetime) -> dict[str, An
                 "total": 0,
                 "completed": 0,
                 "failed": 0,
+                "recovery_required": 0,
                 "_load_seconds": [],
                 "_run_seconds": [],
                 "_peak_vram_mib": [],
@@ -182,6 +173,8 @@ def build_job_metrics(jobs: list[dict[str, Any]], now: datetime) -> dict[str, An
             bucket["completed"] += 1
         if job.get("state") == "failed":
             bucket["failed"] += 1
+        if job.get("state") == "recovery_required":
+            bucket["recovery_required"] += 1
         bucket["_load_seconds"].append(milliseconds_to_seconds(job.get("load_time_ms")))
         bucket["_run_seconds"].append(milliseconds_to_seconds(job.get("run_time_ms")))
         bucket["_peak_vram_mib"].append(job.get("peak_vram_mib"))
@@ -193,6 +186,7 @@ def build_job_metrics(jobs: list[dict[str, Any]], now: datetime) -> dict[str, An
             "total": bucket["total"],
             "completed": bucket["completed"],
             "failed": bucket["failed"],
+            "recovery_required": bucket["recovery_required"],
             "load_seconds": summarize_numbers(bucket["_load_seconds"]),
             "run_seconds": summarize_numbers(bucket["_run_seconds"]),
             "peak_vram_mib": summarize_numbers(bucket["_peak_vram_mib"]),
@@ -206,6 +200,7 @@ def build_job_metrics(jobs: list[dict[str, Any]], now: datetime) -> dict[str, An
         "completed_last_hour": len(completed),
         "failed_last_hour": len(failed),
         "cancelled_last_hour": len(cancelled),
+        "recovery_required_last_hour": len(recovery_required),
         "load_seconds": summarize_numbers(load_seconds),
         "run_seconds": summarize_numbers(run_seconds),
         "peak_vram_mib": summarize_numbers(peak_vram),

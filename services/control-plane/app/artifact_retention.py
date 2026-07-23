@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from . import artifacts as artifact_policy
+from .job_states import TERMINAL_JOB_STATES
 
 
-TERMINAL_STATES = {"completed", "cancelled", "failed", "expired"}
 DISALLOWED_NAMESPACES = {"inputs", "temporary", "backups", "secrets"}
 
 
@@ -149,7 +149,7 @@ def artifact_decision(
         return "kept", public_artifact_entry(job, artifact, relative, "not_generated_output_storage")
     if namespaces and namespace not in namespaces:
         return "kept", public_artifact_entry(job, artifact, relative, "outside_selected_namespaces")
-    if str(job.get("state")) not in TERMINAL_STATES:
+    if str(job.get("state")) not in TERMINAL_JOB_STATES:
         return "kept", public_artifact_entry(job, artifact, relative, "job_not_terminal")
     completed_at = parse_datetime(job.get("completed_at"))
     if completed_at is None or completed_at >= cutoff:
