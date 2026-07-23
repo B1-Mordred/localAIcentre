@@ -434,7 +434,7 @@ Native ComfyUI `POST /prompt` requests create durable `workflow/comfyui-prompt` 
 
 `GET /v1/media/jobs/{job_id}/artifacts` lists artifact metadata recorded on a durable job. Artifact URLs use `/artifacts/{artifact_path}` and are served by the control plane, not by exposing the internal artifact-server.
 
-Artifact downloads require `jobs:read`. Non-admin callers can only download artifacts attached to their own job records; admin callers can read any recorded artifact. The internal artifact-server provides `GET`, `HEAD`, `Range`, `ETag`, `If-None-Match`, `Content-Length`, `Content-Range`, and private cache headers for generated artifacts.
+Artifact downloads require `jobs:read`. Non-admin callers can only download artifacts attached to their own job records; admin callers can read any recorded artifact. The internal artifact-server provides `GET`, `HEAD`, `Range`, `ETag`, `If-None-Match`, `Content-Length`, `Content-Range`, and private cache headers for generated artifacts. The control plane strips client `Authorization` before proxying and injects the generated `B1_ARTIFACT_SERVER_TOKEN_FILE` bearer token; direct internal artifact-server artifact/blob requests without that token fail closed.
 
 ComfyUI-native artifacts also use `/artifacts/...` URLs and the same owner/scope checks. The normal completion path ingests `/history/{prompt_id}` outputs from internal ComfyUI `/view` into `$B1_ARTIFACT_ROOT/comfyui/...`, records byte count and SHA-256 metadata, and serves the stored file through the internal artifact-server. Metadata-only `source=comfyui_view` artifacts are still accepted as a fallback for in-flight or recovery-required jobs.
 
@@ -506,7 +506,7 @@ When `POST /v1/media/jobs` includes `input.workflow_id` and `input.workflow_vers
 
 ## Model Hub Blobs
 
-Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable. If every allowed catalog record for the blob sets `license.acceptance_required=true`, the request must include `X-B1-Accept-License: model_id@version`; otherwise the control plane returns HTTP 428 with the required model refs. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
+Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must belong to a catalog manifest whose licence and execution mode mark it downloadable. If every allowed catalog record for the blob sets `license.acceptance_required=true`, the request must include `X-B1-Accept-License: model_id@version`; otherwise the control plane returns HTTP 428 with the required model refs. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage with the generated internal artifact-server bearer token; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
 
 Supported blob response behaviour:
 

@@ -34,7 +34,7 @@ This repository currently contains the first runnable project slice:
 - durable Voicebox profile registry with Control Center create/export/delete flows, audit events, backup coverage, TTS alias/runtime validation, and artifact-only voice sample references
 - external `comfyui-b1-remote-nodes` package with unified-API nodes for model selection, chat, vision request shaping, embeddings, media jobs, uploads, artifacts, TTS, and STT without using the server-side ComfyUI endpoint
 - external `b1-model-client` CLI/container daemon with Model Hub sync-plan support, pin/unpin, resumable verified blob sync, and managed-only safe prune for workstation model caches
-- Model Hub blob delivery through the authenticated control-plane proxy with downloadable-policy checks, per-client allowlists, CIDR enforcement, Range/ETag/checksum support, and per-subject rate-limit headers
+- Model Hub blob delivery through the authenticated control-plane proxy with downloadable-policy checks, per-client allowlists, CIDR enforcement, a generated internal artifact-server bearer token, Range/ETag/checksum support, and per-subject rate-limit headers
 - committed OpenAPI 3.1 schema generated from the FastAPI app with a CI drift check
 - GitHub Actions quality gates for backend tests, Compose validation, Alembic packaging, frontend builds, NPM audit, source secret scanning, CycloneDX SBOM generation/validation, Python dependency audit, service/frontend/integration container builds, strict Trivy scans for the smaller B1-owned images, and uploaded Trivy inventories for upstream-heavy Open WebUI, LocalAI, ComfyUI, and Voicebox images
 - artifact-server and CPU audio service scaffolds

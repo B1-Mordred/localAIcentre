@@ -968,8 +968,17 @@ async def proxy_http_bytes(
     return Response(content=proxied.content, status_code=proxied.status_code, headers=response_headers)
 
 
-async def proxy_http(base_url: str, path: str, request: Request) -> Response:
-    return await proxy_http_bytes(base_url, path, request)
+async def proxy_http(base_url: str, path: str, request: Request, extra_headers: dict[str, str] | None = None) -> Response:
+    if extra_headers is None:
+        return await proxy_http_bytes(base_url, path, request)
+    return await proxy_http_bytes(base_url, path, request, extra_headers=extra_headers)
+
+
+def artifact_server_auth_headers() -> dict[str, str]:
+    token = settings.artifact_server_token.strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="artifact-server service token is not configured")
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def read_bounded_request_body(request: Request, max_size_bytes: int) -> bytes:
@@ -5280,7 +5289,15 @@ async def self_test_artifact_delivery() -> dict[str, Any]:
         target.write_bytes(payload)
         url = f"{settings.artifact_base_url.rstrip('/')}/artifacts/{relative_path}"
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, headers={"Range": "bytes=0-1"})
+            response = await client.get(url, headers={"Range": "bytes=0-1", **artifact_server_auth_headers()})
+    except HTTPException as exc:
+        detail = jsonable_encoder(exc.detail)
+        return selftest_policy.check(
+            "artifact:delivery",
+            "failed",
+            f"artifact delivery probe failed with HTTP {exc.status_code}: {detail}",
+            {"detail": detail},
+        )
     except (OSError, httpx.HTTPError) as exc:
         return selftest_policy.check("artifact:delivery", "failed", f"artifact delivery probe failed: {exc.__class__.__name__}")
     finally:
@@ -7166,7 +7183,7 @@ async def artifact_download(artifact_path: str, request: Request, authorization:
     comfyui_view_path = comfyui_view_path_for_artifact(artifact or {})
     if comfyui_view_path:
         return await proxy_http_bytes(settings.comfyui_url, comfyui_view_path, request, b"")
-    return await proxy_http(settings.artifact_base_url, artifact_url, request)
+    return await proxy_http(settings.artifact_base_url, artifact_url, request, extra_headers=artifact_server_auth_headers())
 
 
 @app.post("/v1/runtime-reservations")
@@ -7301,7 +7318,7 @@ async def modelhub_blob(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     await require_modelhub_blob_authorized(auth, sha256, accepted_license_refs)
     rate_headers = await enforce_modelhub_blob_rate_limit(auth)
-    response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request)
+    response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request, extra_headers=artifact_server_auth_headers())
     for key, value in rate_headers.items():
         response.headers[key] = value
     return response

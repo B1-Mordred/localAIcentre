@@ -121,6 +121,7 @@ services:
       B1_ADMIN_BOOTSTRAP_KEY_FILE: /run/secrets/admin_bootstrap_key
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
       B1_MASTER_KEY_FILE: /run/secrets/master_encryption_key
+      B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
       REDIS_URL: redis://redis:6379/0
       LOCALAI_URL: http://localai:8000
       COMFYUI_URL: http://comfyui:8000
@@ -401,9 +402,11 @@ services:
     environment:
       B1_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
       B1_MODEL_BLOB_ROOT: /srv/b1-ai-hub/models/blobs
+      B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
     volumes:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts:/srv/b1-ai-hub/artifacts:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     networks:
       - app
       - data

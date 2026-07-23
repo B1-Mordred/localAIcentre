@@ -47,3 +47,4 @@
 - Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
 - Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
 - Redacted manifest source URLs across public Model Hub catalog, model, and version responses so external sync clients do not receive upstream credentials, signed query strings, or fragments.
+- Added a generated internal artifact-server bearer token and made the control plane inject it for authenticated artifact and Model Hub blob proxying while artifact-server fails closed on direct unauthenticated artifact/blob requests.

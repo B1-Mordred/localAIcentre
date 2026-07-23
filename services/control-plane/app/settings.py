@@ -57,6 +57,7 @@ class Settings:
     voicebox_url: str
     audio_cpu_url: str
     artifact_base_url: str
+    artifact_server_token: str
     runtime_agent_url: str
     runtime_agent_token: str
     runtime_agent_tls_ca_file: str
@@ -172,6 +173,7 @@ def load_settings() -> Settings:
         voicebox_url=os.getenv("VOICEBOX_URL", "http://voicebox:8000"),
         audio_cpu_url=os.getenv("AUDIO_CPU_URL", "http://audio-cpu:8000"),
         artifact_base_url=os.getenv("ARTIFACT_BASE_URL", "http://artifact-server:8000"),
+        artifact_server_token=_read_secret(os.getenv("B1_ARTIFACT_SERVER_TOKEN_FILE"), os.getenv("B1_ARTIFACT_SERVER_TOKEN", "")),
         runtime_agent_url=os.getenv("RUNTIME_AGENT_URL", "https://runtime-agent:8443"),
         runtime_agent_token=_read_secret(os.getenv("B1_RUNTIME_AGENT_TOKEN_FILE"), os.getenv("B1_RUNTIME_AGENT_TOKEN", "")),
         runtime_agent_tls_ca_file=os.getenv("B1_RUNTIME_AGENT_TLS_CA_FILE", "/run/secrets/runtime_agent_mtls_ca.crt"),

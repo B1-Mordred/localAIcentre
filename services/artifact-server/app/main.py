@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
+import hmac
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,28 @@ ARTIFACT_ROOT = Path(os.getenv("B1_ARTIFACT_ROOT", "/srv/b1-ai-hub/artifacts")).
 BLOB_ROOT = Path(os.getenv("B1_MODEL_BLOB_ROOT", "/srv/b1-ai-hub/models/blobs")).resolve()
 
 
+def read_secret(path: str | None, fallback: str = "") -> str:
+    if not path:
+        return fallback
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return fallback
+
+
+def configured_service_token() -> str:
+    return read_secret(os.getenv("B1_ARTIFACT_SERVER_TOKEN_FILE"), os.getenv("B1_ARTIFACT_SERVER_TOKEN", "")).strip()
+
+
+def require_service_authorization(request: Request) -> None:
+    expected = configured_service_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="artifact-server service token is not configured")
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(value.strip(), expected):
+        raise HTTPException(status_code=401, detail="artifact-server service token required", headers={"WWW-Authenticate": "Bearer"})
+
+
 def resolve_inside(root: Path, relative: str) -> Path:
     try:
         candidate = safe_resolve_inside(root, relative)
@@ -41,7 +64,13 @@ def resolve_inside(root: Path, relative: str) -> Path:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
-    return {"status": "ok", "service": "artifact-server", "artifact_root": str(ARTIFACT_ROOT), "blob_root": str(BLOB_ROOT)}
+    return {
+        "status": "ok",
+        "service": "artifact-server",
+        "artifact_root": str(ARTIFACT_ROOT),
+        "blob_root": str(BLOB_ROOT),
+        "auth_required": bool(configured_service_token()),
+    }
 
 
 def artifact_etag(path: Path) -> str:
@@ -98,12 +127,14 @@ def artifact_response(path: Path, request: Request, head_only: bool = False) -> 
 
 @app.get("/artifacts/{artifact_path:path}")
 async def artifact_get(artifact_path: str, request: Request) -> Response:
+    require_service_authorization(request)
     path = resolve_inside(ARTIFACT_ROOT, artifact_path)
     return artifact_response(path, request)
 
 
 @app.head("/artifacts/{artifact_path:path}")
 async def artifact_head(artifact_path: str, request: Request) -> Response:
+    require_service_authorization(request)
     path = resolve_inside(ARTIFACT_ROOT, artifact_path)
     return artifact_response(path, request, head_only=True)
 
@@ -159,9 +190,11 @@ def blob_response(request: Request, sha256: str, head_only: bool = False) -> Res
 
 @app.get("/modelhub/v1/blobs/{sha256}")
 async def blob_get(sha256: str, request: Request) -> Response:
+    require_service_authorization(request)
     return blob_response(request, sha256)
 
 
 @app.head("/modelhub/v1/blobs/{sha256}")
 async def blob_head(sha256: str, request: Request) -> Response:
+    require_service_authorization(request)
     return blob_response(request, sha256, head_only=True)

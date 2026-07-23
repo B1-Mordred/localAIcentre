@@ -117,13 +117,22 @@ class SelfTestApiTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             artifact_root = Path(tmp)
-            self.patch_settings(artifact_root=str(artifact_root), artifact_base_url="http://artifact-server:8000")
+            self.patch_settings(artifact_root=str(artifact_root), artifact_base_url="http://artifact-server:8000", artifact_server_token="service-token")
             result = asyncio.run(main.self_test_artifact_delivery())
             leftovers = list((artifact_root / "temporary").glob("self-test-*.txt"))
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Range"], "bytes=0-1")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer service-token")  # type: ignore[attr-defined]
         self.assertEqual(leftovers, [])
+
+    def test_artifact_delivery_probe_fails_closed_without_internal_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, artifact_base_url="http://artifact-server:8000", artifact_server_token="")
+            result = asyncio.run(main.self_test_artifact_delivery())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("artifact-server service token is not configured", result["detail"])
 
     def test_tls_routing_probe_uses_configured_ca_file(self) -> None:
         class FakeResponse:

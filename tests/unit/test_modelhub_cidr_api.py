@@ -284,6 +284,108 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(redis_key.startswith("b1:modelhub:blob-rate:"))
         self.assertEqual(fake_redis.ttls[redis_key], main.MODELHUB_BLOB_RATE_WINDOW_SECONDS)
 
+    async def test_modelhub_blob_proxy_injects_internal_artifact_server_token(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")
+        calls: list[dict[str, Any]] = []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def require_blob_authorized(auth_context: AuthContext, sha256: str, accepted_license_refs: set[str]) -> None:
+            calls.append({"authorized": sha256, "accepted": sorted(accepted_license_refs), "subject": auth_context.subject_id})
+
+        async def enforce_rate_limit(auth_context: AuthContext) -> dict[str, str]:
+            calls.append({"rate_limit": auth_context.subject_id})
+            return {"X-RateLimit-Limit": "120"}
+
+        async def proxy(base_url: str, path: str, request: Any, extra_headers: dict[str, str] | None = None) -> Any:
+            calls.append(
+                {
+                    "base_url": base_url,
+                    "path": path,
+                    "extra_headers": extra_headers,
+                    "client_authorization": request.headers.get("authorization"),
+                }
+            )
+            return main.Response(content=b"blob", status_code=206)
+
+        original_authenticate = main.authenticate
+        original_require = main.require_modelhub_blob_authorized
+        original_rate_limit = main.enforce_modelhub_blob_rate_limit
+        original_proxy = main.proxy_http
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.require_modelhub_blob_authorized = require_blob_authorized  # type: ignore[assignment]
+        main.enforce_modelhub_blob_rate_limit = enforce_rate_limit  # type: ignore[assignment]
+        main.proxy_http = proxy  # type: ignore[assignment]
+        main.settings = replace(main.settings, artifact_server_token="artifact-token")
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "require_modelhub_blob_authorized", original_require))
+        self.addCleanup(lambda: setattr(main, "enforce_modelhub_blob_rate_limit", original_rate_limit))
+        self.addCleanup(lambda: setattr(main, "proxy_http", original_proxy))
+
+        response = await main.modelhub_blob(
+            "a" * 64,
+            request_for("172.18.0.10", {"Authorization": "Bearer client-token"}),
+            authorization="Bearer client-token",
+            x_b1_accept_license="downloadable-llm@1.0.0",
+        )
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["X-RateLimit-Limit"], "120")
+        self.assertEqual(calls[2]["extra_headers"], {"Authorization": "Bearer artifact-token"})
+        self.assertEqual(calls[2]["client_authorization"], "Bearer client-token")
+
+    async def test_proxy_http_bytes_replaces_client_authorization_with_internal_header(self) -> None:
+        class FakeRequest:
+            method = "GET"
+            headers = {
+                "authorization": "Bearer client-token",
+                "host": "api.ai.b1.germering",
+                "range": "bytes=0-1",
+            }
+            url = SimpleNamespace(query="")
+
+            async def body(self) -> bytes:
+                return b""
+
+        class FakeResponse:
+            status_code = 206
+            content = b"ab"
+            headers = {"content-type": "text/plain", "content-length": "2"}
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def request(self, method: str, url: str, content: bytes, headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"method": method, "url": url, "content": content, "headers": headers})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        response = await main.proxy_http_bytes(
+            "http://artifact-server:8000",
+            "/artifacts/test.txt",
+            FakeRequest(),
+            extra_headers={"Authorization": "Bearer artifact-token"},
+        )
+
+        self.assertEqual(response.status_code, 206)
+        forwarded_headers = FakeAsyncClient.calls[0]["headers"]  # type: ignore[attr-defined]
+        self.assertEqual(forwarded_headers["Authorization"], "Bearer artifact-token")
+        self.assertEqual(forwarded_headers["range"], "bytes=0-1")
+        self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("host", forwarded_headers)
+
 
 if __name__ == "__main__":
     unittest.main()

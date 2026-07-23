@@ -910,10 +910,18 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         async def authenticate(_: str | None = None) -> Any:
             return main.AuthContext("client_1", main.Role.SERVICE, frozenset({"jobs:read"}))
 
-        async def proxy(base_url: str, path: str, request: FakeArtifactRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
-            proxied.update({"base_url": base_url, "path": path, "body": body})
+        async def proxy(
+            base_url: str,
+            path: str,
+            request: FakeArtifactRequest,
+            body: bytes | None = None,
+            timeout_seconds: float = 120.0,
+            extra_headers: dict[str, str] | None = None,
+        ) -> Response:
+            proxied.update({"base_url": base_url, "path": path, "body": body, "extra_headers": extra_headers})
             return Response(content=b"image", media_type="image/png", status_code=206)
 
+        main.settings = replace(main.settings, artifact_server_token="service-token")
         main.authenticate = authenticate  # type: ignore[assignment]
         main.proxy_http_bytes = proxy  # type: ignore[assignment]
 
@@ -923,6 +931,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(proxied["base_url"], "http://artifact-server:8000")
         self.assertEqual(proxied["path"], "/artifacts/comfyui/prompt_native_1/0-result.png")
         self.assertIsNone(proxied["body"])
+        self.assertEqual(proxied["extra_headers"], {"Authorization": "Bearer service-token"})
 
 
 def awaitable_body(request: FakeRequest) -> bytes:

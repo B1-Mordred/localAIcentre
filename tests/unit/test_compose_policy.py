@@ -149,6 +149,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_CLIENT_CERT_FILE"], "/run/secrets/runtime_agent_client.crt")
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_CLIENT_KEY_FILE"], "/run/secrets/runtime_agent_client.key")
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_VERIFY"], "${B1_RUNTIME_AGENT_TLS_VERIFY:-true}")
+        self.assertEqual(environment["B1_ARTIFACT_SERVER_TOKEN_FILE"], "/run/secrets/artifact_server_token")
         self.assertEqual(environment["B1_DEV_AUTH_BYPASS"], "${B1_DEV_AUTH_BYPASS:-false}")
         self.assertEqual(environment["B1_OPENAI_COMPATIBLE_BASE_URL"], "${B1_OPENAI_COMPATIBLE_BASE_URL:-}")
         self.assertEqual(environment["B1_OPENAI_COMPATIBLE_API_KEY_FILE"], "${B1_OPENAI_COMPATIBLE_API_KEY_FILE:-}")
@@ -197,6 +198,14 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_COMFY_PROMPT_POLL_SECONDS"], "${B1_COMFY_PROMPT_POLL_SECONDS:-2}")
         self.assertEqual(environment["B1_COMFY_PROMPT_COMPLETION_TIMEOUT_SECONDS"], "${B1_COMFY_PROMPT_COMPLETION_TIMEOUT_SECONDS:-7200}")
         self.assertEqual(environment["B1_COMFY_PROMPT_IDLE_GRACE_SECONDS"], "${B1_COMFY_PROMPT_IDLE_GRACE_SECONDS:-5}")
+
+    def test_artifact_server_requires_generated_internal_token(self) -> None:
+        service = self.compose["services"]["artifact-server"]
+        volumes = service.get("volumes", [])
+        environment = service.get("environment", {})
+        self.assertEqual(environment["B1_ARTIFACT_SERVER_TOKEN_FILE"], "/run/secrets/artifact_server_token")
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", volumes)
+        self.assertEqual(self.production_env["B1_ARTIFACT_SERVER_TOKEN_FILE"], "/run/secrets/artifact_server_token")
 
     def test_control_plane_backup_mounts_are_b1_root_scoped(self) -> None:
         service = self.compose["services"]["control-plane"]

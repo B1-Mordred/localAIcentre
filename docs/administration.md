@@ -109,7 +109,7 @@ The same report performs bounded end-to-end probes required for operator accepta
 - `inference:tiny` runs a minimal `embedding-default` request and verifies the returned vector shape. If the scaffold CPU engine is disabled and no production embedding engine is configured, this fails rather than reporting a fake-ready inference path.
 - `runtime-agent:unload` submits a `dry_run=true` unload request for `B1_SELF_TEST_UNLOAD_RUNTIME`, default `localai`, proving the mTLS/token/runtime-action path without restarting containers.
 - `runtimes:production-readiness` classifies required runtime health. Development mode reports placeholders as a warning; production mode reports placeholders, missing runtimes, or unhealthy required runtimes as failed.
-- `artifact:delivery` writes a temporary artifact probe, fetches it from `artifact-server` with an HTTP Range request, verifies the returned bytes, and removes the probe file.
+- `artifact:delivery` writes a temporary artifact probe, fetches it from `artifact-server` with the generated internal bearer token and an HTTP Range request, verifies the returned bytes, and removes the probe file.
 
 Tune these probes with `B1_SELF_TEST_TLS_URLS`, `B1_SELF_TEST_TLS_CA_FILE`, `B1_SELF_TEST_TLS_VERIFY`, `B1_SELF_TEST_TINY_INFERENCE_ENABLED`, `B1_SELF_TEST_UNLOAD_RUNTIME`, `B1_RUNTIME_DEPLOYMENT_MODE`, and `B1_RUNTIME_PRODUCTION_REQUIRED`. A failed self-test during update staging marks the update stage as failed; a degraded self-test remains visible but does not block staging.
 
