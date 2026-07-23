@@ -4221,7 +4221,7 @@ def model_allowed_by_client(client: dict[str, Any] | None, model_id: str, record
 def modelhub_catalog_for_client(client: dict[str, Any] | None) -> dict[str, Any]:
     catalog = catalog_snapshot().to_catalog()
     if client is None:
-        return catalog
+        return modelhub_policy.public_modelhub_metadata(catalog)
     aliases = [
         record
         for record in catalog.get("aliases", [])
@@ -4232,7 +4232,7 @@ def modelhub_catalog_for_client(client: dict[str, Any] | None) -> dict[str, Any]
         for record in catalog.get("models", [])
         if isinstance(record, dict) and model_allowed_by_client(client, str(record.get("id") or ""), record)
     ]
-    return {**catalog, "aliases": aliases, "models": models}
+    return modelhub_policy.public_modelhub_metadata({**catalog, "aliases": aliases, "models": models})
 
 
 def require_modelhub_client_network_allowed(client: dict[str, Any] | None, request: Request | None) -> None:
@@ -7273,7 +7273,7 @@ async def modelhub_model(model_id: str, authorization: str | None = Header(defau
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
     await require_modelhub_model_authorized(auth, model_id, for_download=False)
-    return modelhub_model_record(model_id)
+    return modelhub_policy.public_modelhub_metadata(modelhub_model_record(model_id))
 
 
 @app.get("/modelhub/v1/models/{model_id}/versions")
@@ -7282,7 +7282,7 @@ async def modelhub_versions(model_id: str, authorization: str | None = Header(de
     require_scope(auth, "modelhub:read")
     await require_modelhub_model_authorized(auth, model_id, for_download=False)
     _ = modelhub_model_record(model_id)
-    return {"model_id": model_id, "versions": catalog_snapshot().versions_for(model_id)}
+    return modelhub_policy.public_modelhub_metadata({"model_id": model_id, "versions": catalog_snapshot().versions_for(model_id)})
 
 
 @app.get("/modelhub/v1/blobs/{sha256}")

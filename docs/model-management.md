@@ -30,6 +30,7 @@ Current scaffold behaviour:
 - `GET /admin/models/{id}/versions/{version}/blob-quarantine-plan` and `POST /admin/models/{id}/versions/{version}/blobs/quarantine` provide a second, explicit cleanup stage for authoritative blobs after the model record is already quarantined.
 - `GET /modelhub/v1/catalog` returns both alias projections and manifest records. Administrator wildcard credentials see the full catalog; dedicated Model Hub clients see only aliases and manifests matched by their `allowed_models` policy.
 - `GET /modelhub/v1/models/{id}` accepts either a public alias such as `tts-fast` or an immutable model ID such as `b1-cpu-placeholder-tts`.
+- Model Hub catalog, model, version, and sync-plan responses redact manifest `source.url` values for external consumers by removing credentials, query strings, fragments, and signed-token material. Use admin model-management endpoints for the authoritative source URL.
 - Inference-only manifests cannot advertise downloadable or network-share execution modes.
 - `POST /modelhub/v1/sync/plan` returns licence, attribution, redacted source, execution mode, immutable model version, and resource-estimate metadata on every keep/download/replace/skip action. Official `b1-model-client` sync and daemon runs require `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` before synchronising manifests whose licence requires acceptance, then send `X-B1-Accept-License: model_id@version` on gated blob requests.
 - Manifest aliases must match the modality declared in the alias seed.

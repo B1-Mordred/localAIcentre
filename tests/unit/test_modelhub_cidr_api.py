@@ -88,8 +88,12 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "tts-fast", "root": "tts-model", "resolved_model": {"id": "tts-model"}},
             ],
             "models": [
-                {"id": "downloadable-llm", "aliases": ["chat-default"]},
-                {"id": "image-model", "aliases": ["image-default"]},
+                {
+                    "id": "downloadable-llm",
+                    "aliases": ["chat-default"],
+                    "source": {"url": "https://downloads.example.test/llm.gguf?token=secret", "revision": "1.0.0"},
+                },
+                {"id": "image-model", "aliases": ["image-default"], "source": {"url": "https://downloads.example.test/image.safetensors#frag"}},
                 {"id": "tts-model", "aliases": ["tts-fast"]},
             ],
         }
@@ -102,20 +106,29 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([record["id"] for record in filtered["aliases"]], ["chat-default", "image-default"])
         self.assertEqual([record["id"] for record in filtered["models"]], ["downloadable-llm", "image-model"])
+        self.assertEqual(filtered["models"][0]["source"]["url"], "https://downloads.example.test/llm.gguf")
+        self.assertTrue(filtered["models"][0]["source"]["url_redacted"])
+        self.assertEqual(filtered["models"][1]["source"]["url"], "https://downloads.example.test/image.safetensors")
         self.assertEqual(catalog_payload["aliases"][2]["id"], "tts-fast")
+        self.assertEqual(catalog_payload["models"][0]["source"]["url"], "https://downloads.example.test/llm.gguf?token=secret")
 
-    def test_modelhub_catalog_admin_wildcard_returns_unfiltered_catalog(self) -> None:
+    def test_modelhub_catalog_admin_wildcard_returns_unfiltered_sanitized_catalog(self) -> None:
         catalog_payload = {
             "object": "catalog",
             "aliases": [{"id": "chat-default"}, {"id": "tts-fast"}],
-            "models": [{"id": "downloadable-llm"}, {"id": "tts-model"}],
+            "models": [{"id": "downloadable-llm", "source": {"url": "https://models.example.test/model.gguf?signature=secret"}}, {"id": "tts-model"}],
         }
 
         original_catalog = main.catalog_snapshot
         main.catalog_snapshot = lambda: SimpleNamespace(to_catalog=lambda: catalog_payload)  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
 
-        self.assertIs(main.modelhub_catalog_for_client(None), catalog_payload)
+        public = main.modelhub_catalog_for_client(None)
+
+        self.assertEqual([record["id"] for record in public["models"]], ["downloadable-llm", "tts-model"])
+        self.assertEqual(public["models"][0]["source"]["url"], "https://models.example.test/model.gguf")
+        self.assertTrue(public["models"][0]["source"]["url_redacted"])
+        self.assertEqual(catalog_payload["models"][0]["source"]["url"], "https://models.example.test/model.gguf?signature=secret")
 
     async def test_modelhub_client_lookup_enforces_cidr_allowlist(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:read", "modelhub:sync"}))
@@ -162,6 +175,34 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.detail["required_model_refs"], ["downloadable-llm@1.0.0"])
 
         await main.require_modelhub_blob_authorized(auth, "a" * 64, {"downloadable-llm@1.0.0"})
+
+    async def test_modelhub_model_and_versions_redact_source_metadata(self) -> None:
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"*"}))
+
+        model_record = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "source": {"type": "direct-url", "url": "https://downloads.example.test/model.gguf?token=secret", "revision": "1.0.0"},
+        }
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: SimpleNamespace(
+            model_or_alias_record=lambda model_id: model_record,
+            versions_for=lambda model_id: [model_record],
+        )  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+
+        public_model = await main.modelhub_model("downloadable-llm")
+        public_versions = await main.modelhub_versions("downloadable-llm")
+
+        self.assertEqual(public_model["source"]["url"], "https://downloads.example.test/model.gguf")
+        self.assertTrue(public_model["source"]["url_redacted"])
+        self.assertEqual(public_versions["versions"][0]["source"]["url"], "https://downloads.example.test/model.gguf")
+        self.assertEqual(model_record["source"]["url"], "https://downloads.example.test/model.gguf?token=secret")
 
     async def test_modelhub_blob_rate_limit_can_be_disabled(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")

@@ -18,6 +18,7 @@ from app.modelhub import (  # noqa: E402
     downloadable_versions_for,
     model_allowed_by_allowed_set,
     parse_accepted_license_refs,
+    public_modelhub_metadata,
     validate_allowed_models,
     validate_cidr_allowlist,
 )
@@ -145,6 +146,31 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertEqual(action["source"]["url"], "https://models.ai.b1.germering/internal/test")
         self.assertTrue(action["source"]["url_redacted"])
         self.assertEqual(action["model_metadata"]["source"]["url"], "https://models.ai.b1.germering/internal/test")
+
+    def test_public_modelhub_metadata_redacts_source_urls_without_mutating_input(self) -> None:
+        payload = {
+            "id": "downloadable-llm",
+            "source": {
+                "type": "direct-url",
+                "url": "https://user:secret@downloads.example.test:8443/models/model.gguf?token=secret#fragment",
+                "revision": "1.0.0",
+            },
+            "model_metadata": {
+                "source": {
+                    "type": "huggingface",
+                    "url": "https://huggingface.co/org/model?download_token=secret",
+                    "revision": "main",
+                }
+            },
+        }
+
+        public = public_modelhub_metadata(payload)
+
+        self.assertEqual(public["source"]["url"], "https://downloads.example.test:8443/models/model.gguf")
+        self.assertTrue(public["source"]["url_redacted"])
+        self.assertEqual(public["model_metadata"]["source"]["url"], "https://huggingface.co/org/model")
+        self.assertTrue(public["model_metadata"]["source"]["url_redacted"])
+        self.assertEqual(payload["source"]["url"], "https://user:secret@downloads.example.test:8443/models/model.gguf?token=secret#fragment")
 
     def test_blob_policy_only_lists_downloadable_catalog_records(self) -> None:
         self.assertEqual(downloadable_records_for_blob(self.catalog, DOWNLOADABLE_SHA)[0]["id"], "downloadable-llm")

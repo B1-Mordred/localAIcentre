@@ -70,6 +70,20 @@ def redacted_source_metadata(source: dict[str, Any] | None) -> dict[str, Any]:
     return metadata
 
 
+def public_modelhub_metadata(value: Any) -> Any:
+    if isinstance(value, list):
+        return [public_modelhub_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    public: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "source" and isinstance(item, dict):
+            public[key] = redacted_source_metadata(item)
+        else:
+            public[key] = public_modelhub_metadata(item)
+    return public
+
+
 def sync_plan_model_metadata(record: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(record, dict):
         return {}

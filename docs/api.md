@@ -522,6 +522,8 @@ Supported blob response behaviour:
 
 Inference-only model manifests remain visible in the catalog but are not downloadable. The Model Hub blob endpoint rejects unknown or non-downloadable catalog blobs before proxying to storage, returns `404` for allowed-but-absent blobs, and returns `409` if an on-disk blob checksum does not match its content-address.
 
+Model Hub catalog, model, version, and sync-plan responses redact manifest `source.url` fields before returning them to external consumers. The public value keeps only scheme, host, optional port, and path; usernames, passwords, query strings, fragments, signed URLs, and credential parameters are omitted and `url_redacted=true` is included when the URL changed. Administrators can still inspect the authoritative manifest source through the admin model-management APIs.
+
 ## Model Hub Sync Plans
 
 `POST /modelhub/v1/sync/plan` accepts a requested model/alias list and the caller's local blob inventory:
