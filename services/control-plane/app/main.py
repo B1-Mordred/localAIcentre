@@ -161,6 +161,13 @@ CORS_ALLOW_HEADERS = [
     "X-B1-Filename",
     "X-B1-Accept-License",
 ]
+IDEMPOTENCY_KEY_MAX_LENGTH = 256
+IDEMPOTENCY_IDENTITY_FIELDS = (
+    "modality",
+    "operation",
+    "model_alias",
+    "priority",
+)
 
 app = FastAPI(
     title="B1 AI Hub Control Plane",
@@ -2734,15 +2741,90 @@ def redact_request(payload: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
+    if idempotency_key is None:
+        return None
+    normalized = idempotency_key.strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail={"code": "invalid_idempotency_key", "message": "Idempotency-Key must not be empty"})
+    if len(normalized) > IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_idempotency_key",
+                "message": f"Idempotency-Key must be {IDEMPOTENCY_KEY_MAX_LENGTH} characters or fewer",
+            },
+        )
+    if any(ord(character) < 33 or ord(character) > 126 for character in normalized):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_idempotency_key", "message": "Idempotency-Key must contain only visible ASCII header characters"},
+        )
+    return normalized
+
+
+def expected_job_identity(request_payload: MediaJobCreate) -> dict[str, Any]:
+    return {
+        "modality": request_payload.modality,
+        "operation": request_payload.operation,
+        "model_alias": request_payload.model,
+        "priority": request_payload.priority,
+        "request_params": jsonable_encoder(request_payload.model_dump()),
+    }
+
+
+def ensure_idempotent_job_matches(existing: dict[str, Any], request_payload: MediaJobCreate, resolution: RuntimeResolution | None = None) -> None:
+    expected = expected_job_identity(request_payload)
+    mismatched_fields = [field for field in IDEMPOTENCY_IDENTITY_FIELDS if existing.get(field) != expected[field]]
+    if existing.get("request_params") != expected["request_params"]:
+        mismatched_fields.append("request_params")
+    if not mismatched_fields:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "idempotency_key_conflict",
+            "message": "Idempotency-Key was already used for a different job request",
+            "job_id": existing.get("id"),
+            "mismatched_fields": mismatched_fields,
+        },
+    )
+
+
+def ensure_existing_job_endpoint(existing: dict[str, Any], *, modality: str, operation: str) -> None:
+    mismatched_fields = [
+        field
+        for field, expected in (("modality", modality), ("operation", operation))
+        if existing.get(field) != expected
+    ]
+    if not mismatched_fields:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "idempotency_key_conflict",
+            "message": "Idempotency-Key was already used for a different job request",
+            "job_id": existing.get("id"),
+            "mismatched_fields": mismatched_fields,
+        },
+    )
+
+
+def openai_image_job_response(job: dict[str, Any]) -> dict[str, Any]:
+    return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
+
+
 async def create_job_record(
     owner: str,
     request_payload: MediaJobCreate,
     idempotency_key: str | None = None,
     resolution: RuntimeResolution | None = None,
 ) -> dict[str, Any]:
-    if idempotency_key:
-        existing = await database.get_job_by_idempotency_key(owner, idempotency_key)
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(owner, normalized_idempotency_key)
         if existing is not None:
+            ensure_idempotent_job_matches(existing, request_payload, resolution)
             return existing
     require_not_in_maintenance(f"{request_payload.modality}/{request_payload.operation}")
     await enforce_queue_admission(owner)
@@ -2751,7 +2833,7 @@ async def create_job_record(
     payload = {
         "id": job_id,
         "correlation_id": uuid.uuid4().hex,
-        "idempotency_key": idempotency_key,
+        "idempotency_key": normalized_idempotency_key,
         "owner_id": owner,
         "modality": request_payload.modality,
         "operation": request_payload.operation,
@@ -2764,6 +2846,7 @@ async def create_job_record(
     }
     job = await database.insert_job(payload)
     if job["id"] != job_id:
+        ensure_idempotent_job_matches(job, request_payload, resolution)
         return job
     await database.update_job(job_id, state=JobState.VALIDATED.value, stage="validated", progress=5)
     queued_job = await database.update_job(job_id, state=JobState.QUEUED.value, stage="queued", progress=10)
@@ -6867,7 +6950,7 @@ async def image_generations(
         idempotency_key=idempotency_key,
         resolution=resolution,
     )
-    return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
+    return openai_image_job_response(job)
 
 
 @app.post("/v1/images/edits")
@@ -6878,6 +6961,12 @@ async def image_edits(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "inference:write")
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_existing_job_endpoint(existing, modality="image", operation="edit")
+            return openai_image_job_response(existing)
     payload = await image_edit_input_from_request(request, auth)
     model = payload.get("model") if isinstance(payload.get("model"), str) and payload.get("model") else "image-edit"
     runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
@@ -6885,10 +6974,10 @@ async def image_edits(
     job = await create_job_record(
         auth.subject_id,
         MediaJobCreate(modality="image", operation="edit", model=model, input=payload, runtime_policy=runtime_policy),
-        idempotency_key=idempotency_key,
+        idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )
-    return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
+    return openai_image_job_response(job)
 
 
 @app.post("/v1/media/uploads")

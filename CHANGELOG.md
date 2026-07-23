@@ -40,3 +40,4 @@
 - Aligned Control Center and Media Studio terminal-job handling with the backend so `recovery_required` jobs stop live progress/cancel affordances while remaining retryable.
 - Wired the Control Center Jobs tab to the administrator job SSE endpoint so the selected job detail and row update live while non-terminal work is running.
 - Added a deliberate ComfyUI compatibility passthrough policy that allows native read routes and core mutating routes while blocking internal lifecycle hooks and unapproved custom-node management surfaces.
+- Tightened durable media-job idempotency so invalid keys are rejected, reused keys must match the original job identity, and image-edit replays avoid restaging upload data.

@@ -159,7 +159,17 @@ class MaintenanceModeApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(fake.inserted_jobs, [])
 
-        fake.idempotency_row = {"id": "job_existing", "owner_id": "creator_1"}
+        fake.idempotency_row = {
+            "id": "job_existing",
+            "owner_id": "creator_1",
+            "modality": "image",
+            "operation": "generation",
+            "model_alias": "image-default",
+            "priority": "single_image",
+            "resolved_model_version": "unresolved",
+            "runtime": "unassigned",
+            "request_params": payload.model_dump(),
+        }
         existing = asyncio.run(main.create_job_record("creator_1", payload, idempotency_key="same-request"))
         self.assertEqual(existing["id"], "job_existing")
 

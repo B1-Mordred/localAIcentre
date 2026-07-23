@@ -74,6 +74,20 @@ def job_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def media_job_payload(**overrides: Any) -> Any:
+    values = {
+        "modality": "image",
+        "operation": "generation",
+        "model": "image-default",
+    }
+    values.update(overrides)
+    return main.MediaJobCreate(**values)
+
+
+def media_job_request_params(**overrides: Any) -> dict[str, Any]:
+    return media_job_payload(**overrides).model_dump()
+
+
 class FakeAdmissionDatabase:
     def __init__(
         self,
@@ -191,7 +205,7 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(fake_database.inserted, [])
 
     def test_idempotent_create_returns_existing_job_before_admission_limits(self) -> None:
-        existing = job_row(idempotency_key="idem_1")
+        existing = job_row(idempotency_key="idem_1", request_params=media_job_request_params())
         fake_database = FakeAdmissionDatabase(owner_queued=99, existing=existing)
         self.patch_attr("database", fake_database)
         self.patch_settings(max_queued_jobs_per_owner=1, artifact_storage_reserve_bytes=0)
@@ -199,13 +213,107 @@ class AdmissionApiTests(unittest.TestCase):
         result = asyncio.run(
             main.create_job_record(
                 "client_1",
-                main.MediaJobCreate(modality="image", operation="generation", model="image-default"),
+                media_job_payload(),
                 idempotency_key="idem_1",
                 resolution=resolution(),
             )
         )
 
         self.assertEqual(result["id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_idempotent_replay_returns_existing_when_alias_resolution_changed(self) -> None:
+        existing = job_row(
+            idempotency_key="idem_1",
+            resolved_model_version="sdxl-light@1.0.0",
+            runtime="comfyui",
+            request_params=media_job_request_params(),
+        )
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        current_resolution = main.RuntimeResolution(
+            public_alias="image-default",
+            model_id="sdxl-new",
+            model_version="2.0.0",
+            resolved_model_version="sdxl-new@2.0.0",
+            runtime="localai",
+            preferred_runtime="localai",
+            requires_gpu=True,
+            resource_label="expected",
+            runtime_policy="any",
+        )
+
+        result = asyncio.run(
+            main.create_job_record(
+                "client_1",
+                media_job_payload(),
+                idempotency_key="idem_1",
+                resolution=current_resolution,
+            )
+        )
+
+        self.assertEqual(result["id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_idempotent_create_rejects_key_reuse_for_different_request(self) -> None:
+        existing = job_row(idempotency_key="idem_1", request_params=media_job_request_params())
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.create_job_record(
+                    "client_1",
+                    media_job_payload(model="image-edit", operation="edit"),
+                    idempotency_key="idem_1",
+                    resolution=resolution(),
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["code"], "idempotency_key_conflict")
+        self.assertIn("operation", caught.exception.detail["mismatched_fields"])
+        self.assertIn("model_alias", caught.exception.detail["mismatched_fields"])
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_create_job_record_rejects_invalid_idempotency_key_before_insert(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.create_job_record(
+                    "client_1",
+                    media_job_payload(),
+                    idempotency_key="bad key",
+                    resolution=resolution(),
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["code"], "invalid_idempotency_key")
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_image_edit_idempotency_returns_existing_job_without_reprocessing_body(self) -> None:
+        existing = job_row(
+            idempotency_key="edit_1",
+            operation="edit",
+            model_alias="image-edit",
+            request_params=media_job_request_params(operation="edit", model="image-edit"),
+        )
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+
+        async def fail_if_called(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("image edit request body should not be processed for an idempotent replay")
+
+        self.patch_attr("image_edit_input_from_request", fail_if_called)
+        request = FakeRequest(body=b"not read", headers={"content-type": "application/octet-stream"})
+
+        result = asyncio.run(main.image_edits(request, idempotency_key="edit_1"))
+
+        self.assertEqual(result["b1_job_id"], "job_existing")
         self.assertEqual(fake_database.inserted, [])
 
     def test_media_upload_rejects_artifact_storage_limit_before_staging(self) -> None:
