@@ -33,6 +33,7 @@ class FakeDatabase:
         self.releases: list[str] = []
         self.workflow: dict[str, Any] | None = None
         self.runtime_states: dict[str, dict[str, Any]] = {}
+        self.runtime_state_updates: list[dict[str, Any]] = []
         self.alias_policies: dict[str, dict[str, Any]] = {}
         self.job = {
             "id": "job_gpu",
@@ -119,6 +120,7 @@ class FakeDatabase:
     async def upsert_runtime_state(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {"updated_at": datetime.now(tz=UTC), **payload}
         self.runtime_states[payload["runtime"]] = row
+        self.runtime_state_updates.append(dict(row))
         return dict(row)
 
     async def list_runtime_states(self) -> list[dict[str, Any]]:
@@ -1167,6 +1169,70 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["failure_category"], "voicebox_empty_speech")
             self.assertEqual(fake.job["artifacts"], [])
 
+    def test_gpu_runner_cancels_blocking_voicebox_call_and_recovers_runtime(self) -> None:
+        class CancellingDatabase(FakeDatabase):
+            async def get_job(self, job_id: str) -> dict[str, Any]:
+                if self.job.get("stage") == "voicebox_speech" and self.job.get("state") == "running":
+                    self.job["state"] = "cancelling"
+                return dict(self.job)
+
+        fake = CancellingDatabase(runtime="voicebox")
+        fake.job.update(
+            {
+                "model_alias": "tts-quality",
+                "resolved_model_version": "voicebox-quality@1.0.0",
+                "modality": "tts",
+                "operation": "speech",
+                "request_params": {"input": {"text": "cancel me"}},
+            }
+        )
+        self.patch_database(fake)
+
+        class VoiceboxCancelRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    runtime_urls={"voicebox": "http://voicebox"},
+                    runtime_cancel_poll_seconds=0.05,
+                )
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+                self.runtime_call_cancelled = False
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                return None
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "action": path.rsplit("/", 1)[-1]}
+
+            async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    self.runtime_call_cancelled = True
+                    raise
+                raise AssertionError("runtime call should be cancelled before it returns")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = VoiceboxCancelRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertTrue(runner.runtime_call_cancelled)
+        self.assertEqual(fake.job["state"], "cancelled")
+        self.assertEqual(fake.job["stage"], "cancelled")
+        self.assertEqual(fake.job["artifacts"], [])
+        self.assertIn("/v1/runtime-actions/voicebox/recover", [path for path, _ in runner.posts])
+        self.assertIn(
+            ("voicebox", "recover_ok", "cancel_recovery"),
+            [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
+        )
+        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+
     def test_gpu_runner_marks_localai_job_recovery_required_when_no_media_is_returned(self) -> None:
         fake = FakeDatabase(runtime="localai")
         fake.job["request_params"] = {"input": {"prompt": "no artifact"}}
@@ -1188,6 +1254,62 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["failure_category"], "localai_no_media_artifacts")
             self.assertEqual(fake.job["artifacts"], [])
             self.assertFalse((Path(tmp) / "temporary" / "job_gpu.json").exists())
+
+    def test_gpu_runner_cancels_blocking_localai_media_call_and_recovers_runtime(self) -> None:
+        class CancellingDatabase(FakeDatabase):
+            async def get_job(self, job_id: str) -> dict[str, Any]:
+                if self.job.get("stage") == "localai_submitting" and self.job.get("state") == "running":
+                    self.job["state"] = "cancelling"
+                return dict(self.job)
+
+        fake = CancellingDatabase(runtime="localai")
+        fake.job["request_params"] = {"input": {"prompt": "cancel me"}}
+        self.patch_database(fake)
+
+        class LocalAICancelRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    runtime_urls={"localai": "http://localai"},
+                    runtime_cancel_poll_seconds=0.05,
+                )
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+                self.runtime_call_cancelled = False
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                return None
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "action": path.rsplit("/", 1)[-1]}
+
+            async def post_localai_media_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    self.runtime_call_cancelled = True
+                    raise
+                raise AssertionError("runtime call should be cancelled before it returns")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = LocalAICancelRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertTrue(runner.runtime_call_cancelled)
+        self.assertEqual(fake.job["state"], "cancelled")
+        self.assertEqual(fake.job["stage"], "cancelled")
+        self.assertEqual(fake.job["artifacts"], [])
+        self.assertIn("/v1/runtime-actions/localai/recover", [path for path, _ in runner.posts])
+        self.assertIn(
+            ("localai", "recover_ok", "cancel_recovery"),
+            [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
+        )
+        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
 
     def test_gpu_runner_leaves_waiting_job_when_lease_is_held(self) -> None:
         fake = FakeDatabase(lease_acquired=False)

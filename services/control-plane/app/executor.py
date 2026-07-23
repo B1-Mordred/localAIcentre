@@ -305,6 +305,7 @@ class GpuJobRunner:
         comfyui_poll_seconds: int = 2,
         comfyui_completion_timeout_seconds: int = 7200,
         pause_check: PauseCheck | None = None,
+        runtime_cancel_poll_seconds: float = 1.0,
     ) -> None:
         self.artifact_root = artifact_root
         self.interval_seconds = max(1, interval_seconds)
@@ -323,6 +324,7 @@ class GpuJobRunner:
         self.comfyui_poll_seconds = max(1, comfyui_poll_seconds)
         self.comfyui_completion_timeout_seconds = max(30, comfyui_completion_timeout_seconds)
         self.pause_check = pause_check
+        self.runtime_cancel_poll_seconds = max(0.05, float(runtime_cancel_poll_seconds))
         self._stopped = asyncio.Event()
 
     async def reconcile_startup(self) -> dict[str, int]:
@@ -345,6 +347,58 @@ class GpuJobRunner:
             await database.update_job(job_id, state=JobState.CANCELLED.value, stage="cancelled", progress=100)
             return True
         return False
+
+    async def recover_cancelled_runtime_execution(self, job: dict[str, Any]) -> None:
+        runtime = str(job.get("runtime") or "")
+        if runtime not in GPU_RUNTIMES:
+            return
+        await self.record_runtime_state_for_job(
+            runtime,
+            "cancel_requested",
+            "cancelling",
+            job,
+            {"reason": "job cancellation requested during runtime execution"},
+        )
+        if runtime == "comfyui":
+            await self.interrupt_comfyui()
+        if not self.runtime_agent_url:
+            return
+        result = await self.runtime_agent_post(
+            f"/v1/runtime-actions/{runtime}/recover",
+            {
+                "reason": f"cancelled job {job['id']}; recover {runtime} before releasing the GPU lease",
+                "timeout_seconds": self.recovery_timeout_seconds,
+            },
+        )
+        await self.record_runtime_state_for_job(
+            runtime,
+            self.runtime_hook_state_status("recover", result),
+            "cancel_recovery",
+            job,
+            {"hook": self.compact_hook_result(result)},
+        )
+
+    async def await_cancellable_runtime_call(self, job: dict[str, Any], call: Awaitable[Any]) -> tuple[bool, Any]:
+        task = asyncio.create_task(call)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.runtime_cancel_poll_seconds)
+                if task in done:
+                    return False, await task
+                if await self.cancel_if_requested(str(job["id"])):
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                    await self.recover_cancelled_runtime_execution(job)
+                    return True, None
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            raise
+        except Exception:
+            if not task.done():
+                task.cancel()
+            raise
 
     def runtime_agent_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.runtime_agent_token}"} if self.runtime_agent_token else {}
@@ -892,6 +946,8 @@ class GpuJobRunner:
                 failure_message=f"ComfyUI prompt {prompt_id} did not reach history before timeout",
             )
             return
+        if await self.cancel_if_requested(job["id"]):
+            return
         current = await database.get_job(job["id"]) or job
         artifacts = await self.ingest_comfyui_artifacts(
             comfyui_native.merge_job_artifacts(
@@ -1139,10 +1195,14 @@ class GpuJobRunner:
         payload = await self.localai_media_payload_for_job(job)
         await database.update_job(job["id"], state=JobState.RUNNING.value, stage="localai_submitting", progress=72)
         if endpoint in {"/v1/images/edits", "/v1/videos/image-to-video"}:
-            body = await self.post_localai_media_multipart(endpoint, payload)
+            cancelled, body = await self.await_cancellable_runtime_call(job, self.post_localai_media_multipart(endpoint, payload))
         else:
-            body = await self.post_localai_media_json(endpoint, payload)
+            cancelled, body = await self.await_cancellable_runtime_call(job, self.post_localai_media_json(endpoint, payload))
+        if cancelled:
+            return True
         await database.update_job(job["id"], state=JobState.RUNNING.value, stage="localai_response_received", progress=85)
+        if await self.cancel_if_requested(job["id"]):
+            return True
         artifacts = await self.localai_artifacts_from_response(job, body)
         if not artifacts:
             await database.update_job(
@@ -1186,7 +1246,12 @@ class GpuJobRunner:
         if modality != "tts" or operation not in VOICEBOX_TTS_OPERATIONS:
             return False
         await database.update_job(job["id"], state=JobState.RUNNING.value, stage="voicebox_speech", progress=72)
-        content, mime_type = await self.post_voicebox_speech(await self.voicebox_payload_for_job(job))
+        cancelled, result = await self.await_cancellable_runtime_call(job, self.post_voicebox_speech(await self.voicebox_payload_for_job(job)))
+        if cancelled:
+            return True
+        content, mime_type = result
+        if await self.cancel_if_requested(job["id"]):
+            return True
         if not content:
             await database.update_job(
                 job["id"],

@@ -20,3 +20,4 @@
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.
 - Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.
 - Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.
+- Added cooperative cancellation for blocking LocalAI and Voicebox GPU media runtime calls, aborting the control-plane request, marking the durable job cancelled, and requesting bounded runtime-agent recovery before releasing the GPU lease.
