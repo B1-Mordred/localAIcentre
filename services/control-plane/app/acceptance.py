@@ -65,6 +65,63 @@ def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | Non
     return None
 
 
+def _read_git_head(repo_root: Path) -> dict[str, Any]:
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        return {"available": False, "reason": "git metadata not present"}
+    if git_dir.is_file():
+        content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+        if not content.startswith("gitdir:"):
+            return {"available": False, "reason": "unsupported git metadata file"}
+        git_dir = (repo_root / content.split(":", 1)[1].strip()).resolve()
+    head_path = git_dir / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"available": False, "reason": "git HEAD is unreadable"}
+    branch = ""
+    commit = head
+    if head.startswith("ref:"):
+        ref = head.split(":", 1)[1].strip()
+        branch = ref.removeprefix("refs/heads/")
+        ref_path = git_dir / ref
+        try:
+            commit = ref_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return {"available": False, "reason": "git branch ref is unreadable", "branch": branch}
+    if not re.fullmatch(r"[a-fA-F0-9]{40}", commit):
+        return {"available": False, "reason": "git commit ref is invalid", "branch": branch}
+    return {
+        "available": True,
+        "commit": commit.lower(),
+        "short_commit": commit[:12].lower(),
+        "branch": branch,
+    }
+
+
+def source_control_snapshot(repo_root: Path | None = None, environ: dict[str, str] | None = None) -> dict[str, Any]:
+    env = environ if environ is not None else dict(os.environ)
+    snapshot: dict[str, Any] = {
+        "version": env.get("B1_APP_VERSION") or env.get("B1_VERSION") or "",
+        "image_revision": env.get("B1_IMAGE_REVISION") or "",
+        "source_commit": env.get("B1_SOURCE_COMMIT") or env.get("GIT_COMMIT") or "",
+        "source_ref": env.get("B1_SOURCE_REF") or env.get("GIT_BRANCH") or "",
+    }
+    if snapshot["source_commit"]:
+        snapshot["source_commit"] = snapshot["source_commit"].lower()
+        snapshot["short_commit"] = snapshot["source_commit"][:12]
+        snapshot["available"] = bool(re.fullmatch(r"[a-f0-9]{40}", snapshot["source_commit"]))
+        snapshot["source"] = "environment"
+        return snapshot
+    git_snapshot = _read_git_head(repo_root or Path.cwd())
+    snapshot.update(git_snapshot)
+    snapshot["source"] = "git" if git_snapshot.get("available") else "unavailable"
+    if git_snapshot.get("commit"):
+        snapshot["source_commit"] = git_snapshot["commit"]
+        snapshot["source_ref"] = git_snapshot.get("branch", "")
+    return snapshot
+
+
 def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     if report.get("status") != "ok":
@@ -82,6 +139,30 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     metrics_gpu = ((report.get("metrics") or {}).get("gpu") or {})
     if metrics_gpu and metrics_gpu.get("available") is not True:
         blockers.append("runtime-agent GPU metrics are unavailable")
+    deployment = report.get("deployment") or {}
+    if deployment.get("error"):
+        blockers.append("runtime-agent service inventory is unavailable")
+    services = deployment.get("services") if isinstance(deployment.get("services"), list) else []
+    service_containers = [
+        container
+        for service in services
+        if isinstance(service, dict)
+        for container in (service.get("containers") or [])
+        if isinstance(container, dict)
+    ]
+    recent_image_refs = [
+        item.get("image")
+        for update in (report.get("recent_updates") or [])
+        if isinstance(update, dict)
+        for item in (update.get("image_refs") or [])
+        if isinstance(item, dict)
+    ]
+    if not service_containers and not recent_image_refs:
+        blockers.append("deployment image evidence is unavailable")
+    elif not any(container.get("image_id") or "@sha256:" in str(container.get("image") or "") for container in service_containers) and not any(
+        "@sha256:" in str(image) for image in recent_image_refs
+    ):
+        blockers.append("deployment image evidence lacks image IDs or pinned digests")
     return blockers
 
 
@@ -101,6 +182,9 @@ def build_report(
     scheduler_lease: dict[str, Any] | None,
     runtime_states: list[dict[str, Any]],
     runtime_reservations: list[dict[str, Any]],
+    deployment: dict[str, Any] | None = None,
+    recent_updates: list[dict[str, Any]] | None = None,
+    source_control: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_id = validate_report_id(report_id)
     status = str(self_test.get("status") or "unknown")
@@ -121,6 +205,9 @@ def build_report(
         "scheduler_lease": scheduler_lease or {},
         "runtime_states": runtime_states,
         "runtime_reservations": runtime_reservations,
+        "deployment": deployment or {},
+        "recent_updates": recent_updates or [],
+        "source_control": source_control or {},
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
     report["operator_handoff_ready"] = status == "ok" and not report["acceptance_blockers"]
@@ -182,6 +269,42 @@ def markdown_report(report: dict[str, Any]) -> str:
                 _format_value(reservation.get("expires_at")),
             ])
 
+    source_control = report.get("source_control") or {}
+    source_rows = [["Field", "Value"]]
+    for key in ("source", "version", "source_ref", "source_commit", "image_revision"):
+        if source_control.get(key):
+            source_rows.append([key, _format_value(source_control.get(key))])
+    if len(source_rows) == 1:
+        source_rows.append(["source", _format_value(source_control.get("reason") or "unavailable")])
+
+    deployment = report.get("deployment") or {}
+    service_rows = [["Service", "Container", "State", "Image", "Image ID"]]
+    for service in deployment.get("services") or []:
+        if not isinstance(service, dict):
+            continue
+        for container in service.get("containers") or []:
+            if isinstance(container, dict):
+                service_rows.append([
+                    _format_value(service.get("name")),
+                    _format_value(container.get("short_id") or container.get("name")),
+                    _format_value(container.get("state")),
+                    _format_value(container.get("image")),
+                    _format_value(container.get("image_id")),
+                ])
+    update_rows = [["Update", "Status", "Stage", "Images"]]
+    for update in report.get("recent_updates") or []:
+        if isinstance(update, dict):
+            update_rows.append([
+                _format_value(update.get("id") or update.get("target_version")),
+                _format_value(update.get("status")),
+                _format_value(update.get("stage")),
+                ", ".join(
+                    f"{item.get('service')}={item.get('image')}"
+                    for item in update.get("image_refs") or []
+                    if isinstance(item, dict)
+                ),
+            ])
+
     metrics_gpu = (report.get("metrics") or {}).get("gpu") or {}
     metrics_jobs = (report.get("metrics") or {}).get("jobs") or {}
     metric_rows = [["Metric", "Value"]]
@@ -221,6 +344,9 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Acceptance Blockers\n\n" + blocker_lines,
             "## Operator Notes\n\n" + notes,
             "## Resource Policy\n\n" + _table(resource_rows),
+            "## Source Control\n\n" + _table(source_rows),
+            "## Deployment Services\n\n" + (_table(service_rows) if len(service_rows) > 1 else _format_value(deployment.get("error") or "No runtime-agent service inventory recorded.")),
+            "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),

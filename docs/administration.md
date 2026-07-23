@@ -117,13 +117,13 @@ GPU/NVML metrics are reported as a warning when unavailable so a CPU-only develo
 
 ## Acceptance Reports
 
-The System tab can create a durable acceptance report after the operator has switched `B1_RUNTIME_DEPLOYMENT_MODE=production` and completed the temporary-hostname validation sequence. Report creation reruns the system self-test, snapshots Dashboard metrics, admission headroom, effective RTX 3060/32 GB resource policy, maintenance state, scheduler lease, runtime state rows, and active runtime reservations, then writes:
+The System tab can create a durable acceptance report after the operator has switched `B1_RUNTIME_DEPLOYMENT_MODE=production` and completed the temporary-hostname validation sequence. Report creation reruns the system self-test, snapshots Dashboard metrics, admission headroom, effective RTX 3060/32 GB resource policy, maintenance state, scheduler lease, runtime state rows, active runtime reservations, runtime-agent allowlisted service/image inventory, recent controlled-update image references, and available source commit metadata, then writes:
 
 - `$B1_BACKUP_ROOT/acceptance/<report_id>/report.json`
 - `$B1_BACKUP_ROOT/acceptance/<report_id>/report.md`
 - `$B1_BACKUP_ROOT/acceptance/<report_id>/SHA256SUMS`
 
-The Markdown report is the operator handoff artifact for cutover review. It is marked handoff-ready only when the self-test is `ok`, production runtime readiness is `ok`, the deployment mode is `production`, and GPU/NVML evidence is healthy. Development placeholders, missing GPU metrics, degraded self-test checks, or production-readiness warnings are preserved as acceptance blockers rather than hidden behind a green report.
+The Markdown report is the operator handoff artifact for cutover review. It is marked handoff-ready only when the self-test is `ok`, production runtime readiness is `ok`, the deployment mode is `production`, GPU/NVML evidence is healthy, and deployment image evidence is present. Development placeholders, missing GPU metrics, missing runtime-agent service inventory, degraded self-test checks, or production-readiness warnings are preserved as acceptance blockers rather than hidden behind a green report. Deployment evidence includes each reported service's image reference and resolved Docker image ID when runtime-agent can reach the Docker API; recent update records carry any digest-pinned image references used for controlled promotion.
 
 ## Audit Log
 

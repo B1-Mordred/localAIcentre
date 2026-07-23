@@ -298,6 +298,7 @@ def container_summary(container: dict[str, Any]) -> dict[str, Any]:
         "short_id": str(container.get("Id", ""))[:12],
         "name": name,
         "image": container.get("Image", ""),
+        "image_id": container.get("ImageID", ""),
         "state": container.get("State", ""),
         "status": container.get("Status", ""),
         "labels": {

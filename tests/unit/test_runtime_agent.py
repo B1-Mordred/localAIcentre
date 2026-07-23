@@ -72,6 +72,7 @@ class FakeDockerEngineClient(DockerEngineClient):
                 "Id": "abcdef1234567890",
                 "Names": ["/b1-ai-hub-control-plane-1"],
                 "Image": "b1-control-plane:test",
+                "ImageID": "sha256:" + "d" * 64,
                 "State": "running",
                 "Status": "Up 1 minute",
                 "Labels": {
@@ -154,6 +155,7 @@ class RuntimeAgentTests(unittest.TestCase):
         containers = client.containers_for_service("control-plane", "b1-ai-hub")
         self.assertEqual(containers[0]["id"], "abcdef1234567890")
         self.assertEqual(containers[0]["short_id"], "abcdef123456")
+        self.assertEqual(containers[0]["image_id"], "sha256:" + "d" * 64)
         method, path = client.requests[0]
         self.assertEqual(method, "GET")
         self.assertIn("com.docker.compose.service", path)

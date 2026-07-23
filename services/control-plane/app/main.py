@@ -5401,6 +5401,8 @@ def acceptance_report_root_path() -> Path:
 
 async def build_acceptance_report_snapshot(auth: AuthContext, payload: AcceptanceReportCreate) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
+    service_inventory, service_error = await runtime_agent_get("/v1/services")
+    deployment = service_inventory or {"services": [], "error": service_error or "runtime-agent service inventory unavailable"}
     report = acceptance.build_report(
         report_id=acceptance.new_report_id(now),
         created_by=auth.subject_id,
@@ -5419,6 +5421,9 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
             public_runtime_reservation(row)
             for row in await database.list_runtime_reservations(limit=50, status="active")
         ],
+        deployment=deployment,
+        recent_updates=[public_update_plan(row) for row in await database.list_update_plans(limit=5)],
+        source_control=acceptance.source_control_snapshot(Path.cwd()),
     )
     return jsonable_encoder(report)
 
