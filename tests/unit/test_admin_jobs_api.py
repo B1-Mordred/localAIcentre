@@ -281,6 +281,35 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertIn('"state":"recovery_required"', body)
         self.assertNotIn("event: timeout", body)
 
+    def test_admin_events_allow_operator_to_stream_other_owner_job(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(owner_id="client_1", state="recovery_required", stage="recovery_required", progress=0))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:read"})))
+
+        async def collect_events() -> str:
+            response = await main.admin_job_events("job_1")
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn("event: job", body)
+        self.assertIn('"owner_id":"client_1"', body)
+        self.assertIn('"state":"recovery_required"', body)
+        self.assertNotIn("belongs to a different owner", body)
+
+    def test_admin_events_requires_queue_admin_role(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(state="recovery_required", stage="recovery_required", progress=0))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.admin_job_events("job_1"))
+
+        self.assertEqual(caught.exception.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

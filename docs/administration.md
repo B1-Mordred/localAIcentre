@@ -123,7 +123,7 @@ Audit metadata is intentionally compact. It keeps public identifiers, target IDs
 
 ## Queue and Jobs
 
-The Jobs tab uses `GET /admin/jobs` and is limited to administrators and operators. It can filter by state, runtime, modality, and owner, inspect a selected job's redacted request, native prompt ID, retry count, artifacts, timings, and measured RAM/VRAM fields, and refresh the durable queue state without touching runtime containers.
+The Jobs tab uses `GET /admin/jobs` and is limited to administrators and operators. It can filter by state, runtime, modality, and owner, inspect a selected job's redacted request, native prompt ID, retry count, artifacts, timings, and measured RAM/VRAM fields, follow `GET /admin/jobs/{job_id}/events` for live durable job snapshots, and refresh the durable queue state without touching runtime containers.
 
 Operators can update priority while a job is still in `created`, `validated`, `queued`, or `waiting_for_gpu`. Valid priorities are `chat`, `interactive_audio`, `single_image`, `image_batch`, `video`, and `batch`. Cancelling a queued/pre-run job marks it `cancelled`; cancelling an active job marks it `cancelling` so the runner or adapter can interrupt at a safe point. Retrying is available only for `failed`, `cancelled`, `expired`, or `recovery_required` jobs and requeues the same durable job with an incremented retry count and cleared failure/artifact/measurement fields.
 

@@ -60,6 +60,12 @@ class ApiRouteSourceTests(unittest.TestCase):
         ]
         self.assertEqual(duplicates, [])
 
+    def test_committed_openapi_documents_job_events_as_sse(self) -> None:
+        schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        for path in ("/v1/media/jobs/{job_id}/events", "/admin/jobs/{job_id}/events"):
+            content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+            self.assertIn("text/event-stream", content)
+
 
 @unittest.skipIf(GENERATED is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class OpenApiSchemaTests(unittest.TestCase):
@@ -82,6 +88,7 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/v1/models", paths)
         self.assertIn("/v1/media/jobs/{job_id}/events", paths)
         self.assertIn("/admin/jobs", paths)
+        self.assertIn("/admin/jobs/{job_id}/events", paths)
         self.assertIn("/admin/jobs/{job_id}/priority", paths)
         self.assertIn("/admin/jobs/{job_id}/cancel", paths)
         self.assertIn("/admin/jobs/{job_id}/retry", paths)

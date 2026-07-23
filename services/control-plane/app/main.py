@@ -14,7 +14,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -5565,6 +5565,21 @@ async def admin_job_get(job_id: str, authorization: str | None = Header(default=
     return jsonable_encoder(job)
 
 
+@app.get(
+    "/admin/jobs/{job_id}/events",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def admin_job_events(job_id: str, authorization: str | None = Header(default=None)) -> StreamingResponse:
+    auth = await authenticate(authorization)
+    require_scope(auth, "jobs:read")
+    require_queue_admin(auth)
+    job = await database.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job_event_stream(job_id, lambda current: True)
+
+
 @app.post("/admin/jobs/{job_id}/priority")
 async def admin_job_priority_update(
     job_id: str,
@@ -6873,7 +6888,11 @@ async def media_job_cancel(job_id: str, authorization: str | None = Header(defau
     return jsonable_encoder(updated)
 
 
-@app.get("/v1/media/jobs/{job_id}/events")
+@app.get(
+    "/v1/media/jobs/{job_id}/events",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
 async def media_job_events(job_id: str, authorization: str | None = Header(default=None)) -> StreamingResponse:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
@@ -6881,14 +6900,17 @@ async def media_job_events(job_id: str, authorization: str | None = Header(defau
     if initial_job is None:
         raise HTTPException(status_code=404, detail="job not found")
     require_job_owner_or_admin(auth, initial_job)
+    return job_event_stream(job_id, lambda current: subject_can_read_job(auth, current))
 
+
+def job_event_stream(job_id: str, can_read_job: Callable[[dict[str, Any]], bool]) -> StreamingResponse:
     async def events():
         for _ in range(120):
             job = await database.get_job(job_id)
             if job is None:
                 yield format_sse_event("error", {"error": "job not found"})
                 return
-            if not subject_can_read_job(auth, job):
+            if not can_read_job(job):
                 yield format_sse_event("error", {"error": "job belongs to a different owner"})
                 return
             yield format_sse_event("job", jsonable_encoder(job), event_id=job_event_id(job), retry_ms=1000)
