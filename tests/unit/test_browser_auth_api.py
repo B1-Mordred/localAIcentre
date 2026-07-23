@@ -129,12 +129,32 @@ class FakeDatabase:
                 api_row["cidr_allowlist"] = cidr_allowlist
         return dict(row)
 
+    async def get_modelhub_client(self, client_id: str) -> dict[str, Any] | None:
+        row = self.modelhub_clients.get(client_id)
+        return dict(row) if row is not None else None
+
+    async def update_modelhub_client_policy(
+        self,
+        client_id: str,
+        *,
+        allowed_models: list[str],
+        allow_downloads: bool,
+    ) -> dict[str, Any] | None:
+        row = self.modelhub_clients.get(client_id)
+        if row is None:
+            return None
+        if row.get("revoked_at") is None:
+            row["allowed_models"] = allowed_models
+            row["allow_downloads"] = allow_downloads
+        return dict(row)
+
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class BrowserAuthApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_database = main.database
         self.original_settings = main.settings
+        self.original_model_catalog = main.model_catalog
         self.database = FakeDatabase()
         main.database = self.database
         main.settings = replace(
@@ -145,11 +165,14 @@ class BrowserAuthApiTests(unittest.TestCase):
             session_cookie_secure=False,
             session_ttl_seconds=3600,
             trusted_proxy_cidrs=("127.0.0.1/32",),
+            model_catalog_dir=str(ROOT / "model-catalog"),
         )
+        main.model_catalog = None
 
     def tearDown(self) -> None:
         main.database = self.original_database
         main.settings = self.original_settings
+        main.model_catalog = self.original_model_catalog
 
     def request_context(self, request: FakeRequest):
         token = main.current_request.set(request)
@@ -356,6 +379,66 @@ class BrowserAuthApiTests(unittest.TestCase):
         self.assertEqual(updated["cidr_allowlist"], ["192.168.8.0/24"])
         self.assertEqual(self.database.api_clients["client_hub"]["cidr_allowlist"], ["192.168.8.0/24"])
         self.assertIn("modelhub_client.cidr_allowlist_updated", [event["event_type"] for event in self.database.audit_events])
+
+    def test_modelhub_client_policy_can_be_updated(self) -> None:
+        self.database.modelhub_clients["mhc_artist"] = {
+            "id": "mhc_artist",
+            "display_name": "artist",
+            "owner_id": "admin_1",
+            "api_client_id": "client_hub",
+            "key_prefix": "b1k_hub",
+            "allowed_models": ["image-default"],
+            "cidr_allowlist": [],
+            "allow_downloads": True,
+            "revoked_at": None,
+        }
+
+        updated = asyncio.run(
+            main.modelhub_client_policy_update(
+                "mhc_artist",
+                main.ModelHubClientPolicyUpdate(allowed_models=["chat-default", "image-default"], allow_downloads=False),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(updated["allowed_models"], ["chat-default", "image-default"])
+        self.assertFalse(updated["allow_downloads"])
+        self.assertEqual(self.database.modelhub_clients["mhc_artist"]["allowed_models"], ["chat-default", "image-default"])
+        self.assertFalse(self.database.modelhub_clients["mhc_artist"]["allow_downloads"])
+        self.assertIn("modelhub_client.policy_updated", [event["event_type"] for event in self.database.audit_events])
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(
+                main.modelhub_client_policy_update(
+                    "mhc_artist",
+                    main.ModelHubClientPolicyUpdate(allowed_models=["missing-alias"], allow_downloads=True),
+                    authorization="Bearer setup-key",
+                )
+            )
+        self.assertEqual(caught.exception.status_code, 422)
+
+    def test_revoked_modelhub_client_policy_cannot_be_updated(self) -> None:
+        self.database.modelhub_clients["mhc_revoked"] = {
+            "id": "mhc_revoked",
+            "display_name": "revoked",
+            "owner_id": "admin_1",
+            "api_client_id": "client_hub",
+            "key_prefix": "b1k_hub",
+            "allowed_models": ["image-default"],
+            "cidr_allowlist": [],
+            "allow_downloads": True,
+            "revoked_at": "now",
+        }
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(
+                main.modelhub_client_policy_update(
+                    "mhc_revoked",
+                    main.ModelHubClientPolicyUpdate(allowed_models=["chat-default"], allow_downloads=False),
+                    authorization="Bearer setup-key",
+                )
+            )
+        self.assertEqual(caught.exception.status_code, 409)
 
 
 if __name__ == "__main__":

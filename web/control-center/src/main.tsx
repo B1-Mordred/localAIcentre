@@ -2044,6 +2044,8 @@ function ExternalAccess() {
   const [hubAllowDownloads, setHubAllowDownloads] = useState(true);
   const [apiClientCidrs, setApiClientCidrs] = useState<Record<string, string>>({});
   const [modelHubClientCidrs, setModelHubClientCidrs] = useState<Record<string, string>>({});
+  const [modelHubClientAllowedModels, setModelHubClientAllowedModels] = useState<Record<string, string>>({});
+  const [modelHubClientDownloads, setModelHubClientDownloads] = useState<Record<string, boolean>>({});
   const [secretName, setSecretName] = useState("");
   const [secretDisplayName, setSecretDisplayName] = useState("");
   const [secretCategory, setSecretCategory] = useState<SecretCategory>("other");
@@ -2069,6 +2071,8 @@ function ExternalAccess() {
         setModelHubClients(hubData);
         setApiClientCidrs(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
         setModelHubClientCidrs(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
+        setModelHubClientAllowedModels(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, (client.allowed_models ?? []).join(", ")])));
+        setModelHubClientDownloads(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, Boolean(client.allow_downloads)])));
         setEncryptedSecrets(secretPayload.data ?? []);
         setSecretMasterKey(secretPayload.master_key ?? null);
         setMessage("ready");
@@ -2139,6 +2143,25 @@ function ExternalAccess() {
     })
       .then(() => {
         setMessage("CIDR allowlist updated");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateModelHubClientPolicy = (id: string) => {
+    setBusy(true);
+    setMessage("updating Model Hub policy");
+    apiJson(`/modelhub/v1/clients/${id}/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allowed_models: parseCsv(modelHubClientAllowedModels[id] ?? "", ["*"]),
+        allow_downloads: modelHubClientDownloads[id] ?? false
+      })
+    })
+      .then(() => {
+        setMessage("Model Hub policy updated");
         loadClients();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -2313,12 +2336,32 @@ function ExternalAccess() {
         <h3>Model Hub Clients</h3>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Allowed Models</th><th>CIDR</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Allowed Models</th><th>Downloads</th><th>CIDR</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
           {modelHubClients.map((client) => (
             <tr key={client.id}>
               <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
-              <td>{client.allowed_models.join(", ")}</td>
+              <td>
+                <div className="inline-form">
+                  <input
+                    value={modelHubClientAllowedModels[client.id] ?? ""}
+                    onChange={(event) => setModelHubClientAllowedModels((current) => ({ ...current, [client.id]: event.target.value }))}
+                    disabled={busy || Boolean(client.revoked_at)}
+                  />
+                  <button title={`Save Model Hub policy for ${client.display_name}`} onClick={() => updateModelHubClientPolicy(client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                </div>
+              </td>
+              <td>
+                <label className="inline-check">
+                  <input
+                    type="checkbox"
+                    checked={modelHubClientDownloads[client.id] ?? false}
+                    onChange={(event) => setModelHubClientDownloads((current) => ({ ...current, [client.id]: event.target.checked }))}
+                    disabled={busy || Boolean(client.revoked_at)}
+                  />
+                  enabled
+                </label>
+              </td>
               <td>
                 <div className="inline-form">
                   <input
@@ -2333,7 +2376,7 @@ function ExternalAccess() {
               <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
           ))}
-          {!modelHubClients.length && <tr><td colSpan={5}>No Model Hub clients recorded</td></tr>}
+          {!modelHubClients.length && <tr><td colSpan={6}>No Model Hub clients recorded</td></tr>}
         </tbody>
       </table>
     </section>

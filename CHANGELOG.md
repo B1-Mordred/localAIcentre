@@ -27,3 +27,4 @@
 - Added Voicebox voice-profile dependency checks to model removal and blob quarantine planning so active profiles block unsafe cleanup and disabled profiles remain visible in dependency reports.
 - Added licence/source/resource metadata to Model Hub sync plans and made `b1-model-client` and Model Hub blob downloads require explicit licence acknowledgement before synchronising acceptance-gated models.
 - Added CIDR allowlists for general API clients, enforced during bearer-token authentication and editable from the Control Center External Access tab for API and Model Hub clients.
+- Added editable Model Hub client download policy, allowing administrators to change allowed models and catalog-only/download mode without rotating client keys.

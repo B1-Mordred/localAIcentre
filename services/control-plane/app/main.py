@@ -225,6 +225,11 @@ class ModelHubClientCreate(BaseModel):
     allow_downloads: bool = True
 
 
+class ModelHubClientPolicyUpdate(BaseModel):
+    allowed_models: list[str] = Field(default_factory=lambda: ["*"])
+    allow_downloads: bool = True
+
+
 class VoiceProfileSampleArtifact(BaseModel):
     url: str = Field(min_length=1, max_length=512)
     sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
@@ -6886,6 +6891,45 @@ async def modelhub_client_cidr_update(
             "api_client_id": row["api_client_id"],
             "key_prefix": row["key_prefix"],
             "cidr_allowlist": cidr_allowlist,
+        },
+    )
+    return public_modelhub_client(row)
+
+
+@app.put("/modelhub/v1/clients/{client_id}/policy")
+async def modelhub_client_policy_update(
+    client_id: str,
+    payload: ModelHubClientPolicyUpdate,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    existing = await database.get_modelhub_client(client_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Model Hub client not found")
+    if existing.get("revoked_at") is not None:
+        raise HTTPException(status_code=409, detail="revoked Model Hub clients cannot be modified")
+    allowed_models = validate_modelhub_allowed_models(payload.allowed_models)
+    row = await database.update_modelhub_client_policy(
+        client_id,
+        allowed_models=allowed_models,
+        allow_downloads=payload.allow_downloads,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Model Hub client not found")
+    log_event("modelhub_client_policy_updated", client_id=client_id, allowed_model_count=len(allowed_models), allow_downloads=payload.allow_downloads)
+    await record_audit_event(
+        auth,
+        "modelhub_client.policy_updated",
+        target_type="modelhub_client",
+        target_id=client_id,
+        summary=f"Updated Model Hub client policy for {row['display_name']}",
+        metadata={
+            "display_name": row["display_name"],
+            "api_client_id": row["api_client_id"],
+            "key_prefix": row["key_prefix"],
+            "allowed_models": allowed_models,
+            "allow_downloads": payload.allow_downloads,
         },
     )
     return public_modelhub_client(row)

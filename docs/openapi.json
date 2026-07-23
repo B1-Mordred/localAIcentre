@@ -744,6 +744,24 @@
         "title": "ModelHubClientCreate",
         "type": "object"
       },
+      "ModelHubClientPolicyUpdate": {
+        "properties": {
+          "allow_downloads": {
+            "default": true,
+            "title": "Allow Downloads",
+            "type": "boolean"
+          },
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Models",
+            "type": "array"
+          }
+        },
+        "title": "ModelHubClientPolicyUpdate",
+        "type": "object"
+      },
       "ModelHubSyncPlanRequest": {
         "properties": {
           "installed_blobs": {
@@ -7292,6 +7310,73 @@
           }
         },
         "summary": "Modelhub Client Cidr Update"
+      }
+    },
+    "/modelhub/v1/clients/{client_id}/policy": {
+      "put": {
+        "operationId": "modelhub_client_policy_update_modelhub_v1_clients__client_id__policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelHubClientPolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Modelhub Client Policy Update Modelhub V1 Clients  Client Id  Policy Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Modelhub Client Policy Update"
       }
     },
     "/modelhub/v1/models/{model_id}": {

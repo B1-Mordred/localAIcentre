@@ -2608,6 +2608,30 @@ async def update_modelhub_client_cidr_allowlist(client_id: str, cidr_allowlist: 
     return await get_modelhub_client(client_id)
 
 
+async def update_modelhub_client_policy(
+    client_id: str,
+    *,
+    allowed_models: list[str],
+    allow_downloads: bool,
+) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(modelhub_clients).where(modelhub_clients.c.id == client_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        if row["revoked_at"] is not None:
+            return dict(row)
+        await conn.execute(
+            update(modelhub_clients)
+            .where(modelhub_clients.c.id == client_id)
+            .values(allowed_models=allowed_models, allow_downloads=allow_downloads, updated_at=now)
+        )
+    return await get_modelhub_client(client_id)
+
+
 async def insert_voice_profile(payload: dict[str, Any]) -> dict[str, Any]:
     if engine is None:
         raise RuntimeError("database engine is not configured")

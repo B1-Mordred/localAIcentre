@@ -103,6 +103,7 @@ POST /modelhub/v1/sync/plan
 GET  /modelhub/v1/clients
 POST /modelhub/v1/clients
 PUT  /modelhub/v1/clients/{client_id}/cidr-allowlist
+PUT  /modelhub/v1/clients/{client_id}/policy
 DELETE /modelhub/v1/clients/{client_id}
 ```
 
@@ -134,6 +135,19 @@ curl -s https://api.ai.b1.germering/admin/runtimes/localai/recover \
 The control plane validates that the selected adapter is configured and non-external, then calls the mTLS/token-protected runtime-agent predefined action endpoint. The runtime-agent only accepts services in `B1_RUNTIME_ACTION_SERVICES` and implements the current forced unload/recovery strategy as a bounded restart of that allowlisted runtime service. With the default `B1_ENABLE_MUTATIONS=false`, these endpoints return a dry-run response.
 
 Runtime-agent `/v1/images/{service}/inspect` and `/v1/images/{service}/pull` are internal update-staging endpoints. Both require an allowlisted service name and an image reference pinned with `@sha256:<digest>`; `latest` and missing digests are rejected. Pull is a mutation and returns `status=dry_run` unless `B1_ENABLE_MUTATIONS=true`. Runtime-agent `/v1/rollback` is intentionally internal and predefined. It restarts only the static `B1_ROLLBACK_SERVICES` sequence after validating every entry against `B1_ALLOWED_SERVICES`; it accepts only the common `reason` and `timeout_seconds` payload. With mutations disabled it returns the rollback plan as a dry run.
+
+## Model Hub Clients
+
+Administrators manage external sync clients through `GET`, `POST`, `PUT`, and `DELETE` under `/modelhub/v1/clients`. The create response is the only time the full API key is returned. CIDR allowlists can be updated separately from policy so a workstation can move networks without changing its download permissions:
+
+```bash
+curl -X PUT https://models.ai.b1.germering/modelhub/v1/clients/mhc_123/policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_models":["image-default","image-upscale"],"allow_downloads":true}'
+```
+
+`allowed_models` accepts explicit aliases/model IDs or `["*"]`. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
 
 ## Maintenance Mode
 
