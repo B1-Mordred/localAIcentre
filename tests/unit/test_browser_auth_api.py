@@ -34,12 +34,13 @@ class FakeRequest:
         path: str = "/",
         cookies: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        client_host: str = "127.0.0.1",
     ) -> None:
         self.method = method
         self.cookies = cookies or {}
         self.headers = headers or {}
         self.url = SimpleNamespace(path=path)
-        self.client = SimpleNamespace(host="127.0.0.1")
+        self.client = SimpleNamespace(host=client_host)
 
 
 class FakeDatabase:
@@ -96,6 +97,18 @@ class FakeDatabase:
         self.api_clients[payload["id"]] = dict(payload)
         return dict(payload)
 
+    async def insert_api_client(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {**payload, "last_used_at": None, "revoked_at": None}
+        self.api_clients[row["id"]] = row
+        return dict(row)
+
+    async def get_api_client_by_prefix(self, key_prefix: str) -> dict[str, Any] | None:
+        for client in self.api_clients.values():
+            if client.get("key_prefix") == key_prefix and client.get("revoked_at") is None:
+                client["last_used_at"] = "now"
+                return dict(client)
+        return None
+
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class BrowserAuthApiTests(unittest.TestCase):
@@ -111,6 +124,7 @@ class BrowserAuthApiTests(unittest.TestCase):
             open_webui_api_key="",
             session_cookie_secure=False,
             session_ttl_seconds=3600,
+            trusted_proxy_cidrs=("127.0.0.1/32",),
         )
 
     def tearDown(self) -> None:
@@ -210,6 +224,57 @@ class BrowserAuthApiTests(unittest.TestCase):
             {"models:read", "inference:write", "jobs:read", "jobs:write", "workflows:read"},
         )
         self.assertIn(main.OPEN_WEBUI_CLIENT_ID, self.database.api_clients)
+
+    def test_api_client_create_validates_and_returns_cidr_allowlist(self) -> None:
+        created = asyncio.run(
+            main.admin_api_client_create(
+                main.ApiClientCreate(
+                    display_name="worker",
+                    role=main.Role.SERVICE,
+                    scopes=["models:read"],
+                    cidr_allowlist=["192.168.2.44/24", "192.168.2.0/24"],
+                ),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(created["cidr_allowlist"], ["192.168.2.0/24"])
+        self.assertNotIn("key_hash", created)
+        self.assertTrue(created["api_key"].startswith(created["key_prefix"] + "."))
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(
+                main.admin_api_client_create(
+                    main.ApiClientCreate(display_name="bad", cidr_allowlist=["not-a-network"]),
+                    authorization="Bearer setup-key",
+                )
+            )
+        self.assertEqual(caught.exception.status_code, 422)
+
+    def test_api_client_cidr_allowlist_is_enforced_on_bearer_auth(self) -> None:
+        prefix, api_key = main.generate_api_key()
+        salt, digest = main.hash_api_key(api_key)
+        self.database.api_clients["client_worker"] = {
+            "id": "client_worker",
+            "display_name": "worker",
+            "role": "service",
+            "scopes": ["models:read"],
+            "key_prefix": prefix,
+            "key_salt": salt,
+            "key_hash": digest,
+            "cidr_allowlist": ["192.168.2.0/24"],
+            "revoked_at": None,
+        }
+
+        self.request_context(FakeRequest(headers={"x-forwarded-for": "192.168.2.44"}))
+        auth = asyncio.run(main.authenticate(f"Bearer {api_key}"))
+        self.assertEqual(auth.subject_id, "client_worker")
+
+        self.request_context(FakeRequest(headers={"x-forwarded-for": "10.10.10.10"}))
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.authenticate(f"Bearer {api_key}"))
+        self.assertEqual(caught.exception.status_code, 403)
+        self.assertEqual(caught.exception.detail, "API client is not permitted from this network")
 
 
 if __name__ == "__main__":

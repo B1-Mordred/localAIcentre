@@ -347,6 +347,7 @@ type ApiClient = {
   role: string;
   scopes: string[];
   key_prefix: string;
+  cidr_allowlist: string[];
   created_at: string;
   last_used_at?: string | null;
   revoked_at?: string | null;
@@ -2036,6 +2037,7 @@ function ExternalAccess() {
   const [apiDisplayName, setApiDisplayName] = useState("");
   const [apiRole, setApiRole] = useState("service");
   const [apiScopes, setApiScopes] = useState("jobs:read,jobs:write,models:read,inference:write");
+  const [apiCidrs, setApiCidrs] = useState("");
   const [hubDisplayName, setHubDisplayName] = useState("");
   const [hubAllowedModels, setHubAllowedModels] = useState("chat-default");
   const [hubCidrs, setHubCidrs] = useState("192.168.2.0/24");
@@ -2080,13 +2082,15 @@ function ExternalAccess() {
       body: JSON.stringify({
         display_name: apiDisplayName,
         role: apiRole,
-        scopes: apiScopes.trim() ? parseCsv(apiScopes) : null
+        scopes: apiScopes.trim() ? parseCsv(apiScopes) : null,
+        cidr_allowlist: parseCsv(apiCidrs)
       })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
       .then((payload) => {
         setOneTimeKey({ label: payload.display_name, value: payload.api_key });
         setApiDisplayName("");
+        setApiCidrs("");
         loadClients();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -2200,6 +2204,7 @@ function ExternalAccess() {
             </select>
           </label>
           <label>Scopes<input value={apiScopes} onChange={(event) => setApiScopes(event.target.value)} /></label>
+          <label>CIDR allowlist<input value={apiCidrs} onChange={(event) => setApiCidrs(event.target.value)} placeholder="192.168.2.0/24" /></label>
           <button title="Create API client" disabled={busy || !apiDisplayName.trim()}><KeyRound size={16} />Create</button>
         </form>
         <form className="stack" onSubmit={createModelHubClient}>
@@ -2255,18 +2260,19 @@ function ExternalAccess() {
         <h3>API Clients</h3>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Role</th><th>Scopes</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Role</th><th>Scopes</th><th>CIDR</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
           {apiClients.map((client) => (
             <tr key={client.id}>
               <td><code>{client.display_name}</code><small>{client.id} / {client.key_prefix}</small></td>
               <td>{client.role}</td>
               <td>{client.scopes.join(", ")}</td>
+              <td>{(client.cidr_allowlist ?? []).join(", ") || "none"}</td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.last_used_at ? `last ${new Date(client.last_used_at).toLocaleString()}` : ""}</small></td>
               <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
           ))}
-          {!apiClients.length && <tr><td colSpan={5}>No API clients recorded</td></tr>}
+          {!apiClients.length && <tr><td colSpan={6}>No API clients recorded</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">

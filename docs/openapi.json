@@ -47,6 +47,13 @@
       },
       "ApiClientCreate": {
         "properties": {
+          "cidr_allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cidr Allowlist",
+            "type": "array"
+          },
           "display_name": {
             "maxLength": 256,
             "minLength": 1,

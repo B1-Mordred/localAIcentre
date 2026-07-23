@@ -340,10 +340,10 @@ API clients are created with:
 curl -s https://api.ai.b1.germering/admin/api-clients \
   -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"display_name":"external-comfy","role":"service","scopes":["jobs:read","jobs:write","models:read","modelhub:read","modelhub:sync","inference:write"]}'
+  -d '{"display_name":"external-comfy","role":"service","scopes":["jobs:read","jobs:write","models:read","modelhub:read","modelhub:sync","inference:write"],"cidr_allowlist":["192.168.2.0/24"]}'
 ```
 
-The full API key is returned once. The control plane stores only a salted PBKDF2 hash plus the public key prefix. Local browser passwords are stored with scrypt hashes; browser session tokens are stored as server-side hashes, not plaintext.
+The full API key is returned once. The control plane stores only a salted PBKDF2 hash plus the public key prefix. Optional `cidr_allowlist` entries are canonicalized and enforced on bearer-token authentication using the trusted-proxy client-IP parser; leave the list empty only for keys that are intentionally unrestricted by source network. Local browser passwords are stored with scrypt hashes; browser session tokens are stored as server-side hashes, not plaintext.
 
 Initial scope use:
 

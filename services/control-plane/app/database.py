@@ -176,6 +176,7 @@ api_clients = Table(
     Column("key_prefix", String(64), nullable=False),
     Column("key_salt", String(128), nullable=False),
     Column("key_hash", String(256), nullable=False),
+    Column("cidr_allowlist", JSONB, nullable=False, default=list),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("last_used_at", DateTime(timezone=True), nullable=True),
@@ -464,6 +465,7 @@ SCHEMA_COMPATIBILITY_SQL = [
         "ON b1_jobs (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
     ),
     "CREATE INDEX IF NOT EXISTS b1_jobs_native_prompt_id_idx ON b1_jobs (native_prompt_id)",
+    "ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS cidr_allowlist jsonb NOT NULL DEFAULT '[]'::jsonb",
     "CREATE UNIQUE INDEX IF NOT EXISTS b1_api_clients_key_prefix_uq ON b1_api_clients (key_prefix)",
     "CREATE UNIQUE INDEX IF NOT EXISTS b1_users_username_normalized_uq ON b1_users (username_normalized)",
     "CREATE INDEX IF NOT EXISTS b1_users_role_idx ON b1_users (role)",
@@ -2256,6 +2258,7 @@ async def insert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
         "updated_at": now,
         "last_used_at": None,
         "revoked_at": None,
+        "cidr_allowlist": [],
         **payload,
     }
     async with engine.begin() as conn:
@@ -2272,6 +2275,7 @@ async def upsert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
         "updated_at": now,
         "last_used_at": None,
         "revoked_at": None,
+        "cidr_allowlist": [],
         **payload,
     }
     stmt = pg_insert(api_clients).values(**row)
@@ -2284,6 +2288,7 @@ async def upsert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
             "key_prefix": stmt.excluded.key_prefix,
             "key_salt": stmt.excluded.key_salt,
             "key_hash": stmt.excluded.key_hash,
+            "cidr_allowlist": stmt.excluded.cidr_allowlist,
             "updated_at": now,
             "revoked_at": None,
         },

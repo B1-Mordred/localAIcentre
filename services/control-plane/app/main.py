@@ -133,6 +133,7 @@ if settings.cors_allow_origins:
             "X-B1-Owner",
             "X-B1-Field",
             "X-B1-Filename",
+            "X-B1-Accept-License",
         ],
     )
 
@@ -200,6 +201,7 @@ class ApiClientCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=256)
     role: Role = Role.SERVICE
     scopes: list[str] | None = None
+    cidr_allowlist: list[str] = Field(default_factory=list)
 
 
 class BlobState(BaseModel):
@@ -506,6 +508,15 @@ async def record_audit_event(
     log_event("audit_recorded", audit_id=row["id"], event_type=event_type, target_type=target_type, target_id=target_id)
 
 
+def require_api_client_network_allowed(client: dict[str, Any], request: Request | None) -> None:
+    cidr_allowlist = client.get("cidr_allowlist") or []
+    if not cidr_allowlist:
+        return
+    remote_addr = client_host(request)
+    if not modelhub_policy.client_ip_allowed_by_cidr(cidr_allowlist, remote_addr):
+        raise HTTPException(status_code=403, detail="API client is not permitted from this network")
+
+
 def client_host(request: Request | None) -> str | None:
     if request is None or request.client is None:
         return None
@@ -605,6 +616,7 @@ async def authenticate_bearer_token(token: str) -> AuthContext:
     client = await database.get_api_client_by_prefix(key_prefix)
     if client is None or not verify_api_key(token, client["key_salt"], client["key_hash"]):
         raise HTTPException(status_code=403, detail="invalid or under-scoped token")
+    require_api_client_network_allowed(client, current_request.get())
     role = Role(client["role"])
     return AuthContext(
         subject_id=client["id"],
@@ -2938,6 +2950,7 @@ def public_api_client(row: dict[str, Any]) -> dict[str, Any]:
     redacted = dict(row)
     redacted.pop("key_hash", None)
     redacted.pop("key_salt", None)
+    redacted.setdefault("cidr_allowlist", [])
     return jsonable_encoder(redacted)
 
 
@@ -4130,6 +4143,7 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
         scopes = scopes_for_role(payload.role, payload.scopes)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
     key_prefix, api_key = generate_api_key()
     key_salt, key_digest = hash_api_key(api_key)
     row = await database.insert_api_client(
@@ -4141,6 +4155,7 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
             "key_prefix": key_prefix,
             "key_salt": key_salt,
             "key_hash": key_digest,
+            "cidr_allowlist": cidr_allowlist,
         }
     )
     log_event("api_client_created", client_id=row["id"], role=payload.role.value, key_prefix=key_prefix)
@@ -4150,7 +4165,13 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
         target_type="api_client",
         target_id=row["id"],
         summary=f"Created API client {payload.display_name}",
-        metadata={"display_name": payload.display_name, "role": payload.role.value, "scopes": sorted(scopes), "key_prefix": key_prefix},
+        metadata={
+            "display_name": payload.display_name,
+            "role": payload.role.value,
+            "scopes": sorted(scopes),
+            "key_prefix": key_prefix,
+            "cidr_allowlist": cidr_allowlist,
+        },
     )
     return {**public_api_client(row), "api_key": api_key, "one_time_display": True}
 
@@ -6766,6 +6787,7 @@ async def modelhub_client_create(payload: ModelHubClientCreate, authorization: s
             "key_prefix": key_prefix,
             "key_salt": key_salt,
             "key_hash": key_digest,
+            "cidr_allowlist": cidr_allowlist,
         },
         {
             "id": modelhub_client_id,
