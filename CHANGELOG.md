@@ -32,3 +32,4 @@
 - Added scheduler-aware tracking for native ComfyUI `/interrupt` and mutating `/queue` compatibility requests so accepted native cancellations update durable B1 job state while still forwarding immediately to ComfyUI.
 - Added Media Studio fetch-based SSE job progress and authenticated artifact downloads, keeping browser-session and service-token access aligned with the control-plane authorization model.
 - Added `.env.production.example` plus Compose validation coverage so the real LocalAI, ComfyUI, Voicebox, and audio-cpu production posture can still be started with the documented `docker compose up -d` command after bootstrap.
+- Added an opt-in external ComfyUI remote-node compatibility harness that stops/restores the server-side B1 ComfyUI service before proving a `non_comfy_only` TTS operation succeeds through the unified API.

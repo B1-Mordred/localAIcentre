@@ -80,6 +80,10 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(json.loads(seen["body"].decode("utf-8")), {"probe": True})
         self.assertEqual(seen["timeout"], 9)
 
+    def test_request_url_rejects_paths_that_are_not_api_routes(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.request_url("v1/models")
+
     def test_text_to_speech_calls_unified_audio_endpoint_not_comfyui(self) -> None:
         calls: list[dict[str, Any]] = []
 
@@ -89,12 +93,13 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
 
         self.patch_attr("request_bytes", fake_request_bytes)
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
-            file_path, byte_count, digest = nodes.B1TextToSpeech().run("tts-fast", "hello", "default")
+            file_path, byte_count, digest = nodes.B1TextToSpeech().run("tts-fast", "hello", "default", runtime_policy="non_comfy_only")
             self.assertTrue(Path(file_path).is_file())
 
         self.assertEqual(calls[0]["path"], "/v1/audio/speech")
         self.assertNotIn("comfy", calls[0]["path"])
         self.assertEqual(calls[0]["payload"]["model"], "tts-fast")
+        self.assertEqual(calls[0]["payload"]["runtime_policy"], "non_comfy_only")
         self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
 

@@ -78,6 +78,19 @@ The package currently registers nodes for listing/selecting model aliases, chat/
 
 These nodes intentionally call `/v1/*` and `/artifacts/...` on `api.ai.b1.germering`; they do not call the native server-side ComfyUI `/prompt` or `/ws` compatibility endpoint. The `integrations/comfyui-b1-remote-nodes/examples/tts-fast.non-comfy.workflow.json` sketch is the default non-Comfy proof path: stop the server-side B1 ComfyUI container, keep the API/control plane and CPU audio runtime running, then run the external `B1 Text To Speech` node with `model=tts-fast` and `runtime_policy=non_comfy_only`.
 
+The opt-in compatibility harness can enforce that proof against the local Compose deployment:
+
+```bash
+export B1_REMOTE_NODES_LIVE_TEST=1
+export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_AI_HUB_API_KEY=...
+export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
+export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
+python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy
+```
+
+`docker-compose` mode stops the B1 `comfyui` service before invoking the node and starts it again afterward if it was running. Use `manual` only when another runbook has already stopped the service and you want the test to avoid mutating Compose.
+
 For stock local ComfyUI execution, use a synchronized local cache and `extra_model_paths.yaml` rather than live network-mounted model loading.
 
 ## Optional External Runtimes
