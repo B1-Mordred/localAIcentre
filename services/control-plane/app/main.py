@@ -64,6 +64,7 @@ from .executor import (
     ModelDownloadRunner,
     RuntimePreparationError,
 )
+from .observability import build_observability_report
 from .runtime_agent_http import runtime_agent_httpx_kwargs
 from .scheduler import JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
 from .settings import Settings, load_settings
@@ -2447,6 +2448,30 @@ async def admin_status(
             "audio_cpu": settings.audio_cpu_url,
         },
     }
+
+
+@app.get("/admin/metrics")
+async def admin_metrics(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=500, ge=1, le=500),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    jobs = await database.list_jobs(limit=limit)
+    state_counts = await database.job_counts_by_state()
+    runtime_states = await database.list_runtime_states()
+    scheduler_lease = await database.get_scheduler_owner()
+    agent_metrics, agent_error = await runtime_agent_get("/v1/metrics")
+    return jsonable_encoder(
+        build_observability_report(
+            jobs=jobs,
+            state_counts=state_counts,
+            runtime_states=runtime_states,
+            scheduler_lease=scheduler_lease,
+            agent_metrics=agent_metrics,
+            agent_error=agent_error,
+        )
+    )
 
 
 @app.get("/admin/maintenance")

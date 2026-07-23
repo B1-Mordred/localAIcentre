@@ -4,7 +4,7 @@ Control Center is served at `https://control.ai.b1.germering/`.
 
 Initial administrative areas:
 
-- Dashboard: service status, resource policy, queue summary, runtime URLs
+- Dashboard: service status, resource policy, queue waits, runtime URLs, runtime-agent health, GPU, memory, recent job timings, and model switches
 - Models: aliases, installation status, runtime preference, visibility, idle timeout, resource policy
 - Runtimes: LocalAI, ComfyUI, Voicebox, and CPU audio state
 - Queue and jobs: durable media job records and SSE status
@@ -14,6 +14,12 @@ Initial administrative areas:
 - System: TLS, maintenance, updates, rollback, bounded service logs, audit logs
 
 The UI must not expose arbitrary shell, Docker, host path, or download destination controls.
+
+## Dashboard Observability
+
+The Dashboard reads `GET /admin/status` for configuration and `GET /admin/metrics` for live operational summaries. The metrics endpoint intentionally stays lightweight for the 32 GB target: it aggregates recent durable job rows in PostgreSQL, scheduler ownership, runtime states, and runtime-agent telemetry instead of requiring Prometheus or Grafana for first boot.
+
+Operators can see queue depth, active jobs, oldest wait, recent run-time p95, completed/failed/cancelled jobs in the last hour, model switches per hour, peak RAM/VRAM recorded on jobs, host memory/swap, and normalized GPU memory/utilization/temperature. If runtime-agent telemetry is unavailable, the Dashboard shows the error and continues to display database-backed queue and job information.
 
 ## Browser Sign-In
 

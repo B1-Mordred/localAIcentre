@@ -42,6 +42,7 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/auth/setup", paths)
         self.assertIn("/auth/login", paths)
         self.assertIn("/auth/logout", paths)
+        self.assertIn("/admin/metrics", paths)
         self.assertIn("/v1/models", paths)
         self.assertIn("/v1/media/jobs/{job_id}/events", paths)
         self.assertIn("/admin/jobs", paths)

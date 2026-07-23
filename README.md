@@ -20,6 +20,7 @@ This repository currently contains the first runnable project slice:
 - database-backed model install planning, resumable direct-url blob downloads, verified staged-blob publication, hardlinked or safely extracted per-runtime read-only model views, recoverable record/blob quarantine, and catalog overlay refresh
 - runtime-agent with default-on internal mTLS, token-protected allowlisted Docker status, bounded redacted logs surfaced through Control Center, disabled-by-default service mutations, and predefined runtime recover/unload actions
 - runtime-agent CPU/memory/disk/GPU metrics and Control Center system self-test with TLS route, tiny inference, dry-run unload, and artifact delivery probes
+- lightweight Control Center observability backed by `GET /admin/metrics`, showing queue waits, recent job timing/resource summaries, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring Prometheus or Grafana for the base appliance
 - PostgreSQL-backed audit log for administrative changes with recursive metadata redaction and Control Center visibility
 - AES-GCM encrypted configuration-secret storage for provider credentials, download tokens, runtime credentials, and integrations, backed by the generated master key outside Git and exposed through redacted admin UI/API controls
 - persisted Control Center configuration for optional external runtimes, with remote-provider secret references, explicit external-data acknowledgement, SSRF-resistant URL validation, and fail-closed alias resolution

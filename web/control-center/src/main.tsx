@@ -54,6 +54,81 @@ type AdminStatus = {
   runtimes: RuntimeMap;
   scheduler_lease?: SchedulerLease | null;
   runtime_states?: RuntimeState[];
+  queue?: { state: string; count: number }[];
+};
+
+type MetricSummary = {
+  count: number;
+  min?: number | null;
+  avg?: number | null;
+  p50?: number | null;
+  p95?: number | null;
+  max?: number | null;
+};
+
+type AdminMetrics = {
+  generated_at: string;
+  queue: {
+    depth_total: number;
+    active_total: number;
+    by_state: Record<string, number>;
+    by_priority: Record<string, number>;
+    oldest_wait_seconds?: number | null;
+    wait_seconds: MetricSummary;
+  };
+  jobs: {
+    sample_size: number;
+    recent_sample_size: number;
+    completed_last_hour: number;
+    failed_last_hour: number;
+    cancelled_last_hour: number;
+    load_seconds: MetricSummary;
+    run_seconds: MetricSummary;
+    peak_vram_mib: MetricSummary;
+    peak_ram_mib: MetricSummary;
+  };
+  model_switches_per_hour: {
+    last_hour: number;
+    sampled_started_jobs: number;
+  };
+  runtimes: {
+    total: number;
+    by_status: Record<string, number>;
+    active: RuntimeState[];
+  };
+  runtime_agent: {
+    available: boolean;
+    error?: string | null;
+  };
+  gpu: {
+    available: boolean;
+    error?: string | null;
+    device_count: number;
+    memory_total_mib?: number | null;
+    memory_used_mib?: number | null;
+    memory_free_mib?: number | null;
+    utilization_gpu_percent_avg?: number | null;
+    utilization_gpu_percent_max?: number | null;
+    temperature_c_max?: number | null;
+    power_watts_total?: number | null;
+  };
+  host: {
+    available: boolean;
+    cpu?: Record<string, number | boolean | null>;
+    memory?: {
+      available?: boolean;
+      total_bytes?: number;
+      used_bytes?: number;
+      available_bytes?: number;
+      swap_used_bytes?: number;
+      swap_total_bytes?: number;
+    };
+    storage?: {
+      total_bytes?: number | null;
+      used_bytes?: number | null;
+      free_bytes?: number | null;
+    };
+  };
 };
 
 type MaintenanceState = {
@@ -549,6 +624,30 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parsed as T;
 }
 
+function formatCount(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "unavailable";
+}
+
+function formatSeconds(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "none";
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  return `${Math.round(value / 3600)}h`;
+}
+
+function formatGibFromMib(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
+  return `${(value / 1024).toFixed(1)} GiB`;
+}
+
+function formatHostBytes(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
+  const gib = value / (1024 ** 3);
+  if (gib >= 1) return `${gib.toFixed(1)} GiB`;
+  const mib = value / (1024 ** 2);
+  return `${mib.toFixed(0)} MiB`;
+}
+
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <div className="metric">
@@ -606,19 +705,38 @@ const SERVICE_LOG_OPTIONS = ["control-plane", "localai", "comfyui", "voicebox", 
 const RUNTIME_OPTIONS = ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"];
 const ROLE_OPTIONS = ["admin", "operator", "creator", "user", "service"];
 
-function Dashboard({ status }: { status: AdminStatus | null }) {
+function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: AdminMetrics | null }) {
   const policy = status?.resource_policy ?? {};
   const lease = status?.scheduler_lease;
   const leaseOwner = lease?.owner ?? "idle";
   const leaseDetail = lease?.lease_expires_at ? `expires ${new Date(lease.lease_expires_at).toLocaleTimeString()}` : "one pipeline policy active";
+  const queueByState = metrics?.queue.by_state ?? Object.fromEntries((status?.queue ?? []).map((item) => [item.state, item.count]));
+  const queuedTotal = metrics?.queue.depth_total ?? ((queueByState.created ?? 0) + (queueByState.validated ?? 0) + (queueByState.queued ?? 0) + (queueByState.waiting_for_gpu ?? 0));
+  const activeTotal = metrics?.queue.active_total ?? ((queueByState.unloading ?? 0) + (queueByState.verifying_vram ?? 0) + (queueByState.loading ?? 0) + (queueByState.warming ?? 0) + (queueByState.running ?? 0) + (queueByState.saving ?? 0) + (queueByState.cancelling ?? 0));
+  const runningTotal = queueByState.running ?? 0;
+  const recoveryTotal = (queueByState.recovery_required ?? 0) + (queueByState.cancelling ?? 0);
+  const gpu = metrics?.gpu;
+  const hostMemory = metrics?.host.memory;
+  const runtimeStateByName = Object.fromEntries((status?.runtime_states ?? []).map((runtime) => [runtime.runtime, runtime]));
+  const gpuDetail = gpu?.available
+    ? `${formatCount(gpu.utilization_gpu_percent_max)}% util, ${formatCount(gpu.temperature_c_max)}C max`
+    : (gpu?.error ?? metrics?.runtime_agent.error ?? "runtime-agent metrics unavailable");
+  const hostMemoryDetail = hostMemory?.available
+    ? `${formatHostBytes(hostMemory.available_bytes)} available, ${formatHostBytes(hostMemory.swap_used_bytes)} swap used`
+    : "runtime-agent metrics unavailable";
   return (
     <div className="panel-grid">
       <section className="panel wide">
         <SectionTitle icon={<Activity size={18} />} title="Dashboard" />
         <div className="metrics">
           <Metric label="GPU lease" value={leaseOwner} detail={leaseDetail} />
+          <Metric label="GPU memory" value={gpu?.available ? `${formatGibFromMib(gpu.memory_used_mib)} / ${formatGibFromMib(gpu.memory_total_mib)}` : "unavailable"} detail={gpuDetail} />
+          <Metric label="Queue depth" value={formatCount(queuedTotal)} detail={`${formatCount(activeTotal)} active, oldest wait ${formatSeconds(metrics?.queue.oldest_wait_seconds)}`} />
+          <Metric label="Jobs last hour" value={`${formatCount(metrics?.jobs.completed_last_hour)} done`} detail={`${formatCount(metrics?.jobs.failed_last_hour)} failed, ${formatCount(metrics?.jobs.cancelled_last_hour)} cancelled`} />
+          <Metric label="Model switches" value={formatCount(metrics?.model_switches_per_hour.last_hour)} detail={`${formatCount(metrics?.model_switches_per_hour.sampled_started_jobs)} started jobs sampled`} />
+          <Metric label="Peak VRAM" value={formatGibFromMib(metrics?.jobs.peak_vram_mib.max)} detail={`peak RAM ${formatGibFromMib(metrics?.jobs.peak_ram_mib.max)}`} />
+          <Metric label="Host memory" value={hostMemory?.available ? `${formatHostBytes(hostMemory.used_bytes)} used` : "unavailable"} detail={hostMemoryDetail} />
           <Metric label="VRAM usable" value={`${policy.gpu_usable_vram_gib ?? 10.5} GiB`} detail={`${policy.gpu_reserve_vram_gib ?? 1.5} GiB reserved`} />
-          <Metric label="Host RAM reserve" value={`${policy.host_reserve_ram_gib ?? 6} GiB`} detail="RTX 3060 / 32 GB profile" />
           <Metric label="Idle unload" value={`${status?.gpu_default_idle_timeout_seconds ?? 300}s`} detail="blank alias policy uses this default" />
           <Metric label="External providers" value={status?.external_providers_enabled ? "enabled" : "disabled"} detail="LAN-local default" />
         </div>
@@ -627,18 +745,22 @@ function Dashboard({ status }: { status: AdminStatus | null }) {
         <SectionTitle icon={<ListChecks size={18} />} title="Queue" />
         <table>
           <tbody>
-            <tr><td>Running</td><td>0</td></tr>
-            <tr><td>Queued</td><td>0</td></tr>
-            <tr><td>Recovery</td><td>0</td></tr>
+            <tr><td>Queued</td><td>{queuedTotal}</td></tr>
+            <tr><td>Running</td><td>{runningTotal}</td></tr>
+            <tr><td>Recovery</td><td>{recoveryTotal}</td></tr>
+            <tr><td>Oldest wait</td><td>{formatSeconds(metrics?.queue.oldest_wait_seconds)}</td></tr>
+            <tr><td>Recent run p95</td><td>{formatSeconds(metrics?.jobs.run_seconds.p95)}</td></tr>
           </tbody>
         </table>
       </section>
       <section className="panel">
         <SectionTitle icon={<Database size={18} />} title="Services" />
         <ul className="runtime-list">
-          {Object.entries(status?.runtimes ?? {}).map(([name, url]) => (
-            <li key={name}><span>{name}</span><code>{url}</code></li>
-          ))}
+          {Object.entries(status?.runtimes ?? {}).map(([name, url]) => {
+            const runtimeState = runtimeStateByName[name];
+            const stateLabel = runtimeState ? `${runtimeState.status} / ${runtimeState.stage}` : "unreported";
+            return <li key={name}><span>{name}</span><code>{url} ({stateLabel})</code></li>;
+          })}
         </ul>
       </section>
     </div>
@@ -2811,6 +2933,7 @@ function AuthGate({ children }: { children: (auth: AuthStatus, logout: () => voi
 
 function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [status, setStatus] = useState<AdminStatus | null>(null);
+  const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [error, setError] = useState<string>("");
   const tabs = useMemo(() => ["dashboard", "models", "runtimes", "jobs", "workflows", "external", "storage", "system"], []);
 
@@ -2818,6 +2941,10 @@ function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () =
     apiFetch(`/admin/status`)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)))
       .then(setStatus)
+      .catch((err: Error) => setError(err.message));
+    apiFetch(`/admin/metrics?limit=500`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)))
+      .then(setMetrics)
       .catch((err: Error) => setError(err.message));
   }, []);
 
@@ -2838,7 +2965,7 @@ function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () =
         <Tabs.List className="tab-list" aria-label="Control Center sections">
           {tabs.map((tab) => <Tabs.Trigger key={tab} value={tab}>{tab}</Tabs.Trigger>)}
         </Tabs.List>
-        <Tabs.Content value="dashboard"><Dashboard status={status} /></Tabs.Content>
+        <Tabs.Content value="dashboard"><Dashboard status={status} metrics={metrics} /></Tabs.Content>
         <Tabs.Content value="models"><Models /></Tabs.Content>
         <Tabs.Content value="runtimes"><Runtimes /></Tabs.Content>
         <Tabs.Content value="jobs"><Jobs /></Tabs.Content>
