@@ -52,6 +52,7 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/admin/jobs/{job_id}/priority", paths)
         self.assertIn("/admin/jobs/{job_id}/cancel", paths)
         self.assertIn("/admin/jobs/{job_id}/retry", paths)
+        self.assertIn("/admin/runtime-reservations", paths)
         self.assertIn("/admin/voicebox/profiles", paths)
         self.assertIn("/admin/voicebox/profiles/{profile_id}", paths)
         self.assertIn("/admin/voicebox/profiles/{profile_id}/export", paths)

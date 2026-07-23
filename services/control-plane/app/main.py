@@ -639,6 +639,15 @@ def require_job_owner_or_admin(auth: AuthContext, job: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="job belongs to a different owner")
 
 
+def subject_can_read_runtime_reservation(auth: AuthContext, reservation: dict[str, Any]) -> bool:
+    return auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR} or reservation.get("owner_id") == auth.subject_id
+
+
+def require_runtime_reservation_owner_or_admin(auth: AuthContext, reservation: dict[str, Any]) -> None:
+    if not subject_can_read_runtime_reservation(auth, reservation):
+        raise HTTPException(status_code=403, detail="runtime reservation belongs to a different owner")
+
+
 def job_mutation_conflict(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=409, detail=str(exc))
 
@@ -4157,6 +4166,21 @@ async def admin_scheduler_lease_acquire(payload: SchedulerLeaseRequest, authoriz
     return {"lease": jsonable_encoder(row)}
 
 
+@app.get("/admin/runtime-reservations")
+async def admin_runtime_reservations(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    status: str | None = Query(default=None, max_length=64),
+    runtime: str | None = Query(default=None, max_length=64),
+    owner_id: str | None = Query(default=None, max_length=128),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "runtimes:read")
+    require_runtime_admin(auth)
+    rows = await database.list_runtime_reservations(limit=limit, owner_id=owner_id, status=status, runtime=runtime)
+    return {"object": "list", "data": [public_runtime_reservation(row) for row in rows]}
+
+
 @app.get("/admin/runtimes/external-config")
 async def admin_external_runtime_configurations(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -6196,6 +6220,7 @@ async def runtime_reservation_get(reservation_id: str, authorization: str | None
     row = await database.get_runtime_reservation(reservation_id)
     if row is None:
         raise HTTPException(status_code=404, detail="runtime reservation not found")
+    require_runtime_reservation_owner_or_admin(auth, row)
     return public_runtime_reservation(row)
 
 
@@ -6203,6 +6228,10 @@ async def runtime_reservation_get(reservation_id: str, authorization: str | None
 async def runtime_reservation_delete(reservation_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "runtimes:write")
+    existing = await database.get_runtime_reservation(reservation_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="runtime reservation not found")
+    require_runtime_reservation_owner_or_admin(auth, existing)
     row = await database.cancel_runtime_reservation(reservation_id)
     if row is None:
         raise HTTPException(status_code=404, detail="runtime reservation not found")

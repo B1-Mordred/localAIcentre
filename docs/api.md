@@ -29,6 +29,7 @@ POST /admin/api-clients
 DELETE /admin/api-clients/{client_id}
 GET  /admin/scheduler/lease
 POST /admin/scheduler/lease
+GET  /admin/runtime-reservations
 GET  /admin/runtimes
 POST /admin/runtimes/{runtime}/recover
 POST /admin/runtimes/{runtime}/unload
@@ -493,7 +494,9 @@ The control plane derives the effective client IP from the direct peer address u
 
 `POST /admin/scheduler/lease` records the active GPU scheduler owner in PostgreSQL with an epoch and expiry time. At runtime the control plane also coordinates an expiring Redis owner key. A GPU lease is usable only when PostgreSQL grants the durable owner/epoch and Redis grants or renews the matching live owner key; if Redis is configured but unavailable or held by another owner, acquisition fails closed and the PostgreSQL claim is released.
 
-Runtime reservations created through `/v1/runtime-reservations` are durable scheduler intent records. Creation validates that the requested alias is installed and compatible with the requested runtime, stores the immutable resolved model version, expiry, owner, and reason, and supports read/cancel operations. Active reservations now gate actual GPU execution: queued GPU jobs must match an active reservation's owner/runtime/immutable model when any reservation is active, and synchronous GPU inference requests are rejected before lease acquisition when they do not match the active reservation set. Expired reservations are marked `expired` during scheduler checks.
+Runtime reservations created through `/v1/runtime-reservations` are durable scheduler intent records. Creation validates that the requested alias is installed and compatible with the requested runtime, stores the immutable resolved model version, expiry, owner, and reason, and supports owner-scoped read/cancel operations. Active reservations gate actual GPU execution: queued GPU jobs must match an active reservation's owner/runtime/immutable model when any reservation is active, and synchronous GPU inference requests are rejected before lease acquisition when they do not match the active reservation set. Expired reservations are marked `expired` during scheduler checks.
+
+`GET /admin/runtime-reservations` requires `runtimes:read` plus administrator or operator role. It returns a bounded, filterable fleet view for Control Center with optional `status`, `runtime`, and `owner_id` query parameters. The Jobs tab also reads `GET /admin/scheduler/lease` so operators can compare queued work, reservations, and the current GPU scheduler owner from one screen.
 
 ## OpenAPI
 

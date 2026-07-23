@@ -63,6 +63,8 @@ The scheduler lease API records the active GPU scheduler owner, epoch, and expir
 
 Runtime reservations are persisted in PostgreSQL as scheduler intent records. A reservation validates the requested alias/runtime pair, records the resolved immutable model version, owner, reason, duration, and expiry, and can be cancelled without touching any runtime container. While an active reservation exists, queued GPU jobs are claimable only when their owner, runtime, and immutable model version match an active reservation. Synchronous GPU inference requests perform the same reservation gate before acquiring the scheduler lease. Expired reservations are marked `expired` during scheduler checks.
 
+The Jobs tab shows a filterable reservation table, the current GPU scheduler lease, and controls for creating or cancelling a time-bounded reservation. The fleet reservation list is administrator/operator-only; direct reservation reads and cancellations remain owner-scoped unless the caller has administrative privileges.
+
 ## Resource Policy
 
 The System tab exposes the effective RTX 3060/32 GB resource policy. Administrators can load the environment defaults, edit the bounded fields, dry-run validation, save a database override, or reset back to the environment profile. The persisted row is included in the control-plane logical PostgreSQL export.

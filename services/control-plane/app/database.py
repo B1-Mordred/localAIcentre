@@ -2287,6 +2287,39 @@ async def list_active_runtime_reservations(runtime_names: list[str] | None = Non
     return [dict(row) for row in rows]
 
 
+async def list_runtime_reservations(
+    limit: int = 50,
+    *,
+    owner_id: str | None = None,
+    status: str | None = None,
+    runtime: str | None = None,
+) -> list[dict[str, Any]]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    bounded_limit = max(1, min(int(limit), 500))
+    filters = []
+    if owner_id:
+        filters.append(runtime_reservations.c.owner_id == owner_id)
+    if status:
+        filters.append(runtime_reservations.c.status == status)
+    if runtime:
+        filters.append(runtime_reservations.c.runtime == runtime)
+    query = select(runtime_reservations)
+    if filters:
+        query = query.where(and_(*filters))
+    query = query.order_by(runtime_reservations.c.created_at.desc()).limit(bounded_limit)
+    async with engine.begin() as conn:
+        await conn.execute(
+            update(runtime_reservations)
+            .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at <= now))
+            .values(status="expired", updated_at=now)
+        )
+        result = await conn.execute(query)
+        rows = result.mappings().all()
+    return [dict(row) for row in rows]
+
+
 async def runtime_reservation_gate(
     owner_id: str,
     runtime: str,

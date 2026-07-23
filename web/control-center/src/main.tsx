@@ -601,6 +601,21 @@ type JobRecord = {
   peak_ram_mib?: number | null;
 };
 
+type RuntimeReservationRecord = {
+  id: string;
+  owner_id: string;
+  runtime: string;
+  model_alias: string;
+  resolved_model_version: string;
+  duration_seconds: number;
+  reason?: string;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+  expires_at?: string;
+  cancelled_at?: string | null;
+};
+
 type WorkflowDependency = {
   type: string;
   id: string;
@@ -1641,6 +1656,7 @@ function Runtimes() {
 
 const JOB_STATES = ["", "created", "validated", "queued", "waiting_for_gpu", "unloading", "verifying_vram", "loading", "warming", "running", "saving", "completed", "cancelling", "cancelled", "failed", "expired", "recovery_required"];
 const JOB_PRIORITIES = ["chat", "interactive_audio", "single_image", "image_batch", "video", "batch"];
+const RESERVATION_STATUSES = ["", "active", "cancelled", "expired"];
 const TERMINAL_JOB_STATES = new Set(["completed", "cancelled", "failed", "expired"]);
 const RETRYABLE_JOB_STATES = new Set(["failed", "cancelled", "expired", "recovery_required"]);
 const PRIORITIZABLE_JOB_STATES = new Set(["created", "validated", "queued", "waiting_for_gpu"]);
@@ -1657,11 +1673,18 @@ function formatMs(value?: number | null) {
 
 function Jobs() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [reservations, setReservations] = useState<RuntimeReservationRecord[]>([]);
+  const [schedulerLease, setSchedulerLease] = useState<SchedulerLease | null>(null);
   const [selected, setSelected] = useState<JobRecord | null>(null);
   const [stateFilter, setStateFilter] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState("");
   const [modalityFilter, setModalityFilter] = useState("");
   const [ownerFilter, setOwnerFilter] = useState("");
+  const [reservationStatusFilter, setReservationStatusFilter] = useState("active");
+  const [reservationRuntime, setReservationRuntime] = useState("localai");
+  const [reservationModel, setReservationModel] = useState("chat-default");
+  const [reservationDuration, setReservationDuration] = useState("300");
+  const [reservationReason, setReservationReason] = useState("");
   const [priorityByJob, setPriorityByJob] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
@@ -1688,7 +1711,26 @@ function Jobs() {
       .catch((error: Error) => setMessage(error.message));
   };
 
-  useEffect(loadJobs, []);
+  const loadReservations = () => {
+    const params = new URLSearchParams({ limit: "50" });
+    if (reservationStatusFilter) params.set("status", reservationStatusFilter);
+    if (runtimeFilter.trim()) params.set("runtime", runtimeFilter.trim());
+    if (ownerFilter.trim()) params.set("owner_id", ownerFilter.trim());
+    Promise.all([
+      apiJson<{ object: string; data: RuntimeReservationRecord[] }>(`/admin/runtime-reservations?${params.toString()}`),
+      apiJson<{ lease?: SchedulerLease | null }>(`/admin/scheduler/lease`)
+    ])
+      .then(([reservationPayload, leasePayload]) => {
+        setReservations(reservationPayload.data ?? []);
+        setSchedulerLease(leasePayload.lease ?? null);
+      })
+      .catch((error: Error) => setMessage(error.message));
+  };
+
+  useEffect(() => {
+    loadJobs();
+    loadReservations();
+  }, []);
 
   const mutateJob = (job: JobRecord, action: "cancel" | "retry") => {
     setBusy(true);
@@ -1725,6 +1767,43 @@ function Jobs() {
       .finally(() => setBusy(false));
   };
 
+  const createReservation = (event: React.FormEvent) => {
+    event.preventDefault();
+    const duration = Math.max(30, Math.min(7200, Number.parseInt(reservationDuration, 10) || 300));
+    setReservationDuration(String(duration));
+    setBusy(true);
+    setMessage("creating reservation");
+    apiJson<RuntimeReservationRecord>(`/v1/runtime-reservations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runtime: reservationRuntime.trim(),
+        model: reservationModel.trim(),
+        duration_seconds: duration,
+        reason: reservationReason.trim()
+      })
+    })
+      .then((payload) => {
+        setMessage(`${payload.id} ${payload.status}`);
+        setReservationReason("");
+        loadReservations();
+      })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
+  const cancelReservation = (reservation: RuntimeReservationRecord) => {
+    setBusy(true);
+    setMessage(`cancel ${reservation.id}`);
+    apiJson<RuntimeReservationRecord>(`/v1/runtime-reservations/${encodeURIComponent(reservation.id)}`, { method: "DELETE" })
+      .then((payload) => {
+        setMessage(`${payload.id} ${payload.status}`);
+        loadReservations();
+      })
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
   return (
     <section className="panel wide">
       <SectionTitle icon={<ListChecks size={18} />} title="Jobs" />
@@ -1737,6 +1816,49 @@ function Jobs() {
         <input aria-label="Owner filter" placeholder="owner" value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
         <button title="Refresh jobs" onClick={loadJobs} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <span className="toolbar-status">{message}</span>
+      </div>
+      <div className="subsection-title">
+        <Gauge size={16} />
+        <h3>Reservations</h3>
+      </div>
+      <form className="toolbar job-filters" onSubmit={createReservation}>
+        <select aria-label="Reservation status filter" value={reservationStatusFilter} onChange={(event) => setReservationStatusFilter(event.target.value)}>
+          {RESERVATION_STATUSES.map((status) => <option key={status || "all"} value={status}>{status || "all reservations"}</option>)}
+        </select>
+        <input aria-label="Reservation runtime" placeholder="runtime" value={reservationRuntime} onChange={(event) => setReservationRuntime(event.target.value)} />
+        <input aria-label="Reservation model" placeholder="model alias" value={reservationModel} onChange={(event) => setReservationModel(event.target.value)} />
+        <input aria-label="Reservation duration seconds" inputMode="numeric" placeholder="seconds" value={reservationDuration} onChange={(event) => setReservationDuration(event.target.value)} />
+        <input aria-label="Reservation reason" placeholder="reason" value={reservationReason} onChange={(event) => setReservationReason(event.target.value)} maxLength={500} />
+        <button title="Create runtime reservation" type="submit" disabled={busy || !reservationRuntime.trim() || !reservationModel.trim()}><Upload size={16} />Reserve</button>
+        <button title="Refresh reservations" type="button" onClick={loadReservations} disabled={busy}><RefreshCw size={16} />Refresh</button>
+      </form>
+      <div className="one-time-key">
+        <strong>GPU lease {schedulerLease?.owner ?? "idle"}</strong>
+        <small>{schedulerLease?.lease_expires_at ? `expires ${new Date(schedulerLease.lease_expires_at).toLocaleString()}` : "no active scheduler owner recorded"}</small>
+      </div>
+      <table>
+        <thead><tr><th>Reservation</th><th>Status</th><th>Runtime</th><th>Model</th><th>Expires</th><th>Actions</th></tr></thead>
+        <tbody>
+          {reservations.map((reservation) => (
+            <tr key={reservation.id}>
+              <td><code>{reservation.id}</code><small>owner {reservation.owner_id}</small></td>
+              <td><span className={`status-pill ${reservation.status}`}>{reservation.status}</span><small>{reservation.reason ?? ""}</small></td>
+              <td>{reservation.runtime}</td>
+              <td>{reservation.model_alias}<small>{reservation.resolved_model_version}</small></td>
+              <td>{formatDateTime(reservation.expires_at)}<small>{reservation.duration_seconds}s</small></td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Cancel ${reservation.id}`} onClick={() => cancelReservation(reservation)} disabled={busy || reservation.status !== "active"}><Trash2 size={16} /></button>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!reservations.length && <tr><td colSpan={6}>No runtime reservations match the current filters</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <ListChecks size={16} />
+        <h3>Job Queue</h3>
       </div>
       <table>
         <thead><tr><th>Job</th><th>State</th><th>Runtime</th><th>Priority</th><th>Measured</th><th>Actions</th></tr></thead>

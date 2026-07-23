@@ -13,3 +13,4 @@
 - Added a control-plane observability report at `GET /admin/metrics` and wired the Dashboard to display queue waits, recent job timings, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring a heavy monitoring stack.
 - Added generated-artifact retention planning and confirmed cleanup through the Storage tab and `POST /admin/artifacts/*`, preserving protected Voicebox samples and marking reclaimed job artifacts as deleted.
 - Added configurable admission controls for media job queue/rate limits and artifact storage headroom, exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing.
+- Added an administrator/operator runtime reservation fleet view at `GET /admin/runtime-reservations` and Jobs tab controls for reservation creation, cancellation, filtering, and current GPU lease inspection.
