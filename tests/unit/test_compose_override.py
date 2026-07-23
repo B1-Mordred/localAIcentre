@@ -62,6 +62,86 @@ class ComposeOverrideTests(unittest.TestCase):
             self.assertEqual(metadata["sha256"], digest)
             self.assertIn("docker compose -f compose.yaml -f", metadata["usage"])
 
+    def test_verify_override_requires_ready_file_and_matching_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata = compose_override.write_compose_image_override(
+                data_root=root,
+                update_id="update_abcdef123456",
+                target_version="0.2.0",
+                image_refs=self.image_refs(),
+                image_stage=[
+                    {"service": "control-plane", "status": "ok"},
+                    {"service": "gateway", "status": "already_present"},
+                ],
+                created_at=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            )
+            verified = compose_override.verify_compose_image_override(
+                data_root=root,
+                update_id="update_abcdef123456",
+                image_refs=self.image_refs(),
+                image_stage=[
+                    {"service": "control-plane", "status": "ok"},
+                    {"service": "gateway", "status": "already_present"},
+                ],
+                metadata=metadata,
+            )
+            handoff = compose_override.build_promotion_handoff(
+                update_id="update_abcdef123456",
+                target_version="0.2.0",
+                compose_override=verified,
+                reason="maintenance window",
+                requested_by="admin_1",
+                requested_at=datetime(2026, 7, 22, 13, 0, tzinfo=UTC),
+            )
+
+            self.assertTrue(verified["ready_for_promotion"])
+            self.assertEqual(verified["services"], ["control-plane", "gateway"])
+            self.assertEqual(handoff["format"], "b1-ai-hub-update-promotion/v1")
+            self.assertEqual(handoff["status"], "operator_action_required")
+            self.assertIn("--no-build", handoff["promotion_command"]["argv"])
+            self.assertIn(str(Path(metadata["path"])), handoff["promotion_command"]["argv"])
+
+            Path(metadata["path"]).write_text("services: {}\n", encoding="utf-8")
+            with self.assertRaises(compose_override.ComposeOverrideError):
+                compose_override.verify_compose_image_override(
+                    data_root=root,
+                    update_id="update_abcdef123456",
+                    image_refs=self.image_refs(),
+                    image_stage=[
+                        {"service": "control-plane", "status": "ok"},
+                        {"service": "gateway", "status": "already_present"},
+                    ],
+                    metadata=metadata,
+                )
+
+    def test_verify_override_rejects_dry_run_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata = compose_override.write_compose_image_override(
+                data_root=root,
+                update_id="update_abcdef123456",
+                target_version="0.2.0",
+                image_refs=self.image_refs(),
+                image_stage=[
+                    {"service": "control-plane", "status": "dry_run"},
+                    {"service": "gateway", "status": "ok"},
+                ],
+                created_at=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            )
+
+            with self.assertRaises(compose_override.ComposeOverrideError):
+                compose_override.verify_compose_image_override(
+                    data_root=root,
+                    update_id="update_abcdef123456",
+                    image_refs=self.image_refs(),
+                    image_stage=[
+                        {"service": "control-plane", "status": "dry_run"},
+                        {"service": "gateway", "status": "ok"},
+                    ],
+                    metadata=metadata,
+                )
+
     def test_rejects_bad_update_id_and_unpinned_images(self) -> None:
         with self.assertRaises(compose_override.ComposeOverrideError):
             compose_override.render_compose_image_override(

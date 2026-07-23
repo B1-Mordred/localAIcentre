@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ from . import update_policy
 
 
 UPDATE_ID_RE = re.compile(r"^update_[A-Za-z0-9]{8,64}$")
+SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+OVERRIDE_FORMAT = "b1-ai-hub-compose-image-override/v1"
+PROMOTION_FORMAT = "b1-ai-hub-update-promotion/v1"
 PROMOTABLE_IMAGE_STAGE_STATUSES = {"ok", "already_present", "pulled"}
 
 
@@ -105,7 +109,7 @@ def write_compose_image_override(
     statuses = stage_statuses(image_stage)
     not_pulled = [item["service"] for item in normalized_refs if statuses.get(item["service"]) not in PROMOTABLE_IMAGE_STAGE_STATUSES]
     return {
-        "format": "b1-ai-hub-compose-image-override/v1",
+        "format": OVERRIDE_FORMAT,
         "path": str(output_path),
         "relative_path": output_path.relative_to(root).as_posix(),
         "sha256": sha256_file(output_path),
@@ -115,4 +119,112 @@ def write_compose_image_override(
         "requires_image_pull_before_promotion": bool(not_pulled),
         "not_pulled_services": not_pulled,
         "usage": f"docker compose -f compose.yaml -f {output_path} up -d",
+    }
+
+
+def _expected_relative_path(update_id: str) -> str:
+    return f"data/control-plane/updates/{validate_update_id(update_id)}/compose.images.yaml"
+
+
+def _assert_path_under_root(root: Path, path: Path) -> Path:
+    resolved = path.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ComposeOverrideError("compose override path escapes data root")
+    return resolved
+
+
+def verify_compose_image_override(
+    *,
+    data_root: Path,
+    update_id: str,
+    image_refs: list[dict[str, Any]],
+    image_stage: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    update_id = validate_update_id(update_id)
+    if metadata.get("format") != OVERRIDE_FORMAT:
+        raise ComposeOverrideError("compose override has an unknown format")
+    if not metadata.get("ready_for_promotion"):
+        not_pulled = metadata.get("not_pulled_services") or []
+        raise ComposeOverrideError(f"compose override is not ready for promotion; pending pulls: {', '.join(not_pulled) or 'unknown'}")
+
+    normalized_refs = normalize_image_refs(image_refs)
+    expected_services = [item["service"] for item in normalized_refs]
+    metadata_services = metadata.get("services") or []
+    if metadata_services != expected_services:
+        raise ComposeOverrideError("compose override services do not match the update image references")
+
+    statuses = stage_statuses(image_stage)
+    not_pulled = [service for service in expected_services if statuses.get(service) not in PROMOTABLE_IMAGE_STAGE_STATUSES]
+    if not_pulled:
+        raise ComposeOverrideError(f"not all service images were pulled successfully: {', '.join(not_pulled)}")
+
+    expected_relative = _expected_relative_path(update_id)
+    relative_path = metadata.get("relative_path")
+    if relative_path != expected_relative:
+        raise ComposeOverrideError("compose override relative path does not match the update id")
+
+    expected_sha256 = str(metadata.get("sha256") or "")
+    if not SHA256_RE.fullmatch(expected_sha256):
+        raise ComposeOverrideError("compose override checksum is missing or invalid")
+
+    root = data_root.resolve()
+    output_path = _assert_path_under_root(root, root / expected_relative)
+    if not output_path.is_file():
+        raise ComposeOverrideError("compose override file is missing")
+    actual_sha256 = sha256_file(output_path)
+    if actual_sha256.lower() != expected_sha256.lower():
+        raise ComposeOverrideError("compose override checksum does not match the staged file")
+
+    return {
+        "format": OVERRIDE_FORMAT,
+        "path": str(output_path),
+        "relative_path": expected_relative,
+        "sha256": actual_sha256,
+        "services": expected_services,
+        "service_count": len(expected_services),
+        "ready_for_promotion": True,
+    }
+
+
+def build_promotion_handoff(
+    *,
+    update_id: str,
+    target_version: str,
+    compose_override: dict[str, Any],
+    reason: str,
+    requested_by: str,
+    requested_at: datetime | None = None,
+) -> dict[str, Any]:
+    update_id = validate_update_id(update_id)
+    services = [str(service) for service in compose_override.get("services") or []]
+    if not services:
+        raise ComposeOverrideError("promotion requires at least one service")
+    timestamp = (requested_at or datetime.now(tz=UTC)).astimezone(UTC).isoformat()
+    override_path = str(compose_override["path"])
+    argv = ["docker", "compose", "-f", "compose.yaml", "-f", override_path, "up", "-d", "--no-build", *services]
+    return {
+        "format": PROMOTION_FORMAT,
+        "status": "operator_action_required",
+        "action": "compose_override_verified",
+        "update_id": update_id,
+        "target_version": target_version,
+        "reason": reason,
+        "requested_by": requested_by,
+        "requested_at": timestamp,
+        "compose_override": {
+            "relative_path": compose_override["relative_path"],
+            "path": override_path,
+            "sha256": compose_override["sha256"],
+            "services": services,
+        },
+        "promotion_command": {
+            "cwd": "repository root",
+            "argv": argv,
+            "shell": " ".join(shlex.quote(item) for item in argv),
+        },
+        "post_promotion": {
+            "required_next_action": "run health-check from Control Center after the Compose command returns successfully",
+            "maintenance_required": True,
+        },
     }

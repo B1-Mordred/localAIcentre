@@ -22,6 +22,7 @@ GET  /admin/updates
 POST /admin/updates
 GET  /admin/updates/{update_id}
 POST /admin/updates/{update_id}/stage
+POST /admin/updates/{update_id}/promote
 POST /admin/updates/{update_id}/health-check
 POST /admin/updates/{update_id}/rollback
 GET  /admin/api-clients
@@ -154,6 +155,7 @@ GET  /admin/updates
 POST /admin/updates
 GET  /admin/updates/{update_id}
 POST /admin/updates/{update_id}/stage
+POST /admin/updates/{update_id}/promote
 POST /admin/updates/{update_id}/health-check
 POST /admin/updates/{update_id}/rollback
 ```
@@ -167,7 +169,15 @@ curl -X POST https://api.ai.b1.germering/admin/updates \
   -d '{"target_version":"0.2.0","source_url":"https://github.com/B1-Mordred/localAIcentre/releases/tag/v0.2.0","image_refs":[{"service":"control-plane","image":"ghcr.io/b1/b1-ai-hub-control-plane:0.2.0@sha256:0000000000000000000000000000000000000000000000000000000000000000"}]}'
 ```
 
-Staging, health-check, and rollback require maintenance mode. Staging creates a normal constrained backup, asks runtime-agent to stage each pinned service image through `/v1/images/{service}/pull`, stores the image staging result on `image_stage`, writes a digest-pinned Compose override to `$B1_DATA_ROOT/data/control-plane/updates/<update_id>/compose.images.yaml`, and records the override metadata plus the same `/admin/self-test` report on the update row. With default `B1_ENABLE_MUTATIONS=false`, image staging is recorded as a dry run and `compose_override.ready_for_promotion=false` until the pinned images are actually pulled. The control-plane container runs Alembic migrations before serving the promoted image; `B1_DB_MIGRATIONS_ENABLED=false` is only for externally managed deployments that apply `python -m app.migrate upgrade head` separately. Health-check refreshes the self-test report after promotion. Rollback calls only the runtime-agent predefined `/v1/rollback` plan; with default mutations disabled the result is stored as `rollback_dry_run`. This surface does not accept arbitrary commands, images without digests, host paths, environment changes, or Docker API passthrough.
+Staging, promotion, health-check, and rollback require maintenance mode. Staging creates a normal constrained backup, asks runtime-agent to stage each pinned service image through `/v1/images/{service}/pull`, stores the image staging result on `image_stage`, writes a digest-pinned Compose override to `$B1_DATA_ROOT/data/control-plane/updates/<update_id>/compose.images.yaml`, and records the override metadata plus the same `/admin/self-test` report on the update row. With default `B1_ENABLE_MUTATIONS=false`, image staging is recorded as a dry run and `compose_override.ready_for_promotion=false` until the pinned images are actually pulled.
+
+`POST /admin/updates/{update_id}/promote` is allowed only after the update is `validated`. It verifies the generated override's expected relative path, SHA-256, service list, image-stage results, and runtime-agent `/v1/images/{service}/inspect` digest results. On success the row becomes `promotion_ready` and `promotion_result` contains a fixed operator handoff command such as:
+
+```bash
+docker compose -f compose.yaml -f /srv/b1-ai-hub/data/control-plane/updates/<update_id>/compose.images.yaml up -d --no-build control-plane gateway
+```
+
+Run that command from the repository root during maintenance, then call `POST /admin/updates/{update_id}/health-check` again. The control-plane container runs Alembic migrations before serving the promoted image; `B1_DB_MIGRATIONS_ENABLED=false` is only for externally managed deployments that apply `python -m app.migrate upgrade head` separately. Health-check refreshes the self-test report after promotion. Rollback calls only the runtime-agent predefined `/v1/rollback` plan; with default mutations disabled the result is stored as `rollback_dry_run`. This surface does not accept arbitrary commands, images without digests, host paths, environment changes, or Docker API passthrough.
 
 ## Voicebox Profiles
 

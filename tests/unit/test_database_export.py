@@ -152,6 +152,10 @@ class DatabaseExportTests(unittest.TestCase):
                         },
                         "backup_name": "update-1",
                         "self_test": {"status": "ok"},
+                        "promotion_result": {
+                            "format": "b1-ai-hub-update-promotion/v1",
+                            "status": "operator_action_required",
+                        },
                         "rollback_result": {},
                         "notes": "test",
                         "failure_message": None,
@@ -160,6 +164,7 @@ class DatabaseExportTests(unittest.TestCase):
                         "updated_at": created,
                         "staged_at": created,
                         "health_checked_at": None,
+                        "promotion_requested_at": created,
                         "rolled_back_at": None,
                     }
                 ],
@@ -233,7 +238,9 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertEqual(update_plans["rows"][0]["target_version"], "0.2.0")
         self.assertEqual(update_plans["rows"][0]["image_stage"][0]["status"], "dry_run")
         self.assertEqual(update_plans["rows"][0]["compose_override"]["format"], "b1-ai-hub-compose-image-override/v1")
+        self.assertEqual(update_plans["rows"][0]["promotion_result"]["format"], "b1-ai-hub-update-promotion/v1")
         self.assertEqual(update_plans["rows"][0]["staged_at"], created.isoformat())
+        self.assertEqual(update_plans["rows"][0]["promotion_requested_at"], created.isoformat())
         alias_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_model_alias_policies")
         self.assertFalse(alias_policies["rows"][0]["enabled"])
         self.assertEqual(alias_policies["rows"][0]["visibility_roles"], ["admin", "operator"])

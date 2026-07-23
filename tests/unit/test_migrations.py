@@ -53,6 +53,8 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertIn("idempotency_key", snapshot["b1_jobs"])
         self.assertIn("image_stage", snapshot["b1_update_plans"])
         self.assertIn("compose_override", snapshot["b1_update_plans"])
+        self.assertIn("promotion_result", snapshot["b1_update_plans"])
+        self.assertIn("promotion_requested_at", snapshot["b1_update_plans"])
         self.assertIn("b1_runtime_configurations", snapshot)
         self.assertIn("api_key_secret_name", snapshot["b1_runtime_configurations"])
         self.assertIn("b1_model_alias_policies", snapshot)
@@ -66,6 +68,7 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertIn("database.metadata.create_all", revision_source)
         self.assertIn("database.SCHEMA_COMPATIBILITY_SQL", revision_source)
         self.assertTrue(any("ALTER TABLE b1_update_plans ADD COLUMN IF NOT EXISTS image_stage" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
+        self.assertTrue(any("ALTER TABLE b1_update_plans ADD COLUMN IF NOT EXISTS promotion_result" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_runtime_configurations" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_model_alias_policies" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE UNIQUE INDEX IF NOT EXISTS b1_jobs_owner_idempotency_key_uq" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
@@ -93,7 +96,7 @@ class AlembicConfigTests(unittest.TestCase):
         self.assertEqual(config.get_main_option("sqlalchemy.url"), "postgresql+asyncpg://user:pass@postgres:5432/b1_ai_hub")
         self.assertEqual(Path(config.get_main_option("script_location")), APP_ROOT / "alembic")
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_current_head(), "202607230004")
+        self.assertEqual(scripts.get_current_head(), "202607230005")
 
 
 if __name__ == "__main__":

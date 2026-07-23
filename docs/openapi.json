@@ -5620,6 +5620,73 @@
         "summary": "Admin Update Health Check"
       }
     },
+    "/admin/updates/{update_id}/promote": {
+      "post": {
+        "operationId": "admin_update_promote_admin_updates__update_id__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "update_id",
+            "required": true,
+            "schema": {
+              "title": "Update Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Update Promote Admin Updates  Update Id  Promote Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Update Promote"
+      }
+    },
     "/admin/updates/{update_id}/rollback": {
       "post": {
         "operationId": "admin_update_rollback_admin_updates__update_id__rollback_post",

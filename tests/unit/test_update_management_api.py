@@ -39,7 +39,17 @@ class FakeUpdateDatabase:
 
     async def insert_update_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
-        row = {"created_at": now, "updated_at": now, "image_stage": [], "compose_override": {}, "self_test": {}, "rollback_result": {}, **payload}
+        row = {
+            "created_at": now,
+            "updated_at": now,
+            "image_stage": [],
+            "compose_override": {},
+            "self_test": {},
+            "promotion_result": {},
+            "rollback_result": {},
+            "promotion_requested_at": None,
+            **payload,
+        }
         self.rows[row["id"]] = dict(row)
         return dict(row)
 
@@ -198,6 +208,57 @@ class UpdateManagementApiTests(unittest.TestCase):
         self.assertEqual(rolled_back["status"], "rollback_dry_run")
         self.assertEqual(rollback_calls[0]["path"], "/v1/rollback")
         self.assertEqual(rollback_calls[0]["payload"]["timeout_seconds"], 7)
+
+    def test_promote_requires_validated_ready_override_and_inspects_images(self) -> None:
+        fake = FakeUpdateDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"admin:write"})
+        self.enable_maintenance()
+        created = asyncio.run(main.admin_update_plan_create(create_payload(), authorization="Bearer key"))
+        image_stage = [{"service": "control-plane", "status": "ok"}]
+
+        inspect_calls: list[dict[str, Any]] = []
+
+        async def runtime_agent_post(path: str, payload: dict[str, Any], timeout_seconds: float = 30.0) -> tuple[dict[str, Any] | None, str | None]:
+            inspect_calls.append({"path": path, "payload": payload, "timeout_seconds": timeout_seconds})
+            return {
+                "status": "ok",
+                "service": "control-plane",
+                "action": "inspect",
+                "result": {"present": True, "digest_verified": True},
+            }, None
+
+        self.patch_attr("runtime_agent_post", runtime_agent_post)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_attr("settings", replace(main.settings, data_root=tmp))
+            compose_override = main.compose_override_policy.write_compose_image_override(
+                data_root=Path(tmp),
+                update_id=created["id"],
+                target_version=created["target_version"],
+                image_refs=created["image_refs"],
+                image_stage=image_stage,
+                created_at=datetime(2026, 7, 22, 12, 30, tzinfo=UTC),
+            )
+            fake.rows[created["id"]].update(
+                {
+                    "status": "validated",
+                    "stage": "health_check_completed",
+                    "image_stage": image_stage,
+                    "compose_override": compose_override,
+                }
+            )
+
+            promoted = asyncio.run(main.admin_update_promote(created["id"], main.UpdateActionRequest(reason="promote"), authorization="Bearer key"))
+
+        self.assertEqual(promoted["status"], "promotion_ready")
+        self.assertEqual(promoted["stage"], "promotion_handoff_ready")
+        self.assertEqual(promoted["promotion_result"]["format"], "b1-ai-hub-update-promotion/v1")
+        self.assertEqual(promoted["promotion_result"]["status"], "operator_action_required")
+        self.assertIn("compose.images.yaml", promoted["promotion_result"]["promotion_command"]["shell"])
+        self.assertEqual(promoted["promotion_result"]["image_inspect"][0]["status"], "ok")
+        self.assertEqual(inspect_calls[0]["path"], "/v1/images/control-plane/inspect")
+        self.assertEqual(fake.audit_events[-1]["event_type"], "update.promotion_ready")
 
 
 if __name__ == "__main__":

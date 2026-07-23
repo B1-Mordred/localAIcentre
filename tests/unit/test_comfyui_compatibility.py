@@ -181,6 +181,15 @@ class FakeDatabase:
     async def get_job_by_idempotency_key(self, owner: str, idempotency_key: str) -> dict[str, Any] | None:
         return None
 
+    async def count_jobs(
+        self,
+        *,
+        owner_id: str | None = None,
+        states: set[str] | frozenset[str] | tuple[str, ...] | list[str] | None = None,
+        created_after: Any | None = None,
+    ) -> int:
+        return 0
+
     async def insert_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {"state": "created", "stage": "created", "progress": 0, "native_prompt_id": None, **payload}
         self.jobs[row["id"]] = row

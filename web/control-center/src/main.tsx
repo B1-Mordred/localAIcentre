@@ -15,6 +15,7 @@ import {
   LogOut,
   PauseCircle,
   RefreshCw,
+  Rocket,
   RotateCcw,
   ScrollText,
   ShieldCheck,
@@ -270,6 +271,12 @@ type UpdatePlan = {
   compose_override?: { path?: string; ready_for_promotion?: boolean; requires_image_pull_before_promotion?: boolean; not_pulled_services?: string[] };
   backup_name?: string | null;
   self_test?: { status?: string; checks?: unknown[] };
+  promotion_result?: {
+    status?: string;
+    promotion_command?: { shell?: string; argv?: string[] };
+    compose_override?: { sha256?: string; services?: string[] };
+    error?: string;
+  };
   rollback_result?: Record<string, unknown>;
   notes?: string;
   failure_message?: string | null;
@@ -2693,7 +2700,7 @@ function System() {
       .finally(() => setBusy(false));
   };
 
-  const updateAction = (update: UpdatePlan, action: "stage" | "health-check" | "rollback") => {
+  const updateAction = (update: UpdatePlan, action: "stage" | "health-check" | "promote" | "rollback") => {
     setBusy(true);
     setMessage(`${action} update`);
     apiJson<UpdatePlan>(`/admin/updates/${encodeURIComponent(update.id)}/${action}`, {
@@ -2825,7 +2832,7 @@ function System() {
       <div className="toolbar">
         <button title="Create update plan" onClick={createUpdatePlan} disabled={busy || !updateVersion.trim()}><ListChecks size={16} />Plan</button>
         <button title="Refresh update plans" onClick={loadUpdates} disabled={busy}><RefreshCw size={16} />Refresh</button>
-        <span className="toolbar-status">Stage, health-check, and rollback require maintenance mode</span>
+        <span className="toolbar-status">Stage, promote, health-check, and rollback require maintenance mode</span>
       </div>
       <table>
         <thead><tr><th>Update</th><th>Status</th><th>Backup</th><th>Images</th><th>Actions</th></tr></thead>
@@ -2833,7 +2840,7 @@ function System() {
           {updates.map((update) => (
             <tr key={update.id}>
               <td><code>{update.target_version}</code><small>{update.id}</small></td>
-              <td><span className={`status-pill ${update.status === "validated" || update.status === "staged" ? "ok" : update.status.includes("failed") ? "failed" : "planned"}`}>{update.status}</span><small>{update.stage}</small>{update.failure_message && <small>{update.failure_message}</small>}</td>
+              <td><span className={`status-pill ${["validated", "staged", "promotion_ready"].includes(update.status) ? "ok" : update.status.includes("failed") ? "failed" : "planned"}`}>{update.status}</span><small>{update.stage}</small>{update.failure_message && <small>{update.failure_message}</small>}</td>
               <td>{update.backup_name ?? "none"}<small>{update.self_test?.status ? `self-test ${update.self_test.status}` : ""}</small></td>
               <td>
                 {update.image_refs.length}
@@ -2848,11 +2855,21 @@ function System() {
                     override: {update.compose_override.ready_for_promotion ? "ready" : "pending pull"} / {update.compose_override.path}
                   </small>
                 )}
+                {update.promotion_result?.status && (
+                  <small>
+                    promotion: {update.promotion_result.status}
+                    {update.promotion_result.error ? ` / ${update.promotion_result.error}` : ""}
+                  </small>
+                )}
+                {update.promotion_result?.promotion_command?.shell && (
+                  <small><code>{update.promotion_result.promotion_command.shell}</code></small>
+                )}
               </td>
               <td>
                 <div className="table-actions">
                   <button title={`Stage ${update.id}`} onClick={() => updateAction(update, "stage")} disabled={busy || !maintenance?.enabled}><Upload size={16} /></button>
                   <button title={`Health-check ${update.id}`} onClick={() => updateAction(update, "health-check")} disabled={busy || !maintenance?.enabled}><CheckCircle2 size={16} /></button>
+                  <button title={`Prepare promotion ${update.id}`} onClick={() => updateAction(update, "promote")} disabled={busy || !maintenance?.enabled}><Rocket size={16} /></button>
                   <button title={`Rollback ${update.id}`} onClick={() => updateAction(update, "rollback")} disabled={busy || !maintenance?.enabled}><RotateCcw size={16} /></button>
                 </div>
               </td>

@@ -3767,6 +3767,7 @@ def public_update_plan(row: dict[str, Any]) -> dict[str, Any]:
         "compose_override": row.get("compose_override") or {},
         "backup_name": row.get("backup_name"),
         "self_test": row.get("self_test") or {},
+        "promotion_result": row.get("promotion_result") or {},
         "rollback_result": row.get("rollback_result") or {},
         "notes": row.get("notes") or "",
         "failure_message": row.get("failure_message"),
@@ -3775,6 +3776,7 @@ def public_update_plan(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": row.get("updated_at"),
         "staged_at": row.get("staged_at"),
         "health_checked_at": row.get("health_checked_at"),
+        "promotion_requested_at": row.get("promotion_requested_at"),
         "rolled_back_at": row.get("rolled_back_at"),
     }
 
@@ -3810,6 +3812,38 @@ async def stage_update_images(row: dict[str, Any], payload: UpdateActionRequest)
             results.append(entry)
             continue
         entry.update(result or {"status": "unknown"})
+        results.append(entry)
+    return results
+
+
+async def inspect_update_images_for_promotion(row: dict[str, Any], payload: UpdateActionRequest) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for image_ref in row.get("image_refs") or []:
+        service = str(image_ref.get("service") or "")
+        image = str(image_ref.get("image") or "")
+        agent_payload = {
+            "image": image,
+            "reason": payload.reason or f"promote update {row['id']}",
+        }
+        result, error = await runtime_agent_post(
+            f"/v1/images/{service}/inspect",
+            agent_payload,
+            timeout_seconds=max(30.0, float(payload.timeout_seconds)),
+        )
+        entry: dict[str, Any] = {
+            "service": service,
+            "image": image,
+            "requested_at": datetime.now(tz=UTC).isoformat(),
+        }
+        if error is not None:
+            entry.update({"status": "failed", "error": error[:500]})
+            results.append(entry)
+            continue
+        entry.update(result or {"status": "unknown"})
+        inspect_result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        if entry.get("status") != "ok" or not inspect_result.get("present") or not inspect_result.get("digest_verified"):
+            entry["status"] = "failed"
+            entry["error"] = "image is not present locally with the requested digest"
         results.append(entry)
     return results
 
@@ -4844,7 +4878,7 @@ async def admin_update_health_check(update_id: str, payload: UpdateActionRequest
     row = await database.get_update_plan(update_id)
     if row is None:
         raise HTTPException(status_code=404, detail="update plan not found")
-    if row["status"] not in {"staged", "validated", "health_failed"}:
+    if row["status"] not in {"staged", "validated", "promotion_ready", "health_failed"}:
         raise update_plan_conflict(f"update plan state {row['status']} cannot run health-check", row)
     self_test = await build_self_test_report(auth.subject_id)
     status = "validated" if self_test["status"] != "failed" else "health_failed"
@@ -4863,6 +4897,108 @@ async def admin_update_health_check(update_id: str, payload: UpdateActionRequest
         target_id=update_id,
         summary=f"Ran update health-check for {update_id}",
         metadata={"status": status, "self_test_status": self_test["status"], "reason": payload.reason},
+    )
+    return public_update_plan(updated or row)
+
+
+@app.post("/admin/updates/{update_id}/promote")
+async def admin_update_promote(update_id: str, payload: UpdateActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "update management requires administrator role")
+    require_maintenance_enabled_for_update("promotion")
+    row = await database.get_update_plan(update_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="update plan not found")
+    if row["status"] not in {"validated", "promotion_failed", "promotion_ready"}:
+        raise update_plan_conflict(f"update plan state {row['status']} cannot be promoted", row)
+
+    image_inspect_results: list[dict[str, Any]] = []
+    try:
+        verified_override = compose_override_policy.verify_compose_image_override(
+            data_root=Path(settings.data_root),
+            update_id=update_id,
+            image_refs=row.get("image_refs") or [],
+            image_stage=row.get("image_stage") or [],
+            metadata=row.get("compose_override") or {},
+        )
+        image_inspect_results = await inspect_update_images_for_promotion(row, payload)
+        failed_image = next((item for item in image_inspect_results if item.get("status") == "failed"), None)
+        if failed_image is not None:
+            raise RuntimeError(f"image promotion preflight failed for {failed_image['service']}: {failed_image.get('error', 'unknown error')}")
+        promotion_result = compose_override_policy.build_promotion_handoff(
+            update_id=update_id,
+            target_version=str(row["target_version"]),
+            compose_override=verified_override,
+            reason=payload.reason or f"promote update {update_id}",
+            requested_by=auth.subject_id,
+        )
+        promotion_result["image_inspect"] = image_inspect_results
+    except compose_override_policy.ComposeOverrideError as exc:
+        updated = await database.update_update_plan(
+            update_id,
+            status="promotion_failed",
+            stage="promotion_preflight_failed",
+            promotion_result={
+                "format": compose_override_policy.PROMOTION_FORMAT,
+                "status": "failed",
+                "error": str(exc)[:500],
+                "image_inspect": image_inspect_results,
+            },
+            failure_message=str(exc)[:500],
+        )
+        await record_audit_event(
+            auth,
+            "update.promotion_failed",
+            target_type="update",
+            target_id=update_id,
+            summary=f"Update promotion preflight failed for {update_id}",
+            metadata={"error": str(exc)[:500], "reason": payload.reason},
+        )
+        raise HTTPException(status_code=409, detail={"message": str(exc), "update": public_update_plan(updated or row)}) from exc
+    except Exception as exc:
+        updated = await database.update_update_plan(
+            update_id,
+            status="promotion_failed",
+            stage="promotion_preflight_failed",
+            promotion_result={
+                "format": compose_override_policy.PROMOTION_FORMAT,
+                "status": "failed",
+                "error": f"{exc.__class__.__name__}: {str(exc)[:500]}",
+                "image_inspect": image_inspect_results,
+            },
+            failure_message=f"{exc.__class__.__name__}: {str(exc)[:500]}",
+        )
+        await record_audit_event(
+            auth,
+            "update.promotion_failed",
+            target_type="update",
+            target_id=update_id,
+            summary=f"Update promotion preflight failed for {update_id}",
+            metadata={"error": exc.__class__.__name__, "reason": payload.reason},
+        )
+        raise HTTPException(status_code=502, detail={"message": "update promotion preflight failed", "update": public_update_plan(updated or row)}) from exc
+
+    updated = await database.update_update_plan(
+        update_id,
+        status="promotion_ready",
+        stage="promotion_handoff_ready",
+        promotion_result=promotion_result,
+        promotion_requested_at=datetime.now(tz=UTC),
+        failure_message=None,
+    )
+    await record_audit_event(
+        auth,
+        "update.promotion_ready",
+        target_type="update",
+        target_id=update_id,
+        summary=f"Prepared promotion handoff for update {update_id}",
+        metadata={
+            "target_version": row["target_version"],
+            "services": promotion_result["compose_override"]["services"],
+            "compose_override_sha256": promotion_result["compose_override"]["sha256"],
+            "reason": payload.reason,
+        },
     )
     return public_update_plan(updated or row)
 

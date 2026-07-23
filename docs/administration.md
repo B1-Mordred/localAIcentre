@@ -89,7 +89,15 @@ The System tab records controlled update plans. Administrators provide a target 
 
 Staging an update requires maintenance mode. The stage action creates a normal constrained backup, sends each pinned service image to runtime-agent `/v1/images/{service}/pull`, records the per-image result on `image_stage`, writes a digest-pinned Compose override to `$B1_DATA_ROOT/data/control-plane/updates/<update_id>/compose.images.yaml`, runs the same self-test used by `/admin/self-test`, and stores the backup name, override metadata, and self-test result on the update row. The override sets `image:` for each staged service and `build: null` so a controlled Compose invocation can consume the pulled immutable images instead of rebuilding local contexts.
 
-With the default `B1_ENABLE_MUTATIONS=false`, image staging is a dry run. In that case the override is still generated, but it is marked `ready_for_promotion=false` and lists the services that still require an actual pull before promotion. When mutations are explicitly enabled during a maintenance window, runtime-agent pulls only the allowlisted service images pinned by digest; if all selected services report a real pull/already-present status, the override is marked ready. The control-plane image runs Alembic migrations before serving traffic, and health-check re-runs the self-test after any staged Compose promotion has started the target image. Rollback calls only the predefined runtime-agent `/v1/rollback` action and stores whether the result was an actual rollback or the default dry-run plan. The current surface is a safe control record, image artifact, migration-on-startup path, and validation path; it does not yet automatically execute the promotion command.
+With the default `B1_ENABLE_MUTATIONS=false`, image staging is a dry run. In that case the override is still generated, but it is marked `ready_for_promotion=false` and lists the services that still require an actual pull before promotion. When mutations are explicitly enabled during a maintenance window, runtime-agent pulls only the allowlisted service images pinned by digest; if all selected services report a real pull/already-present status, the override is marked ready.
+
+After the update is staged and health-checked, the Promote action verifies the stored override path, SHA-256, service list, image-stage results, and runtime-agent image inspection results before writing `promotion_result` to the update row. The handoff includes the fixed Compose command:
+
+```bash
+docker compose -f compose.yaml -f /srv/b1-ai-hub/data/control-plane/updates/<update_id>/compose.images.yaml up -d --no-build <services...>
+```
+
+Run that command from the repository root during the same maintenance window, then run Health-check again from Control Center. The control-plane image runs Alembic migrations before serving traffic, and health-check re-runs the self-test after the promoted image starts. Rollback calls only the predefined runtime-agent `/v1/rollback` action and stores whether the result was an actual rollback or the default dry-run plan. The update surface is a safe control record, image artifact, promotion preflight/handoff, migration-on-startup path, validation path, and rollback path; it does not expose arbitrary shell commands or Docker API passthrough.
 
 ## System Self-Test
 
