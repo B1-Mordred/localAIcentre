@@ -17,6 +17,47 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    REQUIRED_PLAN_DIRS = {
+        "data/postgres",
+        "data/redis",
+        "data/open-webui",
+        "data/control-plane",
+        "data/voicebox",
+        "models/llm",
+        "models/vision",
+        "models/embeddings",
+        "models/diffusion/checkpoints",
+        "models/diffusion/diffusion_models",
+        "models/diffusion/text_encoders",
+        "models/diffusion/vae",
+        "models/diffusion/loras",
+        "models/diffusion/controlnet",
+        "models/diffusion/upscale_models",
+        "models/video",
+        "models/tts",
+        "models/stt",
+        "models/blobs",
+        "workflows",
+        "artifacts/images",
+        "artifacts/audio",
+        "artifacts/video",
+        "artifacts/temporary",
+        "cache",
+        "secrets",
+        "logs",
+        "backups",
+    }
+    REQUIRED_B1_MANAGED_DIRS = {
+        "models/blobs/.partial",
+        "models/runtime-views/localai",
+        "models/runtime-views/comfyui",
+        "models/runtime-views/voicebox",
+        "models/runtime-views/audio-cpu",
+        "models/quarantine/runtime-views",
+        "models/quarantine/blobs",
+        "restore-tests",
+    }
+
     def test_bootstrap_generates_runtime_agent_token_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -72,6 +113,28 @@ class BootstrapTests(unittest.TestCase):
                 self.assertTrue((root / "models" / "runtime-views" / runtime).is_dir())
                 self.assertEqual((root / "models" / "runtime-views" / runtime).stat().st_mode & 0o777, 0o775)
             self.assertTrue((root / "models" / "quarantine" / "runtime-views").is_dir())
+
+    def test_bootstrap_creates_complete_external_data_tree_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = bootstrap.bootstrap(root)
+
+            missing = sorted(
+                relative
+                for relative in self.REQUIRED_PLAN_DIRS | self.REQUIRED_B1_MANAGED_DIRS
+                if not (root / relative).is_dir()
+            )
+            self.assertEqual(missing, [])
+            covered_dirs = set(bootstrap.DIRS)
+            for relative in bootstrap.DIRS:
+                parent = Path(relative).parent
+                while str(parent) != ".":
+                    covered_dirs.add(str(parent))
+                    parent = parent.parent
+            self.assertTrue(self.REQUIRED_PLAN_DIRS <= covered_dirs)
+            self.assertTrue(self.REQUIRED_B1_MANAGED_DIRS <= covered_dirs)
+            created_relative = {str(Path(path).relative_to(root)) for path in result["created_dirs"]}
+            self.assertEqual(created_relative, set(bootstrap.DIRS))
 
 
 if __name__ == "__main__":
