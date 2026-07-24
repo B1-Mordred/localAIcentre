@@ -84,6 +84,33 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
         },
+        "installed_workflows": {
+            "available": True,
+            "format": "b1-ai-hub-installed-workflows-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/installed-workflows.json",
+            "generated_at": "2026-07-24T12:32:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "chat_completed",
+                "tts_completed",
+                "stt_completed",
+                "image_generation_completed",
+                "image_edit_completed",
+                "short_video_completed",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:26:00+00:00"},
+                "tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:27:00+00:00"},
+                "stt_completed": {"status": "ok", "recorded_at": "2026-07-24T12:28:00+00:00"},
+                "image_generation_completed": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
+                "image_edit_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
+                "short_video_completed": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+            },
+            "sample_count": 6,
+            "sample_labels": ["chat", "tts", "stt", "image-generation", "image-edit", "short-video"],
+        },
         "native_comfyui_compatibility": {
             "available": True,
             "format": "b1-ai-hub-native-comfyui-compatibility/v1",
@@ -293,6 +320,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
+            self.assertIn("installed-workflows.json", markdown)
+            self.assertIn("Installed workflow acceptance", markdown)
             self.assertIn("native-comfyui.json", markdown)
             self.assertIn("Native ComfyUI compatibility", markdown)
             self.assertIn("remote-nodes-non-comfy.json", markdown)
@@ -393,6 +422,42 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("RTX 3060 GPU acceptance evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
             "RTX 3060 GPU acceptance evidence is missing required checks: localai_comfyui_voicebox_switch",
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_without_installed_workflow_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["installed_workflows"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("installed workflow evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_installed_workflow_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["installed_workflows"] = {
+            **live_evidence["installed_workflows"],
+            "status": "incomplete",
+            "missing_checks": ["image_edit_completed", "short_video_completed"],
+            "checks": {
+                "chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:26:00+00:00"},
+                "tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:27:00+00:00"},
+                "stt_completed": {"status": "ok", "recorded_at": "2026-07-24T12:28:00+00:00"},
+                "image_generation_completed": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("installed workflow evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "installed workflow evidence is missing required checks: image_edit_completed, short_video_completed",
             report["acceptance_blockers"],
         )
 
@@ -609,6 +674,34 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            installed = evidence_root / "installed-workflows.json"
+            installed.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-installed-workflows-acceptance/v1",
+                        "generated_at": "2026-07-24T12:32:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "chat_completed": {"status": "ok"},
+                            "tts_completed": {"status": "ok"},
+                            "stt_completed": {"status": "ok"},
+                            "image_generation_completed": {"status": "ok"},
+                            "image_edit_completed": {"status": "ok"},
+                            "short_video_completed": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "chat"},
+                            {"label": "tts"},
+                            {"label": "stt"},
+                            {"label": "image-generation"},
+                            {"label": "image-edit"},
+                            {"label": "short-video"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             remote = evidence_root / "remote-nodes-non-comfy.json"
             remote.write_text(
                 json.dumps(
@@ -706,6 +799,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
         self.assertEqual(gpu["sample_count"], 2)
+        workflows = snapshot["installed_workflows"]
+        self.assertTrue(workflows["available"])
+        self.assertEqual(workflows["source_path"], str(installed.resolve()))
+        self.assertEqual(workflows["status"], "ok")
+        self.assertEqual(workflows["missing_checks"], [])
+        self.assertEqual(workflows["sample_count"], 6)
         native = snapshot["native_comfyui_compatibility"]
         self.assertTrue(native["available"])
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))

@@ -19,6 +19,23 @@ B1_INTEGRATION_LIVE_TEST=1 B1_INTEGRATION_API_KEY=... make integration
 
 The first live integration path checks `/admin/runtimes` adapter-contract, health, and production-readiness shape. It verifies that required runtime adapters remain visible without assuming a particular installed model inventory.
 
+## Installed Workflow Acceptance
+
+Run the installed workflow suite on the target host after the public aliases are backed by real installed models and approved workflows. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report.
+
+```bash
+export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering
+export B1_WORKFLOWS_API_KEY=...
+export B1_WORKFLOWS_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_WORKFLOWS_IMAGE_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-generation-job.json
+export B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-edit-job.json
+export B1_WORKFLOWS_VIDEO_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/short-video-job.json
+export B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json
+B1_WORKFLOWS_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_installed_workflows
+```
+
+The image, edit, and video job files should be full `POST /v1/media/jobs` JSON bodies that reference installed aliases and either published workflow IDs or native ComfyUI/LocalAI inputs validated for the RTX 3060 profile. The harness provides simple prompt defaults only to keep dry runs ergonomic; production acceptance should use explicit job files so the operator can review exact model/workflow dependencies. Set `B1_WORKFLOWS_ALLOW_PLACEHOLDER=1` only for a labelled development dry run; handoff evidence should leave it unset so placeholder TTS/STT output fails.
+
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
 Run the GPU acceptance suite only on the target host, or during an equivalent maintenance window with the real LocalAI, ComfyUI, and Voicebox runtime overlays enabled. It sends live inference work and may trigger bounded runtime recovery when explicitly requested.

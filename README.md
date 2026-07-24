@@ -129,6 +129,18 @@ B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.j
 make gpu-acceptance
 ```
 
+Run installed workflow acceptance after chat, TTS/STT, image, edit, and short-video aliases are backed by real installed models:
+
+```bash
+B1_WORKFLOWS_LIVE_TEST=1 \
+B1_WORKFLOWS_API_KEY=... \
+B1_WORKFLOWS_IMAGE_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-generation-job.json \
+B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-edit-job.json \
+B1_WORKFLOWS_VIDEO_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/short-video-job.json \
+B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json \
+python3 -m unittest tests.integration.test_live_installed_workflows
+```
+
 Run native ComfyUI compatibility from an external client after a real API-format workflow is installed:
 
 ```bash
