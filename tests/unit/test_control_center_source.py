@@ -55,11 +55,15 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("snippet-grid", self.source)
         self.assertIn("copySnippet(snippet)", self.source)
         self.assertIn("navigator.clipboard.writeText(snippet.code)", self.source)
-        for label in ("curl", "Open WebUI", "External ComfyUI", "Voicebox", "Python", "JavaScript"):
+        for label in ("curl", "Open WebUI", "External ComfyUI", "Model Hub Sync", "Voicebox", "Python", "JavaScript"):
             self.assertIn(f'label: "{label}"', self.source)
+        self.assertIn("B1_MODELHUB_URL=https://models.ai.b1.germering", self.source)
+        self.assertIn("b1-model-client plan --cache ~/.cache/b1-ai-hub/models chat-default", self.source)
+        self.assertIn("b1-model-client sync --cache ~/.cache/b1-ai-hub/models chat-default", self.source)
         self.assertIn("https://voice.ai.b1.germering", self.source)
         self.assertIn("python -m pip install ./integrations/comfyui-b1-remote-nodes", self.source)
         self.assertIn("<B1_API_KEY>", self.source)
+        self.assertIn("<B1_MODELHUB_KEY>", self.source)
 
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)

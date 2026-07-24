@@ -823,6 +823,14 @@ export B1_API_KEY=<B1_API_KEY>
 python -m pip install ./integrations/comfyui-b1-remote-nodes`
     },
     {
+      id: "modelhub-sync",
+      label: "Model Hub Sync",
+      code: `export B1_MODELHUB_URL=https://models.ai.b1.germering
+export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>
+b1-model-client plan --cache ~/.cache/b1-ai-hub/models chat-default
+b1-model-client sync --cache ~/.cache/b1-ai-hub/models chat-default`
+    },
+    {
       id: "voicebox",
       label: "Voicebox",
       code: `Server URL: https://voice.ai.b1.germering
