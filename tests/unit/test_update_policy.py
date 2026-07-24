@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,22 @@ GOOD_DIGEST = "a" * 64
 
 
 class UpdatePolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.patch_resolver(["93.184.216.34"])
+
+    def patch_resolver(self, addresses: list[str], *, raises: OSError | None = None) -> None:
+        original = update_policy.resolve_hostname_addresses
+
+        def fake_resolver(hostname: str, port: int | None) -> list[str]:
+            self.resolver_calls.append({"hostname": hostname, "port": port})
+            if raises is not None:
+                raise raises
+            return list(addresses)
+
+        self.resolver_calls: list[dict[str, Any]] = []
+        update_policy.resolve_hostname_addresses = fake_resolver
+        self.addCleanup(lambda: setattr(update_policy, "resolve_hostname_addresses", original))
+
     def test_preflight_requires_pinned_digest_images(self) -> None:
         plan = update_policy.build_update_preflight(
             "0.2.0",
@@ -67,6 +84,18 @@ class UpdatePolicyTests(unittest.TestCase):
             with self.subTest(source_url=source_url):
                 with self.assertRaises(update_policy.UpdatePolicyError):
                     update_policy.build_update_preflight("0.2.0", image_refs, source_url)
+
+    def test_source_url_rejects_private_dns_answers_and_dns_failures(self) -> None:
+        image_refs = [{"service": "gateway", "image": f"caddy@sha256:{GOOD_DIGEST}"}]
+        self.patch_resolver(["93.184.216.34", "10.0.0.5"])
+
+        with self.assertRaisesRegex(update_policy.UpdatePolicyError, "hostname must not resolve"):
+            update_policy.build_update_preflight("0.2.0", image_refs, "https://updates.example.org/release")
+        self.assertEqual(self.resolver_calls[-1], {"hostname": "updates.example.org", "port": None})
+
+        self.patch_resolver([], raises=OSError("dns unavailable"))
+        with self.assertRaisesRegex(update_policy.UpdatePolicyError, "could not be resolved safely"):
+            update_policy.build_update_preflight("0.2.0", image_refs, "https://updates.example.org/release")
 
 
 if __name__ == "__main__":

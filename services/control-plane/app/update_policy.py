@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Any
+import socket
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 
@@ -21,6 +22,7 @@ PRIVATE_SOURCE_NETS = [
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
+HostnameResolver = Callable[[str, int | None], list[str]]
 
 
 class UpdatePolicyError(ValueError):
@@ -52,7 +54,27 @@ def validate_pinned_image_ref(value: str) -> str:
     return image
 
 
-def validate_source_url(value: str) -> str:
+def source_ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if not ip.is_global:
+        return False
+    return not any(ip in network for network in PRIVATE_SOURCE_NETS)
+
+
+def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for result in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM):
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        address = str(sockaddr[0])
+        if address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return addresses
+
+
+def validate_source_url(value: str, *, resolver: HostnameResolver | None = None) -> str:
     source_url = value.strip()
     if not source_url:
         return ""
@@ -78,17 +100,22 @@ def validate_source_url(value: str) -> str:
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
-        pass
+        resolver = resolver or resolve_hostname_addresses
+        try:
+            resolved_addresses = resolver(hostname, parsed.port)
+        except OSError as exc:
+            raise UpdatePolicyError("source_url hostname could not be resolved safely") from exc
+        if not resolved_addresses:
+            raise UpdatePolicyError("source_url hostname could not be resolved safely")
+        for address in resolved_addresses:
+            try:
+                resolved_ip = ipaddress.ip_address(address)
+            except ValueError as exc:
+                raise UpdatePolicyError("source_url hostname resolved to an invalid address") from exc
+            if not source_ip_is_public(resolved_ip):
+                raise UpdatePolicyError("source_url hostname must not resolve to private, loopback, link-local, or reserved IP ranges")
     else:
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-            or any(ip in network for network in PRIVATE_SOURCE_NETS)
-        ):
+        if not source_ip_is_public(ip):
             raise UpdatePolicyError("source_url must not target private, loopback, link-local, or reserved IP ranges")
     return source_url
 
