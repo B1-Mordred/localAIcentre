@@ -4430,19 +4430,56 @@ def model_allowed_by_client(client: dict[str, Any] | None, model_id: str, record
     return modelhub_policy.model_allowed_by_allowed_set(client.get("allowed_models") or [], model_id, candidate)
 
 
-def modelhub_catalog_for_client(client: dict[str, Any] | None) -> dict[str, Any]:
+def model_allowed_by_auth_permissions(auth: AuthContext | None, model_id: str, record: dict[str, Any], action: str) -> bool:
+    if auth is None or auth.has_scope("*"):
+        return True
+    if not modelhub_policy.role_allowed_by_manifest_permissions(record, auth.role.value, action):
+        return False
+    resolved = record.get("resolved_model") if isinstance(record.get("resolved_model"), dict) else None
+    if resolved is None:
+        return True
+    versions_for = getattr(catalog_snapshot(), "versions_for", None)
+    if not callable(versions_for):
+        return True
+    versions = versions_for(model_id)
+    if not versions:
+        return True
+    return any(modelhub_policy.role_allowed_by_manifest_permissions(version, auth.role.value, action) for version in versions)
+
+
+def modelhub_catalog_for_client(client: dict[str, Any] | None, auth: AuthContext | None = None) -> dict[str, Any]:
     catalog = catalog_snapshot().to_catalog()
     if client is None:
-        return modelhub_policy.public_modelhub_metadata(catalog)
+        if auth is None or auth.has_scope("*"):
+            return modelhub_policy.public_modelhub_metadata(catalog)
+        aliases = [
+            record
+            for record in catalog.get("aliases", [])
+            if isinstance(record, dict) and model_allowed_by_auth_permissions(auth, str(record.get("id") or ""), record, "read")
+        ]
+        models = [
+            record
+            for record in catalog.get("models", [])
+            if isinstance(record, dict) and model_allowed_by_auth_permissions(auth, str(record.get("id") or ""), record, "read")
+        ]
+        return modelhub_policy.public_modelhub_metadata({**catalog, "aliases": aliases, "models": models})
     aliases = [
         record
         for record in catalog.get("aliases", [])
-        if isinstance(record, dict) and model_allowed_by_client(client, str(record.get("id") or ""), record)
+        if (
+            isinstance(record, dict)
+            and model_allowed_by_client(client, str(record.get("id") or ""), record)
+            and model_allowed_by_auth_permissions(auth, str(record.get("id") or ""), record, "read")
+        )
     ]
     models = [
         record
         for record in catalog.get("models", [])
-        if isinstance(record, dict) and model_allowed_by_client(client, str(record.get("id") or ""), record)
+        if (
+            isinstance(record, dict)
+            and model_allowed_by_client(client, str(record.get("id") or ""), record)
+            and model_allowed_by_auth_permissions(auth, str(record.get("id") or ""), record, "read")
+        )
     ]
     return modelhub_policy.public_modelhub_metadata({**catalog, "aliases": aliases, "models": models})
 
@@ -4472,6 +4509,10 @@ async def require_modelhub_model_authorized(auth: AuthContext, model_id: str, *,
         raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download blobs")
     if client is not None and not model_allowed_by_client(client, model_id):
         raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
+    action = "download" if for_download else "read"
+    records = catalog_snapshot().versions_for(model_id) or [modelhub_model_record(model_id)]
+    if not any(model_allowed_by_auth_permissions(auth, model_id, record, action) for record in records):
+        raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
     return client
 
 
@@ -4485,6 +4526,7 @@ async def require_modelhub_blob_authorized(auth: AuthContext, sha256: str, accep
     allowed_records = records
     if client is not None:
         allowed_records = [record for record in records if model_allowed_by_client(client, record["id"], record)]
+    allowed_records = [record for record in allowed_records if model_allowed_by_auth_permissions(auth, record["id"], record, "download")]
     if not allowed_records:
         raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download this blob")
     accepted = accepted_license_refs or set()
@@ -7755,7 +7797,7 @@ async def modelhub_catalog(authorization: str | None = Header(default=None)) -> 
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
     client = await modelhub_client_for_auth(auth)
-    return modelhub_catalog_for_client(client)
+    return modelhub_catalog_for_client(client, auth)
 
 
 def modelhub_model_record(model_id: str) -> dict[str, Any]:

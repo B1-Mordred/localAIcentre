@@ -164,6 +164,27 @@ def model_allowed_by_allowed_set(allowed_models: list[str], model_id: str, recor
     return bool(model_identifiers(model_id, record) & allowed)
 
 
+def manifest_permission_roles(record: dict[str, Any], action: str) -> set[str]:
+    permissions = record.get("permissions") if isinstance(record.get("permissions"), dict) else {}
+    permission_key = {
+        "read": "visible_to",
+        "download": "downloadable_by",
+        "install": "installable_by",
+        "inference": "inference_roles",
+    }.get(action)
+    roles: Any = permissions.get(permission_key, []) if permission_key else []
+    if action == "read" and not roles:
+        roles = record.get("visibility_roles", [])
+    if not isinstance(roles, list):
+        return set()
+    return {role for role in roles if isinstance(role, str) and role}
+
+
+def role_allowed_by_manifest_permissions(record: dict[str, Any], role: str, action: str) -> bool:
+    roles = manifest_permission_roles(record, action)
+    return not roles or role in roles
+
+
 def validate_allowed_models(
     allowed_models: list[str],
     record_provider: Callable[[str], dict[str, Any] | None],

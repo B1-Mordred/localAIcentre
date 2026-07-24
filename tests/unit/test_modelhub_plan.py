@@ -19,6 +19,7 @@ from app.modelhub import (  # noqa: E402
     model_allowed_by_allowed_set,
     parse_accepted_license_refs,
     public_modelhub_metadata,
+    role_allowed_by_manifest_permissions,
     validate_allowed_models,
     validate_cidr_allowlist,
 )
@@ -180,6 +181,27 @@ class ModelHubPlanTests(unittest.TestCase):
         record = downloadable_versions_for(self.catalog, "chat-default")[0]
         self.assertTrue(model_allowed_by_allowed_set(["chat-default"], "downloadable-llm", record))
         self.assertFalse(model_allowed_by_allowed_set(["chat-default"], "tts-fast", {"id": "inference-only-tts", "aliases": ["tts-fast"]}))
+
+    def test_manifest_permissions_gate_read_download_install_and_inference_roles(self) -> None:
+        record = {
+            "id": "governed-model",
+            "visibility_roles": ["admin", "operator"],
+            "permissions": {
+                "downloadable_by": ["admin"],
+                "installable_by": ["admin", "operator"],
+                "inference_roles": ["admin", "service"],
+            },
+        }
+
+        self.assertTrue(role_allowed_by_manifest_permissions(record, "operator", "read"))
+        self.assertFalse(role_allowed_by_manifest_permissions(record, "service", "read"))
+        self.assertTrue(role_allowed_by_manifest_permissions(record, "admin", "download"))
+        self.assertFalse(role_allowed_by_manifest_permissions(record, "operator", "download"))
+        self.assertTrue(role_allowed_by_manifest_permissions(record, "operator", "install"))
+        self.assertFalse(role_allowed_by_manifest_permissions(record, "user", "install"))
+        self.assertTrue(role_allowed_by_manifest_permissions(record, "service", "inference"))
+        self.assertFalse(role_allowed_by_manifest_permissions(record, "creator", "inference"))
+        self.assertTrue(role_allowed_by_manifest_permissions({"id": "unrestricted"}, "user", "download"))
 
     def test_allowed_models_validation_rejects_unknown_or_mixed_wildcard(self) -> None:
         self.assertEqual(validate_allowed_models(["chat-default"], self.catalog.model_or_alias_record), ["chat-default"])

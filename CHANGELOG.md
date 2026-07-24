@@ -55,7 +55,7 @@
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.
 - Added runtime-adapter operation capabilities and manifest-operation enforcement with endpoint-name normalization, so unsupported operations now return clear capability errors instead of resolving by modality alone.
 - Added model-manifest operation taxonomy validation and canonicalization so catalog, upload, and remote manifests cannot advertise unsupported operation/modality pairs.
-- Extended model manifests with validated governance metadata for runtime adapter version ranges, companion files, role permissions, and deprecation/replacement records.
+- Extended model manifests with validated governance metadata for runtime adapter version ranges, companion files, role permissions, and deprecation/replacement records, and enforced Model Hub read/download permissions for non-admin clients.
 - Added structured Control Center runtime capability rows for modalities, operations, GPU/CPU residency, OpenAI/native API support, configured state, and local/external-data policy.
 - Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.
 - Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.

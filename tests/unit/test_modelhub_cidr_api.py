@@ -112,6 +112,41 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog_payload["aliases"][2]["id"], "tts-fast")
         self.assertEqual(catalog_payload["models"][0]["source"]["url"], "https://downloads.example.test/llm.gguf?token=secret")
 
+    def test_modelhub_catalog_filters_by_manifest_visibility_permissions(self) -> None:
+        private_record = {
+            "id": "private-llm",
+            "version": "1.0.0",
+            "aliases": ["chat-default"],
+            "permissions": {"visible_to": ["admin"]},
+        }
+        public_record = {
+            "id": "public-embedding",
+            "version": "1.0.0",
+            "aliases": ["embedding-default"],
+            "permissions": {"visible_to": ["service"]},
+        }
+        catalog_payload = {
+            "object": "catalog",
+            "aliases": [
+                {"id": "chat-default", "root": "private-llm", "resolved_model": {"id": "private-llm"}},
+                {"id": "embedding-default", "root": "public-embedding", "resolved_model": {"id": "public-embedding"}},
+            ],
+            "models": [private_record, public_record],
+        }
+
+        original_catalog = main.catalog_snapshot
+        main.catalog_snapshot = lambda: SimpleNamespace(
+            to_catalog=lambda: catalog_payload,
+            versions_for=lambda model_id: [private_record] if model_id in {"chat-default", "private-llm"} else [public_record],
+        )  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:read"}))
+        filtered = main.modelhub_catalog_for_client({"allowed_models": ["*"]}, auth)
+
+        self.assertEqual([record["id"] for record in filtered["aliases"]], ["embedding-default"])
+        self.assertEqual([record["id"] for record in filtered["models"]], ["public-embedding"])
+
     def test_modelhub_catalog_admin_wildcard_returns_unfiltered_sanitized_catalog(self) -> None:
         catalog_payload = {
             "object": "catalog",
@@ -175,6 +210,47 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.detail["required_model_refs"], ["downloadable-llm@1.0.0"])
 
         await main.require_modelhub_blob_authorized(auth, "a" * 64, {"downloadable-llm@1.0.0"})
+
+    async def test_modelhub_blob_download_enforces_manifest_role_permissions(self) -> None:
+        service_auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}))
+        admin_auth = AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"*"}))
+        record = {
+            "id": "operator-only-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "license": {"name": "Example", "redistribution": "downloadable", "acceptance_required": False},
+            "permissions": {"downloadable_by": ["admin", "operator"]},
+        }
+
+        class FakeCatalog:
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return [record]
+
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any]:
+                return record
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_records = main.downloadable_records_for_blob
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        original_catalog = main.catalog_snapshot
+        main.downloadable_records_for_blob = lambda sha256: [record]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "downloadable_records_for_blob", original_records))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.require_modelhub_model_authorized(service_auth, "operator-only-llm", for_download=True)
+        self.assertEqual(raised.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.require_modelhub_blob_authorized(service_auth, "a" * 64, set())
+        self.assertEqual(raised.exception.status_code, 403)
+
+        await main.require_modelhub_blob_authorized(admin_auth, "a" * 64, set())
 
     async def test_modelhub_model_and_versions_redact_source_metadata(self) -> None:
         async def authenticate(authorization: str | None = None) -> AuthContext:
