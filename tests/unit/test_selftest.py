@@ -33,6 +33,57 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(selftest.check_http_result("agent", {"ok": True})["status"], "ok")
         self.assertEqual(selftest.check_http_result("agent", None, "timeout")["status"], "degraded")
 
+    def test_runtime_agent_mutation_guard_passes_for_hardened_status(self) -> None:
+        result = selftest.runtime_agent_mutation_guard_check(
+            {
+                "auth_configured": True,
+                "allow_missing_auth": False,
+                "mtls_enabled": True,
+                "client_cert_required": True,
+                "mutations_enabled": False,
+                "mutation_rate_limit_per_minute": 12,
+                "allowed_services": ["control-plane", "localai", "comfyui"],
+                "runtime_action_services": ["localai", "comfyui"],
+            }
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["mutation_rate_limit_per_minute"], 12)
+
+    def test_runtime_agent_mutation_guard_fails_open_auth_or_missing_rate_limit(self) -> None:
+        result = selftest.runtime_agent_mutation_guard_check(
+            {
+                "auth_configured": False,
+                "allow_missing_auth": True,
+                "mtls_enabled": False,
+                "client_cert_required": False,
+                "mutation_rate_limit_per_minute": 0,
+                "allowed_services": ["localai"],
+                "runtime_action_services": ["localai"],
+            }
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("bearer token is not configured", result["detail"])
+        self.assertIn("missing-auth bypass is enabled", result["detail"])
+        self.assertIn("mutation rate limit is not a positive integer", result["detail"])
+
+    def test_runtime_agent_mutation_guard_requires_runtime_actions_inside_service_allowlist(self) -> None:
+        result = selftest.runtime_agent_mutation_guard_check(
+            {
+                "auth_configured": True,
+                "allow_missing_auth": False,
+                "mtls_enabled": True,
+                "client_cert_required": True,
+                "mutation_rate_limit_per_minute": 12,
+                "allowed_services": ["localai"],
+                "runtime_action_services": ["comfyui"],
+            }
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("runtime-action allowlist contains services outside the service allowlist", result["detail"])
+
     def test_gateway_security_header_failures_require_caddy_headers(self) -> None:
         self.assertEqual(
             selftest.gateway_security_header_failures(

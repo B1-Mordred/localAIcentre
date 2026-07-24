@@ -609,6 +609,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("GPU/NVML check is absent")
     elif gpu_check.get("status") != "ok":
         blockers.append(f"GPU/NVML check is {gpu_check.get('status', 'unknown')}")
+    mutation_guard = _check_by_name(report.get("self_test") or {}, "runtime-agent:mutation-guard")
+    if not mutation_guard:
+        blockers.append("runtime-agent mutation guard check is absent")
+    elif mutation_guard.get("status") != "ok":
+        blockers.append(f"runtime-agent mutation guard check is {mutation_guard.get('status', 'unknown')}")
     metrics_gpu = ((report.get("metrics") or {}).get("gpu") or {})
     if metrics_gpu and metrics_gpu.get("available") is not True:
         blockers.append("runtime-agent GPU metrics are unavailable")

@@ -69,6 +69,55 @@ def check_http_result(name: str, payload: dict[str, Any] | None, error: str | No
     return check(name, "ok", "response received", payload)
 
 
+def runtime_agent_mutation_guard_check(payload: dict[str, Any] | None) -> dict[str, Any]:
+    name = "runtime-agent:mutation-guard"
+    if not isinstance(payload, dict):
+        return check(name, "degraded", "runtime-agent status payload is unavailable")
+
+    allowed_services = payload.get("allowed_services")
+    runtime_action_services = payload.get("runtime_action_services")
+    rate_limit = payload.get("mutation_rate_limit_per_minute")
+    data = {
+        "auth_configured": payload.get("auth_configured"),
+        "allow_missing_auth": payload.get("allow_missing_auth"),
+        "mtls_enabled": payload.get("mtls_enabled"),
+        "client_cert_required": payload.get("client_cert_required"),
+        "mutations_enabled": payload.get("mutations_enabled"),
+        "mutation_rate_limit_per_minute": rate_limit,
+        "allowed_services": allowed_services if isinstance(allowed_services, list) else [],
+        "runtime_action_services": runtime_action_services if isinstance(runtime_action_services, list) else [],
+    }
+
+    failures: list[str] = []
+    if payload.get("auth_configured") is not True:
+        failures.append("bearer token is not configured")
+    if payload.get("allow_missing_auth") is True:
+        failures.append("missing-auth bypass is enabled")
+    if payload.get("mtls_enabled") is not True or payload.get("client_cert_required") is not True:
+        failures.append("runtime-agent mTLS client certificate enforcement is not active")
+    if isinstance(rate_limit, bool) or not isinstance(rate_limit, int) or rate_limit <= 0:
+        failures.append("mutation rate limit is not a positive integer")
+    if not isinstance(allowed_services, list) or not allowed_services:
+        failures.append("service allowlist is empty or unavailable")
+        allowed_service_set: set[str] = set()
+    else:
+        allowed_service_set = {str(item).strip() for item in allowed_services if str(item).strip()}
+        if len(allowed_service_set) != len(allowed_services) or "*" in allowed_service_set:
+            failures.append("service allowlist contains unsafe entries")
+    if not isinstance(runtime_action_services, list) or not runtime_action_services:
+        failures.append("runtime-action allowlist is empty or unavailable")
+    else:
+        runtime_action_set = {str(item).strip() for item in runtime_action_services if str(item).strip()}
+        if len(runtime_action_set) != len(runtime_action_services) or "*" in runtime_action_set:
+            failures.append("runtime-action allowlist contains unsafe entries")
+        elif allowed_service_set and not runtime_action_set <= allowed_service_set:
+            failures.append("runtime-action allowlist contains services outside the service allowlist")
+
+    if failures:
+        return check(name, "failed", "; ".join(failures), data)
+    return check(name, "ok", "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited", data)
+
+
 def gateway_security_header_failures(headers: Mapping[str, str]) -> list[str]:
     normalized = {str(name).lower(): str(value).lower() for name, value in headers.items()}
     failures: list[str] = []

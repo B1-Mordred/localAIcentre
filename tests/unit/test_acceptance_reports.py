@@ -262,6 +262,11 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
                 {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                 {"name": "runtimes:production-readiness", "status": "ok", "detail": "required runtimes are production-ready"},
+                {
+                    "name": "runtime-agent:mutation-guard",
+                    "status": "ok",
+                    "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                },
             ],
         },
     )
@@ -424,6 +429,41 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("self-test status is degraded", report["acceptance_blockers"])
         self.assertIn("runtime deployment mode is not production", report["acceptance_blockers"])
         self.assertIn("required runtimes are not production-ready", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_runtime_agent_mutation_guard_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("runtime-agent mutation guard check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_runtime_agent_mutation_guard_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "failed",
+                        "detail": "missing-auth bypass is enabled",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("runtime-agent mutation guard check is failed", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_required_operator_evidence(self) -> None:
         report = sample_report(operator_evidence={"live_stack_smoke": True})
@@ -1103,6 +1143,7 @@ class AcceptanceReportApiTests(unittest.TestCase):
                 "checks": [
                     {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                     {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {"name": "runtime-agent:mutation-guard", "status": "ok", "detail": "ready"},
                 ],
             }
 

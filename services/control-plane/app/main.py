@@ -5510,6 +5510,7 @@ async def build_self_test_report(subject_id: str) -> dict[str, Any]:
 
     agent_status, agent_error = await runtime_agent_get("/v1/status")
     checks.append(selftest_policy.check_http_result("runtime-agent:status", agent_status, agent_error))
+    checks.append(selftest_policy.runtime_agent_mutation_guard_check(agent_status))
     agent_metrics, metrics_error = await runtime_agent_get("/v1/metrics")
     checks.append(selftest_policy.check_http_result("runtime-agent:metrics", agent_metrics, metrics_error))
     if agent_metrics and not agent_metrics.get("gpu", {}).get("available", False):
