@@ -147,6 +147,11 @@ class ComposePolicyTests(unittest.TestCase):
             depends_on = self.compose["services"][name].get("depends_on", {})
             self.assertIn("bootstrap", depends_on, name)
 
+    def test_bootstrap_healthcheck_covers_all_runtime_model_views(self) -> None:
+        healthcheck = "\n".join(str(item) for item in self.compose["services"]["bootstrap"]["healthcheck"]["test"])
+        for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
+            self.assertIn(f"models/runtime-views/{runtime}", healthcheck)
+
     def test_control_plane_mounts_generated_secrets_read_only(self) -> None:
         volumes = self.compose["services"]["control-plane"].get("volumes", [])
         self.assertTrue(any("/run/secrets:ro" in volume for volume in volumes))

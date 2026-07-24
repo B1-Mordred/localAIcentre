@@ -47,6 +47,7 @@ services:
               "models/blobs",
               "models/runtime-views/localai",
               "models/runtime-views/comfyui",
+              "models/runtime-views/voicebox",
               "models/runtime-views/audio-cpu",
               "artifacts/temporary",
               "secrets",
