@@ -2,6 +2,25 @@
 
 Compatibility tests will cover native ComfyUI REST/WebSocket clients, the optional legacy `:8188` listener, external ComfyUI B1 remote nodes, Model Hub clients, and Voicebox remote/server mode.
 
+## Native ComfyUI Compatibility
+
+The native ComfyUI compatibility path uses the public `comfy.ai.b1.germering` gateway endpoint, not the internal `comfyui` container port. It verifies metadata routes, native prompt submission, native WebSocket events, and native history lookup with a real API-format prompt supplied by the operator.
+
+```bash
+export B1_NATIVE_COMFYUI_LIVE_TEST=1
+export B1_NATIVE_COMFYUI_BASE=https://comfy.ai.b1.germering
+export B1_NATIVE_COMFYUI_API_KEY=...
+export B1_NATIVE_COMFYUI_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
+export B1_NATIVE_COMFYUI_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/native-comfyui.json
+python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
+```
+
+For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_NATIVE_COMFYUI_CA_FILE=/path/to/root.crt`; use `B1_NATIVE_COMFYUI_TLS_VERIFY=0` only during an explicit LAN validation window. `B1_NATIVE_COMFYUI_PROMPT_JSON` may be used instead of `B1_NATIVE_COMFYUI_PROMPT_FILE` for a small inline native prompt.
+
+When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/system_stats`, `/models`, `/queue`, `POST /prompt`, `/ws`, or `/history/{prompt_id}` checks are absent or incomplete.
+
+## Remote Nodes Without Server-Side ComfyUI
+
 The first concrete remote-node scenario is the non-Comfy smoke path: run `integrations/comfyui-b1-remote-nodes/examples/tts-fast.non-comfy.workflow.json` from an external ComfyUI while the server-side B1 `comfyui` container is stopped. The workflow must complete through the unified API and the `audio-cpu`/`tts-fast` path.
 
 The same path has an opt-in Python compatibility test:

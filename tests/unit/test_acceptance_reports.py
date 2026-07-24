@@ -84,6 +84,35 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
         },
+        "native_comfyui_compatibility": {
+            "available": True,
+            "format": "b1-ai-hub-native-comfyui-compatibility/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/native-comfyui.json",
+            "generated_at": "2026-07-24T12:33:00+00:00",
+            "base_url": "https://comfy.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "object_info_accessible",
+                "system_stats_accessible",
+                "models_accessible",
+                "queue_accessible",
+                "prompt_submission",
+                "websocket_events",
+                "history_available",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "object_info_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "system_stats_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "models_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "queue_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+                "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+                "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
+            },
+            "sample_count": 3,
+            "sample_labels": ["object-info", "prompt-submission", "websocket-completed"],
+        },
         "remote_nodes_non_comfy": {
             "available": True,
             "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
@@ -241,6 +270,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
+            self.assertIn("native-comfyui.json", markdown)
+            self.assertIn("Native ComfyUI compatibility", markdown)
             self.assertIn("remote-nodes-non-comfy.json", markdown)
             self.assertIn("Remote-node non-Comfy compatibility", markdown)
             self.assertIn("modelhub-client-sync.json", markdown)
@@ -337,6 +368,43 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("RTX 3060 GPU acceptance evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
             "RTX 3060 GPU acceptance evidence is missing required checks: localai_comfyui_voicebox_switch",
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_without_native_comfyui_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["native_comfyui_compatibility"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["native_comfyui_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("native ComfyUI compatibility evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_native_comfyui_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["native_comfyui_compatibility"] = {
+            **live_evidence["native_comfyui_compatibility"],
+            "status": "incomplete",
+            "missing_checks": ["websocket_events", "history_available"],
+            "checks": {
+                "object_info_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "system_stats_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "models_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "queue_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["native_comfyui_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("native ComfyUI compatibility evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "native ComfyUI compatibility evidence is missing required checks: websocket_events, history_available",
             report["acceptance_blockers"],
         )
 
@@ -499,6 +567,32 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            native_comfyui = evidence_root / "native-comfyui.json"
+            native_comfyui.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-native-comfyui-compatibility/v1",
+                        "generated_at": "2026-07-24T12:33:00+00:00",
+                        "base_url": "https://comfy.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "object_info_accessible": {"status": "ok"},
+                            "system_stats_accessible": {"status": "ok"},
+                            "models_accessible": {"status": "ok"},
+                            "queue_accessible": {"status": "ok"},
+                            "prompt_submission": {"status": "ok"},
+                            "websocket_events": {"status": "ok"},
+                            "history_available": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "object-info"},
+                            {"label": "prompt-submission"},
+                            {"label": "websocket-completed"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             modelhub = evidence_root / "modelhub-client-sync.json"
             modelhub.write_text(
                 json.dumps(
@@ -529,6 +623,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
         self.assertEqual(gpu["sample_count"], 2)
+        native = snapshot["native_comfyui_compatibility"]
+        self.assertTrue(native["available"])
+        self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
+        self.assertEqual(native["status"], "ok")
+        self.assertEqual(native["missing_checks"], [])
+        self.assertEqual(native["sample_count"], 3)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))

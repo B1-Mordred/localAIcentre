@@ -29,6 +29,16 @@ MODELHUB_REQUIRED_CHECKS = (
     "dry_run_prune_safe",
     "inference_only_download_blocked",
 )
+NATIVE_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-native-comfyui-compatibility/v1"
+NATIVE_COMFYUI_REQUIRED_CHECKS = (
+    "object_info_accessible",
+    "system_stats_accessible",
+    "models_accessible",
+    "queue_accessible",
+    "prompt_submission",
+    "websocket_events",
+    "history_available",
+)
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -286,9 +296,40 @@ def modelhub_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
     }
 
 
+def native_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != NATIVE_COMFYUI_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported native ComfyUI compatibility evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in NATIVE_COMFYUI_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
+        "native_comfyui_compatibility": {"available": False, "reason": reason, "root": str(root)},
         "remote_nodes_non_comfy": {"available": False, "reason": reason, "root": str(root)},
         "modelhub_client_sync": {"available": False, "reason": reason, "root": str(root)},
     }
@@ -328,13 +369,16 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         if payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT and "gpu_acceptance" not in found:
             snapshots["gpu_acceptance"] = gpu_acceptance_evidence_snapshot(payload, path.resolve())
             found.add("gpu_acceptance")
+        elif payload.get("format") == NATIVE_COMFYUI_EVIDENCE_FORMAT and "native_comfyui_compatibility" not in found:
+            snapshots["native_comfyui_compatibility"] = native_comfyui_evidence_snapshot(payload, path.resolve())
+            found.add("native_comfyui_compatibility")
         elif payload.get("format") == REMOTE_NODES_EVIDENCE_FORMAT and "remote_nodes_non_comfy" not in found:
             snapshots["remote_nodes_non_comfy"] = remote_nodes_evidence_snapshot(payload, path.resolve())
             found.add("remote_nodes_non_comfy")
         elif payload.get("format") == MODELHUB_EVIDENCE_FORMAT and "modelhub_client_sync" not in found:
             snapshots["modelhub_client_sync"] = modelhub_evidence_snapshot(payload, path.resolve())
             found.add("modelhub_client_sync")
-        if found == {"gpu_acceptance", "remote_nodes_non_comfy", "modelhub_client_sync"}:
+        if found == {"gpu_acceptance", "native_comfyui_compatibility", "remote_nodes_non_comfy", "modelhub_client_sync"}:
             break
     return snapshots
 
@@ -450,6 +494,17 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = gpu_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("RTX 3060 GPU acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+    native_comfyui_evidence = (
+        live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
+    )
+    if native_comfyui_evidence.get("available") is not True:
+        blockers.append("native ComfyUI compatibility evidence is unavailable")
+    else:
+        if native_comfyui_evidence.get("status") != "ok":
+            blockers.append(f"native ComfyUI compatibility evidence status is {native_comfyui_evidence.get('status', 'unknown')}")
+        missing_checks = native_comfyui_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("native ComfyUI compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     if remote_nodes_evidence.get("available") is not True:
         blockers.append("remote-node non-Comfy compatibility evidence is unavailable")
@@ -537,6 +592,7 @@ def build_report(
         "live_evidence": live_evidence
         or {
             "gpu_acceptance": {"available": False, "reason": "not supplied"},
+            "native_comfyui_compatibility": {"available": False, "reason": "not supplied"},
             "remote_nodes_non_comfy": {"available": False, "reason": "not supplied"},
             "modelhub_client_sync": {"available": False, "reason": "not supplied"},
         },
@@ -563,6 +619,39 @@ def _format_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_message: str) -> str:
+    summary_rows = [["Field", "Value"]]
+    for key in (
+        "available",
+        "source_path",
+        "generated_at",
+        "base_url",
+        "status",
+        "sample_count",
+    ):
+        summary_rows.append([key, _format_value(evidence.get(key))])
+    missing_checks = evidence.get("missing_checks")
+    if isinstance(missing_checks, list) and missing_checks:
+        summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_checks)])
+    check_rows = [["Check", "Status", "Recorded"]]
+    checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
+    for name in sorted(checks):
+        check = checks.get(name)
+        if isinstance(check, dict):
+            check_rows.append([
+                _format_value(name),
+                _format_value(check.get("status")),
+                _format_value(check.get("recorded_at")),
+            ])
+    return (
+        label
+        + "\n\n"
+        + _table(summary_rows)
+        + "\n\n"
+        + (_table(check_rows) if len(check_rows) > 1 else _format_value(evidence.get("reason") or no_checks_message))
+    )
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -633,77 +722,11 @@ def markdown_report(report: dict[str, Any]) -> str:
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
-    gpu_evidence_summary_rows = [["Field", "Value"]]
-    for key in (
-        "available",
-        "source_path",
-        "generated_at",
-        "base_url",
-        "status",
-        "sample_count",
-    ):
-        gpu_evidence_summary_rows.append([key, _format_value(gpu_evidence.get(key))])
-    missing_checks = gpu_evidence.get("missing_checks")
-    if isinstance(missing_checks, list) and missing_checks:
-        gpu_evidence_summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_checks)])
-    check_rows_live = [["Check", "Status", "Recorded"]]
-    live_checks = gpu_evidence.get("checks") if isinstance(gpu_evidence.get("checks"), dict) else {}
-    for name in sorted(live_checks):
-        check = live_checks.get(name)
-        if isinstance(check, dict):
-            check_rows_live.append([
-                _format_value(name),
-                _format_value(check.get("status")),
-                _format_value(check.get("recorded_at")),
-            ])
+    native_comfyui_evidence = (
+        live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
+    )
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
-    remote_nodes_summary_rows = [["Field", "Value"]]
-    for key in (
-        "available",
-        "source_path",
-        "generated_at",
-        "base_url",
-        "status",
-        "sample_count",
-    ):
-        remote_nodes_summary_rows.append([key, _format_value(remote_nodes_evidence.get(key))])
-    missing_remote_checks = remote_nodes_evidence.get("missing_checks")
-    if isinstance(missing_remote_checks, list) and missing_remote_checks:
-        remote_nodes_summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_remote_checks)])
-    remote_check_rows_live = [["Check", "Status", "Recorded"]]
-    remote_checks = remote_nodes_evidence.get("checks") if isinstance(remote_nodes_evidence.get("checks"), dict) else {}
-    for name in sorted(remote_checks):
-        check = remote_checks.get(name)
-        if isinstance(check, dict):
-            remote_check_rows_live.append([
-                _format_value(name),
-                _format_value(check.get("status")),
-                _format_value(check.get("recorded_at")),
-            ])
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
-    modelhub_summary_rows = [["Field", "Value"]]
-    for key in (
-        "available",
-        "source_path",
-        "generated_at",
-        "base_url",
-        "status",
-        "sample_count",
-    ):
-        modelhub_summary_rows.append([key, _format_value(modelhub_evidence.get(key))])
-    missing_modelhub_checks = modelhub_evidence.get("missing_checks")
-    if isinstance(missing_modelhub_checks, list) and missing_modelhub_checks:
-        modelhub_summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_modelhub_checks)])
-    modelhub_check_rows_live = [["Check", "Status", "Recorded"]]
-    modelhub_checks = modelhub_evidence.get("checks") if isinstance(modelhub_evidence.get("checks"), dict) else {}
-    for name in sorted(modelhub_checks):
-        check = modelhub_checks.get(name)
-        if isinstance(check, dict):
-            modelhub_check_rows_live.append([
-                _format_value(name),
-                _format_value(check.get("status")),
-                _format_value(check.get("recorded_at")),
-            ])
 
     source_control = report.get("source_control") or {}
     source_rows = [["Field", "Value"]]
@@ -786,28 +809,21 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
             "## Live Acceptance Evidence\n\n"
-            + "GPU acceptance\n\n"
-            + _table(gpu_evidence_summary_rows)
+            + _live_evidence_markdown("GPU acceptance", gpu_evidence, "No live GPU acceptance checks recorded.")
             + "\n\n"
-            + (_table(check_rows_live) if len(check_rows_live) > 1 else _format_value(gpu_evidence.get("reason") or "No live GPU acceptance checks recorded."))
-            + "\n\n"
-            + "Remote-node non-Comfy compatibility\n\n"
-            + _table(remote_nodes_summary_rows)
-            + "\n\n"
-            + (
-                _table(remote_check_rows_live)
-                if len(remote_check_rows_live) > 1
-                else _format_value(remote_nodes_evidence.get("reason") or "No remote-node non-Comfy compatibility checks recorded.")
+            + _live_evidence_markdown(
+                "Native ComfyUI compatibility",
+                native_comfyui_evidence,
+                "No native ComfyUI compatibility checks recorded.",
             )
             + "\n\n"
-            + "Model Hub client sync\n\n"
-            + _table(modelhub_summary_rows)
+            + _live_evidence_markdown(
+                "Remote-node non-Comfy compatibility",
+                remote_nodes_evidence,
+                "No remote-node non-Comfy compatibility checks recorded.",
+            )
             + "\n\n"
-            + (
-                _table(modelhub_check_rows_live)
-                if len(modelhub_check_rows_live) > 1
-                else _format_value(modelhub_evidence.get("reason") or "No Model Hub client sync checks recorded.")
-            ),
+            + _live_evidence_markdown("Model Hub client sync", modelhub_evidence, "No Model Hub client sync checks recorded."),
             "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
@@ -858,9 +874,17 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
+    native_comfyui_evidence = (
+        live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
+    )
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     gpu_evidence_ready = gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks")
+    native_comfyui_evidence_ready = (
+        native_comfyui_evidence.get("available") is True
+        and native_comfyui_evidence.get("status") == "ok"
+        and not native_comfyui_evidence.get("missing_checks")
+    )
     remote_nodes_evidence_ready = (
         remote_nodes_evidence.get("available") is True
         and remote_nodes_evidence.get("status") == "ok"
@@ -883,9 +907,10 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
         "gpu_evidence_ready": gpu_evidence_ready,
+        "native_comfyui_evidence_ready": native_comfyui_evidence_ready,
         "remote_nodes_evidence_ready": remote_nodes_evidence_ready,
         "modelhub_evidence_ready": modelhub_evidence_ready,
-        "live_evidence_ready": gpu_evidence_ready and remote_nodes_evidence_ready and modelhub_evidence_ready,
+        "live_evidence_ready": gpu_evidence_ready and native_comfyui_evidence_ready and remote_nodes_evidence_ready and modelhub_evidence_ready,
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
     if report_dir is not None:
