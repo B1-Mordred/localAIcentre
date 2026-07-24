@@ -69,6 +69,54 @@ class ModelClientTests(unittest.TestCase):
             client.urllib.request.urlopen = original
         self.assertFalse(called)
 
+    def test_request_json_refuses_http_bearer_token_without_explicit_opt_in(self) -> None:
+        called = False
+
+        def fake_urlopen(request: object, timeout: int = 30) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called when token transport is unsafe")
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(client.ALLOW_INSECURE_HTTP_ENV, None)
+                with self.assertRaisesRegex(RuntimeError, "plain HTTP"):
+                    client.request_json("http://modelhub", "/modelhub/v1/catalog", "secret-token")
+        finally:
+            client.urllib.request.urlopen = original
+        self.assertFalse(called)
+
+    def test_request_json_allows_http_bearer_token_only_with_explicit_opt_in(self) -> None:
+        seen: dict[str, str] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+        def fake_urlopen(request: object, timeout: int = 30) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen.update({key.lower(): value for key, value in request.header_items()})
+            return FakeResponse()
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with patch.dict(os.environ, {client.ALLOW_INSECURE_HTTP_ENV: "true"}, clear=False):
+                self.assertEqual(client.request_json("http://modelhub", "/modelhub/v1/catalog", "secret-token"), {"ok": True})
+        finally:
+            client.urllib.request.urlopen = original
+
+        self.assertEqual(seen["url"], "http://modelhub/modelhub/v1/catalog")
+        self.assertEqual(seen["authorization"], "Bearer secret-token")
+
     def test_resolve_token_reads_private_token_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             token_file = Path(tmp) / "token"

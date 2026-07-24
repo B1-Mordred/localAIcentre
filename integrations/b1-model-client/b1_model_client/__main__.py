@@ -21,6 +21,7 @@ CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
 MODELHUB_URL_ENV = "B1_MODELHUB_URL"
 TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
+ALLOW_INSECURE_HTTP_ENV = "B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP"
 
 
 def has_unsafe_path_segment(path: str) -> bool:
@@ -60,6 +61,26 @@ def request_url(base_url: str, path: str) -> str:
     if not path.startswith("/") or "?" in path or "#" in path or "\\" in path or has_unsafe_path_segment(path):
         raise RuntimeError("Model Hub request path is unsafe")
     return validate_base_url(base_url) + path
+
+
+def enforce_token_transport_security(url: str, token: str | None) -> None:
+    if not token:
+        return
+    parsed = urlsplit(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and env_bool(ALLOW_INSECURE_HTTP_ENV):
+        return
+    raise RuntimeError(
+        "refusing to send a Model Hub bearer token over plain HTTP; use HTTPS "
+        f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for isolated development"
+    )
+
+
+def modelhub_request_url(base_url: str, path: str, token: str | None) -> str:
+    url = request_url(base_url, path)
+    enforce_token_transport_security(url, token)
+    return url
 
 
 def require_private_token_file(path: Path) -> None:
@@ -103,7 +124,7 @@ def resolve_token(args: argparse.Namespace) -> str | None:
 
 def request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(request_url(base_url, path), data=data, method=method)
+    request = urllib.request.Request(modelhub_request_url(base_url, path, token), data=data, method=method)
     request.add_header("Accept", "application/json")
     if payload is not None:
         request.add_header("Content-Type", "application/json")
@@ -440,7 +461,7 @@ def download_blob(
         resume_from = 0
 
     while True:
-        request = urllib.request.Request(request_url(base_url, f"/modelhub/v1/blobs/{sha256}"))
+        request = urllib.request.Request(modelhub_request_url(base_url, f"/modelhub/v1/blobs/{sha256}", token))
         request.add_header("Accept", "application/octet-stream")
         if token:
             request.add_header("Authorization", f"Bearer {token}")
