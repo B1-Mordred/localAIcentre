@@ -2093,6 +2093,24 @@ def alias_manifest_allows_inference(alias: CatalogAlias, auth: AuthContext | Non
     return modelhub_policy.role_allowed_by_manifest_permissions(alias.manifest.to_dict(), auth.role.value, "inference")
 
 
+def manifest_allows_role_action(manifest: Any, auth: AuthContext | None, action: str) -> bool:
+    if auth is None or auth.has_scope("*"):
+        return True
+    manifest_dict = manifest.to_dict() if hasattr(manifest, "to_dict") else manifest
+    if not isinstance(manifest_dict, dict):
+        return True
+    return modelhub_policy.role_allowed_by_manifest_permissions(manifest_dict, auth.role.value, action)
+
+
+def require_manifest_role_action(manifest: Any, auth: AuthContext | None, action: str) -> None:
+    if manifest_allows_role_action(manifest, auth, action):
+        return
+    model_id = getattr(manifest, "id", None)
+    version = getattr(manifest, "version", None)
+    model_ref = f"{model_id}@{version}" if model_id and version else "model"
+    raise HTTPException(status_code=403, detail=f"{model_ref} cannot be used for {action} by this role")
+
+
 def require_catalog_alias(
     model_id: str,
     required_modality: str | None = None,
@@ -6912,6 +6930,7 @@ async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorizati
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
     manifest = await manifest_for_install_request(payload)
+    require_manifest_role_action(manifest, auth, "install")
     return install_plan_for_manifest(manifest, payload)
 
 
@@ -6920,6 +6939,7 @@ async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorizat
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
     manifest = await manifest_for_install_request(payload)
+    require_manifest_role_action(manifest, auth, "install")
     return download_plan_for_manifest(manifest, accept_license=payload.accept_license)
 
 
@@ -6945,6 +6965,7 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
     manifest = await manifest_for_install_request(payload)
+    require_manifest_role_action(manifest, auth, "install")
     plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license)
     credential_secret_name = await validate_model_download_secret_name(payload.credential_secret_name)
     if not payload.confirm:
@@ -7078,6 +7099,7 @@ async def admin_model_install(payload: ModelInstallRequest, authorization: str |
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
     manifest = await manifest_for_install_request(payload)
+    require_manifest_role_action(manifest, auth, "install")
     plan = install_plan_for_manifest(manifest, payload)
     try:
         model_lifecycle.require_installable(plan, confirmed=payload.confirm)

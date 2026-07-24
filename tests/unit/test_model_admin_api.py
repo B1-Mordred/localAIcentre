@@ -238,6 +238,12 @@ class ModelAdminApiTests(unittest.TestCase):
         self.patch_attr("record_audit_event", fake_record_audit_event)
         self.patch_attr("refresh_workflow_dependency_statuses", fake_refresh_workflow_dependency_statuses)
 
+    def patch_auth_context(self, auth: Any) -> None:
+        async def fake_authenticate(authorization: str | None = None) -> Any:
+            return auth
+
+        self.patch_attr("authenticate", fake_authenticate)
+
     def test_blob_quarantine_plan_blocks_active_jobs(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()
@@ -597,6 +603,46 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertTrue(result["plan"]["license_accepted"])
         self.assertEqual(len(fake_database.model_downloads), 1)
         self.assertEqual(audit_events[0]["event_type"], "model_download.created")
+
+    def test_manifest_install_permissions_block_operator_install_planning(self) -> None:
+        digest = hashlib.sha256(b"admin-only model").hexdigest()
+        payload = manifest_payload(digest, len(b"admin-only model"))
+        payload["permissions"] = {"installable_by": ["admin"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.patch_common(root, FakeDatabase({}, [], active_jobs=0))
+            self.patch_auth_context(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"models:read"})))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_model_install_plan(main.ModelInstallPlanRequest(manifest=payload)))
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertIn("cannot be used for install by this role", str(raised.exception.detail))
+
+    def test_manifest_install_permissions_block_operator_download_and_install_mutations(self) -> None:
+        data = b"admin-only model"
+        digest = hashlib.sha256(data).hexdigest()
+        payload = manifest_payload(digest, len(data))
+        payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
+        payload["permissions"] = {"installable_by": ["admin"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_path = root / "models" / "blobs" / digest
+            blob_path.parent.mkdir(parents=True)
+            blob_path.write_bytes(data)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(root, fake_database)
+            self.patch_auth_context(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"models:write"})))
+
+            with self.assertRaises(main.HTTPException) as download_blocked:
+                asyncio.run(main.admin_model_download_create(main.ModelDownloadCreate(manifest=payload, confirm=True)))
+            with self.assertRaises(main.HTTPException) as install_blocked:
+                asyncio.run(main.admin_model_install(main.ModelInstallRequest(manifest=payload, confirm=True, accept_license=True)))
+
+        self.assertEqual(download_blocked.exception.status_code, 403)
+        self.assertEqual(install_blocked.exception.status_code, 403)
+        self.assertEqual(fake_database.model_downloads, [])
+        self.assertEqual(fake_database.records, [])
 
     def test_model_download_pause_and_resume_are_audited(self) -> None:
         audit_events: list[dict[str, Any]] = []
