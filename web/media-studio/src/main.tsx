@@ -900,6 +900,69 @@ function History({ jobs, onRefresh, onSelect }: { jobs: MediaJob[]; onRefresh: (
   );
 }
 
+function HistoryDetail({
+  job,
+  artifacts,
+  status,
+  onRefreshArtifacts,
+  onDownload
+}: {
+  job: MediaJob | null;
+  artifacts: Artifact[];
+  status: string;
+  onRefreshArtifacts: () => void;
+  onDownload: (artifact: Artifact) => void;
+}) {
+  const formatMs = (value?: number | null) => {
+    if (typeof value !== "number") return "pending";
+    if (value >= 1000) return `${(value / 1000).toFixed(1)}s`;
+    return `${value}ms`;
+  };
+  const formatPeak = (value?: number | null) => typeof value === "number" ? `${value} MiB` : "pending";
+  const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : "pending";
+
+  if (!job) {
+    return (
+      <aside className="history-detail">
+        <div className="pane-title">
+          <h2>Job Details</h2>
+        </div>
+        <p className="empty-state">Select a history row to inspect artifacts and reproducibility metadata.</p>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="history-detail">
+      <div className="pane-title">
+        <h2>Job Details</h2>
+        <button title="Refresh artifacts" onClick={onRefreshArtifacts}><RefreshCw size={16} /></button>
+      </div>
+      <dl>
+        <div><dt>Job</dt><dd><code>{job.id}</code></dd></div>
+        <div><dt>Status</dt><dd>{job.state} / {job.stage ?? "unknown"} / {job.progress ?? 0}%</dd></div>
+        <div><dt>Workflow</dt><dd>{job.modality} / {job.operation}</dd></div>
+        <div><dt>Runtime</dt><dd>{job.runtime}</dd></div>
+        <div><dt>Model</dt><dd>{job.model_alias}<small>{job.resolved_model_version}</small></dd></div>
+        <div><dt>Created</dt><dd>{formatTime(job.created_at)}</dd></div>
+        <div><dt>Completed</dt><dd>{formatTime(job.completed_at)}</dd></div>
+        <div><dt>Measured</dt><dd>load {formatMs(job.load_time_ms)} / run {formatMs(job.run_time_ms)}</dd></div>
+        <div><dt>Peak</dt><dd>VRAM {formatPeak(job.peak_vram_mib)} / RAM {formatPeak(job.peak_ram_mib)}</dd></div>
+        {job.failure_category && <div><dt>Failure</dt><dd>{job.failure_category}<small>{job.failure_message ?? ""}</small></dd></div>}
+      </dl>
+      <div className="artifact-list">
+        {artifacts.map((artifact) => (
+          <button key={artifact.id} type="button" onClick={() => onDownload(artifact)}>
+            <Download size={16} />{artifact.kind} / {artifact.mime_type} / {formatBytes(artifact.bytes)}
+          </button>
+        ))}
+        {!artifacts.length && <span className="toolbar-status">No artifacts recorded</span>}
+      </div>
+      <span className="toolbar-status">{status}</span>
+    </aside>
+  );
+}
+
 function AuthGate({ children }: { children: (auth: AuthStatus, logout: () => void) => React.ReactNode }) {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [username, setUsername] = useState("");
@@ -996,15 +1059,43 @@ function AuthGate({ children }: { children: (auth: AuthStatus, logout: () => voi
 
 function StudioApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [jobs, setJobs] = useState<MediaJob[]>([]);
-  const [, setSelectedHistoryJob] = useState<MediaJob | null>(null);
+  const [selectedHistoryJob, setSelectedHistoryJob] = useState<MediaJob | null>(null);
+  const [historyArtifacts, setHistoryArtifacts] = useState<Artifact[]>([]);
+  const [historyStatus, setHistoryStatus] = useState("select a job");
 
   const loadJobs = () => {
     apiJson<MediaJob[]>("/v1/media/jobs")
-      .then(setJobs)
+      .then((rows) => {
+        setJobs(rows);
+        setSelectedHistoryJob((current) => current ? rows.find((job) => job.id === current.id) ?? current : null);
+      })
       .catch(() => setJobs([]));
   };
 
   useEffect(loadJobs, []);
+
+  const loadHistoryArtifacts = (job: MediaJob) => {
+    setSelectedHistoryJob(job);
+    setHistoryArtifacts(job.artifacts ?? []);
+    setHistoryStatus("loading artifacts");
+    apiJson<{ artifacts: Artifact[] }>(`/v1/media/jobs/${job.id}/artifacts`)
+      .then((payload) => {
+        setHistoryArtifacts(payload.artifacts ?? []);
+        setHistoryStatus(`loaded ${(payload.artifacts ?? []).length} artifact(s)`);
+      })
+      .catch((error: Error) => setHistoryStatus(error.message));
+  };
+
+  const refreshSelectedHistoryArtifacts = () => {
+    if (selectedHistoryJob) loadHistoryArtifacts(selectedHistoryJob);
+  };
+
+  const downloadHistoryArtifact = (artifact: Artifact) => {
+    setHistoryStatus(`downloading ${artifact.kind}`);
+    downloadArtifact(artifact)
+      .then((filename) => setHistoryStatus(`downloaded ${filename}`))
+      .catch((error: Error) => setHistoryStatus(error.message));
+  };
 
   return (
     <main>
@@ -1024,7 +1115,18 @@ function StudioApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
           <Tabs.Trigger value="history">history</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="create"><StudioForm onJobsLoaded={setJobs} /></Tabs.Content>
-        <Tabs.Content value="history"><History jobs={jobs} onRefresh={loadJobs} onSelect={setSelectedHistoryJob} /></Tabs.Content>
+        <Tabs.Content value="history">
+          <section className="history-shell">
+            <History jobs={jobs} onRefresh={loadJobs} onSelect={loadHistoryArtifacts} />
+            <HistoryDetail
+              job={selectedHistoryJob}
+              artifacts={historyArtifacts}
+              status={historyStatus}
+              onRefreshArtifacts={refreshSelectedHistoryArtifacts}
+              onDownload={downloadHistoryArtifact}
+            />
+          </section>
+        </Tabs.Content>
       </Tabs.Root>
     </main>
   );

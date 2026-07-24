@@ -18,6 +18,16 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn('disabled={!job || TERMINAL_STATES.has(job.state)}', self.source)
         self.assertIn('if (!currentJob || TERMINAL_STATES.has(currentJob.state)) return;', self.source)
 
+    def test_history_rows_open_artifact_and_reproducibility_panel(self) -> None:
+        self.assertIn("function HistoryDetail", self.source)
+        self.assertIn("selectedHistoryJob", self.source)
+        self.assertIn("setHistoryArtifacts(payload.artifacts ?? [])", self.source)
+        self.assertIn("downloadHistoryArtifact", self.source)
+        self.assertIn("reproducibility metadata", self.source)
+        self.assertIn("resolved_model_version", self.source)
+        self.assertIn("/v1/media/jobs/${job.id}/artifacts", self.source)
+        self.assertIn("<History jobs={jobs} onRefresh={loadJobs} onSelect={loadHistoryArtifacts} />", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

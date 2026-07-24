@@ -383,6 +383,37 @@ dd {
   margin: 16px 20px 28px;
 }
 
+.history-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 14px;
+  padding: 0 20px 28px;
+}
+
+.history-shell .history {
+  margin: 16px 0 0;
+}
+
+.history-detail {
+  align-self: start;
+  background: #fff;
+  border: 1px solid #d6dde3;
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.history-detail small {
+  color: #66727d;
+  display: block;
+  margin-top: 2px;
+}
+
+.empty-state {
+  color: #66727d;
+  margin-top: 14px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -408,6 +439,10 @@ code {
 
 @media (max-width: 1080px) {
   .workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .history-shell {
     grid-template-columns: 1fr;
   }
 
