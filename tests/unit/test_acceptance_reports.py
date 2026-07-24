@@ -1096,6 +1096,19 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["open_webui_preservation_ready"])
         self.assertIn("Open WebUI preservation requires operator review before handoff", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_cutover_plan_has_unresolved_warnings(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                warnings=["production HTTPS port is occupied by an unreviewed listener"]
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["cutover_warnings_ready"])
+        self.assertIn("cutover plan has unresolved warnings", report["acceptance_blockers"])
+
     def test_latest_cutover_preservation_snapshot_reads_only_direct_supported_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

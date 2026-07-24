@@ -947,6 +947,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("old-stack backup verification evidence is missing from cutover plan")
         if int(preservation.get("resource_count") or 0) <= 0:
             blockers.append("cutover preservation plan lists no old rollback resources")
+        cutover_warnings = _as_string_list(preservation.get("warnings"))
+        if cutover_warnings:
+            blockers.append("cutover plan has unresolved warnings")
         hardware = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
         if hardware.get("available") is not True:
             blockers.append("cutover hardware readiness is unavailable")
@@ -1142,10 +1145,14 @@ def markdown_report(report: dict[str, Any]) -> str:
         "source_path",
         "created_at",
         "reviewed_by",
-        "old_stack_backup_verification_status",
-        "resource_count",
-    ):
+            "old_stack_backup_verification_status",
+            "resource_count",
+        ):
         preservation_summary_rows.append([key, _format_value(preservation.get(key))])
+    cutover_warnings = _as_string_list(preservation.get("warnings"))
+    preservation_summary_rows.append(["warning_count", _format_value(len(cutover_warnings))])
+    for warning in cutover_warnings[:10]:
+        preservation_summary_rows.append(["warning", _format_value(warning)])
     for key in (
         "profile",
         "accepted",
@@ -1349,6 +1356,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
+    cutover_warnings = _as_string_list(preservation.get("warnings"))
     open_webui_preservation_ready = (
         open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True
     )
@@ -1443,7 +1451,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True
-        and open_webui_preservation_ready,
+        and open_webui_preservation_ready
+        and not cutover_warnings,
+        "cutover_warnings_ready": not cutover_warnings,
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,
