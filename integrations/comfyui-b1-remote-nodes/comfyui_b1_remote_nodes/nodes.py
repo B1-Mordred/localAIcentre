@@ -19,6 +19,7 @@ TERMINAL_JOB_STATES = {"completed", "cancelled", "failed", "expired", "recovery_
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_OUTPUT_DIR = "b1-artifacts"
+DEFAULT_MAX_DATA_URL_BYTES = 256 * 1024 * 1024
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -154,11 +155,48 @@ def parse_json_object(value: str, field_name: str) -> dict[str, Any]:
     return parsed
 
 
+def max_data_url_bytes() -> int:
+    raw = os.getenv("B1_AI_HUB_MAX_DATA_URL_BYTES")
+    if raw is None:
+        return DEFAULT_MAX_DATA_URL_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_DATA_URL_BYTES
+    return value if value > 0 else DEFAULT_MAX_DATA_URL_BYTES
+
+
+def validate_data_url_reference(reference: str, kind: str) -> None:
+    header, separator, encoded = reference.partition(",")
+    if not separator or not header.startswith("data:"):
+        raise B1RemoteNodeError(f"{kind} data URL must include media metadata and payload")
+    metadata = header.removeprefix("data:")
+    parts = [part.strip().lower() for part in metadata.split(";") if part.strip()]
+    mime_type = parts[0] if parts and "/" in parts[0] else ""
+    expected_prefix = f"{kind.strip().lower()}/" if kind.strip().lower() in {"image", "audio", "video"} else ""
+    if expected_prefix and not mime_type.startswith(expected_prefix):
+        raise B1RemoteNodeError(f"{kind} data URL must use a {expected_prefix} media type")
+    if "base64" not in parts[1:]:
+        raise B1RemoteNodeError(f"{kind} data URL must be base64 encoded")
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise B1RemoteNodeError(f"{kind} data URL payload is not valid base64") from exc
+    if not content:
+        raise B1RemoteNodeError(f"{kind} data URL payload is empty")
+    limit = max_data_url_bytes()
+    if len(content) > limit:
+        raise B1RemoteNodeError(f"{kind} data URL payload exceeds {limit} bytes")
+
+
 def require_media_reference(value: str, kind: str) -> str:
     reference = value.strip()
     if not reference:
         raise B1RemoteNodeError(f"{kind} reference is required")
-    if reference.startswith("/artifacts/") or reference.startswith("data:"):
+    if reference.startswith("/artifacts/"):
+        return reference
+    if reference.startswith("data:"):
+        validate_data_url_reference(reference, kind)
         return reference
     if reference.startswith("{"):
         parse_json_object(reference, f"{kind} reference")

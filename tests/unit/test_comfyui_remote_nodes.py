@@ -198,6 +198,15 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(nodes.require_media_reference("/artifacts/images/job/0.png", "image"), "/artifacts/images/job/0.png")
         self.assertEqual(nodes.require_media_reference("data:image/png;base64,AAAA", "image"), "data:image/png;base64,AAAA")
 
+    def test_media_reference_data_urls_must_be_bounded_base64_media(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("data:image/png,not-base64", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("data:text/plain;base64,AAAA", "image")
+        with EnvPatch(B1_AI_HUB_MAX_DATA_URL_BYTES="2"):
+            with self.assertRaises(nodes.B1RemoteNodeError):
+                nodes.require_media_reference("data:image/png;base64,QUFB", "image")
+
     def test_required_node_classes_are_registered(self) -> None:
         for name in [
             "B1ListModels",
