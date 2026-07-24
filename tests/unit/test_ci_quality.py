@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SHA_REF_RE = re.compile(r"@[0-9a-f]{40}\b")
+IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}\b")
 
 
 def flatten_strings(value: Any) -> list[str]:
@@ -41,6 +44,22 @@ class CiQualityGateTests(unittest.TestCase):
             set(self.workflow["jobs"]),
             {"backend", "frontend", "security-and-sbom", "containers"},
         )
+
+    def test_github_actions_are_pinned_to_immutable_commits(self) -> None:
+        for job_name, job in self.workflow["jobs"].items():
+            for step in job.get("steps", []):
+                uses = step.get("uses")
+                if not uses:
+                    continue
+                with self.subTest(job=job_name, uses=uses):
+                    self.assertRegex(uses, SHA_REF_RE)
+                    self.assertNotRegex(uses, r"@v\d+\b")
+
+    def test_github_runner_labels_are_fixed(self) -> None:
+        for job_name, job in self.workflow["jobs"].items():
+            with self.subTest(job=job_name):
+                self.assertEqual(job["runs-on"], "ubuntu-24.04")
+                self.assertNotIn("-latest", job["runs-on"])
 
     def test_backend_job_validates_compose_unit_tests_openapi_and_migrations(self) -> None:
         backend = self.workflow["jobs"]["backend"]
@@ -155,14 +174,18 @@ class CiQualityGateTests(unittest.TestCase):
         security = self.workflow["jobs"]["security-and-sbom"]
         commands = "\n".join(flatten_strings(security))
 
-        self.assertEqual(self.workflow["env"]["CYCLONEDX_CLI_IMAGE"], "cyclonedx/cyclonedx-cli:0.29.1")
+        self.assertEqual(
+            self.workflow["env"]["CYCLONEDX_CLI_IMAGE"],
+            "cyclonedx/cyclonedx-cli:0.29.1@sha256:f025573a1dcc12971d711badf32bff1e030192a051a3a4987204fc6b79f91b6c",
+        )
+        self.assertRegex(self.workflow["env"]["CYCLONEDX_CLI_IMAGE"], IMAGE_DIGEST_RE)
         self.assertNotIn(":latest", self.workflow["env"]["CYCLONEDX_CLI_IMAGE"])
         self.assertIn("pip-audit==2.9.0", commands)
         self.assertIn("make secret-scan", commands)
         self.assertIn("make sbom", commands)
         self.assertIn("make voicebox-audit-inventory", commands)
         self.assertIn("validate --input-file /sbom/b1-ai-hub.cdx.json", commands)
-        self.assertIn("actions/upload-artifact@v4", commands)
+        self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", commands)
         self.assertIn("artifacts/pip-audit/voicebox-constraints.json", commands)
         self.assertIn("voicebox-pip-audit", commands)
         for path in (
@@ -181,7 +204,11 @@ class CiQualityGateTests(unittest.TestCase):
         strict_image_scan = steps["Image vulnerability scan"]["run"]
         upstream_inventory = steps["Upstream-heavy image vulnerability inventory"]["run"]
 
-        self.assertEqual(self.workflow["env"]["TRIVY_IMAGE"], "aquasec/trivy:0.66.0")
+        self.assertEqual(
+            self.workflow["env"]["TRIVY_IMAGE"],
+            "aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e",
+        )
+        self.assertRegex(self.workflow["env"]["TRIVY_IMAGE"], IMAGE_DIGEST_RE)
         self.assertNotIn(":latest", self.workflow["env"]["TRIVY_IMAGE"])
         for image, context in (
             ("b1-ai-hub/control-plane:ci", "services/control-plane"),
@@ -214,7 +241,10 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("b1-ai-hub/voicebox:ci", upstream_inventory)
         self.assertIn("image --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed", upstream_inventory)
         self.assertIn('report="$(echo "$image" | tr \'/:\' \'--\').trivy.json"', upstream_inventory)
-        self.assertIn("actions/upload-artifact@v4", steps["Upload upstream-heavy vulnerability inventory"]["uses"])
+        self.assertIn(
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            steps["Upload upstream-heavy vulnerability inventory"]["uses"],
+        )
 
 
 if __name__ == "__main__":

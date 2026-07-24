@@ -11,16 +11,16 @@ permissions:
 env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "22.18.0"
-  TRIVY_IMAGE: "aquasec/trivy:0.66.0"
-  CYCLONEDX_CLI_IMAGE: "cyclonedx/cyclonedx-cli:0.29.1"
+  TRIVY_IMAGE: "aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e"
+  CYCLONEDX_CLI_IMAGE: "cyclonedx/cyclonedx-cli:0.29.1@sha256:f025573a1dcc12971d711badf32bff1e030192a051a3a4987204fc6b79f91b6c"
 
 jobs:
   backend:
     name: Backend, Compose, and API Schema
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install backend test dependencies
@@ -44,7 +44,7 @@ jobs:
 
   frontend:
     name: Frontend Build and NPM Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -52,8 +52,8 @@ jobs:
           - web/control-center
           - web/media-studio
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -70,10 +70,10 @@ jobs:
 
   security-and-sbom:
     name: Secret Scan, SBOM, and Dependency Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install audit tools
@@ -98,13 +98,13 @@ jobs:
       - name: Voicebox constraints vulnerability inventory
         run: make voicebox-audit-inventory
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: b1-ai-hub-sbom
           path: artifacts/sbom/b1-ai-hub.cdx.json
           if-no-files-found: error
       - name: Upload Voicebox vulnerability inventory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: voicebox-pip-audit
           path: artifacts/pip-audit/voicebox-constraints.json
@@ -112,9 +112,9 @@ jobs:
 
   containers:
     name: Container Builds and Image Vulnerability Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Build service images
         run: |
           docker build -t b1-ai-hub/control-plane:ci services/control-plane
@@ -172,7 +172,7 @@ jobs:
               "$image"
           done
       - name: Upload upstream-heavy vulnerability inventory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: upstream-heavy-trivy
           path: artifacts/trivy/*.trivy.json
