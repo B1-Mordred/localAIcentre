@@ -58,6 +58,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "system_stats_accessible",
     "models_accessible",
     "queue_accessible",
+    "upload_image_accessible",
     "prompt_submission",
     "websocket_events",
     "history_available",

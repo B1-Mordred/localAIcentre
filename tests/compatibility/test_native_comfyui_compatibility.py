@@ -22,6 +22,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "system_stats_accessible",
     "models_accessible",
     "queue_accessible",
+    "upload_image_accessible",
     "prompt_submission",
     "websocket_events",
     "history_available",
@@ -29,6 +30,38 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
 )
 
 COMFYUI_OUTPUT_KEYS = ("images", "videos", "gifs", "audio")
+TINY_PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000049454e44ae426082"
+)
+
+
+def multipart_form_data(fields: dict[str, str], files: dict[str, tuple[str, str, bytes]]) -> tuple[bytes, str]:
+    boundary = f"b1-comfyui-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
+                value.encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+    for name, (filename, content_type, body) in files.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode("ascii"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
+                body,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -160,6 +193,26 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             status = int(getattr(response, "status", 200))
         return body, response_headers, status
 
+    @classmethod
+    def request_multipart_json(
+        cls,
+        method: str,
+        path: str,
+        fields: dict[str, str],
+        files: dict[str, tuple[str, str, bytes]],
+        timeout: float | None = None,
+    ) -> dict[str, Any] | list[Any]:
+        body, content_type = multipart_form_data(fields, files)
+        headers = cls.headers()
+        headers["Content-Type"] = content_type
+        request = urllib.request.Request(cls.url(path), data=body, headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
+            response_body = response.read()
+        decoded = json.loads(response_body.decode("utf-8"))
+        if not isinstance(decoded, (dict, list)):
+            raise AssertionError(f"{path} did not return a JSON object or array")
+        return decoded
+
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
         self.checks[name] = {
             "status": status,
@@ -176,6 +229,25 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.record_check(name, path=path, **sample)
         self.samples.append({"label": path.strip("/") or "root", **sample})
         return payload
+
+    def verify_image_upload(self) -> None:
+        filename = f"b1-native-comfyui-upload-{uuid.uuid4().hex}.png"
+        payload = self.request_multipart_json(
+            "POST",
+            "/upload/image",
+            {"type": "input", "overwrite": "true"},
+            {"image": (filename, "image/png", TINY_PNG_BYTES)},
+            timeout=60,
+        )
+        self.assertIsInstance(payload, dict)
+        response_keys = sorted(str(key) for key in payload.keys()) if isinstance(payload, dict) else []
+        self.record_check(
+            "upload_image_accessible",
+            path="/upload/image",
+            filename=filename,
+            response_keys=response_keys,
+        )
+        self.samples.append({"label": "upload-image", "filename": filename, "response_keys": response_keys})
 
     async def connect_websocket(self):
         import websockets
@@ -322,6 +394,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.record_metadata_check("system_stats_accessible", "/system_stats")
         self.record_metadata_check("models_accessible", "/models")
         self.record_metadata_check("queue_accessible", "/queue")
+        self.verify_image_upload()
 
         prompt_id = asyncio.run(self.submit_prompt_and_collect_ws())
         history = self.wait_for_history(prompt_id)

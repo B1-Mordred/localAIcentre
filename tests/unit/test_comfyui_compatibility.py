@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+from tests.compatibility import test_native_comfyui_compatibility as native_comfyui_live  # noqa: E402
 
 try:
     from fastapi import Response  # noqa: E402
@@ -28,6 +29,23 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test e
     MISSING_DEPENDENCY = exc.name
 else:
     MISSING_DEPENDENCY = ""
+
+
+class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
+    def test_multipart_form_data_builds_upload_image_body_without_credentials(self) -> None:
+        body, content_type = native_comfyui_live.multipart_form_data(
+            {"type": "input", "overwrite": "true"},
+            {"image": ("upload.png", "image/png", native_comfyui_live.TINY_PNG_BYTES)},
+        )
+
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary=b1-comfyui-"))
+        self.assertIn(b'name="type"', body)
+        self.assertIn(b"input", body)
+        self.assertIn(b'name="image"; filename="upload.png"', body)
+        self.assertIn(b"Content-Type: image/png", body)
+        self.assertIn(native_comfyui_live.TINY_PNG_BYTES, body)
+        self.assertNotIn(b"Authorization", body)
+        self.assertNotIn(b"Bearer", body)
 
 
 class FakeRequest:
