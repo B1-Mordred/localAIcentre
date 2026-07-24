@@ -31,13 +31,24 @@ def manifest(
     runtimes: list[str],
     preferred_runtime: str,
     vram_gib: float = 0.0,
+    operations: list[str] | None = None,
 ) -> ModelManifest:
+    default_operations = {
+        "llm": ["chat"],
+        "vlm": ["chat"],
+        "embedding": ["embedding"],
+        "tts": ["text-to-speech"],
+        "stt": ["transcription"],
+        "image": ["image-generation", "image-edit"],
+        "video": ["video-generation", "image-to-video"],
+        "workflow": ["workflow"],
+    }
     return ModelManifest(
         id=model_id,
         version="0.1.0",
         display_name=model_id,
         modality=modality,
-        operations=["test"],
+        operations=operations or default_operations.get(modality, ["test"]),
         source=ManifestSource(type="catalog", url="https://models.ai.b1.germering/test", revision="0.1.0"),
         files=[ManifestFile(path="internal", sha256="0" * 64, size_bytes=1)],
         runtimes=runtimes,
@@ -91,6 +102,8 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertEqual(public["adapter_contract"]["surfaces"]["submit"], "native-http-websocket")
         self.assertEqual(public["adapter_contract"]["methods"]["load_warm_model"], "b1-runtime-hooks")
         self.assertEqual(public["capabilities"]["modalities"], ["image", "video", "workflow"])
+        self.assertIn("comfyui-prompt", public["capabilities"]["operations"])
+        self.assertIn("image-generation", public["capabilities"]["operations"])
         self.assertTrue(public["capabilities"]["requires_gpu"])
         self.assertTrue(public["native_api"])
 
@@ -103,6 +116,51 @@ class RuntimeAdapterTests(unittest.TestCase):
         resolution = self.registry().resolve(catalog.require_alias("image-flex"), runtime_policy="non_comfy_only")
         self.assertEqual(resolution.runtime, "localai")
         self.assertTrue(resolution.requires_gpu)
+
+    def test_manifest_operations_are_enforced_during_resolution(self) -> None:
+        catalog = ModelCatalog(
+            aliases=[AliasDefinition(alias="image-flex", modality="image", preferred_runtime="localai", status="installed")],
+            manifests=[
+                manifest(
+                    "image-flex-model",
+                    "image",
+                    ["image-flex"],
+                    ["localai"],
+                    "localai",
+                    vram_gib=1.0,
+                    operations=["image-edit"],
+                )
+            ],
+            policy=ResourcePolicy(),
+        )
+
+        with self.assertRaises(RuntimeResolutionError) as caught:
+            self.registry().resolve(catalog.require_alias("image-flex"), operation="image-generation")
+
+        self.assertIn("has no compatible runtime", str(caught.exception))
+        self.assertIn("operation image-generation", str(caught.exception))
+        self.assertIn("manifest operations image-edit", str(caught.exception))
+
+    def test_operation_aliases_allow_endpoint_specific_names(self) -> None:
+        registry = self.registry()
+        cases = [
+            ("chat-model", "llm", "chat-default", ["localai"], "localai", ["chat"], "responses", "localai"),
+            ("embed-model", "embedding", "embedding-default", ["audio-cpu"], "audio-cpu", ["embedding"], "embeddings", "audio-cpu"),
+            ("image-model", "image", "image-default", ["comfyui"], "comfyui", ["text-to-image"], "image-generation", "comfyui"),
+            ("tts-model", "tts", "tts-fast", ["audio-cpu"], "audio-cpu", ["text-to-speech"], "speech", "audio-cpu"),
+            ("stt-model", "stt", "stt-default", ["audio-cpu"], "audio-cpu", ["transcription"], "audio-transcriptions", "audio-cpu"),
+        ]
+        for model_id, modality, alias_name, runtimes, preferred, operations, requested_operation, expected_runtime in cases:
+            with self.subTest(alias=alias_name, requested_operation=requested_operation):
+                catalog = ModelCatalog(
+                    aliases=[AliasDefinition(alias=alias_name, modality=modality, preferred_runtime=preferred, status="installed")],
+                    manifests=[manifest(model_id, modality, [alias_name], runtimes, preferred, operations=operations)],
+                    policy=ResourcePolicy(),
+                )
+
+                resolution = registry.resolve(catalog.require_alias(alias_name), operation=requested_operation)
+
+                self.assertEqual(resolution.runtime, expected_runtime)
 
     def test_alias_preferred_runtime_override_selects_compatible_runtime(self) -> None:
         catalog = ModelCatalog(

@@ -9,6 +9,39 @@ from .catalog import CatalogAlias
 
 ADAPTER_CONTRACT_VERSION = "b1-runtime-adapter/v1alpha1"
 
+OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
+    "llm": {
+        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "text-generation"},
+    },
+    "vlm": {
+        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "vision", "vision-analysis"},
+    },
+    "embedding": {
+        "embedding": {"embedding", "embeddings"},
+    },
+    "tts": {
+        "text-to-speech": {"audio-speech", "speech", "text-to-speech", "tts"},
+        "voice-cloning": {"clone", "voice-clone", "voice-cloning"},
+    },
+    "stt": {
+        "transcription": {"audio-transcription", "audio-transcriptions", "speech-to-text", "stt", "transcription", "transcriptions"},
+    },
+    "image": {
+        "image-generation": {"generation", "image-generation", "text-to-image"},
+        "image-edit": {"edit", "image-edit", "image-to-image", "inpaint", "inpainting", "outpaint", "outpainting", "inpainting-outpainting"},
+        "background-removal": {"background-removal", "remove-background"},
+        "upscaling": {"upscale", "upscaling", "image-upscale"},
+    },
+    "video": {
+        "video-generation": {"generation", "text-to-video", "video-generation"},
+        "image-to-video": {"image-to-video", "image-video", "video-image"},
+        "frame-interpolation": {"frame-interpolation", "interpolation"},
+    },
+    "workflow": {
+        "workflow": {"comfyui-prompt", "native-workflow", "workflow"},
+    },
+}
+
 PRIVATE_RUNTIME_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -25,6 +58,25 @@ PRIVATE_RUNTIME_NETS = [
 
 class RuntimeResolutionError(ValueError):
     pass
+
+
+def normalize_operation(value: str) -> str:
+    return value.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def operation_alias_set(operation: str, modality: str) -> set[str]:
+    normalized = normalize_operation(operation)
+    for group in OPERATION_ALIASES.get(modality, {}).values():
+        if normalized in group:
+            return group
+    return {normalized}
+
+
+def operation_is_supported(requested: str, supported: list[str] | tuple[str, ...], modality: str) -> bool:
+    if not supported:
+        return True
+    requested_group = operation_alias_set(requested, modality)
+    return any(requested_group & operation_alias_set(operation, modality) for operation in supported)
 
 
 def validate_external_runtime_base_url(value: str) -> tuple[str, str | None]:
@@ -97,7 +149,9 @@ class RuntimeAdapter:
             return False
         if alias.alias.modality not in self.modalities:
             return False
-        if operation and self.operations and operation not in self.operations:
+        if operation and not operation_is_supported(operation, alias.operations, alias.alias.modality):
+            return False
+        if operation and not operation_is_supported(operation, self.operations, alias.alias.modality):
             return False
         return self.name in alias.runtimes
 
@@ -289,7 +343,12 @@ class RuntimeRegistry:
             raise RuntimeResolutionError(f"alias {alias.alias.alias} is not backed by an installed model manifest")
         candidates = self.compatible_runtimes(alias, operation, runtime_policy)
         if not candidates:
-            raise RuntimeResolutionError(f"alias {alias.alias.alias} has no compatible runtime for policy {runtime_policy}")
+            details = [f"policy {runtime_policy}"]
+            if operation:
+                details.append(f"operation {operation}")
+                details.append(f"manifest operations {', '.join(alias.operations) or 'none'}")
+            details.append(f"candidate runtimes {', '.join(alias.runtimes) or 'none'}")
+            raise RuntimeResolutionError(f"alias {alias.alias.alias} has no compatible runtime for {'; '.join(details)}")
 
         preferred = alias.preferred_runtime
         selected = next((adapter for adapter in candidates if adapter.name == preferred), candidates[0])
@@ -331,7 +390,17 @@ def build_runtime_registry(
                 name="localai",
                 base_url=localai_url,
                 modalities=("llm", "vlm", "embedding", "tts", "stt", "image", "video"),
-                operations=(),
+                operations=(
+                    "chat",
+                    "responses",
+                    "embedding",
+                    "text-to-speech",
+                    "transcription",
+                    "image-generation",
+                    "image-edit",
+                    "video-generation",
+                    "image-to-video",
+                ),
                 requires_gpu=True,
                 health_path="/readyz",
                 openai_compatible=True,
@@ -340,7 +409,17 @@ def build_runtime_registry(
                 name="comfyui",
                 base_url=comfyui_url,
                 modalities=("image", "video", "workflow"),
-                operations=(),
+                operations=(
+                    "comfyui-prompt",
+                    "workflow",
+                    "image-generation",
+                    "image-edit",
+                    "background-removal",
+                    "upscaling",
+                    "video-generation",
+                    "image-to-video",
+                    "frame-interpolation",
+                ),
                 requires_gpu=True,
                 native_api=True,
             ),
@@ -348,7 +427,7 @@ def build_runtime_registry(
                 name="voicebox",
                 base_url=voicebox_url,
                 modalities=("tts",),
-                operations=(),
+                operations=("text-to-speech", "voice-cloning"),
                 requires_gpu=True,
                 native_api=True,
             ),
@@ -356,7 +435,7 @@ def build_runtime_registry(
                 name="audio-cpu",
                 base_url=audio_cpu_url,
                 modalities=("embedding", "tts", "stt"),
-                operations=(),
+                operations=("embedding", "text-to-speech", "transcription"),
                 requires_gpu=False,
                 openai_compatible=True,
             ),
@@ -364,7 +443,17 @@ def build_runtime_registry(
                 name="openai-compatible",
                 base_url=openai_url,
                 modalities=("llm", "vlm", "embedding", "tts", "stt", "image", "video"),
-                operations=(),
+                operations=(
+                    "chat",
+                    "responses",
+                    "embedding",
+                    "text-to-speech",
+                    "transcription",
+                    "image-generation",
+                    "image-edit",
+                    "video-generation",
+                    "image-to-video",
+                ),
                 requires_gpu=False,
                 external=True,
                 health_path="/v1/models",
@@ -377,7 +466,17 @@ def build_runtime_registry(
                 name="generic-http",
                 base_url=generic_url,
                 modalities=("llm", "vlm", "embedding", "tts", "stt", "image", "video"),
-                operations=(),
+                operations=(
+                    "chat",
+                    "responses",
+                    "embedding",
+                    "text-to-speech",
+                    "transcription",
+                    "image-generation",
+                    "image-edit",
+                    "video-generation",
+                    "image-to-video",
+                ),
                 requires_gpu=False,
                 external=True,
                 configured=generic_error is None,
