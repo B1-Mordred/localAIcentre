@@ -90,9 +90,6 @@ class FakeDatabase:
     async def requeue_interrupted_waiting_jobs(self, runtime_names: list[str]) -> int:
         return self.waiting_requeues
 
-    async def requeue_recovery_jobs(self, runtime_names: list[str]) -> int:
-        raise AssertionError("startup reconciliation must not requeue every recovery_required job")
-
     async def claim_next_model_download(self) -> dict[str, Any] | None:
         self.model_download_claims += 1
         if self.model_download is None or self.model_download["status"] not in {"queued", "running", "pausing", "cancelling"}:

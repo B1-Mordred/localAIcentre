@@ -14,6 +14,7 @@
 - Added generated-artifact retention planning and confirmed cleanup through the Storage tab and `POST /admin/artifacts/*`, preserving protected Voicebox samples and marking reclaimed job artifacts as deleted.
 - Added configurable admission controls for media job queue/rate limits and artifact storage headroom, exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing.
 - Added an administrator/operator runtime reservation fleet view at `GET /admin/runtime-reservations` and Jobs tab controls for reservation creation, cancellation, filtering, and current GPU lease inspection.
+- Hardened runtime reservation creation against conflicting active GPU reservations so a second batch client cannot reserve the single GPU while another owner/model reservation is active.
 - Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
@@ -44,6 +45,7 @@
 - Centralized credential-query detection for model source and remote-manifest URLs, including signed URL keys such as `download_token`, `X-Amz-Signature`, and `X-Goog-Credential`.
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
 - Tightened runner startup reconciliation so only pre-runtime `waiting_for_gpu` claims are automatically requeued; jobs interrupted during runtime preparation or execution remain `recovery_required` for explicit operator retry.
+- Removed the obsolete blanket recovery requeue helper so `recovery_required` jobs only leave that state through explicit retry, cancellation, failure, or expiry workflows.
 - Removed the fixed 120-second backend timeout from public and admin job SSE streams so long-running media jobs remain observable until terminal state or client disconnect.
 - Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.
 - Added an administrator/operator job SSE route at `GET /admin/jobs/{job_id}/events` so Control Center can observe any durable job without weakening public owner-scoped media streams.

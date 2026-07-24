@@ -2104,22 +2104,6 @@ async def requeue_interrupted_waiting_jobs(runtime_names: list[str]) -> int:
         )
     return int(result.rowcount or 0)
 
-
-async def requeue_recovery_jobs(runtime_names: list[str]) -> int:
-    if engine is None:
-        raise RuntimeError("database engine is not configured")
-    if not runtime_names:
-        return 0
-    now = datetime.now(tz=UTC)
-    async with engine.begin() as conn:
-        result = await conn.execute(
-            update(jobs)
-            .where(and_(jobs.c.runtime.in_(runtime_names), jobs.c.state == "recovery_required"))
-            .values(state="queued", stage="queued", progress=10, completed_at=None, updated_at=now)
-        )
-    return int(result.rowcount or 0)
-
-
 async def job_counts_by_state() -> list[dict[str, Any]]:
     if engine is None:
         raise RuntimeError("database engine is not configured")

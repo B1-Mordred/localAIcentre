@@ -84,6 +84,25 @@ class FakeReservationDatabase:
         }
         return dict(self.row)
 
+    async def runtime_reservation_gate(
+        self,
+        owner_id: str,
+        runtime: str,
+        resolved_model_version: str,
+        runtime_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        row = self.row
+        if not row or row.get("status") != "active" or row.get("expires_at") <= datetime.now(tz=UTC):
+            return {"allowed": True, "reservation": None, "active_reservation": None}
+        if runtime_names and row.get("runtime") not in runtime_names:
+            return {"allowed": True, "reservation": None, "active_reservation": None}
+        matches = (
+            row.get("owner_id") == owner_id
+            and row.get("runtime") == runtime
+            and row.get("resolved_model_version") == resolved_model_version
+        )
+        return {"allowed": matches, "reservation": dict(row) if matches else None, "active_reservation": dict(row)}
+
 
 def fake_catalog_alias(*, runtimes: list[str] | None = None, model_id: str = "chat-model", version: str = "1.0.0") -> Any:
     return SimpleNamespace(
@@ -165,6 +184,25 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
         self.assertEqual(fake_database.inserted[0]["duration_seconds"], 600)
         self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.created")
+
+    def test_create_reservation_rejects_conflicting_active_gpu_reservation(self) -> None:
+        fake_database = FakeReservationDatabase(reservation_row(owner_id="other_client"))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_attr("require_catalog_alias", lambda *args, **kwargs: fake_catalog_alias())
+        self.patch_attr("runtime_registry_snapshot", lambda: fake_runtime_registry(localai=fake_adapter()))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.runtime_reservation_create(
+                    main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=600, reason="batch window")
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("already reserved", str(caught.exception.detail))
+        self.assertEqual(caught.exception.detail["reservation"]["owner_id"], "other_client")
+        self.assertEqual(fake_database.inserted, [])
 
     def test_create_reservation_rejects_cpu_runtime_before_insert(self) -> None:
         fake_database = FakeReservationDatabase()

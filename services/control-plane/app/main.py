@@ -7421,6 +7421,24 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
         raise HTTPException(status_code=422, detail=f"model alias {payload.model} is not compatible with runtime {payload.runtime}")
     if adapter.external and not settings.allow_external_providers:
         raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} is external and external providers are disabled")
+    resolved_model_version = f"{alias.manifest.id}@{alias.manifest.version}"
+    gate = await database.runtime_reservation_gate(auth.subject_id, payload.runtime, resolved_model_version, GPU_RUNTIMES)
+    if not gate.get("allowed"):
+        active = gate.get("active_reservation") or {}
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "GPU runtime is already reserved for another owner/model",
+                "reservation": {
+                    "id": active.get("id"),
+                    "owner_id": active.get("owner_id"),
+                    "runtime": active.get("runtime"),
+                    "model_alias": active.get("model_alias"),
+                    "resolved_model_version": active.get("resolved_model_version"),
+                    "expires_at": jsonable_encoder(active.get("expires_at")),
+                },
+            },
+        )
     reservation_id = f"reservation_{uuid.uuid4().hex}"
     row = await database.insert_runtime_reservation(
         {
@@ -7428,7 +7446,7 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
             "owner_id": auth.subject_id,
             "runtime": payload.runtime,
             "model_alias": payload.model,
-            "resolved_model_version": f"{alias.manifest.id}@{alias.manifest.version}",
+            "resolved_model_version": resolved_model_version,
             "duration_seconds": payload.duration_seconds,
             "reason": payload.reason,
             "expires_at": datetime.now(tz=UTC) + timedelta(seconds=payload.duration_seconds),
