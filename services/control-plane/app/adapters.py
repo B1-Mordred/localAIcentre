@@ -5,42 +5,9 @@ from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from .catalog import CatalogAlias
+from .catalog import CatalogAlias, operation_is_supported
 
 ADAPTER_CONTRACT_VERSION = "b1-runtime-adapter/v1alpha1"
-
-OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
-    "llm": {
-        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "text-generation"},
-    },
-    "vlm": {
-        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "vision", "vision-analysis"},
-    },
-    "embedding": {
-        "embedding": {"embedding", "embeddings"},
-    },
-    "tts": {
-        "text-to-speech": {"audio-speech", "speech", "text-to-speech", "tts"},
-        "voice-cloning": {"clone", "voice-clone", "voice-cloning"},
-    },
-    "stt": {
-        "transcription": {"audio-transcription", "audio-transcriptions", "speech-to-text", "stt", "transcription", "transcriptions"},
-    },
-    "image": {
-        "image-generation": {"generation", "image-generation", "text-to-image"},
-        "image-edit": {"edit", "image-edit", "image-to-image", "inpaint", "inpainting", "outpaint", "outpainting", "inpainting-outpainting"},
-        "background-removal": {"background-removal", "remove-background"},
-        "upscaling": {"upscale", "upscaling", "image-upscale"},
-    },
-    "video": {
-        "video-generation": {"generation", "text-to-video", "video-generation"},
-        "image-to-video": {"image-to-video", "image-video", "video-image"},
-        "frame-interpolation": {"frame-interpolation", "interpolation"},
-    },
-    "workflow": {
-        "workflow": {"comfyui-prompt", "native-workflow", "workflow"},
-    },
-}
 
 PRIVATE_RUNTIME_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -58,25 +25,6 @@ PRIVATE_RUNTIME_NETS = [
 
 class RuntimeResolutionError(ValueError):
     pass
-
-
-def normalize_operation(value: str) -> str:
-    return value.strip().lower().replace("_", "-").replace(" ", "-")
-
-
-def operation_alias_set(operation: str, modality: str) -> set[str]:
-    normalized = normalize_operation(operation)
-    for group in OPERATION_ALIASES.get(modality, {}).values():
-        if normalized in group:
-            return group
-    return {normalized}
-
-
-def operation_is_supported(requested: str, supported: list[str] | tuple[str, ...], modality: str) -> bool:
-    if not supported:
-        return True
-    requested_group = operation_alias_set(requested, modality)
-    return any(requested_group & operation_alias_set(operation, modality) for operation in supported)
 
 
 def validate_external_runtime_base_url(value: str) -> tuple[str, str | None]:

@@ -133,6 +133,76 @@ class CatalogTests(unittest.TestCase):
             with self.assertRaises(CatalogError):
                 load_catalog(root, self.policy)
 
+    def test_manifest_operations_are_canonicalized_by_modality(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            seed.mkdir()
+            (seed / "aliases.json").write_text(
+                json.dumps({"aliases": [{"alias": "image-default", "modality": "image", "preferred_runtime": "comfyui", "status": "installed"}]}),
+                encoding="utf-8",
+            )
+            (seed / "image.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "id": "image-model",
+                        "version": "1.0.0",
+                        "display_name": "Image Model",
+                        "modality": "image",
+                        "operations": ["text-to-image", "image-to-image"],
+                        "source": {"type": "catalog", "url": "https://models.ai.b1.germering/image", "revision": "1.0.0"},
+                        "files": [{"path": "image.safetensors", "sha256": "1" * 64, "size_bytes": 12}],
+                        "runtimes": ["comfyui"],
+                        "preferred_runtime": "comfyui",
+                        "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+                        "license": {"name": "test", "redistribution": "downloadable"},
+                        "execution_modes": ["hosted-inference"],
+                        "aliases": ["image-default"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            catalog = load_catalog(root, self.policy)
+            alias = catalog.require_alias("image-default")
+
+            self.assertEqual(alias.operations, ["image-generation", "image-edit"])
+
+    def test_manifest_operations_reject_wrong_modality_and_duplicate_aliases(self) -> None:
+        base_manifest = {
+            "id": "tts-model",
+            "version": "1.0.0",
+            "display_name": "TTS Model",
+            "modality": "tts",
+            "operations": ["text-to-speech"],
+            "source": {"type": "catalog", "url": "https://models.ai.b1.germering/tts", "revision": "1.0.0"},
+            "files": [{"path": "tts.onnx", "sha256": "1" * 64, "size_bytes": 12}],
+            "runtimes": ["audio-cpu"],
+            "preferred_runtime": "audio-cpu",
+            "resource_estimate": {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1},
+            "license": {"name": "test", "redistribution": "downloadable"},
+            "execution_modes": ["hosted-inference"],
+            "aliases": ["tts-fast"],
+        }
+        cases = [
+            (["transcription"], "unsupported tts operation transcription"),
+            (["speech", "text-to-speech"], "duplicate operation after normalization"),
+        ]
+        for operations, message in cases:
+            with self.subTest(operations=operations), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                seed = root / "seed"
+                seed.mkdir()
+                (seed / "aliases.json").write_text(
+                    json.dumps({"aliases": [{"alias": "tts-fast", "modality": "tts", "preferred_runtime": "audio-cpu", "status": "installed"}]}),
+                    encoding="utf-8",
+                )
+                manifest = {**base_manifest, "operations": operations}
+                (seed / "tts.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(CatalogError, message):
+                    load_catalog(root, self.policy)
+
     def test_extra_installed_manifest_activates_uninstalled_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

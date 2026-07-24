@@ -18,10 +18,72 @@ REDISTRIBUTION_POLICIES = {"downloadable", "inference-only", "restricted"}
 SOURCE_TYPES = {"catalog", "huggingface", "direct-url", "upload"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
+OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
+    "llm": {
+        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "text-generation"},
+    },
+    "vlm": {
+        "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "vision", "vision-analysis"},
+    },
+    "embedding": {
+        "embedding": {"embedding", "embeddings"},
+    },
+    "tts": {
+        "text-to-speech": {"audio-speech", "speech", "text-to-speech", "tts"},
+        "voice-cloning": {"clone", "voice-clone", "voice-cloning"},
+    },
+    "stt": {
+        "transcription": {"audio-transcription", "audio-transcriptions", "speech-to-text", "stt", "transcription", "transcriptions"},
+    },
+    "image": {
+        "image-generation": {"generation", "image-generation", "text-to-image"},
+        "image-edit": {"edit", "image-edit", "image-to-image", "inpaint", "inpainting", "outpaint", "outpainting", "inpainting-outpainting"},
+        "background-removal": {"background-removal", "remove-background"},
+        "upscaling": {"upscale", "upscaling", "image-upscale"},
+    },
+    "video": {
+        "video-generation": {"generation", "text-to-video", "video-generation"},
+        "image-to-video": {"image-to-video", "image-video", "video-image"},
+        "frame-interpolation": {"frame-interpolation", "interpolation"},
+    },
+    "workflow": {
+        "workflow": {"comfyui-prompt", "native-workflow", "workflow"},
+    },
+}
 
 
 class CatalogError(ValueError):
     pass
+
+
+def normalize_operation(value: str) -> str:
+    return value.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def canonical_operation(operation: str, modality: str) -> str | None:
+    normalized = normalize_operation(operation)
+    for canonical, aliases in OPERATION_ALIASES.get(modality, {}).items():
+        if normalized == canonical or normalized in aliases:
+            return canonical
+    return None
+
+
+def operation_alias_set(operation: str, modality: str) -> set[str]:
+    canonical = canonical_operation(operation, modality)
+    if canonical is None:
+        return {normalize_operation(operation)}
+    return OPERATION_ALIASES.get(modality, {}).get(canonical, {canonical}) | {canonical}
+
+
+def operation_is_supported(requested: str, supported: list[str] | tuple[str, ...], modality: str) -> bool:
+    if not supported:
+        return True
+    requested_group = operation_alias_set(requested, modality)
+    return any(requested_group & operation_alias_set(operation, modality) for operation in supported)
+
+
+def supported_operations_for_modality(modality: str) -> list[str]:
+    return sorted(OPERATION_ALIASES.get(modality, {}))
 
 
 @dataclass(frozen=True)
@@ -357,6 +419,22 @@ def _string_list(data: dict[str, Any], key: str, context: str, allowed: set[str]
     return list(value)
 
 
+def _operation_list(data: dict[str, Any], key: str, modality: str, context: str) -> list[str]:
+    raw = _string_list(data, key, context, min_items=1)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    allowed = supported_operations_for_modality(modality)
+    for operation in raw:
+        canonical = canonical_operation(operation, modality)
+        if canonical is None:
+            raise CatalogError(f"{context}.{key} has unsupported {modality} operation {operation}; supported operations: {', '.join(allowed)}")
+        if canonical in seen:
+            raise CatalogError(f"{context}.{key} has duplicate operation after normalization: {canonical}")
+        seen.add(canonical)
+        normalized.append(canonical)
+    return normalized
+
+
 def _validate_id(value: str, context: str) -> str:
     if not ID_PATTERN.match(value):
         raise CatalogError(f"{context} has invalid identifier: {value}")
@@ -538,7 +616,7 @@ def _parse_manifest(data: dict[str, Any], context: str) -> ModelManifest:
         display_name=_string(data, "display_name", context),
         description=_optional_string(data, "description", context),
         modality=modality,
-        operations=_string_list(data, "operations", context, min_items=1),
+        operations=_operation_list(data, "operations", modality, context),
         source=_parse_source(data["source"], f"{context}.source"),
         files=[_parse_file(item, f"{context}.files[{index}]") for index, item in enumerate(files)],
         runtimes=runtimes,
