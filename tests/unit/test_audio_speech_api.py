@@ -340,7 +340,15 @@ class AudioSpeechApiTests(unittest.TestCase):
 
         response = asyncio.run(
             main.audio_transcriptions(
-                FakeRequest({"model": "stt-default", "audio": "UklGRg==", "runtime_policy": "any"}),
+                FakeRequest(
+                    {
+                        "model": "stt-default",
+                        "audio": "UklGRg==",
+                        "runtime_policy": "any",
+                        "b1_resolved_model_version": "client-spoof@9.9.9",
+                        "b1_internal_note": "must-not-forward",
+                    }
+                ),
                 authorization="Bearer key",
             )
         )

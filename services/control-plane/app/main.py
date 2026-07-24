@@ -8100,7 +8100,7 @@ async def audio_transcriptions(request: Request, authorization: str | None = Hea
     resolution = resolve_catalog_alias_for_auth(model, "stt", auth, runtime_policy, operation="transcription")
     if resolution.runtime != "audio-cpu":
         raise HTTPException(status_code=422, detail=f"runtime {resolution.runtime} does not support CPU transcription forwarding")
-    forwarded = {key: value for key, value in payload.items() if key != "runtime_policy" and value is not None}
+    forwarded = {key: value for key, value in payload.items() if key != "runtime_policy" and not key.startswith("b1_") and value is not None}
     forwarded["model"] = resolution.model_id
     forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
     forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
