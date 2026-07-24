@@ -64,6 +64,7 @@ class OpenWebUiMigrationTests(unittest.TestCase):
             },
             "paths": {
                 "open_webui_data_candidates": [{"path": str(database_path.parent), "exists": True, "type": "directory"}],
+                "open_webui_data_roots": [{"path": str(database_path.parent), "exists": True, "type": "directory"}],
                 "open_webui_database_candidates": [
                     {
                         "path": str(database_path),
@@ -78,7 +79,14 @@ class OpenWebUiMigrationTests(unittest.TestCase):
                     }
                 ],
             },
-            "migration_readiness": {"open_webui": {"database_candidate_count": 1, "readable_sqlite_count": 1}},
+            "migration_readiness": {
+                "open_webui": {"database_candidate_count": 1, "readable_sqlite_count": 1},
+                "open_webui_data_roots": {
+                    "candidate_count": 1,
+                    "existing_directory_count": 1,
+                    "unreadable_or_unscannable": [],
+                },
+            },
         }
 
     def scope(self, include_path: Path) -> dict[str, Any]:
@@ -120,6 +128,8 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertTrue(plan["safety"]["does_not_read_database_rows"])
         self.assertTrue(plan["safety"]["does_not_import_automatically"])
         self.assertEqual(plan["open_webui"]["readable_database_count"], 1)
+        self.assertEqual(plan["open_webui"]["data_path_candidates"], [str(database_path.parent)])
+        self.assertEqual(plan["open_webui"]["unreadable_data_roots"], [])
         self.assertEqual(plan["open_webui"]["backed_up_database_candidate_count"], 1)
         self.assertEqual(plan["open_webui"]["database_candidates"][0]["backup_coverage"], "covered")
         self.assertEqual(plan["open_webui"]["database_candidates"][0]["table_counts"], {"chat": 1, "user": 1})
@@ -135,6 +145,41 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertTrue(plan["open_webui"]["backup_database_artifacts"][0]["sensitive"])
         self.assertNotIn("Private prompt title", json.dumps(plan, sort_keys=True))
         self.assertEqual(plan["warnings"], [])
+
+    def test_plan_warns_when_open_webui_root_is_discovered_but_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            compose = root / "old-open-webui" / "compose.yaml"
+            compose.parent.mkdir(parents=True, exist_ok=True)
+            compose.write_text("services: {}\n", encoding="utf-8")
+            inventory_payload = self.inventory(root, root / "unreadable" / "webui.db")
+            inventory_payload["paths"]["open_webui_database_candidates"] = []
+            inventory_payload["paths"]["open_webui_data_roots"] = [
+                {"path": "/var/lib/docker/volumes/open-webui/_data", "exists": None, "error": "PermissionError: denied"}
+            ]
+            inventory_payload["migration_readiness"]["open_webui"] = {"database_candidate_count": 0, "readable_sqlite_count": 0}
+            inventory_payload["migration_readiness"]["open_webui_data_roots"] = {
+                "candidate_count": 1,
+                "existing_directory_count": 0,
+                "unreadable_or_unscannable": [
+                    {"path": "/var/lib/docker/volumes/open-webui/_data", "reason": "PermissionError: denied"}
+                ],
+            }
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            backup_dir = self.make_backup(root, compose)
+
+            plan = open_webui_migration.build_plan(
+                inventory_path=inventory_path,
+                backup_dir=backup_dir,
+                restore_target="/restore/open-webui",
+            )
+
+        self.assertEqual(
+            plan["open_webui"]["unreadable_data_roots"],
+            [{"path": "/var/lib/docker/volumes/open-webui/_data", "reason": "PermissionError: denied"}],
+        )
+        self.assertTrue(any("could not be scanned" in warning for warning in plan["warnings"]))
+        self.assertEqual(plan["open_webui"]["recommended_strategy"], "no-readable-open-webui-database-found-preserve-old-stack")
 
     def test_plan_warns_when_readable_database_is_not_backed_up(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

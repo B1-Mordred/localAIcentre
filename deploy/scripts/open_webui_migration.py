@@ -91,11 +91,30 @@ def database_candidates(inventory: dict[str, Any]) -> list[dict[str, Any]]:
 
 def data_path_candidates(inventory: dict[str, Any]) -> list[str]:
     paths: list[str] = []
-    for item in inventory_paths(inventory, "open_webui_data_candidates"):
+    for item in inventory_paths(inventory, "open_webui_data_candidates") + inventory_paths(inventory, "open_webui_data_roots"):
         path = item.get("path")
         if isinstance(path, str) and item.get("exists") and path not in paths:
             paths.append(path)
     return sorted(paths)
+
+
+def unreadable_data_roots(inventory: dict[str, Any]) -> list[dict[str, str]]:
+    roots: list[dict[str, str]] = []
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    root_readiness = readiness.get("open_webui_data_roots") if isinstance(readiness.get("open_webui_data_roots"), dict) else {}
+    for item in root_readiness.get("unreadable_or_unscannable") or []:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and path:
+            roots.append({"path": path, "reason": str(item.get("reason") or "not readable by current user")})
+    seen = {item["path"] for item in roots}
+    for item in inventory_paths(inventory, "open_webui_data_roots"):
+        path = item.get("path")
+        if isinstance(path, str) and item.get("exists") is None and path not in seen:
+            roots.append({"path": path, "reason": str(item.get("error") or "not readable by current user")})
+            seen.add(path)
+    return sorted(roots, key=lambda item: item["path"])
 
 
 def looks_like_open_webui(*values: Any) -> bool:
@@ -270,12 +289,18 @@ def build_plan(
     artifacts = backup_database_artifacts(manifest)
     version_evidence = open_webui_container_version_evidence(inventory)
     backed_container_metadata = backed_up_open_webui_container_metadata(manifest, version_evidence)
+    unreadable_roots = unreadable_data_roots(inventory)
     readable = [item for item in databases if item["readable_sqlite"]]
     backed = [item for item in databases if item["backup_coverage"] == "covered"]
     readable_not_backed = [item for item in readable if item["backup_coverage"] != "covered"]
     warnings: list[str] = []
     if not readable:
         warnings.append("inventory did not contain a readable Open WebUI SQLite database; preserve the old stack for manual export")
+    if unreadable_roots:
+        warnings.append(
+            "Open WebUI data roots were discovered but could not be scanned by the inventory user; include the Docker volume in the reviewed old-stack backup or rerun inventory with read access: "
+            + ", ".join(item["path"] for item in unreadable_roots)
+        )
     if readable_not_backed:
         warnings.append(
             "readable Open WebUI database candidates are not covered by the verified old-stack backup: "
@@ -308,6 +333,7 @@ def build_plan(
         },
         "open_webui": {
             "data_path_candidates": data_path_candidates(inventory),
+            "unreadable_data_roots": unreadable_roots,
             "database_candidates": databases,
             "backup_database_artifacts": artifacts,
             "readable_database_count": len(readable),
