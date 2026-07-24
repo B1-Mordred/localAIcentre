@@ -11,6 +11,7 @@ import unittest
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,13 +75,14 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertEqual((view_root / "tokenizer.json").read_text(encoding="utf-8"), '{"model":"tiny"}')
 
     def test_safe_zip_archive_rejects_traversal(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            archive = Path(tmp) / "bad.zip"
-            with zipfile.ZipFile(archive, "w") as handle:
-                handle.writestr("../escape.gguf", b"nope")
+        for member_name in ("../escape.gguf", "%2e%2e/escape.gguf", "weights/safe%2Fescape.gguf"):
+            with self.subTest(member_name=member_name), tempfile.TemporaryDirectory() as tmp:
+                archive = Path(tmp) / "bad.zip"
+                with zipfile.ZipFile(archive, "w") as handle:
+                    handle.writestr(member_name, b"nope")
 
-            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unsafe relative path"):
-                model_lifecycle.inspect_archive(archive)
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unsafe"):
+                    model_lifecycle.inspect_archive(archive)
 
     def test_safe_zip_archive_rejects_symlink_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +287,41 @@ class ModelLifecycleTests(unittest.TestCase):
                 plan["files"][1]["source_url"],
                 "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_q4.onnx",
             )
+
+    def test_download_url_builders_reject_encoded_file_path_controls(self) -> None:
+        direct_payload = manifest_payload(
+            "5" * 64,
+            12,
+            source_url="https://downloads.example.org/models/",
+            source_type="direct-url",
+        )
+        direct_payload["files"] = [
+            {"path": "first.gguf", "sha256": "5" * 64, "size_bytes": 12},
+            {"path": "second.gguf", "sha256": "6" * 64, "size_bytes": 13},
+        ]
+        direct_manifest = parse_manifest_payload(direct_payload)
+        hf_payload = manifest_payload(
+            "7" * 64,
+            12,
+            source_url="https://huggingface.co/org/model",
+            source_type="huggingface",
+        )
+        hf_manifest = parse_manifest_payload(hf_payload)
+
+        for unsafe_path in (
+            "weights/%2e%2e/model.gguf",
+            "weights/safe%2Fmodel.gguf",
+            "weights/safe%5Cmodel.gguf",
+            "weights/safe%3Ftoken.gguf",
+            "weights/safe%23fragment.gguf",
+            "weights/%00model.gguf",
+            "C:/model.gguf",
+        ):
+            with self.subTest(unsafe_path=unsafe_path):
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unsafe"):
+                    model_lifecycle.direct_download_source_url(direct_manifest, SimpleNamespace(path=unsafe_path))
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "unsafe"):
+                    model_lifecycle.huggingface_download_source_url(hf_manifest, SimpleNamespace(path=unsafe_path))
 
     def test_download_plan_blocks_unsafe_huggingface_source(self) -> None:
         payload = manifest_payload(

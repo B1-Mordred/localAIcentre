@@ -78,6 +78,7 @@
 - Hardened resumed model downloads so partial `206` responses must match the requested `Content-Range` and `Content-Length` before bytes are appended to staged blobs.
 - Hardened artifact URL canonicalization so percent-encoded traversal, separators, and control characters are rejected before artifact access or Voicebox reference-sample linking.
 - Hardened workflow staged-upload references so percent-encoded path controls are rejected and the normalized artifact path must contain the declared upload ID.
+- Hardened model manifest file-path validation so encoded traversal, separators, query/fragment controls, control bytes, and Windows drive prefixes cannot feed runtime views or derived download URLs.
 - Hardened `b1-model-client` resumed blob sync with exact `Content-Range` parsing before appending server bytes to a local partial cache file.
 - Hardened `b1-model-client` sync plans so server-provided blob IDs must be SHA-256 digests and local write paths are recomputed under the managed cache.
 - Hardened `b1-model-client` credential and endpoint handling with token-file support, ambiguous-source rejection, POSIX private-file checks, and Model Hub base URL validation.

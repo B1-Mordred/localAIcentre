@@ -387,6 +387,13 @@ class CatalogTests(unittest.TestCase):
         cases = [
             ({"runtime_adapter_versions": {"comfyui": ">=0.3.77"}}, "must also be listed in runtimes"),
             ({"companion_files": [{"path": "../escape"}]}, "must not contain traversal"),
+            ({"files": [{"path": "weights/%2e%2e/chat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "weights/safe%2Fchat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "weights/safe%5Cchat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "weights/safe%3Ftoken.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "weights/safe%23fragment.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "weights/%00chat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "encoded path-control"),
+            ({"files": [{"path": "C:/chat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}]}, "traversal"),
             ({"permissions": {"downloadable_by": ["guest"]}}, "unsupported values"),
             ({"deprecation": {"status": "replaced"}}, "replacement_model is required"),
         ]

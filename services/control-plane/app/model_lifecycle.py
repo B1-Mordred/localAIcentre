@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse, urlunparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 from .catalog import ModelManifest, parse_manifest_payload
 from .scheduler import ResourcePolicy, classify_resource_fit
@@ -159,11 +159,25 @@ def ensure_directory_inside(path: Path, root: Path) -> None:
         current.mkdir(exist_ok=True)
 
 
+def safe_relative_parts(value: str, context: str) -> tuple[str, ...]:
+    normalized = value.replace("\\", "/")
+    rel = PurePosixPath(normalized)
+    if rel.is_absolute() or not rel.parts or any(part in {"", ".", ".."} for part in rel.parts):
+        raise ModelLifecycleError(f"{context} uses an unsafe relative path")
+    if WINDOWS_DRIVE_RE.match(rel.parts[0]):
+        raise ModelLifecycleError(f"{context} uses an unsafe relative path")
+    for part in rel.parts:
+        decoded = unquote(part)
+        if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
+            raise ModelLifecycleError(f"{context} uses an unsafe encoded path-control segment")
+        if any(ord(character) < 32 or ord(character) == 127 for character in decoded):
+            raise ModelLifecycleError(f"{context} uses an unsafe encoded path-control segment")
+    return tuple(rel.parts)
+
+
 def safe_view_file_path(view_root: Path, relative: str) -> Path:
-    rel = PurePosixPath(relative.replace("\\", "/"))
-    if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
-        raise ModelLifecycleError(f"unsafe runtime view file path: {relative}")
-    candidate = view_root.joinpath(*rel.parts)
+    parts = safe_relative_parts(relative, f"runtime view file path: {relative}")
+    candidate = view_root.joinpath(*parts)
     view_resolved = view_root.resolve(strict=True)
     resolved = candidate.resolve(strict=False)
     try:
@@ -207,19 +221,10 @@ def file_record_archive_format(file_record: Any) -> str | None:
 def safe_archive_member_path(name: str) -> PurePosixPath:
     if "\x00" in name:
         raise ModelLifecycleError("archive member path contains NUL byte")
-    normalized = name.replace("\\", "/")
-    if len(normalized) > 4096:
+    if len(name.replace("\\", "/")) > 4096:
         raise ModelLifecycleError(f"archive member path is too long: {name[:120]}")
-    rel = PurePosixPath(normalized)
-    if rel.is_absolute():
-        raise ModelLifecycleError(f"archive member uses an absolute path: {name}")
-    if not rel.parts:
-        raise ModelLifecycleError("archive member path is empty")
-    if WINDOWS_DRIVE_RE.match(rel.parts[0]):
-        raise ModelLifecycleError(f"archive member uses a Windows drive path: {name}")
-    if any(part in {"", ".", ".."} for part in rel.parts):
-        raise ModelLifecycleError(f"archive member uses an unsafe relative path: {name}")
-    return rel
+    parts = safe_relative_parts(name, f"archive member path: {name}")
+    return PurePosixPath(*parts)
 
 
 def validate_archive_file_type(relative_path: PurePosixPath) -> None:
@@ -1127,7 +1132,7 @@ def direct_download_source_url(manifest: ModelManifest, file: Any) -> str:
         raise ModelLifecycleError("multi-file direct-url manifests require source.url to end with /")
     if parsed.query or parsed.fragment:
         raise ModelLifecycleError("multi-file direct-url manifests cannot use query strings or fragments on source.url")
-    encoded_path = "/".join(quote(part, safe="") for part in PurePosixPath(file.path).parts)
+    encoded_path = "/".join(quote(part, safe="") for part in safe_relative_parts(file.path, f"direct-url file path: {file.path}"))
     return urlunparse((parsed.scheme, parsed.netloc, f"{parsed.path}{encoded_path}", "", "", ""))
 
 
@@ -1191,10 +1196,7 @@ def huggingface_repo_source(source_url: str, revision: str) -> dict[str, str]:
 
 def huggingface_download_source_url(manifest: ModelManifest, file: Any) -> str:
     source = huggingface_repo_source(manifest.source.url, manifest.source.revision)
-    relative = PurePosixPath(file.path)
-    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
-        raise ModelLifecycleError(f"unsafe Hugging Face file path: {file.path}")
-    encoded_file_path = "/".join(quote(part, safe="") for part in relative.parts)
+    encoded_file_path = "/".join(quote(part, safe="") for part in safe_relative_parts(file.path, f"Hugging Face file path: {file.path}"))
     encoded_revision = quote(source["revision"], safe="")
     return f"https://huggingface.co/{source['repo_path']}/resolve/{encoded_revision}/{encoded_file_path}"
 
