@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from .catalog import CatalogAlias, operation_is_supported
@@ -21,13 +22,34 @@ PRIVATE_RUNTIME_NETS = [
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
+HostnameResolver = Callable[[str, int | None], list[str]]
 
 
 class RuntimeResolutionError(ValueError):
     pass
 
 
-def validate_external_runtime_base_url(value: str) -> tuple[str, str | None]:
+def runtime_ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if not ip.is_global:
+        return False
+    return not any(ip in network for network in PRIVATE_RUNTIME_NETS)
+
+
+def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for result in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM):
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        address = str(sockaddr[0])
+        if address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return addresses
+
+
+def validate_external_runtime_base_url(value: str, *, resolver: HostnameResolver | None = None) -> tuple[str, str | None]:
     raw = value.strip()
     if not raw:
         return "", "base URL is not configured"
@@ -45,27 +67,33 @@ def validate_external_runtime_base_url(value: str) -> tuple[str, str | None]:
     except ValueError:
         return "", "external runtime base URL has an invalid port"
 
-    hostname = parsed.hostname.lower().rstrip(".")
-    try:
-        ip = ipaddress.ip_address(hostname)
-    except ValueError:
-        pass
-    else:
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-            or any(ip in network for network in PRIVATE_RUNTIME_NETS)
-        ):
-            return "", "external runtime base URL must not target private, loopback, link-local, or reserved IP ranges"
-
     path = parsed.path.rstrip("/")
     path_parts = [part for part in path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
         return "", "external runtime base URL path must not contain relative segments"
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        resolver = resolver or resolve_hostname_addresses
+        try:
+            resolved_addresses = resolver(hostname, port)
+        except OSError:
+            return "", "external runtime hostname could not be resolved safely"
+        if not resolved_addresses:
+            return "", "external runtime hostname could not be resolved safely"
+        for address in resolved_addresses:
+            try:
+                resolved_ip = ipaddress.ip_address(address)
+            except ValueError:
+                return "", "external runtime hostname resolved to an invalid address"
+            if not runtime_ip_is_public(resolved_ip):
+                return "", "external runtime hostname must not resolve to private, loopback, link-local, or reserved IP ranges"
+    else:
+        if not runtime_ip_is_public(ip):
+            return "", "external runtime base URL must not target private, loopback, link-local, or reserved IP ranges"
+
     if ":" in hostname:
         netloc = f"[{hostname}]"
         if port is not None:

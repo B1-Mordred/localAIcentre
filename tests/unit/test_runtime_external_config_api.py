@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 try:
     from fastapi import HTTPException  # noqa: E402
+    import app.adapters as adapters  # noqa: E402
     from app import main, secret_store  # noqa: E402
     from app.auth import AuthContext, Role  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
@@ -94,6 +95,9 @@ class RuntimeExternalConfigApiTests(unittest.TestCase):
         self.patch_attr("record_audit_event", fake_record_audit_event)
         self.patch_attr("runtime_registry", None)
         self.patch_attr("runtime_configuration_cache", None)
+        original_resolver = adapters.resolve_hostname_addresses
+        adapters.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
+        self.addCleanup(lambda: setattr(adapters, "resolve_hostname_addresses", original_resolver))
 
     def encrypted_secret(self, name: str, value: str, category: str = "remote-provider", master_key: str = "m" * 64) -> dict[str, Any]:
         now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)

@@ -294,6 +294,17 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.detail["code"], "invalid_idempotency_key")
         self.assertEqual(fake_database.inserted, [])
 
+    def test_normalize_idempotency_key_treats_fastapi_missing_header_sentinel_as_absent(self) -> None:
+        class MissingHeaderSentinel:
+            default = None
+
+        self.assertIsNone(main.normalize_idempotency_key(MissingHeaderSentinel()))
+
+        with self.assertRaises(HTTPException) as caught:
+            main.normalize_idempotency_key(object())
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["code"], "invalid_idempotency_key")
+
     def test_image_edit_idempotency_returns_existing_job_without_reprocessing_body(self) -> None:
         existing = job_row(
             idempotency_key="edit_1",

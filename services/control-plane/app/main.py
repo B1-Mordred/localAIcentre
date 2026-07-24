@@ -2803,9 +2803,13 @@ def public_jobs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [public_job(row) for row in rows]
 
 
-def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
+def normalize_idempotency_key(idempotency_key: Any) -> str | None:
     if idempotency_key is None:
         return None
+    if not isinstance(idempotency_key, str):
+        if getattr(idempotency_key, "default", object()) is None:
+            return None
+        raise HTTPException(status_code=422, detail={"code": "invalid_idempotency_key", "message": "Idempotency-Key must be a string"})
     normalized = idempotency_key.strip()
     if not normalized:
         raise HTTPException(status_code=422, detail={"code": "invalid_idempotency_key", "message": "Idempotency-Key must not be empty"})

@@ -5,11 +5,13 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
+import app.adapters as adapters  # noqa: E402
 from app.adapters import ADAPTER_CONTRACT_VERSION, RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url  # noqa: E402
 from app.catalog import (  # noqa: E402
     AliasDefinition,
@@ -61,6 +63,22 @@ def manifest(
 
 
 class RuntimeAdapterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.patch_resolver(["93.184.216.34"])
+
+    def patch_resolver(self, addresses: list[str], *, raises: OSError | None = None) -> None:
+        original = adapters.resolve_hostname_addresses
+
+        def fake_resolver(hostname: str, port: int | None) -> list[str]:
+            self.resolver_calls.append({"hostname": hostname, "port": port})
+            if raises is not None:
+                raise raises
+            return list(addresses)
+
+        self.resolver_calls: list[dict[str, Any]] = []
+        adapters.resolve_hostname_addresses = fake_resolver
+        self.addCleanup(lambda: setattr(adapters, "resolve_hostname_addresses", original))
+
     def registry(self, allow_external: bool = False, **kwargs):
         return build_runtime_registry(
             localai_url="http://localai",
@@ -222,6 +240,23 @@ class RuntimeAdapterTests(unittest.TestCase):
                 normalized, error = validate_external_runtime_base_url(url)
                 self.assertEqual(normalized, "")
                 self.assertIsNotNone(error)
+
+    def test_external_runtime_base_url_validation_rejects_private_dns_answers(self) -> None:
+        self.patch_resolver(["203.0.113.10", "127.0.0.1"])
+
+        normalized, error = validate_external_runtime_base_url("https://runtime.example.org/v1")
+
+        self.assertEqual(normalized, "")
+        self.assertEqual(error, "external runtime hostname must not resolve to private, loopback, link-local, or reserved IP ranges")
+        self.assertEqual(self.resolver_calls[-1], {"hostname": "runtime.example.org", "port": None})
+
+    def test_external_runtime_base_url_validation_fails_closed_on_dns_failure(self) -> None:
+        self.patch_resolver([], raises=OSError("dns unavailable"))
+
+        normalized, error = validate_external_runtime_base_url("https://runtime.example.org/v1")
+
+        self.assertEqual(normalized, "")
+        self.assertEqual(error, "external runtime hostname could not be resolved safely")
 
     def test_external_runtime_public_shape_redacts_secret_and_joins_v1_path(self) -> None:
         registry = self.registry(
