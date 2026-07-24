@@ -944,6 +944,12 @@ def require_runtime_admin(auth: AuthContext) -> None:
     raise HTTPException(status_code=403, detail="runtime administration requires admin or operator role")
 
 
+def require_model_admin(auth: AuthContext) -> None:
+    if auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR}:
+        return
+    raise HTTPException(status_code=403, detail="model administration requires admin or operator role")
+
+
 def subject_can_read_job(auth: AuthContext, job: dict[str, Any]) -> bool:
     return auth.has_scope("*") or job.get("owner_id") == auth.subject_id
 
@@ -6541,6 +6547,7 @@ async def admin_artifact_cleanup(payload: ArtifactRetentionRequest, authorizatio
 async def admin_model_quarantine_retention_plan(payload: ModelQuarantineRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "storage:read")
+    require_model_admin(auth)
     try:
         return await asyncio.to_thread(
             model_lifecycle.build_blob_quarantine_retention_plan,
@@ -6556,6 +6563,7 @@ async def admin_model_quarantine_retention_plan(payload: ModelQuarantineRetentio
 async def admin_model_quarantine_cleanup(payload: ModelQuarantineRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "storage:write")
+    require_model_admin(auth)
     try:
         report = await asyncio.to_thread(
             model_lifecycle.apply_blob_quarantine_retention_plan,
@@ -6859,6 +6867,7 @@ async def workflow_unpublish(workflow_id: str, version: str, authorization: str 
 async def admin_models(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     catalog = catalog_snapshot()
     return {
         "object": "list",
@@ -6877,6 +6886,7 @@ async def admin_model_alias_policy_update(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     policy = validate_model_alias_policy_payload(alias_id, payload)
     if not policy["enabled"]:
         active_jobs = await database.count_active_jobs_for_model(f"alias-policy:{alias_id}", [alias_id])
@@ -6906,6 +6916,7 @@ async def admin_model_alias_policy_update(
 async def admin_model_alias_policy_delete(alias_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     try:
         catalog_snapshot().require_alias(alias_id)
     except CatalogError as exc:
@@ -6929,6 +6940,7 @@ async def admin_model_alias_policy_delete(alias_id: str, authorization: str | No
 async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
     return install_plan_for_manifest(manifest, payload)
@@ -6938,6 +6950,7 @@ async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorizati
 async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
     return download_plan_for_manifest(manifest, accept_license=payload.accept_license)
@@ -6947,6 +6960,7 @@ async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorizat
 async def admin_model_downloads(authorization: str | None = Header(default=None), limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     return {"object": "list", "data": [public_model_download(row) for row in await database.list_model_downloads(limit=limit)]}
 
 
@@ -6954,6 +6968,7 @@ async def admin_model_downloads(authorization: str | None = Header(default=None)
 async def admin_model_download_get(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     row = await database.get_model_download(download_id)
     if row is None:
         raise HTTPException(status_code=404, detail="model download not found")
@@ -6964,6 +6979,7 @@ async def admin_model_download_get(download_id: str, authorization: str | None =
 async def admin_model_download_create(payload: ModelDownloadCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
     plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license)
@@ -7012,6 +7028,7 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
 async def admin_model_download_cancel(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     row = await database.request_model_download_cancel(download_id)
     if row is None:
         raise HTTPException(status_code=404, detail="model download not found")
@@ -7030,6 +7047,7 @@ async def admin_model_download_cancel(download_id: str, authorization: str | Non
 async def admin_model_download_pause(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     try:
         row = await database.request_model_download_pause(download_id)
     except ValueError as exc:
@@ -7051,6 +7069,7 @@ async def admin_model_download_pause(download_id: str, authorization: str | None
 async def admin_model_download_resume(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     try:
         row = await database.resume_model_download(download_id)
     except ValueError as exc:
@@ -7072,6 +7091,7 @@ async def admin_model_download_resume(download_id: str, authorization: str | Non
 async def admin_model_download_retry(download_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     try:
         row = await database.retry_model_download(download_id)
     except ValueError as exc:
@@ -7098,6 +7118,7 @@ async def admin_model_download_retry(download_id: str, authorization: str | None
 async def admin_model_install(payload: ModelInstallRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
     plan = install_plan_for_manifest(manifest, payload)
@@ -7153,6 +7174,7 @@ async def admin_model_smoke_test(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     request = payload or ModelSmokeTestRequest()
     row = await database.get_model_record(model_id, version)
     if row is None:
@@ -7175,6 +7197,7 @@ async def admin_model_remove(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     request = payload or ModelRemoveRequest()
     row = await database.get_model_record(model_id, version)
     if row is None:
@@ -7257,6 +7280,7 @@ async def admin_model_remove(
 async def admin_model_blob_quarantine_plan(model_id: str, version: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
+    require_model_admin(auth)
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="model record not found")
@@ -7300,6 +7324,7 @@ async def admin_model_blob_quarantine(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
+    require_model_admin(auth)
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="model record not found")

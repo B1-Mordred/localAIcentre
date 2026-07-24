@@ -100,4 +100,6 @@ Initial roles are `admin`, `operator`, `creator`, `user`, and `service`.
 
 `admin` may grant all scopes. Other roles are bounded to their expected operational surface; for example, a `service` client can receive inference, jobs, model-read, and Model Hub sync scopes but cannot receive `admin:write`.
 
+Administrative route families also apply role-specific guards where a broad scope could otherwise overlap with public clients. `/admin/models*` requires `admin` or `operator` role in addition to model/storage scopes, so service, creator, and user clients with `models:read` can discover usable aliases through `/v1/models` or Model Hub without gaining access to model installation, downloads, alias policy, smoke tests, or quarantine controls.
+
 The default Compose configuration sets `B1_DEV_AUTH_BYPASS=false`. Set it to `true` only for isolated local development where bypassing all role checks is acceptable.

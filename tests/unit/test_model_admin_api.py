@@ -244,6 +244,59 @@ class ModelAdminApiTests(unittest.TestCase):
 
         self.patch_attr("authenticate", fake_authenticate)
 
+    def test_admin_model_routes_require_model_admin_guard_in_source(self) -> None:
+        source = (ROOT / "services" / "control-plane" / "app" / "main.py").read_text(encoding="utf-8")
+        route_handlers = [
+            "admin_model_quarantine_retention_plan",
+            "admin_model_quarantine_cleanup",
+            "admin_models",
+            "admin_model_alias_policy_update",
+            "admin_model_alias_policy_delete",
+            "admin_model_install_plan",
+            "admin_model_download_plan",
+            "admin_model_downloads",
+            "admin_model_download_get",
+            "admin_model_download_create",
+            "admin_model_download_cancel",
+            "admin_model_download_pause",
+            "admin_model_download_resume",
+            "admin_model_download_retry",
+            "admin_model_install",
+            "admin_model_smoke_test",
+            "admin_model_remove",
+            "admin_model_blob_quarantine_plan",
+            "admin_model_blob_quarantine",
+        ]
+        for handler in route_handlers:
+            with self.subTest(handler=handler):
+                start = source.index(f"async def {handler}")
+                end = source.find("\n@app.", start + 1)
+                body = source[start:] if end == -1 else source[start:end]
+                self.assertIn("require_model_admin(auth)", body)
+
+    def test_admin_models_rejects_service_client_with_models_read_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+            self.patch_auth_context(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"models:read"})))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_models())
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "model administration requires admin or operator role")
+
+    def test_admin_models_allows_operator_with_models_read_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+            self.patch_auth_context(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"models:read"})))
+
+            result = asyncio.run(main.admin_models())
+
+        self.assertEqual(result["object"], "list")
+        self.assertIn("aliases", result)
+        self.assertIn("catalog", result)
+        self.assertEqual(result["records"], [])
+
     def test_blob_quarantine_plan_blocks_active_jobs(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()
