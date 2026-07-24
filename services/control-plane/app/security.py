@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import unquote, urlparse
+import re
+from urllib.parse import parse_qsl, unquote, urlparse
 
 
 PRIVATE_NETS = [
@@ -16,6 +17,40 @@ PRIVATE_NETS = [
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
+
+CREDENTIAL_QUERY_KEY_EXACT = {
+    "key",
+    "sig",
+}
+CREDENTIAL_QUERY_KEY_FRAGMENTS = {
+    "accesskeyid",
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "bearer",
+    "clientsecret",
+    "credential",
+    "downloadtoken",
+    "password",
+    "passwd",
+    "secret",
+    "securitytoken",
+    "sharedaccesssignature",
+    "signature",
+    "token",
+}
+
+
+def query_key_may_carry_credentials(key: str) -> bool:
+    lowered = key.strip().lower()
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
+    if lowered in CREDENTIAL_QUERY_KEY_EXACT or compact in CREDENTIAL_QUERY_KEY_EXACT:
+        return True
+    return any(fragment in compact for fragment in CREDENTIAL_QUERY_KEY_FRAGMENTS)
+
+
+def has_credential_query_parameter(query: str) -> bool:
+    return any(query_key_may_carry_credentials(key) for key, _value in parse_qsl(query, keep_blank_values=True))
 
 
 def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None) -> bool:

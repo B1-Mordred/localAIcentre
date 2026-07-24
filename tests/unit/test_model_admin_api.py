@@ -820,6 +820,17 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(sensitive.exception.status_code, 422)
             self.assertIn("credential query", str(sensitive.exception.detail))
 
+            for manifest_url in [
+                "https://manifests.example.org/model.json?download_token=secret",
+                "https://manifests.example.org/model.json?X-Amz-Signature=secret",
+                "https://manifests.example.org/model.json?X-Goog-Credential=secret",
+            ]:
+                with self.subTest(manifest_url=manifest_url):
+                    with self.assertRaises(main.HTTPException) as signed:
+                        asyncio.run(main.admin_model_install_plan(main.ModelInstallPlanRequest(manifest_url=manifest_url)))
+                    self.assertEqual(signed.exception.status_code, 422)
+                    self.assertIn("credential query", str(signed.exception.detail))
+
             with self.assertRaises(main.HTTPException) as conflict:
                 asyncio.run(
                     main.admin_model_install_plan(

@@ -40,6 +40,7 @@
 - Added recursive structured-log redaction for control-plane events, including sensitive keys, bearer/B1/GitHub token-shaped strings, URL credential query values, long strings, and long lists.
 - Hardened controlled-update source URL validation against loopback/private/link-local/reserved IP literals, localhost names, malformed ports, query strings, fragments, and relative path segments.
 - Hardened shared model-import URL validation against localhost/internal targets, URL credentials, fragments, malformed ports, reserved/multicast/unspecified IP literals, and decoded path traversal.
+- Centralized credential-query detection for model source and remote-manifest URLs, including signed URL keys such as `download_token`, `X-Amz-Signature`, and `X-Goog-Credential`.
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
 - Removed the fixed 120-second backend timeout from public and admin job SSE streams so long-running media jobs remain observable until terminal state or client disconnect.
 - Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.

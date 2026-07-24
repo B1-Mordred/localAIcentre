@@ -13,11 +13,11 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import parse_qsl, quote, urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from .catalog import ModelManifest, parse_manifest_payload
 from .scheduler import ResourcePolicy, classify_resource_fit
-from .security import is_safe_public_import_url
+from .security import has_credential_query_parameter, is_safe_public_import_url
 
 
 class ModelLifecycleError(ValueError):
@@ -1108,8 +1108,7 @@ def source_url_allowed(manifest: ModelManifest) -> bool:
     parsed = urlparse(manifest.source.url)
     if parsed.username or parsed.password:
         return False
-    sensitive_query_keys = {"token", "api_key", "apikey", "key", "signature", "sig", "credential", "access_token"}
-    if any(key.lower() in sensitive_query_keys for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
+    if has_credential_query_parameter(parsed.query):
         return False
     return is_safe_public_import_url(manifest.source.url)
 

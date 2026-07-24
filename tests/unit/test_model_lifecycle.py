@@ -378,18 +378,39 @@ class ModelLifecycleTests(unittest.TestCase):
             with self.assertRaises(model_lifecycle.ModelLifecycleError):
                 model_lifecycle.build_download_plan(manifest, Path(tmp))
 
-        credentialed = parse_manifest_payload(
+        credentialed_urls = [
+            "https://downloads.example.org/model.gguf?token=secret",
+            "https://downloads.example.org/model.gguf?download_token=secret",
+            "https://downloads.example.org/model.gguf?X-Amz-Signature=secret",
+            "https://downloads.example.org/model.gguf?X-Goog-Credential=secret",
+        ]
+        for source_url in credentialed_urls:
+            with self.subTest(source_url=source_url):
+                credentialed = parse_manifest_payload(
+                    manifest_payload(
+                        "4" * 64,
+                        12,
+                        source_url=source_url,
+                        source_type="direct-url",
+                    )
+                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    plan = model_lifecycle.build_download_plan(credentialed, Path(tmp))
+                    self.assertFalse(plan["can_download"])
+                    self.assertIn("source URL is not allowed by import policy", plan["blockers"])
+
+        benign_query = parse_manifest_payload(
             manifest_payload(
                 "4" * 64,
                 12,
-                source_url="https://downloads.example.org/model.gguf?token=secret",
+                source_url="https://downloads.example.org/model.gguf?download=1",
                 source_type="direct-url",
             )
         )
         with tempfile.TemporaryDirectory() as tmp:
-            plan = model_lifecycle.build_download_plan(credentialed, Path(tmp))
-            self.assertFalse(plan["can_download"])
-            self.assertIn("source URL is not allowed by import policy", plan["blockers"])
+            plan = model_lifecycle.build_download_plan(benign_query, Path(tmp))
+            self.assertTrue(plan["can_download"])
+            self.assertNotIn("source URL is not allowed by import policy", plan["blockers"])
 
     def test_download_plan_requires_license_acceptance_when_declared(self) -> None:
         payload = manifest_payload(

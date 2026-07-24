@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis.asyncio as redis
@@ -3847,7 +3847,6 @@ def validate_model_alias_policy_payload(alias_id: str, payload: ModelAliasPolicy
 
 
 REMOTE_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
-REMOTE_MANIFEST_SENSITIVE_QUERY_KEYS = {"token", "api_key", "apikey", "key", "signature", "sig", "credential", "access_token"}
 REMOTE_MANIFEST_CONTENT_TYPES = {
     "",
     "application/json",
@@ -3868,7 +3867,7 @@ def validate_remote_manifest_url(manifest_url: str | None) -> str:
         raise HTTPException(status_code=422, detail="manifest_url must not contain credentials")
     if parsed.fragment:
         raise HTTPException(status_code=422, detail="manifest_url must not contain a fragment")
-    if any(key.lower() in REMOTE_MANIFEST_SENSITIVE_QUERY_KEYS for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
+    if model_lifecycle.has_credential_query_parameter(parsed.query):
         raise HTTPException(status_code=422, detail="manifest_url must not contain credential query parameters")
     if not model_lifecycle.is_safe_public_import_url(url):
         raise HTTPException(status_code=422, detail="manifest_url must be a public HTTPS URL allowed by import policy")
