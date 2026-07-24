@@ -103,6 +103,46 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
 
+    def test_speech_to_text_uses_openai_style_multipart_model_and_file(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"text": "hello", "b1_placeholder": False}
+
+        self.patch_attr("request_json", fake_request_json)
+        text, raw = nodes.B1SpeechToText().run(
+            "stt-default",
+            nodes.base64.b64encode(b"RIFF....WAVEaudio").decode("ascii"),
+            language="en",
+            runtime_policy="non_comfy_only",
+            audio_mime_type="audio/wav",
+            filename="../sample.wav",
+        )
+
+        self.assertEqual(text, "hello")
+        self.assertEqual(json.loads(raw)["text"], "hello")
+        self.assertEqual(calls[0]["path"], "/v1/audio/transcriptions")
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertIsNone(calls[0]["payload"])
+        self.assertNotIn("X-B1-Model", calls[0]["headers"])
+        content_type = calls[0]["headers"]["Content-Type"]
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        body = calls[0]["data"]
+        self.assertIn(b'name="model"\r\n\r\nstt-default\r\n', body)
+        self.assertIn(b'name="language"\r\n\r\nen\r\n', body)
+        self.assertIn(b'name="runtime_policy"\r\n\r\nnon_comfy_only\r\n', body)
+        self.assertIn(b'name="file"; filename="sample.wav"', body)
+        self.assertIn(b"Content-Type: audio/wav", body)
+        self.assertIn(b"RIFF....WAVEaudio", body)
+        self.assertNotIn(b"X-B1-Model", body)
+
+    def test_multipart_builder_rejects_unsafe_names_and_header_values(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.multipart_form_data({"bad\r\nname": "value"}, [])
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.multipart_form_data({}, [("file", "audio.wav", "audio/wav\r\nX-Bad: yes", b"audio")])
+
     def test_submit_job_node_posts_parsed_input_json(self) -> None:
         calls: list[dict[str, Any]] = []
 
@@ -169,9 +209,11 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             "B1ImageToVideo",
             "B1TextToSpeech",
             "B1SpeechToText",
+            "B1UploadMediaBase64",
             "B1SubmitMediaJob",
             "B1WaitMediaJob",
             "B1CancelMediaJob",
+            "B1ListJobArtifacts",
             "B1DownloadArtifact",
         ]:
             self.assertIn(name, nodes.NODE_CLASS_MAPPINGS)

@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.parse
@@ -19,6 +20,7 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_OUTPUT_DIR = "b1-artifacts"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
 class B1RemoteNodeError(RuntimeError):
@@ -182,12 +184,55 @@ def decode_base64_payload(value: str, expected_kind: str) -> bytes:
     return content
 
 
+def safe_form_name(value: str) -> str:
+    name = value.strip()
+    if not SAFE_FORM_NAME_PATTERN.fullmatch(name):
+        raise B1RemoteNodeError("multipart form field name is unsafe")
+    return name
+
+
+def safe_multipart_header_value(value: str | None, fallback: str, limit: int = 256) -> str:
+    normalized = (value or fallback).strip() or fallback
+    if "\r" in normalized or "\n" in normalized:
+        raise B1RemoteNodeError("multipart header value is unsafe")
+    return normalized[:limit]
+
+
 def safe_filename(value: str | None, fallback: str) -> str:
     leaf = (value or "").replace("\\", "/").split("/")[-1]
     cleaned = SAFE_FILENAME_PATTERN.sub("_", leaf).strip("._-")
     if not cleaned:
         cleaned = fallback
     return cleaned[:160]
+
+
+def multipart_form_data(
+    fields: dict[str, str],
+    files: list[tuple[str, str, str, bytes]],
+    *,
+    boundary: str | None = None,
+) -> tuple[bytes, str]:
+    marker = boundary or f"----b1-ai-hub-{secrets.token_hex(16)}"
+    if "\r" in marker or "\n" in marker:
+        raise B1RemoteNodeError("multipart boundary is unsafe")
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        field_name = safe_form_name(name)
+        parts.append(f"--{marker}\r\n".encode("ascii"))
+        parts.append(f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode("ascii"))
+        parts.append(str(value).encode("utf-8"))
+        parts.append(b"\r\n")
+    for field_name, filename, content_type, content in files:
+        safe_field = safe_form_name(field_name)
+        safe_file = safe_filename(filename, "upload.bin")
+        safe_content_type = safe_multipart_header_value(content_type, "application/octet-stream")
+        parts.append(f"--{marker}\r\n".encode("ascii"))
+        parts.append(f'Content-Disposition: form-data; name="{safe_field}"; filename="{safe_file}"\r\n'.encode("ascii"))
+        parts.append(f"Content-Type: {safe_content_type}\r\n\r\n".encode("ascii"))
+        parts.append(content)
+        parts.append(b"\r\n")
+    parts.append(f"--{marker}--\r\n".encode("ascii"))
+    return b"".join(parts), f"multipart/form-data; boundary={marker}"
 
 
 def extension_for_content_type(content_type: str | None, fallback: str = ".bin") -> str:
@@ -555,6 +600,9 @@ class B1SpeechToText:
             },
             "optional": {
                 "language": ("STRING", {"default": ""}),
+                "runtime_policy": ("STRING", {"default": "any"}),
+                "audio_mime_type": ("STRING", {"default": "audio/wav"}),
+                "filename": ("STRING", {"default": "audio.wav"}),
             },
         }
 
@@ -563,11 +611,31 @@ class B1SpeechToText:
     FUNCTION = "run"
     CATEGORY = "B1 AI Hub"
 
-    def run(self, model: str, audio_base64: str, language: str = ""):
-        payload: dict[str, Any] = {"audio": base64.b64encode(decode_base64_payload(audio_base64, "audio")).decode("ascii")}
+    def run(self, model: str, audio_base64: str, language: str = "", runtime_policy: str = "any", audio_mime_type: str = "audio/wav", filename: str = "audio.wav"):
+        audio = decode_base64_payload(audio_base64, "audio")
+        fields = {"model": model.strip() or "stt-default"}
         if language.strip():
-            payload["language"] = language.strip()
-        response = request_json("/v1/audio/transcriptions", payload, method="POST", headers={"X-B1-Model": model}, timeout_seconds=1800)
+            fields["language"] = language.strip()
+        if runtime_policy.strip():
+            fields["runtime_policy"] = runtime_policy.strip()
+        body, content_type = multipart_form_data(
+            fields,
+            [
+                (
+                    "file",
+                    filename.strip() or "audio.wav",
+                    audio_mime_type.strip() or "audio/wav",
+                    audio,
+                )
+            ],
+        )
+        response = request_json(
+            "/v1/audio/transcriptions",
+            method="POST",
+            data=body,
+            headers={"Content-Type": content_type},
+            timeout_seconds=1800,
+        )
         return (str(response.get("text", "")), json_output(response))
 
 
