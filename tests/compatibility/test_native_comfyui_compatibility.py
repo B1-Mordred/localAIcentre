@@ -25,7 +25,10 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "prompt_submission",
     "websocket_events",
     "history_available",
+    "view_artifact_accessible",
 )
+
+COMFYUI_OUTPUT_KEYS = ("images", "videos", "gifs", "audio")
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -146,6 +149,17 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             raise AssertionError(f"{path} did not return a JSON object or array")
         return decoded
 
+    @classmethod
+    def request_bytes(cls, method: str, path: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
+        headers = cls.headers()
+        headers["Accept"] = "*/*"
+        request = urllib.request.Request(cls.url(path), headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
+            body = response.read()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            status = int(getattr(response, "status", 200))
+        return body, response_headers, status
+
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
         self.checks[name] = {
             "status": status,
@@ -244,6 +258,64 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             time.sleep(2)
         raise AssertionError(f"/history/{prompt_id} did not return completed native history; last payload: {last_payload}")
 
+    def first_history_artifact(self, prompt_id: str, history: dict[str, Any]) -> dict[str, Any]:
+        record = history.get(prompt_id) if isinstance(history.get(prompt_id), dict) else history
+        outputs = record.get("outputs") if isinstance(record, dict) else None
+        if not isinstance(outputs, dict):
+            raise AssertionError(f"/history/{prompt_id} did not contain native outputs")
+        for node_id, output in outputs.items():
+            if not isinstance(output, dict):
+                continue
+            for output_key in COMFYUI_OUTPUT_KEYS:
+                items = output.get(output_key)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+                        continue
+                    return {
+                        "node_id": str(node_id),
+                        "output_key": output_key,
+                        "filename": item["filename"],
+                        "subfolder": item.get("subfolder") if isinstance(item.get("subfolder"), str) else "",
+                        "type": item.get("type") if isinstance(item.get("type"), str) else "output",
+                    }
+        raise AssertionError(f"/history/{prompt_id} did not contain image, video, GIF, or audio outputs")
+
+    def verify_view_artifact(self, prompt_id: str, history: dict[str, Any]) -> None:
+        artifact = self.first_history_artifact(prompt_id, history)
+        query = urllib.parse.urlencode(
+            {
+                "filename": artifact["filename"],
+                "subfolder": artifact["subfolder"],
+                "type": artifact["type"],
+            }
+        )
+        body, headers, status = self.request_bytes("GET", f"/view?{query}", timeout=120)
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0, "native /view returned an empty artifact body")
+        content_type = headers.get("content-type", "")
+        self.record_check(
+            "view_artifact_accessible",
+            prompt_id=prompt_id,
+            node_id=artifact["node_id"],
+            output_key=artifact["output_key"],
+            filename=artifact["filename"],
+            subfolder=artifact["subfolder"],
+            type=artifact["type"],
+            byte_count=len(body),
+            content_type=content_type,
+        )
+        self.samples.append(
+            {
+                "label": "view-artifact",
+                "prompt_id": prompt_id,
+                "output_key": artifact["output_key"],
+                "byte_count": len(body),
+                "content_type": content_type,
+            }
+        )
+
     def test_native_rest_websocket_prompt_history_and_metadata(self) -> None:
         object_info = self.record_metadata_check("object_info_accessible", "/object_info")
         self.assertTrue(object_info, "native /object_info response is empty")
@@ -259,6 +331,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             history_keys=sorted(str(key) for key in history.keys())[:20],
         )
         self.samples.append({"label": "prompt-submission", "prompt_id": prompt_id, "history_available": True})
+        self.verify_view_artifact(prompt_id, history)
 
 
 if __name__ == "__main__":
