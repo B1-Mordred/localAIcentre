@@ -76,6 +76,7 @@
 - Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
 - Bound the Caddy admin API to loopback inside the gateway container and added Compose policy coverage so the normal HTTPS virtual hosts remain the only exposed gateway management surface.
+- Made `b1-model-client` recover stale partial blob downloads by retrying once from byte zero after an HTTP 416 resume rejection, while still verifying ETag, size, and SHA-256 before publication.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.

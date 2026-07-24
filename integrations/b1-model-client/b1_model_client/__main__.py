@@ -306,44 +306,58 @@ def download_blob(
         partial.unlink()
         resume_from = 0
 
-    request = urllib.request.Request(base_url.rstrip("/") + f"/modelhub/v1/blobs/{sha256}")
-    request.add_header("Accept", "application/octet-stream")
-    if token:
-        request.add_header("Authorization", f"Bearer {token}")
-    if accept_licenses and source:
-        accepted_refs = accepted_license_refs_for_action(source)
-        if accepted_refs:
-            request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
-    if resume_from:
-        request.add_header("Range", f"bytes={resume_from}-")
+    while True:
+        request = urllib.request.Request(base_url.rstrip("/") + f"/modelhub/v1/blobs/{sha256}")
+        request.add_header("Accept", "application/octet-stream")
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        if accept_licenses and source:
+            accepted_refs = accepted_license_refs_for_action(source)
+            if accepted_refs:
+                request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
+        if resume_from:
+            request.add_header("Range", f"bytes={resume_from}-")
 
-    with urllib.request.urlopen(request, timeout=120) as response:
-        status = getattr(response, "status", response.getcode())
-        if resume_from and status != 206:
-            partial.unlink(missing_ok=True)
-            resume_from = 0
-        etag = response.headers.get("ETag")
-        if etag and etag != expected_etag(sha256):
-            raise RuntimeError(f"{sha256}: unexpected ETag {etag}")
-        checksum = response.headers.get("X-Checksum-SHA256")
-        if checksum and checksum.lower() != sha256:
-            raise RuntimeError(f"{sha256}: unexpected X-Checksum-SHA256 {checksum}")
-        length = response.headers.get("Content-Length")
-        if length and length.isdigit():
-            expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
-            if int(length) != expected_remaining:
-                raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {length}")
-        if resume_from and status == 206:
-            content_range = response.headers.get("Content-Range", "")
-            if not content_range.startswith(f"bytes {resume_from}-") or not content_range.endswith(f"/{expected_size}"):
-                raise RuntimeError(f"{sha256}: unexpected Content-Range {content_range}")
-        mode = "ab" if resume_from and status == 206 else "wb"
-        with partial.open(mode) as handle:
-            while True:
-                chunk = response.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                handle.write(chunk)
+        try:
+            response_context = urllib.request.urlopen(request, timeout=120)
+        except urllib.error.HTTPError as exc:
+            if resume_from and exc.code == 416:
+                partial.unlink(missing_ok=True)
+                resume_from = 0
+                close = getattr(exc, "close", None)
+                if callable(close):
+                    close()
+                continue
+            raise
+
+        with response_context as response:
+            status = getattr(response, "status", response.getcode())
+            if resume_from and status != 206:
+                partial.unlink(missing_ok=True)
+                resume_from = 0
+            etag = response.headers.get("ETag")
+            if etag and etag != expected_etag(sha256):
+                raise RuntimeError(f"{sha256}: unexpected ETag {etag}")
+            checksum = response.headers.get("X-Checksum-SHA256")
+            if checksum and checksum.lower() != sha256:
+                raise RuntimeError(f"{sha256}: unexpected X-Checksum-SHA256 {checksum}")
+            length = response.headers.get("Content-Length")
+            if length and length.isdigit():
+                expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
+                if int(length) != expected_remaining:
+                    raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {length}")
+            if resume_from and status == 206:
+                content_range = response.headers.get("Content-Range", "")
+                if not content_range.startswith(f"bytes {resume_from}-") or not content_range.endswith(f"/{expected_size}"):
+                    raise RuntimeError(f"{sha256}: unexpected Content-Range {content_range}")
+            mode = "ab" if resume_from and status == 206 else "wb"
+            with partial.open(mode) as handle:
+                while True:
+                    chunk = response.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+        break
 
     actual_size = partial.stat().st_size
     if actual_size != expected_size:
