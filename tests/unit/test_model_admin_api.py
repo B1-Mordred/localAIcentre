@@ -711,6 +711,86 @@ class ModelAdminApiTests(unittest.TestCase):
                 asyncio.run(main.admin_model_download_retry("modeldl_missing"))
             self.assertEqual(missing.exception.status_code, 404)
 
+    def test_model_install_plan_accepts_remote_manifest_url(self) -> None:
+        data = b"tiny remote model"
+        digest = hashlib.sha256(data).hexdigest()
+        payload = manifest_payload(digest, len(data))
+        payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
+        body = main.json.dumps(payload).encode("utf-8")
+
+        class FakeResponse:
+            status_code = 200
+            headers = {"content-type": "application/json", "content-length": str(len(body))}
+
+            async def aiter_bytes(self):
+                yield body
+
+        class FakeStreamContext:
+            async def __aenter__(self) -> FakeResponse:
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return FakeStreamContext()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(root, fake_database)
+            original_client = main.httpx.AsyncClient
+            FakeAsyncClient.calls = []
+            main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+            self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+            result = asyncio.run(
+                main.admin_model_install_plan(
+                    main.ModelInstallPlanRequest(manifest_url="https://manifests.example.org/chat-small.manifest.json")
+                )
+            )
+
+        self.assertEqual(result["model_ref"], "chat-small@1.0.0")
+        self.assertEqual(result["model"]["source"]["url"], "https://downloads.example.org/model.gguf")
+        self.assertEqual(FakeAsyncClient.calls[0]["method"], "GET")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "https://manifests.example.org/chat-small.manifest.json")
+        self.assertIn("application/json", FakeAsyncClient.calls[0]["headers"]["Accept"])
+
+    def test_remote_manifest_url_rejects_credentials_and_conflicting_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+
+            with self.assertRaises(main.HTTPException) as sensitive:
+                asyncio.run(
+                    main.admin_model_install_plan(
+                        main.ModelInstallPlanRequest(manifest_url="https://manifests.example.org/model.json?token=secret")
+                    )
+                )
+            self.assertEqual(sensitive.exception.status_code, 422)
+            self.assertIn("credential query", str(sensitive.exception.detail))
+
+            with self.assertRaises(main.HTTPException) as conflict:
+                asyncio.run(
+                    main.admin_model_install_plan(
+                        main.ModelInstallPlanRequest(model="chat-default", manifest_url="https://manifests.example.org/model.json")
+                    )
+                )
+            self.assertEqual(conflict.exception.status_code, 422)
+            self.assertIn("only one", str(conflict.exception.detail))
+
     def test_model_install_persists_available_manifest_as_installed(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()

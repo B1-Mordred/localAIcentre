@@ -712,6 +712,18 @@
             ],
             "title": "Manifest"
           },
+          "manifest_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Url"
+          },
           "model": {
             "anyOf": [
               {
@@ -828,6 +840,18 @@
             ],
             "title": "Manifest"
           },
+          "manifest_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Url"
+          },
           "model": {
             "anyOf": [
               {
@@ -872,6 +896,18 @@
               }
             ],
             "title": "Manifest"
+          },
+          "manifest_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Url"
           },
           "model": {
             "anyOf": [

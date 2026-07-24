@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable, Literal
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis.asyncio as redis
@@ -312,6 +312,7 @@ class VoiceProfileUpdate(BaseModel):
 class ModelInstallPlanRequest(BaseModel):
     model: str | None = Field(default=None, max_length=128)
     manifest: dict[str, Any] | None = None
+    manifest_url: str | None = Field(default=None, max_length=2048)
     accept_license: bool = False
     allow_resource_override: bool = False
 
@@ -3830,16 +3831,100 @@ def validate_model_alias_policy_payload(alias_id: str, payload: ModelAliasPolicy
     }
 
 
-def manifest_for_install_request(payload: ModelInstallPlanRequest) -> Any:
-    if payload.manifest is not None and payload.model is not None:
-        raise HTTPException(status_code=422, detail="provide either model or manifest, not both")
+REMOTE_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
+REMOTE_MANIFEST_SENSITIVE_QUERY_KEYS = {"token", "api_key", "apikey", "key", "signature", "sig", "credential", "access_token"}
+REMOTE_MANIFEST_CONTENT_TYPES = {
+    "",
+    "application/json",
+    "application/manifest+json",
+    "application/octet-stream",
+    "application/schema+json",
+    "text/json",
+    "text/plain",
+}
+
+
+def validate_remote_manifest_url(manifest_url: str | None) -> str:
+    url = (manifest_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="manifest_url is required")
+    parsed = urlsplit(url)
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=422, detail="manifest_url must not contain credentials")
+    if parsed.fragment:
+        raise HTTPException(status_code=422, detail="manifest_url must not contain a fragment")
+    if any(key.lower() in REMOTE_MANIFEST_SENSITIVE_QUERY_KEYS for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
+        raise HTTPException(status_code=422, detail="manifest_url must not contain credential query parameters")
+    if not model_lifecycle.is_safe_public_import_url(url):
+        raise HTTPException(status_code=422, detail="manifest_url must be a public HTTPS URL allowed by import policy")
+    return url
+
+
+async def fetch_remote_manifest_payload(manifest_url: str | None) -> dict[str, Any]:
+    source_url = validate_remote_manifest_url(manifest_url)
+    request_url = source_url
+    redirect_count = 0
+    body = bytearray()
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        while True:
+            async with client.stream("GET", request_url, headers={"Accept": "application/json, application/schema+json;q=0.9, text/plain;q=0.5"}) as response:
+                if response.status_code in model_lifecycle.DOWNLOAD_REDIRECT_STATUS_CODES:
+                    redirect_count += 1
+                    if redirect_count > 5:
+                        raise HTTPException(status_code=422, detail="manifest_url exceeded maximum redirect count")
+                    try:
+                        request_url = model_lifecycle.redirect_url_allowed(
+                            source_url,
+                            request_url,
+                            response.headers.get("location", ""),
+                            source_type="direct-url",
+                        )
+                    except model_lifecycle.ModelLifecycleError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    continue
+                if response.status_code >= 400:
+                    raise HTTPException(status_code=502, detail=f"manifest_url returned HTTP {response.status_code}")
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type not in REMOTE_MANIFEST_CONTENT_TYPES and not content_type.endswith("+json"):
+                    raise HTTPException(status_code=422, detail=f"manifest_url returned unsupported content type {content_type}")
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > REMOTE_MANIFEST_MAX_BYTES:
+                            raise HTTPException(status_code=413, detail="manifest_url response is too large")
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail="manifest_url returned invalid content-length") from exc
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > REMOTE_MANIFEST_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail="manifest_url response is too large")
+                break
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="manifest_url did not return valid UTF-8 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="manifest_url must return a JSON object")
+    return parsed
+
+
+async def manifest_for_install_request(payload: ModelInstallPlanRequest) -> Any:
+    provided = sum(1 for value in (payload.model, payload.manifest, payload.manifest_url) if value is not None)
+    if provided > 1:
+        raise HTTPException(status_code=422, detail="provide only one of model, manifest, or manifest_url")
     if payload.manifest is not None:
         try:
             return model_lifecycle.parse_uploaded_manifest(payload.manifest)
         except (CatalogError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.manifest_url is not None:
+        try:
+            return model_lifecycle.parse_uploaded_manifest(await fetch_remote_manifest_payload(payload.manifest_url))
+        except (CatalogError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not payload.model:
-        raise HTTPException(status_code=422, detail="model or manifest is required")
+        raise HTTPException(status_code=422, detail="model, manifest, or manifest_url is required")
     catalog = catalog_snapshot()
     alias = catalog.get_alias(payload.model)
     manifest = alias.manifest if alias is not None else catalog.get_manifest(payload.model)
@@ -6516,7 +6601,7 @@ async def admin_model_alias_policy_delete(alias_id: str, authorization: str | No
 async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
-    manifest = manifest_for_install_request(payload)
+    manifest = await manifest_for_install_request(payload)
     return install_plan_for_manifest(manifest, payload)
 
 
@@ -6524,7 +6609,7 @@ async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorizati
 async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
-    manifest = manifest_for_install_request(payload)
+    manifest = await manifest_for_install_request(payload)
     return download_plan_for_manifest(manifest)
 
 
@@ -6549,7 +6634,7 @@ async def admin_model_download_get(download_id: str, authorization: str | None =
 async def admin_model_download_create(payload: ModelDownloadCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
-    manifest = manifest_for_install_request(payload)
+    manifest = await manifest_for_install_request(payload)
     plan = download_plan_for_manifest(manifest)
     credential_secret_name = await validate_model_download_secret_name(payload.credential_secret_name)
     if not payload.confirm:
@@ -6682,7 +6767,7 @@ async def admin_model_download_retry(download_id: str, authorization: str | None
 async def admin_model_install(payload: ModelInstallRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
-    manifest = manifest_for_install_request(payload)
+    manifest = await manifest_for_install_request(payload)
     plan = install_plan_for_manifest(manifest, payload)
     try:
         model_lifecycle.require_installable(plan, confirmed=payload.confirm)

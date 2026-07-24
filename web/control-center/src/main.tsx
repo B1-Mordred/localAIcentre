@@ -1005,6 +1005,7 @@ function Models() {
   const [downloads, setDownloads] = useState<ModelDownloadRecord[]>([]);
   const [downloadSecrets, setDownloadSecrets] = useState<EncryptedSecret[]>([]);
   const [downloadCredentialSecretName, setDownloadCredentialSecretName] = useState("");
+  const [manifestUrl, setManifestUrl] = useState("");
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
@@ -1104,13 +1105,24 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
-  const planInstall = (model: string) => {
+  const modelRequestBody = (model?: string) => {
+    if (model) return { model };
+    const url = manifestUrl.trim();
+    return url ? { manifest_url: url } : null;
+  };
+
+  const planInstall = (model?: string) => {
+    const body = modelRequestBody(model);
+    if (!body) {
+      setMessage("manifest URL required");
+      return;
+    }
     setBusy(true);
     setMessage("planning");
     apiFetch(`/admin/models/install-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model })
+      body: JSON.stringify(body)
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -1121,13 +1133,18 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
-  const installModel = (model: string) => {
+  const installModel = (model?: string) => {
+    const body = modelRequestBody(model);
+    if (!body) {
+      setMessage("manifest URL required");
+      return;
+    }
     setBusy(true);
     setMessage("installing");
     apiFetch(`/admin/models/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance) })
+      body: JSON.stringify({ ...body, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance) })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -1139,13 +1156,18 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
-  const planDownload = (model: string) => {
+  const planDownload = (model?: string) => {
+    const body = modelRequestBody(model);
+    if (!body) {
+      setMessage("manifest URL required");
+      return;
+    }
     setBusy(true);
     setMessage("planning download");
     apiFetch(`/admin/models/download-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model })
+      body: JSON.stringify(body)
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -1156,14 +1178,19 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
-  const queueDownload = (model: string) => {
+  const queueDownload = (model?: string) => {
+    const body = modelRequestBody(model);
+    if (!body) {
+      setMessage("manifest URL required");
+      return;
+    }
     setBusy(true);
     setMessage("queueing download");
     apiFetch(`/admin/models/downloads`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model,
+        ...body,
         confirm: true,
         credential_secret_name: downloadCredentialSecretName.trim() || null
       })
@@ -1294,6 +1321,14 @@ function Models() {
             <input value={downloadCredentialSecretName} onChange={(event) => setDownloadCredentialSecretName(event.target.value)} maxLength={128} placeholder="model-download secret" />
           )}
         </label>
+        <label>
+          Manifest URL
+          <input value={manifestUrl} onChange={(event) => setManifestUrl(event.target.value)} maxLength={2048} placeholder="https://..." />
+        </label>
+        <button title="Plan remote manifest install" onClick={() => planInstall()} disabled={busy || !manifestUrl.trim()}><ListChecks size={16} /></button>
+        <button title="Install remote manifest" onClick={() => installModel()} disabled={busy || !manifestUrl.trim()}><Archive size={16} /></button>
+        <button title="Plan remote manifest download" onClick={() => planDownload()} disabled={busy || !manifestUrl.trim()}><Download size={16} /></button>
+        <button title="Queue remote manifest download" onClick={() => queueDownload()} disabled={busy || !manifestUrl.trim()}><Download size={16} /></button>
         <span className="toolbar-status">{message}</span>
       </div>
       {plan && (

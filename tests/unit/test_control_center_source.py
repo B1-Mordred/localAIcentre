@@ -37,6 +37,13 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("/admin/acceptance-reports", self.source)
         self.assertIn("<h3>Acceptance Reports</h3>", self.source)
 
+    def test_models_tab_supports_remote_manifest_url(self) -> None:
+        self.assertIn('const [manifestUrl, setManifestUrl] = useState("");', self.source)
+        self.assertIn("return url ? { manifest_url: url } : null;", self.source)
+        self.assertIn("Manifest URL", self.source)
+        self.assertIn("Plan remote manifest install", self.source)
+        self.assertIn("Queue remote manifest download", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
