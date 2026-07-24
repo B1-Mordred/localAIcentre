@@ -898,6 +898,39 @@ def require_scope(auth: AuthContext, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"missing required scope: {scope}")
 
 
+def compatibility_header_value(headers: Any) -> str:
+    value = headers.get("x-b1-compatibility", "") if headers is not None else ""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def compatibility_is_legacy_comfy(compatibility: str) -> bool:
+    return compatibility == "comfyui-legacy-8188"
+
+
+def compatibility_scope_for_method(method: str) -> str:
+    return "jobs:read" if method.upper() in SAFE_METHODS else "jobs:write"
+
+
+async def require_http_compatibility_access(request: Request, compatibility: str, scope: str) -> AuthContext | None:
+    if compatibility_is_legacy_comfy(compatibility):
+        return None
+    auth = await authenticate(request.headers.get("authorization"))
+    require_scope(auth, scope)
+    return auth
+
+
+async def require_websocket_compatibility_access(websocket: WebSocket, compatibility: str, scope: str) -> bool:
+    if compatibility_is_legacy_comfy(compatibility):
+        return True
+    try:
+        auth = await authenticate(websocket.headers.get("authorization"))
+        require_scope(auth, scope)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return False
+    return True
+
+
 def require_queue_admin(auth: AuthContext) -> None:
     if auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR}:
         return
@@ -947,7 +980,7 @@ async def proxy_http_bytes(
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length", "connection", "authorization"}
+        if key.lower() not in {"host", "content-length", "connection", "authorization", "x-b1-compatibility"}
     }
     if extra_headers:
         headers.update(extra_headers)
@@ -7758,6 +7791,10 @@ async def modelhub_client_delete(client_id: str, authorization: str | None = Hea
 
 @app.post("/prompt")
 async def comfy_prompt(request: Request) -> Response:
+    compatibility = compatibility_header_value(request.headers)
+    if not compatibility.startswith("comfyui"):
+        raise HTTPException(status_code=404, detail="route not found")
+    auth = await require_http_compatibility_access(request, compatibility, "jobs:write")
     body_bytes = await request.body()
     try:
         body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -7765,7 +7802,7 @@ async def comfy_prompt(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="ComfyUI prompt body must be valid JSON") from exc
     prompt_keys = sorted(str(key) for key in body) if isinstance(body, dict) else []
     client_id = body.get("client_id") if isinstance(body, dict) and isinstance(body.get("client_id"), str) else None
-    owner = f"comfy-client:{client_id[:80]}" if client_id else "comfy-client"
+    owner = auth.subject_id if auth is not None else (f"comfy-client:{client_id[:80]}" if client_id else "comfy-client")
     job = await create_job_record(
         owner,
         MediaJobCreate(
@@ -7875,11 +7912,15 @@ async def comfy_prompt(request: Request) -> Response:
 
 @app.websocket("/ws")
 async def native_ws(websocket: WebSocket) -> None:
-    compatibility = websocket.headers.get("x-b1-compatibility", "")
+    compatibility = compatibility_header_value(websocket.headers)
     if compatibility.startswith("voicebox"):
+        if not await require_websocket_compatibility_access(websocket, compatibility, "jobs:read"):
+            return
         await bridge_voicebox_websocket(websocket, "/ws")
         return
-    if compatibility.startswith("comfyui") or not compatibility:
+    if compatibility.startswith("comfyui"):
+        if not await require_websocket_compatibility_access(websocket, compatibility, "jobs:read"):
+            return
         await bridge_comfyui_websocket(websocket)
         return
     await websocket.close(code=1008)
@@ -7887,11 +7928,15 @@ async def native_ws(websocket: WebSocket) -> None:
 
 @app.websocket("/{path:path}")
 async def compatibility_ws(path: str, websocket: WebSocket) -> None:
-    compatibility = websocket.headers.get("x-b1-compatibility", "")
+    compatibility = compatibility_header_value(websocket.headers)
     if compatibility.startswith("voicebox"):
+        if not await require_websocket_compatibility_access(websocket, compatibility, "jobs:read"):
+            return
         await bridge_voicebox_websocket(websocket, f"/{path}")
         return
     if compatibility.startswith("comfyui"):
+        if not await require_websocket_compatibility_access(websocket, compatibility, "jobs:read"):
+            return
         await bridge_runtime_websocket(
             websocket,
             base_url=settings.comfyui_url,
@@ -7905,9 +7950,11 @@ async def compatibility_ws(path: str, websocket: WebSocket) -> None:
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], include_in_schema=False)
 async def compatibility_passthrough(path: str, request: Request) -> Response:
-    compatibility = request.headers.get("x-b1-compatibility", "")
+    compatibility = compatibility_header_value(request.headers)
     if compatibility.startswith("comfyui"):
+        await require_http_compatibility_access(request, compatibility, compatibility_scope_for_method(request.method))
         return await proxy_comfyui_compatibility(path, request)
     if compatibility.startswith("voicebox"):
+        await require_http_compatibility_access(request, compatibility, compatibility_scope_for_method(request.method))
         return await proxy_http(settings.voicebox_url, path, request)
     raise HTTPException(status_code=404, detail="route not found")

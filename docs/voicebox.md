@@ -2,6 +2,8 @@
 
 Voicebox is an optional managed runtime. It is routed at `https://voice.ai.b1.germering/` through the gateway while the backend remains internal.
 
+The normal Voicebox compatibility host requires a B1 bearer token before the control plane proxies native HTTP or WebSocket traffic. Read-only native requests require `jobs:read`; mutating native requests require `jobs:write`. The control plane strips `Authorization` before forwarding to the internal Voicebox proxy, so upstream Voicebox never receives B1 API keys.
+
 Start the pinned production server/web/API build with:
 
 ```bash

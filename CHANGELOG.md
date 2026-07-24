@@ -77,6 +77,7 @@
 - Scoped Model Hub catalog responses to each dedicated client's `allowed_models` policy so limited workstation keys cannot discover unrelated aliases or manifests.
 - Moved media-job and image-generation idempotent replay checks ahead of mutable workflow and alias validation so retries return the original durable job after catalog or workflow changes.
 - Tightened maintenance-mode admission so image generation, image edit, and media-job creation fail before body staging, workflow validation, or alias/runtime resolution, while idempotent replays can still return existing jobs.
+- Added authentication gates for normal ComfyUI and Voicebox compatibility routes and gateway header stripping so clients cannot spoof the disabled-by-default legacy ComfyUI listener through ordinary API hosts.
 - Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
 - Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
 - Redacted manifest source URLs across public Model Hub catalog, model, and version responses so external sync clients do not receive upstream credentials, signed query strings, or fragments.

@@ -2,6 +2,8 @@
 
 Native ComfyUI traffic is exposed at `https://comfy.ai.b1.germering/` through the control-plane compatibility proxy, not directly to the ComfyUI backend.
 
+Normal `https://comfy.ai.b1.germering/` requests must authenticate with a B1 bearer token. Read-only native routes such as `/object_info`, `/system_stats`, `/models`, `/history`, `/view`, and `/ws` require `jobs:read`; mutating routes such as `POST /prompt`, `/queue`, `/interrupt`, uploads, and approved custom-node API routes require `jobs:write`. The gateway stamps the managed compatibility header for this virtual host and strips client-supplied `X-B1-Compatibility` on normal API/model hosts so clients cannot spoof the legacy path. The control plane removes `Authorization` and the compatibility marker before forwarding to the ComfyUI runtime.
+
 The development Compose topology uses a mock ComfyUI service. Run the production native ComfyUI runtime with:
 
 ```bash
@@ -46,4 +48,4 @@ Enable the legacy listener only for clients that cannot use `https://comfy.ai.b1
 docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-comfy up -d gateway
 ```
 
-The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend.
+The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend. This listener is the only ComfyUI compatibility path that may omit bearer authentication; use it only for clients that cannot set headers, keep the allowlist narrow, and prefer the authenticated HTTPS virtual host whenever possible.

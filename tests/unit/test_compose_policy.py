@@ -509,6 +509,22 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("reverse_proxy control-plane:8000", models_block)
         self.assertNotIn("reverse_proxy artifact-server:8000", models_block)
 
+    def test_gateway_strips_spoofed_compatibility_headers_except_managed_hosts(self) -> None:
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        for host_var in ("B1_HOST_API", "B1_HOST_MODELS"):
+            block_start = caddyfile.index("{$" + host_var)
+            block_end = caddyfile.find("\n}\n", block_start)
+            block = caddyfile[block_start:block_end]
+            self.assertIn("header_up -X-B1-Compatibility", block, host_var)
+        comfy_block_start = caddyfile.index("{$B1_HOST_COMFY")
+        comfy_block_end = caddyfile.index("{$B1_HOST_VOICE", comfy_block_start)
+        comfy_block = caddyfile[comfy_block_start:comfy_block_end]
+        voice_block_start = caddyfile.index("{$B1_HOST_VOICE")
+        voice_block_end = caddyfile.find("\n}\n", voice_block_start)
+        voice_block = caddyfile[voice_block_start:voice_block_end]
+        self.assertIn("header_up X-B1-Compatibility comfyui-native", comfy_block)
+        self.assertIn("header_up X-B1-Compatibility voicebox-native", voice_block)
+
     def test_legacy_comfy_listener_is_not_in_base_caddyfile(self) -> None:
         caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
         self.assertNotIn(":8188", caddyfile)

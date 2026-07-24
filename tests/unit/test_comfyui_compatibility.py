@@ -31,10 +31,25 @@ else:
 
 
 class FakeRequest:
-    def __init__(self, payload: dict[str, Any], *, method: str = "POST") -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        method: str = "POST",
+        compatibility: str | None = "comfyui-native",
+        authorization: str | None = "Bearer test",
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.method = method
         self._body = json.dumps(payload).encode("utf-8")
-        self.headers = {"content-type": "application/json"}
+        request_headers = {"content-type": "application/json"}
+        if compatibility is not None:
+            request_headers["x-b1-compatibility"] = compatibility
+        if authorization is not None:
+            request_headers["authorization"] = authorization
+        if headers:
+            request_headers.update(headers)
+        self.headers = request_headers
         self.url = SimpleNamespace(query="")
 
     async def body(self) -> bytes:
@@ -64,6 +79,7 @@ class FakeWebSocket:
         self.headers = headers or {
             "host": "comfy.ai.b1.germering",
             "authorization": "Bearer secret",
+            "x-b1-compatibility": "comfyui-native",
             "sec-websocket-key": "browser-key",
             "user-agent": "native-client",
             "x-b1-test": "forwarded",
@@ -302,6 +318,10 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             comfyui_prompt_completion_timeout_seconds=30,
             comfyui_prompt_idle_grace_seconds=0,
         )
+        async def authenticate(_: str | None = None) -> Any:
+            return main.AuthContext("client_1", main.Role.SERVICE, frozenset({"jobs:read", "jobs:write"}))
+
+        main.authenticate = authenticate  # type: ignore[assignment]
 
     def tearDown(self) -> None:
         main.database = self.original_database
@@ -346,7 +366,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(len(fake.leases), 1)
         self.assertEqual(fake.releases, [])
         job = next(iter(fake.jobs.values()))
-        self.assertEqual(job["owner_id"], "comfy-client:client-1")
+        self.assertEqual(job["owner_id"], "client_1")
         self.assertEqual(job["runtime"], "comfyui")
         self.assertEqual(job["native_prompt_id"], "prompt_native_1")
         self.assertEqual(
@@ -371,6 +391,31 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             ],
         )
         self.assertEqual(scheduled[0]["prompt_id"], "prompt_native_1")
+
+    def test_prompt_requires_gateway_compatibility_header_before_job_creation(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.comfy_prompt(FakeRequest({"prompt": {}}, compatibility=None)))
+
+        self.assertEqual(caught.exception.status_code, 404)
+        self.assertEqual(fake.jobs, {})
+
+    def test_prompt_rejects_unauthenticated_normal_compatibility_before_job_creation(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+
+        async def authenticate(_: str | None = None) -> Any:
+            raise main.HTTPException(status_code=401, detail="missing bearer token or browser session")
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.comfy_prompt(FakeRequest({"prompt": {}}, authorization=None)))
+
+        self.assertEqual(caught.exception.status_code, 401)
+        self.assertEqual(fake.jobs, {})
 
     def test_prompt_prepare_failure_fails_without_forwarding_to_comfyui(self) -> None:
         fake = FakeDatabase()
@@ -604,6 +649,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             headers={
                 "host": "voice.ai.b1.germering",
                 "authorization": "Bearer secret",
+                "x-b1-compatibility": "voicebox-native",
                 "sec-websocket-key": "browser-key",
                 "user-agent": "voicebox-client",
                 "x-b1-test": "forwarded",
@@ -778,6 +824,60 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 200)
         self.assertEqual(user_data_response.status_code, 200)
         self.assertEqual([item["path"] for item in proxied], ["models/checkpoints", "upload/image", "api/userdata/workflows/example.json"])
+
+    def test_compatibility_passthrough_requires_gateway_header_and_auth(self) -> None:
+        async def proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("unauthorized or non-compatibility requests must not be proxied")
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        with self.assertRaises(main.HTTPException) as missing_header:
+            asyncio.run(main.compatibility_passthrough("object_info", FakeRequest({}, method="GET", compatibility=None)))
+        self.assertEqual(missing_header.exception.status_code, 404)
+
+        async def authenticate(_: str | None = None) -> Any:
+            raise main.HTTPException(status_code=401, detail="missing bearer token or browser session")
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+
+        with self.assertRaises(main.HTTPException) as unauthenticated:
+            asyncio.run(main.compatibility_passthrough("object_info", FakeRequest({}, method="GET", authorization=None)))
+        self.assertEqual(unauthenticated.exception.status_code, 401)
+
+    def test_legacy_comfy_passthrough_allows_cidr_checked_listener_without_auth(self) -> None:
+        proxied: list[dict[str, Any]] = []
+
+        async def authenticate(_: str | None = None) -> Any:
+            raise AssertionError("legacy ComfyUI listener uses the gateway CIDR allowlist instead of bearer auth")
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            proxied.append({"base_url": base_url, "path": path, "method": request.method})
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        response = asyncio.run(
+            main.compatibility_passthrough(
+                "object_info",
+                FakeRequest({}, method="GET", compatibility="comfyui-legacy-8188", authorization=None),
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(proxied[0]["path"], "object_info")
+
+    def test_normal_comfy_websocket_rejects_missing_auth(self) -> None:
+        async def authenticate(_: str | None = None) -> Any:
+            raise main.HTTPException(status_code=401, detail="missing bearer token or browser session")
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+        websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native"})
+
+        asyncio.run(main.native_ws(websocket))
+
+        self.assertFalse(websocket.accepted)
+        self.assertEqual(websocket.closed, [1008])
 
     def test_comfyui_passthrough_blocks_internal_and_custom_node_management_routes(self) -> None:
         async def proxy(*_: Any, **__: Any) -> Response:
