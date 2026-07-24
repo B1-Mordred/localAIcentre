@@ -106,7 +106,20 @@ The override:
 
 Use `B1_LOCALAI_GPU_DRIVER=nvidia` only if the installed NVIDIA Container Toolkit still requires the legacy Compose driver name. The first LocalAI startup can take a long time while the image initializes or downloads runtime backends; the health check allows a one-hour start period for that reason.
 
-By default the B1 lifecycle hooks are conservative: model-list misses return `unconfirmed`, warm and smoke inference are disabled, and video smoke is disabled. For acceptance testing with installed model manifests, set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` and `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`; set `B1_LOCALAI_HOOK_WARM_ENABLED=true` only when a tiny warm inference is acceptable before the real request. The unload hook calls LocalAI's native `/backend/shutdown` endpoint for the resolved model.
+By default the B1 lifecycle hooks are conservative: model-list misses return `unconfirmed`, warm and smoke inference are disabled, and video smoke is disabled. For acceptance testing with installed model manifests, set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` and `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`; set `B1_LOCALAI_HOOK_WARM_ENABLED=true` only when a tiny warm inference is acceptable before the real request. The unload hook calls LocalAI's native `/backend/shutdown` endpoint for the resolved model. The GPU scheduler now tries the runtime unload hook first and uses runtime-agent restart only when graceful unload is unavailable or unconfirmed.
+
+Run LocalAI runtime acceptance before cross-runtime acceptance:
+
+```bash
+export B1_LOCALAI_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
+export B1_LOCALAI_ACCEPTANCE_API_KEY=...
+export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_LOCALAI_ACCEPTANCE_CHAT_MODEL=chat-default
+export B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json
+make localai-acceptance
+```
+
+This proves streamed chat through the unified API, one reported LocalAI GPU-resident backend, and confirmed unload through the guarded admin runtime route.
 
 Do not set `B1_RUNTIME_DEPLOYMENT_MODE=production` for cutover until LocalAI is healthy through the gateway, at least one installed model smoke test has passed with strict hooks enabled, unload/recovery has been exercised through runtime-agent and the LocalAI hook, and the remaining required runtimes are also real rather than placeholders.
 

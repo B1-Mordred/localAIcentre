@@ -84,6 +84,23 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
         },
+        "localai_runtime": {
+            "available": True,
+            "format": "b1-ai-hub-localai-runtime-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/localai-runtime.json",
+            "generated_at": "2026-07-24T12:31:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": ["streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified"],
+            "missing_checks": [],
+            "checks": {
+                "streaming_chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:10+00:00"},
+                "single_backend_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:30:20+00:00"},
+                "graceful_unload_verified": {"status": "ok", "recorded_at": "2026-07-24T12:30:30+00:00"},
+            },
+            "sample_count": 3,
+            "sample_labels": ["localai-stream-chat", "active-gpu-runtime-states", "localai-unload"],
+        },
         "installed_workflows": {
             "available": True,
             "format": "b1-ai-hub-installed-workflows-acceptance/v1",
@@ -562,6 +579,40 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_localai_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["localai_runtime"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("LocalAI runtime acceptance evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_localai_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["localai_runtime"] = {
+            **live_evidence["localai_runtime"],
+            "status": "incomplete",
+            "missing_checks": ["graceful_unload_verified"],
+            "checks": {
+                "streaming_chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:10+00:00"},
+                "single_backend_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:30:20+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("LocalAI runtime acceptance evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "LocalAI runtime acceptance evidence is missing required checks: graceful_unload_verified",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_without_installed_workflow_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["installed_workflows"] = {"available": False, "reason": "missing"}
@@ -886,6 +937,28 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            localai = evidence_root / "localai-runtime.json"
+            localai.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-localai-runtime-acceptance/v1",
+                        "generated_at": "2026-07-24T12:31:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "streaming_chat_completed": {"status": "ok"},
+                            "single_backend_enforced": {"status": "ok"},
+                            "graceful_unload_verified": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "localai-stream-chat"},
+                            {"label": "active-gpu-runtime-states"},
+                            {"label": "localai-unload"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             installed = evidence_root / "installed-workflows.json"
             installed.write_text(
                 json.dumps(
@@ -1072,6 +1145,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
         self.assertEqual(gpu["sample_count"], 2)
+        localai_snapshot = snapshot["localai_runtime"]
+        self.assertTrue(localai_snapshot["available"])
+        self.assertEqual(localai_snapshot["source_path"], str(localai.resolve()))
+        self.assertEqual(localai_snapshot["status"], "ok")
+        self.assertEqual(localai_snapshot["missing_checks"], [])
+        self.assertEqual(localai_snapshot["sample_count"], 3)
         workflows = snapshot["installed_workflows"]
         self.assertTrue(workflows["available"])
         self.assertEqual(workflows["source_path"], str(installed.resolve()))

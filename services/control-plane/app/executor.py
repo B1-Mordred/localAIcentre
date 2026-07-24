@@ -484,30 +484,79 @@ class GpuJobRunner:
         except (httpx.HTTPError, ValueError):
             return None
 
+    async def current_runtime_state_by_name(self) -> dict[str, dict[str, Any]]:
+        list_states = getattr(database, "list_runtime_states", None)
+        if list_states is None:
+            return {}
+        try:
+            rows = await list_states()
+        except Exception:
+            return {}
+        return {str(row.get("runtime") or ""): dict(row) for row in rows if isinstance(row, dict) and row.get("runtime")}
+
+    def runtime_unload_payload(self, runtime: str, job: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+        state = state or {}
+        return {
+            "job_id": str(job["id"]),
+            "runtime": runtime,
+            "model": str(state.get("active_model") or state.get("resolved_model_version") or ""),
+            "model_alias": str(state.get("model_alias") or ""),
+            "resolved_model_version": str(state.get("resolved_model_version") or ""),
+            "modality": str(state.get("modality") or ""),
+            "operation": "unload",
+        }
+
+    async def graceful_or_forced_unload_runtime(
+        self,
+        runtime: str,
+        target_runtime: str,
+        job: dict[str, Any],
+        state: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        graceful: dict[str, Any] | None
+        try:
+            graceful = await self.post_runtime_control(runtime, "unload", self.runtime_unload_payload(runtime, job, state))
+        except Exception as exc:
+            graceful = {"status": "failed", "runtime": runtime, "action": "unload", "reason": "runtime_hook_failed", "error": exc.__class__.__name__}
+        details: dict[str, Any] = {
+            "target_runtime": target_runtime,
+            "graceful_hook": self.compact_hook_result(graceful),
+        }
+        if self.runtime_hook_status(graceful) == "ok":
+            details["hook"] = self.compact_hook_result(graceful)
+            return graceful, details
+        if not self.runtime_agent_url:
+            details["hook"] = self.compact_hook_result(graceful)
+            return graceful, details
+        fallback_reason = reason or f"prepare {target_runtime} for job {job['id']}: unload other GPU runtime {runtime}"
+        forced = await self.runtime_agent_post(
+            f"/v1/runtime-actions/{runtime}/unload",
+            {
+                "reason": fallback_reason,
+                "timeout_seconds": self.recovery_timeout_seconds,
+            },
+        )
+        details["restart_fallback"] = self.compact_hook_result(forced)
+        details["hook"] = self.compact_hook_result(forced)
+        return forced, details
+
     async def unload_other_gpu_runtimes(self, job: dict[str, Any]) -> list[dict[str, Any] | None]:
         target_runtime = str(job.get("runtime") or "")
-        if not self.runtime_agent_url or target_runtime not in GPU_RUNTIMES:
+        if target_runtime not in GPU_RUNTIMES:
             return []
         results: list[dict[str, Any] | None] = []
+        states = await self.current_runtime_state_by_name()
         for runtime in GPU_RUNTIMES:
             if runtime == target_runtime:
                 continue
-            result = await self.runtime_agent_post(
-                f"/v1/runtime-actions/{runtime}/unload",
-                {
-                    "reason": f"prepare {target_runtime} for job {job['id']}: unload other GPU runtime {runtime}",
-                    "timeout_seconds": self.recovery_timeout_seconds,
-                },
-            )
+            result, details = await self.graceful_or_forced_unload_runtime(runtime, target_runtime, job, states.get(runtime))
             await self.record_runtime_state_for_job(
                 runtime,
                 self.runtime_hook_state_status("unload", result),
                 "unloading",
                 job,
-                {
-                    "target_runtime": target_runtime,
-                    "hook": self.compact_hook_result(result),
-                },
+                details,
                 record_model=False,
             )
             results.append(result)
@@ -647,7 +696,7 @@ class GpuJobRunner:
         return None
 
     async def unload_expired_idle_runtime(self) -> bool:
-        if not self.runtime_agent_url:
+        if not self.runtime_agent_url and not self.runtime_urls:
             return False
         candidate = await self.expired_idle_runtime_state()
         if candidate is None:
@@ -658,15 +707,16 @@ class GpuJobRunner:
             return False
         result: dict[str, Any] | None = None
         try:
-            result = await self.runtime_agent_post(
-                f"/v1/runtime-actions/{runtime}/unload",
-                {
-                    "reason": (
-                        f"idle timeout expired for {runtime} model {state.get('active_model') or state.get('resolved_model_version')} "
-                        f"after {idle_seconds}s >= {timeout_seconds}s"
-                    ),
-                    "timeout_seconds": self.recovery_timeout_seconds,
-                },
+            reason = (
+                f"idle timeout expired for {runtime} model {state.get('active_model') or state.get('resolved_model_version')} "
+                f"after {idle_seconds}s >= {timeout_seconds}s"
+            )
+            result, details = await self.graceful_or_forced_unload_runtime(
+                runtime,
+                runtime,
+                {"id": state.get("job_id") or f"idle-{runtime}", "runtime": runtime},
+                state,
+                reason=reason,
             )
             confirmed = str((result or {}).get("status") or "") == "ok"
             await self.upsert_runtime_state(
@@ -681,7 +731,7 @@ class GpuJobRunner:
                     "details": {
                         "idle_seconds": idle_seconds,
                         "timeout_seconds": timeout_seconds,
-                        "hook": self.compact_hook_result(result),
+                        **details,
                     },
                 }
             )

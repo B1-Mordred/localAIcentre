@@ -453,6 +453,63 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["state"], "failed")
             self.assertEqual(fake.job["failure_category"], "unsupported_gpu_operation")
 
+    def test_gpu_runner_tries_graceful_unload_before_restart_fallback(self) -> None:
+        fake = FakeDatabase(runtime="localai")
+        fake.runtime_states["comfyui"] = {
+            "runtime": "comfyui",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "sdxl-low-vram",
+            "model_alias": "image-default",
+            "resolved_model_version": "sdxl-low-vram@1",
+            "job_id": "job_image",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC),
+        }
+        fake.runtime_states["voicebox"] = {
+            "runtime": "voicebox",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "voicebox-quality",
+            "model_alias": "tts-quality",
+            "resolved_model_version": "voicebox-quality@1",
+            "job_id": "job_voice",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC),
+        }
+        self.patch_database(fake)
+
+        class GracefulRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    runtime_urls={"comfyui": "http://comfyui", "voicebox": "http://voicebox"},
+                )
+                self.controls: list[tuple[str, str, dict[str, Any]]] = []
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action, payload))
+                return {"status": "ok", "runtime": runtime, "action": action, "strategy": "backend_shutdown"}
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "action": "unload"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = GracefulRunner(Path(tmp))
+            results = asyncio.run(runner.unload_other_gpu_runtimes({"id": "job_gpu", "runtime": "localai"}))
+
+        self.assertEqual([result["status"] for result in results if isinstance(result, dict)], ["ok", "ok"])
+        self.assertEqual([(runtime, action) for runtime, action, _ in runner.controls], [("comfyui", "unload"), ("voicebox", "unload")])
+        self.assertEqual(runner.posts, [])
+        self.assertEqual(runner.controls[0][2]["model"], "sdxl-low-vram")
+        self.assertEqual(runner.controls[1][2]["resolved_model_version"], "voicebox-quality@1")
+        self.assertEqual(fake.runtime_states["comfyui"]["status"], "unload_ok")
+        self.assertEqual(fake.runtime_states["comfyui"]["details"]["hook"]["strategy"], "backend_shutdown")
+        self.assertEqual(fake.runtime_states["voicebox"]["status"], "unload_ok")
+
     def test_gpu_runner_calls_runtime_load_and_warm_hooks(self) -> None:
         fake = FakeDatabase(runtime="voicebox")
         fake.job.update(
@@ -485,11 +542,11 @@ class ExecutorTests(unittest.TestCase):
             self.assertTrue(processed)
             self.assertEqual(
                 [(runtime, action) for runtime, action, _ in runner.controls],
-                [("voicebox", "load"), ("voicebox", "warm")],
+                [("localai", "unload"), ("comfyui", "unload"), ("voicebox", "load"), ("voicebox", "warm")],
             )
-            self.assertEqual(runner.controls[0][2]["job_id"], "job_gpu")
-            self.assertEqual(runner.controls[0][2]["model"], "voicebox-quality")
-            self.assertEqual(runner.controls[0][2]["resolved_model_version"], "voicebox-quality@1.0.0")
+            self.assertEqual(runner.controls[2][2]["job_id"], "job_gpu")
+            self.assertEqual(runner.controls[2][2]["model"], "voicebox-quality")
+            self.assertEqual(runner.controls[2][2]["resolved_model_version"], "voicebox-quality@1.0.0")
             self.assertEqual(fake.runtime_states["voicebox"]["status"], "idle")
             self.assertEqual(fake.runtime_states["voicebox"]["active_model"], "voicebox-quality")
             self.assertEqual(fake.runtime_states["voicebox"]["stage"], "idle")
@@ -529,7 +586,10 @@ class ExecutorTests(unittest.TestCase):
             processed = asyncio.run(runner.run_once())
 
             self.assertTrue(processed)
-            self.assertEqual([(runtime, action) for runtime, action, _ in runner.controls], [("voicebox", "load")])
+            self.assertEqual(
+                [(runtime, action) for runtime, action, _ in runner.controls],
+                [("localai", "unload"), ("comfyui", "unload"), ("voicebox", "load")],
+            )
             self.assertFalse(runner.submitted)
             self.assertEqual(fake.job["state"], "failed")
             self.assertEqual(fake.job["stage"], "runtime_prepare_failed")

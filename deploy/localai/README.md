@@ -97,6 +97,16 @@ Normal LocalAI requests are proxied unchanged to the private upstream listener. 
 
 Set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` for cutover acceptance so a requested model missing from `/v1/models` becomes a hard preparation failure instead of an `unconfirmed` staging result.
 
+Run the LocalAI acceptance harness after a real chat alias is installed:
+
+```bash
+B1_LOCALAI_ACCEPTANCE_API_KEY=... \
+B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json \
+make localai-acceptance
+```
+
+The harness verifies streamed chat through the unified API, one reported LocalAI GPU-resident backend, and confirmed unload through the guarded admin runtime route.
+
 The control-plane adapter currently submits:
 
 - `/v1/images/generations` as JSON for text-to-image

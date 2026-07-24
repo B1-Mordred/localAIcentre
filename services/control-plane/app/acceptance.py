@@ -19,6 +19,8 @@ CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 MAX_LIVE_EVIDENCE_BYTES = 4 * 1024 * 1024
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
+LOCALAI_EVIDENCE_FORMAT = "b1-ai-hub-localai-runtime-acceptance/v1"
+LOCALAI_REQUIRED_CHECKS = ("streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified")
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
 INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "chat_completed",
@@ -293,6 +295,36 @@ def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path 
     }
 
 
+def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != LOCALAI_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported LocalAI runtime acceptance evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in LOCALAI_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(LOCALAI_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     if payload.get("format") != INSTALLED_WORKFLOWS_EVIDENCE_FORMAT:
         return {"available": False, "reason": "unsupported installed workflow acceptance evidence format"}
@@ -506,6 +538,7 @@ def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_pat
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
+        "localai_runtime": {"available": False, "reason": reason, "root": str(root)},
         "installed_workflows": {"available": False, "reason": reason, "root": str(root)},
         "native_comfyui_compatibility": {"available": False, "reason": reason, "root": str(root)},
         "remote_nodes_non_comfy": {"available": False, "reason": reason, "root": str(root)},
@@ -550,6 +583,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         if payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT and "gpu_acceptance" not in found:
             snapshots["gpu_acceptance"] = gpu_acceptance_evidence_snapshot(payload, path.resolve())
             found.add("gpu_acceptance")
+        elif payload.get("format") == LOCALAI_EVIDENCE_FORMAT and "localai_runtime" not in found:
+            snapshots["localai_runtime"] = localai_evidence_snapshot(payload, path.resolve())
+            found.add("localai_runtime")
         elif payload.get("format") == INSTALLED_WORKFLOWS_EVIDENCE_FORMAT and "installed_workflows" not in found:
             snapshots["installed_workflows"] = installed_workflows_evidence_snapshot(payload, path.resolve())
             found.add("installed_workflows")
@@ -573,6 +609,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             found.add("restart_reconciliation")
         if found == {
             "gpu_acceptance",
+            "localai_runtime",
             "installed_workflows",
             "native_comfyui_compatibility",
             "remote_nodes_non_comfy",
@@ -701,6 +738,15 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = gpu_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("RTX 3060 GPU acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+    localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
+    if localai_evidence.get("available") is not True:
+        blockers.append("LocalAI runtime acceptance evidence is unavailable")
+    else:
+        if localai_evidence.get("status") != "ok":
+            blockers.append(f"LocalAI runtime acceptance evidence status is {localai_evidence.get('status', 'unknown')}")
+        missing_checks = localai_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("LocalAI runtime acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     if installed_workflows_evidence.get("available") is not True:
         blockers.append("installed workflow evidence is unavailable")
@@ -841,6 +887,7 @@ def build_report(
         "live_evidence": live_evidence
         or {
             "gpu_acceptance": {"available": False, "reason": "not supplied"},
+            "localai_runtime": {"available": False, "reason": "not supplied"},
             "installed_workflows": {"available": False, "reason": "not supplied"},
             "native_comfyui_compatibility": {"available": False, "reason": "not supplied"},
             "remote_nodes_non_comfy": {"available": False, "reason": "not supplied"},
@@ -975,6 +1022,7 @@ def markdown_report(report: dict[str, Any]) -> str:
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
+    localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
@@ -1070,6 +1118,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Live Acceptance Evidence\n\n"
             + _live_evidence_markdown("GPU acceptance", gpu_evidence, "No live GPU acceptance checks recorded.")
             + "\n\n"
+            + _live_evidence_markdown("LocalAI runtime acceptance", localai_evidence, "No LocalAI runtime acceptance checks recorded.")
+            + "\n\n"
             + _live_evidence_markdown(
                 "Installed workflow acceptance",
                 installed_workflows_evidence,
@@ -1149,6 +1199,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
+    localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
@@ -1161,6 +1212,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
     )
     gpu_evidence_ready = gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks")
+    localai_evidence_ready = (
+        localai_evidence.get("available") is True and localai_evidence.get("status") == "ok" and not localai_evidence.get("missing_checks")
+    )
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
         and installed_workflows_evidence.get("status") == "ok"
@@ -1208,6 +1262,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
         "gpu_evidence_ready": gpu_evidence_ready,
+        "localai_evidence_ready": localai_evidence_ready,
         "installed_workflows_evidence_ready": installed_workflows_evidence_ready,
         "native_comfyui_evidence_ready": native_comfyui_evidence_ready,
         "remote_nodes_evidence_ready": remote_nodes_evidence_ready,
@@ -1217,6 +1272,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "restart_reconciliation_evidence_ready": restart_reconciliation_evidence_ready,
         "live_evidence_ready": (
             gpu_evidence_ready
+            and localai_evidence_ready
             and installed_workflows_evidence_ready
             and native_comfyui_evidence_ready
             and remote_nodes_evidence_ready

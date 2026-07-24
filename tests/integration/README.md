@@ -36,6 +36,21 @@ B1_WORKFLOWS_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_install
 
 The image, edit, and video job files should be full `POST /v1/media/jobs` JSON bodies that reference installed aliases and either published workflow IDs or native ComfyUI/LocalAI inputs validated for the RTX 3060 profile. The harness provides simple prompt defaults only to keep dry runs ergonomic; production acceptance should use explicit job files so the operator can review exact model/workflow dependencies. Set `B1_WORKFLOWS_CPU_TTS_MODEL` and `B1_WORKFLOWS_CPU_STT_MODEL` when CPU lease validation should use aliases different from the ordinary `tts-fast` and `stt-default` defaults. Set `B1_WORKFLOWS_ALLOW_PLACEHOLDER=1` only for a labelled development dry run; handoff evidence should leave it unset so placeholder TTS/STT output fails.
 
+## LocalAI Runtime Acceptance
+
+Run the LocalAI runtime suite on the target host after a real `chat-default` or configured `B1_LOCALAI_ACCEPTANCE_CHAT_MODEL` alias is installed and the production LocalAI override is enabled. It sends a streamed OpenAI-compatible chat request through `api.ai.b1.germering`, verifies scheduler runtime state reports only LocalAI as GPU-resident, then calls the operator unload route and verifies the persisted LocalAI state is cleared.
+
+```bash
+export B1_LOCALAI_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
+export B1_LOCALAI_ACCEPTANCE_API_KEY=...
+export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_LOCALAI_ACCEPTANCE_CHAT_MODEL=chat-default
+export B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json
+make localai-acceptance
+```
+
+The API key must include chat/inference access plus `runtimes:read` and `runtimes:write`. The unload check is intentional: it exercises the same guarded admin route operators use to clear LocalAI residency. Keep `B1_LOCALAI_ACCEPTANCE_REQUIRE_PRODUCTION=true` for handoff evidence; disable it only for a labelled temporary-hostname dry run.
+
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
 Run the GPU acceptance suite only on the target host, or during an equivalent maintenance window with the real LocalAI, ComfyUI, and Voicebox runtime overlays enabled. It sends live inference work and may trigger bounded runtime recovery when explicitly requested.
@@ -76,4 +91,4 @@ Use the same TLS helper variables as smoke tests when testing through the Caddy 
 - `B1_INTEGRATION_TLS_VERIFY=0`
 - `B1_INTEGRATION_HOST_HEADER`
 
-Remaining integration coverage will expand to LocalAI streaming/unload internals, more native ComfyUI REST/WebSocket client behaviours, Voicebox external-server scenarios, and Model Hub blob semantics.
+Remaining integration coverage will expand to more native ComfyUI REST/WebSocket client behaviours, Voicebox external-server scenarios, and Model Hub blob semantics.

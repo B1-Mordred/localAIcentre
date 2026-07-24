@@ -21,7 +21,7 @@ This repository currently contains the first runnable project slice:
 - database-backed model install planning from catalog IDs, uploaded manifests, or bounded HTTPS manifest URLs; licence-gated resumable direct-url and Hugging Face repository blob downloads with Control Center pause/resume and retry/requeue; verified staged-blob publication; hardlinked or safely extracted per-runtime read-only model views; recoverable record/blob quarantine with confirmed quarantine retention cleanup; and catalog overlay refresh
 - runtime-agent with default-on internal mTLS, fail-closed token-protected allowlisted Docker status, bounded redacted logs surfaced through Control Center, disabled-by-default service mutations, and predefined runtime recover/unload actions
 - runtime-agent CPU/memory/disk/GPU metrics and Control Center system self-test with TLS route, tiny inference, dry-run unload, and artifact delivery probes
-- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/restart reconciliation/rollback/security, machine-readable RTX GPU, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, deployed security including artifact authorization, and restart reconciliation evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
+- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/restart reconciliation/rollback/security, machine-readable RTX GPU, LocalAI streaming/unload, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, deployed security including artifact authorization, and restart reconciliation evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
 - lightweight Control Center observability backed by `GET /admin/metrics`, showing queue waits, recent job timing/resource summaries, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring Prometheus or Grafana for the base appliance
 - PostgreSQL-backed audit log for administrative changes with recursive metadata redaction and Control Center visibility
 - AES-GCM encrypted configuration-secret storage for provider credentials, download tokens, runtime credentials, and integrations, backed by the generated master key outside Git and exposed through redacted admin UI/API controls
@@ -30,7 +30,7 @@ This repository currently contains the first runnable project slice:
 - persisted administrator-controlled maintenance mode that blocks new inference/media/reservation work, admin job retries, and queued runner claims while leaving cancellation, backups, audit, and inspection paths available
 - persisted controlled-update planning with pinned image digest validation, maintenance-gated staging backups, runtime-agent pinned-image staging, generated Compose image override artifacts, self-test recording, promotion handoff validation, and predefined runtime-agent rollback dry-run/execute metadata
 - browser first-admin setup, scrypt password hashes, HttpOnly session cookies, CSRF-protected UI mutations, and web-managed CORS/trusted-proxy allowlists for LAN UI origins
-- CPU and GPU job runners that persist durable job state, recover interrupted work, verify runtime-agent VRAM metrics before GPU execution when available, cancel long LocalAI/Voicebox runtime calls cooperatively, and fail unsupported runtime/job shapes without writing placeholder success artifacts
+- CPU and GPU job runners that persist durable job state, recover interrupted work, try graceful runtime unload hooks before restart fallback, verify runtime-agent VRAM metrics before GPU execution when available, cancel long LocalAI/Voicebox runtime calls cooperatively, and fail unsupported runtime/job shapes without writing placeholder success artifacts
 - Alembic-backed control-plane database migration runner that executes before Uvicorn and startup schema verification that fails closed on missing tables/columns
 - durable Voicebox profile registry with Control Center create/export/delete flows, audit events, backup coverage, TTS alias/runtime validation, and artifact-only voice sample references
 - external `comfyui-b1-remote-nodes` package with unified-API nodes for model selection, chat, vision request shaping, embeddings, media jobs, uploads, artifacts, TTS, and STT without using the server-side ComfyUI endpoint
@@ -48,7 +48,7 @@ This repository currently contains the first runnable project slice:
 - Control Center generated-artifact retention planning and confirmed cleanup for old terminal job artifacts, with Voicebox sample protection, symlink/path-scope refusal, job metadata marking, and HTTP 410 for reclaimed artifact downloads
 - configurable media-job queue/rate admission and artifact-storage headroom checks exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing, returning HTTP 429 or 507 before work is accepted when limits would be exceeded
 - runtime reservation fleet visibility for administrators/operators with Jobs tab creation/cancellation controls and current GPU scheduler lease inspection
-- opt-in live smoke tests for deployed health, authenticated model listing, async TTS media jobs, SSE events, artifact download, optional admin self-test, an RTX 3060 cross-runtime GPU acceptance sequence for LocalAI -> ComfyUI -> Voicebox switching, and a restart reconciliation drill that proves waiting jobs are requeued while interrupted active jobs become `recovery_required`
+- opt-in live smoke tests for deployed health, authenticated model listing, async TTS media jobs, SSE events, artifact download, optional admin self-test, LocalAI streaming/unload acceptance, an RTX 3060 cross-runtime GPU acceptance sequence for LocalAI -> ComfyUI -> Voicebox switching, and a restart reconciliation drill that proves waiting jobs are requeued while interrupted active jobs become `recovery_required`
 
 The placeholder runtime containers are intentional at this stage. They keep `docker compose up -d` runnable on a small host without downloading model weights while the scheduler, registry, adapters, and UI flows are implemented. They are service-compatible placeholders to be replaced by pinned upstream runtime images/builds as each adapter reaches production readiness. The control plane now reports `runtimes:production-readiness` in `/admin/self-test` and `/admin/runtimes`: default `B1_RUNTIME_DEPLOYMENT_MODE=development` degrades when required runtimes are placeholders, while `B1_RUNTIME_DEPLOYMENT_MODE=production` fails self-test until `B1_RUNTIME_PRODUCTION_REQUIRED` runtimes are real, healthy, and non-placeholder.
 
@@ -120,9 +120,13 @@ B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS and temporary-host options.
 
-Run target-host cross-runtime GPU acceptance after real GPU models and a ComfyUI API prompt are installed:
+Run LocalAI runtime acceptance after a real chat alias is installed, then run target-host cross-runtime GPU acceptance after real GPU models and a ComfyUI API prompt are installed:
 
 ```bash
+B1_LOCALAI_ACCEPTANCE_API_KEY=... \
+B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json \
+make localai-acceptance
+
 B1_GPU_ACCEPTANCE_API_KEY=... \
 B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json \
 B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json \

@@ -5200,6 +5200,65 @@ async def admin_service_logs(
     }
 
 
+async def current_runtime_state(runtime: str) -> dict[str, Any] | None:
+    list_states = getattr(database, "list_runtime_states", None)
+    if list_states is None:
+        return None
+    rows = await list_states()
+    for row in rows:
+        if isinstance(row, dict) and row.get("runtime") == runtime:
+            return dict(row)
+    return None
+
+
+def compact_runtime_action_result(result: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"status": "unconfirmed"}
+    allowed_keys = {"status", "reason", "action", "strategy", "runtime_action", "service", "runtime", "message", "error", "code"}
+    return {key: value for key, value in result.items() if key in allowed_keys}
+
+
+def runtime_action_status(result: dict[str, Any] | None) -> str:
+    return str((result or {}).get("status") or "unconfirmed").strip().lower()
+
+
+async def admin_graceful_runtime_unload(runtime: str) -> dict[str, Any] | None:
+    state = await current_runtime_state(runtime)
+    if not state or not (state.get("active_model") or state.get("resolved_model_version")):
+        return {"status": "unconfirmed", "runtime": runtime, "action": "unload", "reason": "runtime_state_model_missing"}
+    runner = runtime_control_runner()
+    try:
+        return await runner.post_runtime_control(
+            runtime,
+            "unload",
+            runner.runtime_unload_payload(runtime, {"id": state.get("job_id") or f"admin-unload-{runtime}", "runtime": runtime}, state),
+        )
+    except Exception as exc:
+        return {"status": "failed", "runtime": runtime, "action": "unload", "reason": "runtime_hook_failed", "error": exc.__class__.__name__}
+
+
+async def record_confirmed_runtime_unload(runtime: str, result: dict[str, Any] | None, auth: AuthContext, reason: str) -> None:
+    if runtime_action_status(result) != "ok":
+        return
+    await database.upsert_runtime_state(
+        {
+            "runtime": runtime,
+            "status": "unload_ok",
+            "stage": "idle_unloaded",
+            "active_model": None,
+            "model_alias": None,
+            "resolved_model_version": None,
+            "job_id": None,
+            "details": {
+                "source": "admin_runtime_action",
+                "requested_by": auth.subject_id,
+                "reason": reason,
+                "hook": compact_runtime_action_result(result),
+            },
+        }
+    )
+
+
 async def admin_runtime_action(
     runtime: str,
     action: str,
@@ -5213,13 +5272,21 @@ async def admin_runtime_action(
         raise HTTPException(status_code=404, detail="runtime adapter is not configured")
     if adapter.external:
         raise HTTPException(status_code=422, detail="external runtime adapters cannot be mutated by runtime-agent")
-    agent_result, agent_error = await runtime_agent_post(
-        f"/v1/runtime-actions/{runtime}/{action}",
-        {"reason": payload.reason, "timeout_seconds": payload.timeout_seconds},
-        timeout_seconds=max(30.0, float(payload.timeout_seconds + 5)),
-    )
-    if agent_error is not None:
-        raise HTTPException(status_code=502, detail=agent_error)
+    graceful_result: dict[str, Any] | None = None
+    if action == "unload":
+        graceful_result = await admin_graceful_runtime_unload(runtime)
+    if action == "unload" and runtime_action_status(graceful_result) == "ok":
+        agent_result, agent_error = graceful_result, None
+    else:
+        agent_result, agent_error = await runtime_agent_post(
+            f"/v1/runtime-actions/{runtime}/{action}",
+            {"reason": payload.reason, "timeout_seconds": payload.timeout_seconds},
+            timeout_seconds=max(30.0, float(payload.timeout_seconds + 5)),
+        )
+        if agent_error is not None:
+            raise HTTPException(status_code=502, detail=agent_error)
+    if action == "unload":
+        await record_confirmed_runtime_unload(runtime, agent_result, auth, payload.reason)
     await record_audit_event(
         auth,
         f"runtime.{action}_requested",
@@ -5233,9 +5300,13 @@ async def admin_runtime_action(
             "timeout_seconds": payload.timeout_seconds,
             "runtime_agent_status": (agent_result or {}).get("status"),
             "strategy": (agent_result or {}).get("strategy"),
+            "graceful_runtime_status": (graceful_result or {}).get("status") if graceful_result is not None else None,
         },
     )
-    return {"runtime": runtime, "action": action, "runtime_agent": agent_result}
+    response = {"runtime": runtime, "action": action, "runtime_agent": agent_result}
+    if graceful_result is not None:
+        response["graceful_runtime"] = compact_runtime_action_result(graceful_result)
+    return response
 
 
 @app.post("/admin/runtimes/{runtime}/recover")
