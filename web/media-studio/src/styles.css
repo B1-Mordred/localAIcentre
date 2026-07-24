@@ -332,6 +332,33 @@ textarea {
   overflow: hidden;
 }
 
+.backing-strip {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.backing-strip span {
+  border: 1px solid #d6dde3;
+  border-radius: 999px;
+  color: #46515b;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 8px;
+}
+
+.backing-strip.comfy span {
+  border-color: #b7d2f0;
+  color: #215a92;
+}
+
+.backing-strip.external span {
+  border-color: #f1cd84;
+  color: #7b4d00;
+}
+
 .preview.empty {
   color: #66727d;
   flex-direction: column;

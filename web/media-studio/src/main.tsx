@@ -344,6 +344,26 @@ function backendLabel(workflow: PublishedWorkflow): string {
   return "local selectable";
 }
 
+function jobBacking(job: MediaJob | null, workflow?: PublishedWorkflow | null): { locality: string; backend: string; label: string; className: string } {
+  const runtime = (job?.runtime ?? "").toLowerCase();
+  if (runtime === "comfyui") {
+    return { locality: "local", backend: "ComfyUI-backed", label: "local / ComfyUI-backed", className: "local comfy" };
+  }
+  if (runtime === "openai-compatible" || runtime === "generic-http") {
+    return { locality: "external", backend: "non-Comfy-backed", label: "external / non-Comfy-backed", className: "external non-comfy" };
+  }
+  if (runtime) {
+    return { locality: "local", backend: "non-Comfy-backed", label: "local / non-Comfy-backed", className: "local non-comfy" };
+  }
+  if (workflow?.backend_policy === "comfyui-only") {
+    return { locality: "local", backend: "ComfyUI-backed", label: "local / ComfyUI-backed", className: "local comfy" };
+  }
+  if (workflow?.backend_policy === "non-comfy-only") {
+    return { locality: "local", backend: "non-Comfy-backed", label: "local / non-Comfy-backed", className: "local non-comfy" };
+  }
+  return { locality: "pending", backend: "runtime selected at execution", label: "pending / runtime selected at execution", className: "pending" };
+}
+
 function priorityFor(workflow: PublishedWorkflow): string {
   if (workflow.modality === "video") return "video";
   if (workflow.modality === "tts" || workflow.modality === "stt") return "interactive_audio";
@@ -704,6 +724,7 @@ function JobSummary({
 }) {
   const preview = previewSource(workflow, values, uploadPreviews);
   const outputPreview = firstPreviewArtifact(artifacts);
+  const backing = jobBacking(job, workflow);
   return (
     <aside className="resultpane">
       <div className="pane-title">
@@ -712,12 +733,16 @@ function JobSummary({
           <Square size={16} />Cancel
         </button>
       </div>
+      <div className={`backing-strip ${backing.className}`} aria-label="Job backing">
+        <span>{backing.locality}</span>
+        <span>{backing.backend}</span>
+      </div>
       <ArtifactPreview artifact={outputPreview} fallbackSource={preview} />
       <dl>
         <div><dt>Status</dt><dd>{job?.state ?? "idle"}</dd></div>
         <div><dt>Progress</dt><dd>{job?.progress ?? 0}%</dd></div>
         <div><dt>Events</dt><dd>{eventStatus || "idle"}</dd></div>
-        <div><dt>Backend</dt><dd>{workflow ? backendLabel(workflow) : "none"}</dd></div>
+        <div><dt>Backing</dt><dd>{backing.label}</dd></div>
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>
@@ -1035,7 +1060,7 @@ function History({ jobs, onRefresh, onSelect }: { jobs: MediaJob[]; onRefresh: (
             <tr key={job.id} onClick={() => onSelect(job)}>
               <td><code>{job.id}</code><small>{job.modality} / {job.operation}</small></td>
               <td>{job.model_alias}<small>{job.resolved_model_version}</small></td>
-              <td>{job.runtime}</td>
+              <td>{job.runtime}<small>{jobBacking(job).label}</small></td>
               <td>{job.state}<small>{job.stage ?? ""} / {job.progress ?? 0}%</small></td>
               <td>
                 {formatMs(job.run_time_ms)}
@@ -1071,6 +1096,7 @@ function HistoryDetail({
   const formatPeak = (value?: number | null) => typeof value === "number" ? `${value} MiB` : "pending";
   const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : "pending";
   const outputPreview = firstPreviewArtifact(artifacts);
+  const backing = jobBacking(job);
 
   if (!job) {
     return (
@@ -1095,6 +1121,7 @@ function HistoryDetail({
         <div><dt>Status</dt><dd>{job.state} / {job.stage ?? "unknown"} / {job.progress ?? 0}%</dd></div>
         <div><dt>Workflow</dt><dd>{job.modality} / {job.operation}</dd></div>
         <div><dt>Runtime</dt><dd>{job.runtime}</dd></div>
+        <div><dt>Backing</dt><dd>{backing.label}</dd></div>
         <div><dt>Model</dt><dd>{job.model_alias}<small>{job.resolved_model_version}</small></dd></div>
         <div><dt>Created</dt><dd>{formatTime(job.created_at)}</dd></div>
         <div><dt>Completed</dt><dd>{formatTime(job.completed_at)}</dd></div>

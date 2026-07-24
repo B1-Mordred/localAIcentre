@@ -64,6 +64,7 @@
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
 - Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.
+- Added Media Studio resolved backing labels so active and historical jobs clearly show local/external and ComfyUI/non-Comfy execution after runtime selection.
 - Added structured media-job request redaction that preserves workflow IDs, versions, and safe runtime parameters while redacting prompts, uploads, paths, hashes, and credentials.
 - Added a Control Center job reproducibility summary beside the raw redacted request JSON for faster operator inspection.
 - Added authenticated Control Center job artifact downloads from the selected job detail panel.
