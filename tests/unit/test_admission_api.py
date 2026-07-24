@@ -344,6 +344,68 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(result["b1_job_id"], "job_existing")
         self.assertEqual(fake_database.inserted, [])
 
+    def test_image_generation_persists_runtime_policy_and_priority_extensions(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(artifact_storage_reserve_bytes=0)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+        resolver_calls: list[tuple[str, str, str, str | None]] = []
+
+        def resolver(model: str, modality: str, auth: Any, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            resolver_calls.append((model, modality, runtime_policy, operation))
+            return resolution()
+
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+        payload = {
+            "model": "image-default",
+            "prompt": "castle",
+            "runtime_policy": "non_comfy_only",
+            "priority": "image_batch",
+        }
+
+        result = asyncio.run(main.image_generations(payload, authorization="Bearer key"))
+
+        self.assertTrue(result["b1_job_id"].startswith("job_"))
+        self.assertEqual(resolver_calls, [("image-default", "image", "non_comfy_only", "image-generation")])
+        inserted = fake_database.inserted[0]
+        self.assertEqual(inserted["priority"], "image_batch")
+        self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
+        self.assertEqual(inserted["request_params"]["priority"], "image_batch")
+        self.assertEqual(inserted["request_params"]["input"]["runtime_policy"], "non_comfy_only")
+
+    def test_image_edit_persists_runtime_policy_and_priority_extensions(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(artifact_storage_reserve_bytes=0)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+        resolver_calls: list[tuple[str, str, str, str | None]] = []
+
+        async def parse_body(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "model": "image-edit",
+                "prompt": "replace sky",
+                "image": "data:image/png;base64,iVBORw0KGgo=",
+                "runtime_policy": "non_comfy_only",
+                "priority": "single_image",
+            }
+
+        def resolver(model: str, modality: str, auth: Any, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            resolver_calls.append((model, modality, runtime_policy, operation))
+            return resolution()
+
+        self.patch_attr("image_edit_input_from_request", parse_body)
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+
+        result = asyncio.run(main.image_edits(FakeRequest(body=b"not-read"), authorization="Bearer key"))
+
+        self.assertTrue(result["b1_job_id"].startswith("job_"))
+        self.assertEqual(resolver_calls, [("image-edit", "image", "non_comfy_only", "image-edit")])
+        inserted = fake_database.inserted[0]
+        self.assertEqual(inserted["priority"], "single_image")
+        self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
+        self.assertEqual(inserted["request_params"]["priority"], "single_image")
+        self.assertEqual(inserted["request_params"]["input"]["runtime_policy"], "non_comfy_only")
+
     def test_media_job_idempotency_returns_existing_before_workflow_or_alias_checks(self) -> None:
         payload = media_job_payload(input={"workflow_id": "workflow_1", "workflow_version": "1.0.0", "parameters": {"prompt": "castle"}})
         existing = job_row(idempotency_key="media_1", request_params=payload.model_dump())

@@ -3202,6 +3202,13 @@ def openai_image_job_response(job: dict[str, Any]) -> dict[str, Any]:
     return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
 
 
+def media_job_string_extension(payload: dict[str, Any], key: str, default: str) -> str:
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
 async def create_job_record(
     owner: str,
     request_payload: MediaJobCreate,
@@ -7980,7 +7987,17 @@ async def image_generations(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "inference:write")
-    job_payload = MediaJobCreate(modality="image", operation="generation", model=payload.get("model", "image-default"), input=payload)
+    model = media_job_string_extension(payload, "model", "image-default")
+    runtime_policy = media_job_string_extension(payload, "runtime_policy", "any")
+    priority = media_job_string_extension(payload, "priority", "single_image")
+    job_payload = MediaJobCreate(
+        modality="image",
+        operation="generation",
+        model=model,
+        input=payload,
+        priority=priority,
+        runtime_policy=runtime_policy,
+    )
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
@@ -7988,8 +8005,7 @@ async def image_generations(
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
     require_not_in_maintenance("images/generations")
-    model = job_payload.model
-    resolution = resolve_catalog_alias_for_auth(model, "image", auth, payload.get("runtime_policy", "any"), operation="image-generation")
+    resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-generation")
     job = await create_job_record(
         auth.subject_id,
         job_payload,
@@ -8017,10 +8033,11 @@ async def image_edits(
     payload = await image_edit_input_from_request(request, auth)
     model = payload.get("model") if isinstance(payload.get("model"), str) and payload.get("model") else "image-edit"
     runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
+    priority = media_job_string_extension(payload, "priority", "single_image")
     resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-edit")
     job = await create_job_record(
         auth.subject_id,
-        MediaJobCreate(modality="image", operation="edit", model=model, input=payload, runtime_policy=runtime_policy),
+        MediaJobCreate(modality="image", operation="edit", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
         idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )
