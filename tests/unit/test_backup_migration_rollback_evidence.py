@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 sys.path.insert(0, str(SCRIPTS))
 
 from app import backup_restore  # noqa: E402
+from app import rollback_rehearsal  # noqa: E402
 import old_stack_backup  # noqa: E402
 
 
@@ -22,12 +23,6 @@ evidence = importlib.util.module_from_spec(spec)
 sys.modules["b1_backup_migration_rollback_evidence"] = evidence
 assert spec.loader is not None
 spec.loader.exec_module(evidence)
-
-rollback_spec = importlib.util.spec_from_file_location("b1_rollback_rehearsal", SCRIPTS / "rollback_rehearsal.py")
-rollback_rehearsal = importlib.util.module_from_spec(rollback_spec)
-sys.modules["b1_rollback_rehearsal"] = rollback_rehearsal
-assert rollback_spec.loader is not None
-rollback_spec.loader.exec_module(rollback_rehearsal)
 
 
 class BackupMigrationRollbackEvidenceTests(unittest.TestCase):

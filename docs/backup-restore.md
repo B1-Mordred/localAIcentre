@@ -238,6 +238,12 @@ Control Center acceptance reports require machine-readable evidence that B1 back
 
 Create the rollback rehearsal report after reviewing the rollback phase in the cutover plan and verifying that old-stack resources are still present:
 
+```text
+Control Center -> System -> Rollback Rehearsal -> Generate
+```
+
+The web action calls `POST /admin/migration/rollback-rehearsal`, accepts only generated `cutover-plan*.json` files under `$B1_BACKUP_ROOT`, and writes the same fixed `$B1_BACKUP_ROOT/rollback-rehearsal.json` report as the helper below.
+
 ```bash
 make rollback-rehearsal-report \
   CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \

@@ -1108,6 +1108,46 @@
         "title": "Role",
         "type": "string"
       },
+      "RollbackRehearsalCreate": {
+        "properties": {
+          "cutover_plan_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutover Plan Name"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "old_resources_preserved": {
+            "default": false,
+            "title": "Old Resources Preserved",
+            "type": "boolean"
+          },
+          "rehearsed_by": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Rehearsed By",
+            "type": "string"
+          },
+          "rollback_commands_tested": {
+            "default": false,
+            "title": "Rollback Commands Tested",
+            "type": "boolean"
+          }
+        },
+        "title": "RollbackRehearsalCreate",
+        "type": "object"
+      },
       "RuntimeActionRequest": {
         "properties": {
           "reason": {
@@ -3782,6 +3822,110 @@
           }
         },
         "summary": "Admin Metrics"
+      }
+    },
+    "/admin/migration/rollback-rehearsal": {
+      "get": {
+        "operationId": "admin_rollback_rehearsal_status_admin_migration_rollback_rehearsal_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Rollback Rehearsal Status Admin Migration Rollback Rehearsal Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Rollback Rehearsal Status"
+      },
+      "post": {
+        "operationId": "admin_rollback_rehearsal_create_admin_migration_rollback_rehearsal_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRehearsalCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Rollback Rehearsal Create Admin Migration Rollback Rehearsal Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Rollback Rehearsal Create"
       }
     },
     "/admin/models": {

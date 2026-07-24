@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import tempfile
@@ -9,13 +8,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "deploy" / "scripts"
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-spec = importlib.util.spec_from_file_location("b1_rollback_rehearsal", SCRIPTS / "rollback_rehearsal.py")
-rollback_rehearsal = importlib.util.module_from_spec(spec)
-sys.modules["b1_rollback_rehearsal"] = rollback_rehearsal
-assert spec.loader is not None
-spec.loader.exec_module(rollback_rehearsal)
+from app import rollback_rehearsal  # noqa: E402
 
 
 class RollbackRehearsalTests(unittest.TestCase):
@@ -121,6 +116,39 @@ class RollbackRehearsalTests(unittest.TestCase):
                     rollback_commands_tested=True,
                     old_resources_preserved=True,
                 )
+
+    def test_build_and_write_report_selects_latest_generated_cutover_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = self.write_cutover_plan(root)
+            older.rename(root / "cutover-plan-20260723-120000.json")
+            latest = self.write_cutover_plan(root)
+            latest.rename(root / "cutover-plan-20260724-120000.json")
+
+            result = rollback_rehearsal.build_and_write_report(
+                backup_root=root,
+                cutover_plan_name=None,
+                rehearsed_by="operator",
+                rollback_commands_tested=True,
+                old_resources_preserved=True,
+            )
+
+            report_path = root / "rollback-rehearsal.json"
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(report_path.is_file())
+            self.assertEqual(result["report"]["cutover_plan_name"], "cutover-plan-20260724-120000.json")
+            status = rollback_rehearsal.status(root)
+            self.assertTrue(status["cutover_plan"]["available"])
+            self.assertTrue(status["report"]["available"])
+            self.assertEqual(status["report"]["cutover_plan_name"], "cutover-plan-20260724-120000.json")
+
+    def test_resolve_cutover_plan_rejects_names_outside_backup_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_cutover_plan(root)
+
+            with self.assertRaisesRegex(rollback_rehearsal.RollbackRehearsalError, "generated cutover-plan"):
+                rollback_rehearsal.resolve_cutover_plan(root, "../cutover-plan.json")
 
 
 if __name__ == "__main__":

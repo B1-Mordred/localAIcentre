@@ -399,6 +399,45 @@ type AcceptanceReportDetail = {
 
 type AcceptanceReportFileName = "report.json" | "report.md" | "SHA256SUMS";
 
+type RollbackRehearsalStatus = {
+  format: string;
+  backup_root: string;
+  cutover_plan: {
+    available: boolean;
+    path?: string;
+    name?: string;
+    sha256?: string;
+    resource_count?: number;
+    rollback_command_count?: number;
+    rollback_operator_action_count?: number;
+    reason?: string;
+  };
+  report: {
+    available: boolean;
+    path?: string;
+    status?: string;
+    generated_at?: string;
+    cutover_plan?: string;
+    cutover_plan_name?: string;
+    cutover_plan_sha256?: string;
+    rehearsed_by?: string;
+    resource_count?: number;
+    reason?: string;
+  };
+};
+
+type RollbackRehearsalCreateResult = {
+  status: string;
+  output: string;
+  report: {
+    generated_at?: string;
+    cutover_plan_name?: string;
+    cutover_plan_sha256?: string;
+    rehearsed_by?: string;
+    checks?: Record<string, unknown>;
+  };
+};
+
 type AcceptanceEvidenceDetail = {
   key: string;
   label: string;
@@ -3504,6 +3543,11 @@ function System() {
   const [acceptanceLabel, setAcceptanceLabel] = useState("");
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
+  const [rollbackRehearsal, setRollbackRehearsal] = useState<RollbackRehearsalStatus | null>(null);
+  const [rollbackRehearsedBy, setRollbackRehearsedBy] = useState("");
+  const [rollbackNotes, setRollbackNotes] = useState("");
+  const [rollbackCommandsTested, setRollbackCommandsTested] = useState(false);
+  const [rollbackResourcesPreserved, setRollbackResourcesPreserved] = useState(false);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [resourcePolicy, setResourcePolicy] = useState<ResourcePolicyPayload | null>(null);
   const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
@@ -3614,6 +3658,12 @@ function System() {
       .catch(() => setAcceptanceReports([]));
   };
 
+  const loadRollbackRehearsal = () => {
+    apiJson<RollbackRehearsalStatus>(`/admin/migration/rollback-rehearsal`)
+      .then(setRollbackRehearsal)
+      .catch(() => setRollbackRehearsal(null));
+  };
+
   const inspectAcceptanceReport = (reportId: string) => {
     setBusy(true);
     setMessage(`loading ${reportId}`);
@@ -3651,6 +3701,31 @@ function System() {
         setMessage(`acceptance ${payload.summary.status}`);
         setAcceptanceReports((current) => [payload.summary, ...current.filter((item) => item.id !== payload.summary.id)].slice(0, 10));
         setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const createRollbackRehearsal = () => {
+    setBusy(true);
+    setMessage("creating rollback rehearsal");
+    apiJson<RollbackRehearsalCreateResult>(`/admin/migration/rollback-rehearsal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cutover_plan_name: rollbackRehearsal?.cutover_plan?.name ?? null,
+        rehearsed_by: rollbackRehearsedBy.trim(),
+        rollback_commands_tested: rollbackCommandsTested,
+        old_resources_preserved: rollbackResourcesPreserved,
+        notes: rollbackNotes.trim()
+      })
+    })
+      .then((payload) => {
+        setMessage(`rollback rehearsal ${payload.status}`);
+        setRollbackCommandsTested(false);
+        setRollbackResourcesPreserved(false);
+        loadRollbackRehearsal();
         loadAudit();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -3823,6 +3898,7 @@ function System() {
   useEffect(() => {
     runSelfTest();
     loadAcceptanceReports();
+    loadRollbackRehearsal();
     loadAudit();
     loadResourcePolicy();
     loadAdmissionPolicy();
@@ -4029,6 +4105,54 @@ function System() {
           {!result?.checks?.length && <tr><td colSpan={3}>No self-test results</td></tr>}
         </tbody>
       </table>
+      <div className="subsection-title">
+        <RotateCcw size={16} />
+        <h3>Rollback Rehearsal</h3>
+      </div>
+      <div className="metrics compact">
+        <Metric
+          label="Cutover plan"
+          value={rollbackRehearsal?.cutover_plan.available ? "ready" : "missing"}
+          detail={rollbackRehearsal?.cutover_plan.name ?? rollbackRehearsal?.cutover_plan.reason ?? "not loaded"}
+        />
+        <Metric
+          label="Rollback actions"
+          value={formatCount(rollbackRehearsal?.cutover_plan.rollback_operator_action_count ?? 0)}
+          detail={`${formatCount(rollbackRehearsal?.cutover_plan.rollback_command_count ?? 0)} command${(rollbackRehearsal?.cutover_plan.rollback_command_count ?? 0) === 1 ? "" : "s"}`}
+        />
+        <Metric
+          label="Preserved resources"
+          value={formatCount(rollbackRehearsal?.cutover_plan.resource_count ?? rollbackRehearsal?.report.resource_count ?? 0)}
+          detail={rollbackRehearsal?.report.available ? `report ${rollbackRehearsal.report.status ?? "recorded"}` : "report missing"}
+        />
+        <Metric
+          label="Report"
+          value={rollbackRehearsal?.report.available ? "recorded" : "missing"}
+          detail={rollbackRehearsal?.report.generated_at ? formatDateTime(rollbackRehearsal.report.generated_at) : rollbackRehearsal?.report.reason ?? "not loaded"}
+        />
+      </div>
+      <div className="stack">
+        <div className="split">
+          <label>Rehearsed by<input value={rollbackRehearsedBy} onChange={(event) => setRollbackRehearsedBy(event.target.value)} maxLength={128} placeholder="current admin" /></label>
+          <label>Cutover plan<input value={rollbackRehearsal?.cutover_plan.name ?? "unavailable"} readOnly /></label>
+        </div>
+        <label>Notes<textarea rows={2} value={rollbackNotes} onChange={(event) => setRollbackNotes(event.target.value)} maxLength={2000} /></label>
+        <div className="evidence-grid">
+          <label className="evidence-item">
+            <input type="checkbox" checked={rollbackCommandsTested} onChange={(event) => setRollbackCommandsTested(event.target.checked)} />
+            <span>Rollback commands/actions rehearsed</span>
+          </label>
+          <label className="evidence-item">
+            <input type="checkbox" checked={rollbackResourcesPreserved} onChange={(event) => setRollbackResourcesPreserved(event.target.checked)} />
+            <span>Old resources preserved</span>
+          </label>
+        </div>
+      </div>
+      <div className="toolbar">
+        <button title="Refresh rollback rehearsal status" onClick={loadRollbackRehearsal} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Generate rollback rehearsal report" onClick={createRollbackRehearsal} disabled={busy || !rollbackRehearsal?.cutover_plan.available || !rollbackCommandsTested || !rollbackResourcesPreserved}><RotateCcw size={16} />Generate</button>
+        <span className="toolbar-status">{rollbackRehearsal?.report.path ?? rollbackRehearsal?.backup_root ?? "rollback status unavailable"}</span>
+      </div>
       <div className="subsection-title">
         <Archive size={16} />
         <h3>Acceptance Reports</h3>

@@ -35,6 +35,7 @@ from . import artifacts as artifact_policy
 from . import backup_restore
 from . import backup_schedule
 from . import compose_override as compose_override_policy
+from . import rollback_rehearsal
 from .job_events import format_sse_event, job_event_id
 from .job_states import TERMINAL_JOB_STATES
 from .job_redaction import redact_request
@@ -236,6 +237,14 @@ class AcceptanceReportCreate(BaseModel):
     notes: str = Field(default="", max_length=4000)
     operator_evidence: dict[str, bool] = Field(default_factory=dict)
     operator_evidence_notes: dict[str, str] = Field(default_factory=dict)
+
+
+class RollbackRehearsalCreate(BaseModel):
+    cutover_plan_name: str | None = Field(default=None, max_length=160)
+    rehearsed_by: str = Field(default="", max_length=128)
+    rollback_commands_tested: bool = False
+    old_resources_preserved: bool = False
+    notes: str = Field(default="", max_length=2000)
 
 
 class RuntimeActionRequest(BaseModel):
@@ -5996,6 +6005,50 @@ async def admin_acceptance_report_create(payload: AcceptanceReportCreate, author
         },
     )
     return {"summary": summary, "report": report}
+
+
+@app.get("/admin/migration/rollback-rehearsal")
+async def admin_rollback_rehearsal_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "rollback rehearsal status requires administrator role")
+    return await asyncio.to_thread(rollback_rehearsal.status, backup_root_path())
+
+
+@app.post("/admin/migration/rollback-rehearsal")
+async def admin_rollback_rehearsal_create(payload: RollbackRehearsalCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "rollback rehearsal generation requires administrator role")
+    try:
+        result = await asyncio.to_thread(
+            rollback_rehearsal.build_and_write_report,
+            backup_root=backup_root_path(),
+            cutover_plan_name=payload.cutover_plan_name,
+            rehearsed_by=payload.rehearsed_by.strip() or auth.subject_id,
+            rollback_commands_tested=payload.rollback_commands_tested,
+            old_resources_preserved=payload.old_resources_preserved,
+            notes=payload.notes.strip() or None,
+        )
+    except rollback_rehearsal.RollbackRehearsalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    report = result["report"]
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    preserved = checks.get("old_resources_preserved") if isinstance(checks.get("old_resources_preserved"), dict) else {}
+    await record_audit_event(
+        auth,
+        "rollback_rehearsal.created",
+        target_type="rollback_rehearsal",
+        target_id=str(report.get("cutover_plan_name") or ""),
+        summary="Created rollback rehearsal report",
+        metadata={
+            "cutover_plan_name": report.get("cutover_plan_name"),
+            "cutover_plan_sha256": report.get("cutover_plan_sha256"),
+            "output": result.get("output"),
+            "resource_count": preserved.get("resource_count"),
+        },
+    )
+    return result
 
 
 @app.get("/admin/updates")
