@@ -1076,6 +1076,22 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             return main.AuthContext("client_1", main.Role.SERVICE, frozenset({"jobs:read", "jobs:write"}))
 
         main.authenticate = read_write_authenticate  # type: ignore[assignment]
+        websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
+
+        asyncio.run(main.compatibility_ws("trusted/custom/ws", websocket))
+
+        self.assertFalse(websocket.accepted)
+        self.assertEqual(websocket.closed, [1008])
+
+        main.approved_node_pins = {
+            ("comfyui-custom-ws", "a" * 40): main.ApprovedNodePin(
+                id="comfyui-custom-ws",
+                repository_url="https://github.com/example/comfyui-custom-ws",
+                commit="a" * 40,
+                dependency_lock_sha256="b" * 64,
+                allowed_route_prefixes=["trusted/custom"],
+            )
+        }
         connected: dict[str, Any] = {}
         upstream = FakeUpstream(['{"type":"custom_status"}'], block_when_empty=False)
 
@@ -1174,6 +1190,19 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
                 id="comfyui-custom-api",
                 repository_url="https://github.com/example/comfyui-custom-api",
                 commit="a" * 40,
+                allowed_route_prefixes=["trusted/custom"],
+            )
+        }
+        with self.assertRaises(main.HTTPException) as unlocked:
+            asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
+        self.assertEqual(unlocked.exception.status_code, 403)
+
+        main.approved_node_pins = {
+            ("comfyui-custom-api", "a" * 40): main.ApprovedNodePin(
+                id="comfyui-custom-api",
+                repository_url="https://github.com/example/comfyui-custom-api",
+                commit="a" * 40,
+                dependency_lock_sha256="b" * 64,
                 allowed_route_prefixes=["trusted/custom"],
             )
         }

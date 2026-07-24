@@ -119,6 +119,7 @@ SERVICE_LOG_SECRET_PATTERNS = [
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
 COMFYUI_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+COMFYUI_NODE_PIN_LOCK_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 COMFYUI_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 COMFYUI_MUTATING_CORE_ROUTES: dict[str, set[str]] = {
     "interrupt": {"POST"},
@@ -2817,6 +2818,11 @@ def approved_comfyui_route_prefixes() -> set[str]:
     prefixes: set[str] = set()
     for pin in pins.values():
         if pin.status != "approved":
+            continue
+        if pin.allowed_route_prefixes and not (
+            isinstance(pin.dependency_lock_sha256, str) and COMFYUI_NODE_PIN_LOCK_DIGEST.match(pin.dependency_lock_sha256)
+        ):
+            log_event("comfyui_route_pin_missing_dependency_lock", node_id=pin.id, commit=pin.commit)
             continue
         for prefix in pin.allowed_route_prefixes:
             prefixes.add(normalize_comfyui_passthrough_path(prefix).lower())
