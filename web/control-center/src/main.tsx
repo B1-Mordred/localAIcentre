@@ -339,6 +339,8 @@ type AcceptanceReportSummary = {
   operator_handoff_ready: boolean;
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
+  gpu_evidence_ready?: boolean;
+  remote_nodes_evidence_ready?: boolean;
   live_evidence_ready?: boolean;
   acceptance_blockers: string[];
   files?: {
@@ -3445,7 +3447,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.live_evidence_ready ? "GPU proof missing" : !report.cutover_preservation_ready ? "rollback proof missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.cutover_preservation_ready ? "rollback proof missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>

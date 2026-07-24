@@ -12,7 +12,10 @@ export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
 export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
+export B1_REMOTE_NODES_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/remote-nodes-non-comfy.json
 python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy
 ```
 
 `B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose` makes the test stop the local Compose `comfyui` service before running the remote-node operation and restore it afterward if it was previously running. Use this only during an explicit compatibility window. If the service has already been stopped by another runbook, set `B1_REMOTE_NODES_COMFYUI_STOP_MODE=manual`; the test then relies on that operator-controlled state and does not mutate Compose.
+
+When `B1_REMOTE_NODES_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and a redacted artifact sample. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` remote-node evidence file and block handoff if the server-side ComfyUI stop, non-Comfy TTS completion, or artifact download checks are absent or incomplete.

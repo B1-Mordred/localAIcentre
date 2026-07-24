@@ -17,6 +17,7 @@
 - Hardened runtime reservation creation against conflicting active GPU reservations so a second batch client cannot reserve the single GPU while another owner/model reservation is active.
 - Added structured operator evidence gates to acceptance reports so handoff readiness now requires explicit proof for live smoke, RTX 3060 acceptance, installed-model media paths, ComfyUI compatibility, external consumers, Model Hub sync, Voicebox, backups, restore, migration, rollback, and security review.
 - Added machine-readable live RTX GPU acceptance evidence ingestion to acceptance reports, gating handoff on a supported `$B1_BACKUP_ROOT/acceptance/*.json` cross-runtime proof with required checks.
+- Added machine-readable remote-node non-Comfy compatibility evidence ingestion so handoff now requires proof that external ComfyUI B1 nodes complete a unified-API operation while server-side ComfyUI is stopped.
 - Added cutover-plan preservation capture to acceptance reports so the Markdown handoff lists old containers, Docker volumes, and host paths deliberately preserved for rollback and blocks handoff when that evidence is missing.
 - Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.

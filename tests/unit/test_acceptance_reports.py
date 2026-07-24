@@ -83,6 +83,23 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
+        },
+        "remote_nodes_non_comfy": {
+            "available": True,
+            "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/remote-nodes-non-comfy.json",
+            "generated_at": "2026-07-24T12:35:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": ["server_side_comfyui_stopped", "non_comfy_tts_completed", "artifact_downloaded"],
+            "missing_checks": [],
+            "checks": {
+                "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "non_comfy_tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
+                "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
+            },
+            "sample_count": 1,
+            "sample_labels": ["tts-fast-non-comfy"],
         }
     }
     payload.update(overrides)
@@ -197,6 +214,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
+            self.assertIn("remote-nodes-non-comfy.json", markdown)
+            self.assertIn("Remote-node non-Comfy compatibility", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -292,6 +311,39 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["remote_nodes_non_comfy"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["remote_nodes_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("remote-node non-Comfy compatibility evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_remote_node_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["remote_nodes_non_comfy"] = {
+            **live_evidence["remote_nodes_non_comfy"],
+            "status": "incomplete",
+            "missing_checks": ["artifact_downloaded"],
+            "checks": {
+                "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "non_comfy_tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["remote_nodes_evidence_ready"])
+        self.assertIn("remote-node non-Comfy compatibility evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "remote-node non-Comfy compatibility evidence is missing required checks: artifact_downloaded",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -367,6 +419,24 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            remote = evidence_root / "remote-nodes-non-comfy.json"
+            remote.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+                        "generated_at": "2026-07-24T12:35:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "server_side_comfyui_stopped": {"status": "ok"},
+                            "non_comfy_tts_completed": {"status": "ok"},
+                            "artifact_downloaded": {"status": "ok"},
+                        },
+                        "samples": [{"label": "tts-fast-non-comfy"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -376,6 +446,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
         self.assertEqual(gpu["sample_count"], 2)
+        remote_nodes = snapshot["remote_nodes_non_comfy"]
+        self.assertTrue(remote_nodes["available"])
+        self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))
+        self.assertEqual(remote_nodes["status"], "ok")
+        self.assertEqual(remote_nodes["missing_checks"], [])
+        self.assertEqual(remote_nodes["sample_count"], 1)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
