@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 from contextlib import suppress
 from datetime import UTC, datetime
 from inspect import isawaitable
@@ -1596,6 +1597,42 @@ class ModelDownloadRunner:
             raise model_lifecycle.ModelLifecycleError("model download credential contains invalid header characters")
         return {"Authorization": f"Bearer {token}"}
 
+    @staticmethod
+    def response_header(headers: Any, name: str) -> str:
+        value = headers.get(name) if hasattr(headers, "get") else None
+        if value is None and hasattr(headers, "items"):
+            lowered = name.lower()
+            for key, candidate in headers.items():
+                if str(key).lower() == lowered:
+                    value = candidate
+                    break
+        return str(value).strip() if value is not None else ""
+
+    def validate_download_response_headers(self, file_plan: dict[str, Any], status_code: int, headers: Any, resume_from: int) -> None:
+        expected_size = int(file_plan["target_size_bytes"])
+        content_length = self.response_header(headers, "Content-Length")
+        if content_length:
+            try:
+                actual_length = int(content_length)
+            except ValueError as exc:
+                raise model_lifecycle.ModelLifecycleError("download returned invalid Content-Length") from exc
+            expected_length = expected_size - resume_from if status_code == 206 and resume_from else expected_size
+            if actual_length != expected_length:
+                raise model_lifecycle.ModelLifecycleError(f"download returned unexpected Content-Length {actual_length} != {expected_length}")
+        if status_code != 206:
+            return
+        if resume_from <= 0:
+            raise model_lifecycle.ModelLifecycleError("download returned partial content without a resume request")
+        content_range = self.response_header(headers, "Content-Range")
+        match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+)", content_range)
+        if not match:
+            raise model_lifecycle.ModelLifecycleError(f"download returned invalid Content-Range {content_range or '<missing>'}")
+        start, end, total = (int(part) for part in match.groups())
+        if start != resume_from or total != expected_size or end != expected_size - 1:
+            raise model_lifecycle.ModelLifecycleError(
+                f"download returned unexpected Content-Range {content_range}; expected bytes {resume_from}-{expected_size - 1}/{expected_size}"
+            )
+
     async def download_plan(self, download_id: str, plan: dict[str, Any], *, auth_headers: dict[str, str] | None = None) -> None:
         file_plans = plan.get("files") or [plan]
         completed_bytes = 0
@@ -1648,6 +1685,20 @@ class ModelDownloadRunner:
         existing = partial.stat().st_size if partial.exists() else 0
         if existing > file_plan["target_size_bytes"]:
             raise model_lifecycle.ModelLifecycleError("partial download is larger than expected")
+        if existing == file_plan["target_size_bytes"]:
+            if model_lifecycle.sha256_file(partial) == file_plan["target_sha256"]:
+                partial.replace(target)
+                target.chmod(0o644)
+                await database.update_model_download(
+                    download_id,
+                    stage=f"{stage_prefix}_verified",
+                    bytes_downloaded=completed_before + int(file_plan["target_size_bytes"]),
+                    error_category=None,
+                    error_message=None,
+                )
+                return True
+            partial.unlink()
+            existing = 0
         mode = "ab" if existing else "wb"
         timeout = httpx.Timeout(self.request_timeout_seconds)
         source_url = str(file_plan["source_url"])
@@ -1677,8 +1728,15 @@ class ModelDownloadRunner:
                     if existing and response.status_code == 200:
                         existing = 0
                         mode = "wb"
+                    elif existing and response.status_code == 416:
+                        partial.unlink(missing_ok=True)
+                        existing = 0
+                        mode = "wb"
+                        request_url = source_url
+                        continue
                     elif response.status_code not in {200, 206}:
                         raise model_lifecycle.ModelLifecycleError(f"download returned HTTP {response.status_code}")
+                    self.validate_download_response_headers(file_plan, response.status_code, getattr(response, "headers", {}), existing)
                     downloaded = existing
                     await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
                     with partial.open(mode) as handle:

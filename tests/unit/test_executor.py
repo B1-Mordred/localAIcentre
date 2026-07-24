@@ -1801,6 +1801,147 @@ class ExecutorTests(unittest.TestCase):
 
             self.assertEqual(FakeAsyncClient.calls, [])
 
+    def test_model_download_runner_validates_resumed_content_range(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        partial_payload = b"abc"
+        remaining_payload = b"def"
+        payload = partial_payload + remaining_payload
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_resume",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": len(partial_payload),
+        }
+
+        class FakeResponse:
+            status_code = 206
+            headers = {"Content-Range": f"bytes {len(partial_payload)}-{len(payload) - 1}/{len(payload)}", "Content-Length": str(len(remaining_payload))}
+
+            async def aiter_bytes(self, chunk_size: int):
+                yield remaining_payload
+
+        class FakeStreamContext:
+            async def __aenter__(self) -> FakeResponse:
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return FakeStreamContext()
+
+        original_client = executor.httpx.AsyncClient
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial_path = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+            partial_path.parent.mkdir(parents=True)
+            partial_path.write_bytes(partial_payload)
+            target_path = root / "models" / "blobs" / digest
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(target_path),
+                "partial_path": str(partial_path),
+            }
+
+            downloaded = asyncio.run(runner.download_file("modeldl_resume", file_plan, 0, "file_1"))
+
+            self.assertTrue(downloaded)
+            self.assertEqual(target_path.read_bytes(), payload)
+            self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Range"], f"bytes={len(partial_payload)}-")
+            self.assertFalse(partial_path.exists())
+
+    def test_model_download_runner_rejects_resumed_content_range_mismatch_before_append(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        partial_payload = b"abc"
+        remaining_payload = b"def"
+        payload = partial_payload + remaining_payload
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_bad_resume",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": len(partial_payload),
+        }
+
+        class FakeResponse:
+            status_code = 206
+            headers = {"Content-Range": f"bytes 0-{len(payload) - 1}/{len(payload)}", "Content-Length": str(len(remaining_payload))}
+
+            async def aiter_bytes(self, chunk_size: int):
+                yield remaining_payload
+
+        class FakeStreamContext:
+            async def __aenter__(self) -> FakeResponse:
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                return FakeStreamContext()
+
+        original_client = executor.httpx.AsyncClient
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial_path = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+            partial_path.parent.mkdir(parents=True)
+            partial_path.write_bytes(partial_payload)
+            target_path = root / "models" / "blobs" / digest
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(target_path),
+                "partial_path": str(partial_path),
+            }
+
+            with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "unexpected Content-Range"):
+                asyncio.run(runner.download_file("modeldl_bad_resume", file_plan, 0, "file_1"))
+
+            self.assertEqual(partial_path.read_bytes(), partial_payload)
+            self.assertFalse(target_path.exists())
+
     def test_model_download_runner_follows_safe_huggingface_redirect_without_forwarding_token(self) -> None:
         if secret_store is None or secret_store.AESGCM is None:
             self.skipTest("cryptography is not installed in this lightweight test environment")
