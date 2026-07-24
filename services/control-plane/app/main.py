@@ -5531,6 +5531,7 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         source_control=acceptance.source_control_snapshot(Path.cwd()),
         operator_evidence=payload.operator_evidence,
         operator_evidence_notes=payload.operator_evidence_notes,
+        cutover_preservation=await asyncio.to_thread(acceptance.latest_cutover_preservation_snapshot, backup_root_path()),
     )
     return jsonable_encoder(report)
 

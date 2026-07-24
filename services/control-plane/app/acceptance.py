@@ -13,6 +13,8 @@ from typing import Any
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
 REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
 SUMMARY_LIMIT = 200
+MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
+CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -98,6 +100,86 @@ def normalize_operator_evidence(evidence: dict[str, Any] | None = None, notes: d
             }
         )
     return rows
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
+
+
+def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if plan.get("format") != CUTOVER_PLAN_FORMAT:
+        return {"available": False, "reason": "unsupported cutover plan format"}
+    old_scope = plan.get("old_stack_scope") if isinstance(plan.get("old_stack_scope"), dict) else {}
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
+    inputs = plan.get("inputs") if isinstance(plan.get("inputs"), dict) else {}
+    verification = inputs.get("old_stack_backup_verification") if isinstance(inputs.get("old_stack_backup_verification"), dict) else {}
+    resources = {
+        "containers_to_stop_during_cutover": _as_string_list(old_scope.get("containers_to_stop_during_cutover")),
+        "containers_to_restart_for_rollback": _as_string_list(old_scope.get("containers_to_restart_for_rollback")),
+        "docker_volumes_preserved": _as_string_list(old_scope.get("docker_volumes_preserved")),
+        "host_paths_preserved": _as_string_list(old_scope.get("host_paths_preserved")),
+    }
+    resource_count = (
+        len(resources["containers_to_restart_for_rollback"])
+        + len(resources["docker_volumes_preserved"])
+        + len(resources["host_paths_preserved"])
+    )
+    return {
+        "available": True,
+        "format": plan.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "created_at": str(plan.get("created_at") or ""),
+        "reviewed_by": str(old_scope.get("reviewed_by") or ""),
+        "review_notes": str(old_scope.get("review_notes") or "")[:1000],
+        "safety": {
+            "read_only_plan": bool(safety.get("read_only_plan")),
+            "stops_nothing_automatically": bool(safety.get("stops_nothing_automatically")),
+            "deletes_nothing": bool(safety.get("deletes_nothing")),
+            "old_stack_deletion_allowed": bool(safety.get("old_stack_deletion_allowed")),
+            "unknown_resources_preserved_by_default": bool(safety.get("unknown_resources_preserved_by_default")),
+        },
+        "old_stack_backup_verification_status": str(verification.get("status") or ""),
+        "open_webui_preservation": plan.get("open_webui_preservation") if isinstance(plan.get("open_webui_preservation"), dict) else {},
+        "warnings": _as_string_list(plan.get("warnings")),
+        "resources": resources,
+        "resource_count": resource_count,
+    }
+
+
+def latest_cutover_preservation_snapshot(backup_root: Path) -> dict[str, Any]:
+    root = backup_root.resolve()
+    if not root.exists():
+        return {"available": False, "reason": "backup root does not exist", "root": str(root)}
+    if not root.is_dir() or root.is_symlink():
+        return {"available": False, "reason": "backup root is not a directory", "root": str(root)}
+    candidates: list[tuple[float, str, Path]] = []
+    for path in root.glob("cutover-plan*.json"):
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent != root or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            stat_result = path.stat()
+            if stat_result.st_size > MAX_CUTOVER_PLAN_BYTES:
+                continue
+        except OSError:
+            continue
+        candidates.append((stat_result.st_mtime, path.name, path))
+    if not candidates:
+        return {"available": False, "reason": "no cutover-plan*.json found", "root": str(root)}
+    candidates.sort(reverse=True)
+    for _, _, path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("format") == CUTOVER_PLAN_FORMAT:
+            return cutover_preservation_snapshot(payload, path.resolve())
+    return {"available": False, "reason": "no supported cutover plan found", "root": str(root)}
 
 
 def _read_git_head(repo_root: Path) -> dict[str, Any]:
@@ -201,6 +283,19 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
+    preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
+    if preservation.get("available") is not True:
+        blockers.append("cutover preservation plan is unavailable")
+    else:
+        safety = preservation.get("safety") if isinstance(preservation.get("safety"), dict) else {}
+        if safety.get("read_only_plan") is not True or safety.get("stops_nothing_automatically") is not True or safety.get("deletes_nothing") is not True:
+            blockers.append("cutover preservation plan safety invariants are incomplete")
+        if safety.get("old_stack_deletion_allowed") is not False:
+            blockers.append("cutover preservation plan permits old-stack deletion")
+        if preservation.get("old_stack_backup_verification_status") != "verified":
+            blockers.append("old-stack backup verification evidence is missing from cutover plan")
+        if int(preservation.get("resource_count") or 0) <= 0:
+            blockers.append("cutover preservation plan lists no old rollback resources")
     return blockers
 
 
@@ -225,6 +320,7 @@ def build_report(
     source_control: dict[str, Any] | None = None,
     operator_evidence: dict[str, Any] | None = None,
     operator_evidence_notes: dict[str, Any] | None = None,
+    cutover_preservation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_id = validate_report_id(report_id)
     status = str(self_test.get("status") or "unknown")
@@ -249,6 +345,7 @@ def build_report(
         "recent_updates": recent_updates or [],
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
+        "cutover_preservation": cutover_preservation or {"available": False, "reason": "not supplied"},
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
     report["operator_handoff_ready"] = status == "ok" and not report["acceptance_blockers"]
@@ -318,6 +415,27 @@ def markdown_report(report: dict[str, Any]) -> str:
                 _format_value(bool(item.get("passed"))),
                 _format_value(item.get("note") or ""),
             ])
+
+    preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
+    preserved_rows = [["Class", "Value"]]
+    resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
+    for key, label in (
+        ("containers_to_restart_for_rollback", "container"),
+        ("docker_volumes_preserved", "docker volume"),
+        ("host_paths_preserved", "host path"),
+    ):
+        for value in resources.get(key) or []:
+            preserved_rows.append([label, _format_value(value)])
+    preservation_summary_rows = [["Field", "Value"]]
+    for key in (
+        "available",
+        "source_path",
+        "created_at",
+        "reviewed_by",
+        "old_stack_backup_verification_status",
+        "resource_count",
+    ):
+        preservation_summary_rows.append([key, _format_value(preservation.get(key))])
 
     source_control = report.get("source_control") or {}
     source_rows = [["Field", "Value"]]
@@ -399,6 +517,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
+            "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
             "## Active Runtime Reservations\n\n" + (_table(reservation_rows) if len(reservation_rows) > 1 else "No active runtime reservations recorded."),
@@ -445,6 +564,7 @@ def load_report(root: Path, report_id: str) -> dict[str, Any]:
 
 def public_report_summary(report: dict[str, Any], report_dir: Path | None = None) -> dict[str, Any]:
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
+    preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -455,6 +575,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "runtime_deployment_mode": report.get("runtime_deployment_mode"),
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
+        "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
     if report_dir is not None:

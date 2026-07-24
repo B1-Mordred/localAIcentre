@@ -36,6 +36,36 @@ def complete_operator_evidence() -> dict[str, bool]:
     return {item["key"]: True for item in acceptance.required_operator_evidence_items()}
 
 
+def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
+    payload = {
+        "available": True,
+        "format": "b1-ai-hub-cutover-plan/v1",
+        "source_path": "/srv/b1-ai-hub/backups/cutover-plan.json",
+        "created_at": "2026-07-24T11:30:00+00:00",
+        "reviewed_by": "operator",
+        "review_notes": "old AI resources only",
+        "safety": {
+            "read_only_plan": True,
+            "stops_nothing_automatically": True,
+            "deletes_nothing": True,
+            "old_stack_deletion_allowed": False,
+            "unknown_resources_preserved_by_default": True,
+        },
+        "old_stack_backup_verification_status": "verified",
+        "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
+        "warnings": [],
+        "resources": {
+            "containers_to_stop_during_cutover": ["old-open-webui"],
+            "containers_to_restart_for_rollback": ["old-open-webui"],
+            "docker_volumes_preserved": ["open-webui-data"],
+            "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
+        },
+        "resource_count": 3,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def sample_report(**overrides: Any) -> dict[str, Any]:
     report_id = overrides.pop("report_id", "acceptance-20260724t120000z-deadbeef")
     self_test = overrides.pop(
@@ -101,6 +131,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
         ),
         operator_evidence=overrides.pop("operator_evidence", complete_operator_evidence()),
         operator_evidence_notes=overrides.pop("operator_evidence_notes", {}),
+        cutover_preservation=overrides.pop("cutover_preservation", sample_cutover_preservation()),
         source_control=overrides.pop(
             "source_control",
             {
@@ -140,6 +171,9 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("## Source Control", markdown)
             self.assertIn("## Operator Evidence", markdown)
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
+            self.assertIn("## Old Resources Preserved For Rollback", markdown)
+            self.assertIn("old-open-webui", markdown)
+            self.assertIn("open-webui-data", markdown)
 
             checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
             checksums = dict(line.split("  ", 1)[::-1] for line in checksum_lines)
@@ -189,6 +223,62 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("deployment image evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_cutover_preservation(self) -> None:
+        report = sample_report(cutover_preservation={"available": False, "reason": "no cutover plan"})
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertIn("cutover preservation plan is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                resources={
+                    "containers_to_stop_during_cutover": [],
+                    "containers_to_restart_for_rollback": [],
+                    "docker_volumes_preserved": [],
+                    "host_paths_preserved": [],
+                },
+                resource_count=0,
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("cutover preservation plan lists no old rollback resources", report["acceptance_blockers"])
+
+    def test_latest_cutover_preservation_snapshot_reads_only_direct_supported_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ignored = root / "cutover-plan-old.json"
+            ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+            plan = {
+                "format": "b1-ai-hub-cutover-plan/v1",
+                "created_at": "2026-07-24T11:30:00+00:00",
+                "safety": sample_cutover_preservation()["safety"],
+                "inputs": {"old_stack_backup_verification": {"status": "verified"}},
+                "old_stack_scope": {
+                    "reviewed_by": "operator",
+                    "review_notes": "reviewed",
+                    "containers_to_stop_during_cutover": ["old-open-webui"],
+                    "containers_to_restart_for_rollback": ["old-open-webui"],
+                    "docker_volumes_preserved": ["open-webui-data"],
+                    "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
+                },
+                "open_webui_preservation": {"plan_supplied": True},
+                "warnings": ["review DNS"],
+            }
+            current = root / "cutover-plan.json"
+            current.write_text(json.dumps(plan), encoding="utf-8")
+
+            snapshot = acceptance.latest_cutover_preservation_snapshot(root)
+
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["source_path"], str(current.resolve()))
+        self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
+        self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
+        self.assertEqual(snapshot["resource_count"], 3)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
