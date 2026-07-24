@@ -416,8 +416,14 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
             method = "GET"
             headers = {
                 "authorization": "Bearer client-token",
+                "cookie": "b1_session=browser-secret",
+                "forwarded": "for=203.0.113.8",
                 "host": "api.ai.b1.germering",
                 "range": "bytes=0-1",
+                "x-b1-csrf": "csrf-secret",
+                "x-forwarded-for": "203.0.113.8",
+                "x-forwarded-host": "models.ai.b1.germering",
+                "x-real-ip": "203.0.113.8",
             }
             url = SimpleNamespace(query="")
 
@@ -460,7 +466,13 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forwarded_headers["Authorization"], "Bearer artifact-token")
         self.assertEqual(forwarded_headers["range"], "bytes=0-1")
         self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("cookie", forwarded_headers)
+        self.assertNotIn("forwarded", forwarded_headers)
         self.assertNotIn("host", forwarded_headers)
+        self.assertNotIn("x-b1-csrf", forwarded_headers)
+        self.assertNotIn("x-forwarded-for", forwarded_headers)
+        self.assertNotIn("x-forwarded-host", forwarded_headers)
+        self.assertNotIn("x-real-ip", forwarded_headers)
 
 
 if __name__ == "__main__":

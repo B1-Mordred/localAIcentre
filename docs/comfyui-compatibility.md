@@ -2,7 +2,7 @@
 
 Native ComfyUI traffic is exposed at `https://comfy.ai.b1.germering/` through the control-plane compatibility proxy, not directly to the ComfyUI backend.
 
-Normal `https://comfy.ai.b1.germering/` requests must authenticate with a B1 bearer token. Read-only native routes such as `/object_info`, `/system_stats`, `/models`, `/history`, `/view`, and `/ws` require `jobs:read`; mutating routes such as `POST /prompt`, `/queue`, `/interrupt`, uploads, and approved custom-node API routes require `jobs:write`. The gateway stamps the managed compatibility header for this virtual host and strips client-supplied `X-B1-Compatibility` on normal API/model hosts so clients cannot spoof the legacy path. The control plane removes `Authorization` and the compatibility marker before forwarding to the ComfyUI runtime.
+Normal `https://comfy.ai.b1.germering/` requests must authenticate with a B1 bearer token. Read-only native routes such as `/object_info`, `/system_stats`, `/models`, `/history`, `/view`, and `/ws` require `jobs:read`; mutating routes such as `POST /prompt`, `/queue`, `/interrupt`, uploads, and approved custom-node API routes require `jobs:write`. The gateway stamps the managed compatibility header for this virtual host and strips client-supplied `X-B1-Compatibility` on normal API/model hosts so clients cannot spoof the legacy path. The control plane removes `Authorization`, cookies, CSRF/session headers, forwarded-client-IP headers, hop-by-hop headers, and the compatibility marker before forwarding to the ComfyUI runtime.
 
 The development Compose topology uses a mock ComfyUI service. Run the production native ComfyUI runtime with:
 

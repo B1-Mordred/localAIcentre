@@ -151,6 +151,28 @@ COMFYUI_DENIED_MUTATION_TOKENS = {
     "update",
     "upgrade",
 }
+RUNTIME_PROXY_FORBIDDEN_REQUEST_HEADERS = {
+    "authorization",
+    "connection",
+    "content-length",
+    "cookie",
+    "forwarded",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "x-b1-compatibility",
+    "x-b1-csrf",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
+    "x-real-ip",
+}
 MODELHUB_BLOB_RATE_WINDOW_SECONDS = 60
 MODELHUB_BLOB_RATE_FALLBACK_MAX_SUBJECTS = 4096
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -988,7 +1010,7 @@ async def proxy_http_bytes(
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length", "connection", "authorization", "x-b1-compatibility"}
+        if key.lower() not in RUNTIME_PROXY_FORBIDDEN_REQUEST_HEADERS
     }
     if extra_headers:
         headers.update(extra_headers)

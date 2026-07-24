@@ -144,7 +144,15 @@ class AudioSpeechApiTests(unittest.TestCase):
         main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original))
 
-        response = asyncio.run(main.proxy_http_bytes("http://audio-cpu", "/v1/audio/speech", FakeRequest({"input": "hello"})))
+        request = FakeRequest({"input": "hello"})
+        request.headers = {
+            "content-type": "application/json",
+            "cookie": "b1_session=browser-secret",
+            "x-b1-csrf": "csrf-secret",
+            "x-forwarded-for": "203.0.113.8",
+        }
+
+        response = asyncio.run(main.proxy_http_bytes("http://audio-cpu", "/v1/audio/speech", request))
 
         self.assertEqual(response.body, b"cpu-wav")
         self.assertEqual(response.headers["x-b1-placeholder"], "true")
@@ -152,6 +160,10 @@ class AudioSpeechApiTests(unittest.TestCase):
         self.assertEqual(response.headers["x-b1-gpu-lease-required"], "false")
         self.assertNotIn("authorization", response.headers)
         self.assertEqual(calls[0]["url"], "http://audio-cpu/v1/audio/speech")
+        self.assertEqual(calls[0]["headers"]["content-type"], "application/json")
+        self.assertNotIn("cookie", calls[0]["headers"])
+        self.assertNotIn("x-b1-csrf", calls[0]["headers"])
+        self.assertNotIn("x-forwarded-for", calls[0]["headers"])
 
     def test_audio_speech_routes_voicebox_under_gpu_lease_and_rewrites_model(self) -> None:
         self.patch_auth()
