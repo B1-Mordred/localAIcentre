@@ -36,6 +36,7 @@
 - Added an opt-in external ComfyUI remote-node compatibility harness that stops/restores the server-side B1 ComfyUI service before proving a `non_comfy_only` TTS operation succeeds through the unified API.
 - Added offline runtime-agent security policy tests that lock down its route surface, mutation guards, pinned-image requirement, and absence of arbitrary Docker passthrough APIs.
 - Made runtime-agent `/v1/*` authentication fail closed when its bearer-token secret is missing or malformed, with only an explicit development bypass.
+- Sanitized public/admin job API and SSE responses so raw request parameters and idempotency keys remain internal while clients see only `redacted_request`.
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
 - Removed the fixed 120-second backend timeout from public and admin job SSE streams so long-running media jobs remain observable until terminal state or client disconnect.
 - Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.

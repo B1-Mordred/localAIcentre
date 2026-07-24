@@ -144,7 +144,26 @@ class AdminJobsApiTests(unittest.TestCase):
         rows = asyncio.run(main.media_jobs(limit=25))
 
         self.assertEqual(rows[0]["id"], "job_1")
+        self.assertNotIn("request_params", rows[0])
+        self.assertNotIn("idempotency_key", rows[0])
+        self.assertEqual(rows[0]["redacted_request"], {"prompt": "[redacted]"})
         self.assertEqual(fake_database.list_kwargs, {"limit": 25, "owner_id": "client_1"})
+
+    def test_public_media_job_get_returns_redacted_job_payload(self) -> None:
+        self.patch_attr(
+            "database",
+            FakeJobsDatabase(job_row(idempotency_key="idem_sensitive", request_params={"prompt": "secret prompt"}, redacted_request={"prompt": "[redacted]"})),
+        )
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        result = asyncio.run(main.media_job_get("job_1"))
+
+        self.assertEqual(result["id"], "job_1")
+        self.assertEqual(result["redacted_request"], {"prompt": "[redacted]"})
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("secret prompt", str(result))
+        self.assertNotIn("idem_sensitive", str(result))
 
     def test_public_media_job_get_rejects_other_owner(self) -> None:
         self.patch_attr("database", FakeJobsDatabase(job_row(owner_id="other_client")))
@@ -154,6 +173,21 @@ class AdminJobsApiTests(unittest.TestCase):
             asyncio.run(main.media_job_get("job_1"))
 
         self.assertEqual(caught.exception.status_code, 403)
+
+    def test_job_sanitizer_falls_back_to_redacting_raw_request(self) -> None:
+        result = main.public_job(
+            job_row(
+                idempotency_key="idem_secret",
+                request_params={"input": {"prompt": "raw secret"}},
+                redacted_request=None,
+            )
+        )
+
+        self.assertEqual(result["redacted_request"], {"input": "<redacted>"})
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("raw secret", str(result))
+        self.assertNotIn("idem_secret", str(result))
 
     def test_admin_job_listing_requires_admin_or_operator_role(self) -> None:
         fake_database = FakeJobsDatabase()
@@ -174,10 +208,28 @@ class AdminJobsApiTests(unittest.TestCase):
         result = asyncio.run(main.admin_jobs(limit=10, state=main.JobState.QUEUED, runtime="comfyui", modality="image", owner_id="client_1"))
 
         self.assertEqual(result["object"], "list")
+        self.assertNotIn("request_params", result["data"][0])
+        self.assertNotIn("idempotency_key", result["data"][0])
+        self.assertEqual(result["data"][0]["redacted_request"], {"prompt": "[redacted]"})
         self.assertEqual(
             fake_database.list_kwargs,
             {"limit": 10, "owner_id": "client_1", "state": "queued", "runtime": "comfyui", "modality": "image"},
         )
+
+    def test_admin_job_get_returns_redacted_job_payload(self) -> None:
+        self.patch_attr(
+            "database",
+            FakeJobsDatabase(job_row(idempotency_key="admin_idem", request_params={"input": {"prompt": "admin visible secret"}}, redacted_request={"input": "<redacted>"})),
+        )
+        self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:read"})))
+
+        result = asyncio.run(main.admin_job_get("job_1"))
+
+        self.assertEqual(result["redacted_request"], {"input": "<redacted>"})
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("admin visible secret", str(result))
+        self.assertNotIn("admin_idem", str(result))
 
     def test_admin_priority_update_records_audit(self) -> None:
         fake_database = FakeJobsDatabase()
@@ -194,6 +246,8 @@ class AdminJobsApiTests(unittest.TestCase):
         )
 
         self.assertEqual(result["priority"], "video")
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
         self.assertEqual(fake_database.priority_updates, [("job_1", "video")])
         self.assertEqual(audit_events[0]["event_type"], "job.priority_updated")
         self.assertEqual(audit_events[0]["metadata"]["previous_priority"], "single_image")
@@ -235,6 +289,8 @@ class AdminJobsApiTests(unittest.TestCase):
         result = asyncio.run(main.media_job_cancel("job_1"))
 
         self.assertEqual(result["state"], "cancelled")
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
         self.assertEqual(fake_database.cancelled, ["job_1"])
         self.assertEqual(audit_events[0]["event_type"], "job.cancelled")
 
@@ -279,6 +335,9 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertIn("event: job", body)
         self.assertIn("retry: 1000", body)
         self.assertIn('"state":"recovery_required"', body)
+        self.assertNotIn("request_params", body)
+        self.assertNotIn("idempotency_key", body)
+        self.assertNotIn("sensitive", body)
         self.assertNotIn("event: timeout", body)
 
     def test_event_stream_keeps_active_jobs_observable_without_backend_timeout(self) -> None:
@@ -352,6 +411,9 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertIn("event: job", body)
         self.assertIn('"owner_id":"client_1"', body)
         self.assertIn('"state":"recovery_required"', body)
+        self.assertNotIn("request_params", body)
+        self.assertNotIn("idempotency_key", body)
+        self.assertNotIn("sensitive", body)
         self.assertNotIn("belongs to a different owner", body)
 
     def test_admin_events_requires_queue_admin_role(self) -> None:

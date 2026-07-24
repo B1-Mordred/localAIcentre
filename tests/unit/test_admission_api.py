@@ -352,6 +352,9 @@ class AdmissionApiTests(unittest.TestCase):
         result = asyncio.run(main.media_job_create(payload, idempotency_key="media_1"))
 
         self.assertEqual(result["id"], "job_existing")
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("castle", str(result))
         self.assertEqual(fake_database.inserted, [])
 
     def test_media_upload_rejects_artifact_storage_limit_before_staging(self) -> None:

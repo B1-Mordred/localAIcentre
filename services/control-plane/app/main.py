@@ -2757,6 +2757,21 @@ def redact_request(payload: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def public_job(row: dict[str, Any]) -> dict[str, Any]:
+    job = dict(row)
+    raw_request = job.pop("request_params", None)
+    job.pop("idempotency_key", None)
+    redacted_request = job.get("redacted_request")
+    if not isinstance(redacted_request, dict):
+        redacted_request = redact_request(raw_request) if isinstance(raw_request, dict) else {}
+    job["redacted_request"] = redacted_request
+    return jsonable_encoder(job)
+
+
+def public_jobs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [public_job(row) for row in rows]
+
+
 def normalize_idempotency_key(idempotency_key: str | None) -> str | None:
     if idempotency_key is None:
         return None
@@ -5947,7 +5962,7 @@ async def admin_jobs(
         runtime=runtime,
         modality=modality,
     )
-    return {"object": "list", "data": jsonable_encoder(rows)}
+    return {"object": "list", "data": public_jobs(rows)}
 
 
 @app.get("/admin/jobs/{job_id}")
@@ -5958,7 +5973,7 @@ async def admin_job_get(job_id: str, authorization: str | None = Header(default=
     job = await database.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    return jsonable_encoder(job)
+    return public_job(job)
 
 
 @app.get(
@@ -6010,7 +6025,7 @@ async def admin_job_priority_update(
         },
         correlation_id=updated.get("correlation_id"),
     )
-    return jsonable_encoder(updated)
+    return public_job(updated)
 
 
 @app.post("/admin/jobs/{job_id}/cancel")
@@ -6044,7 +6059,7 @@ async def admin_job_cancel(
             },
             correlation_id=updated.get("correlation_id"),
         )
-    return jsonable_encoder(updated)
+    return public_job(updated)
 
 
 @app.post("/admin/jobs/{job_id}/retry")
@@ -6082,7 +6097,7 @@ async def admin_job_retry(
         },
         correlation_id=updated.get("correlation_id"),
     )
-    return jsonable_encoder(updated)
+    return public_job(updated)
 
 
 @app.get("/admin/backups")
@@ -7250,11 +7265,11 @@ async def media_job_create(
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
         if existing is not None:
             ensure_idempotent_job_matches(existing, payload)
-            return jsonable_encoder(existing)
+            return public_job(existing)
     await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
     job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
-    return jsonable_encoder(job)
+    return public_job(job)
 
 
 @app.get("/v1/media/jobs")
@@ -7265,7 +7280,7 @@ async def media_jobs(
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
     owner_id = None if auth.has_scope("*") else auth.subject_id
-    return jsonable_encoder(await database.list_jobs(limit=limit, owner_id=owner_id))
+    return public_jobs(await database.list_jobs(limit=limit, owner_id=owner_id))
 
 
 @app.get("/v1/media/jobs/{job_id}")
@@ -7276,7 +7291,7 @@ async def media_job_get(job_id: str, authorization: str | None = Header(default=
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     require_job_owner_or_admin(auth, job)
-    return jsonable_encoder(job)
+    return public_job(job)
 
 
 @app.delete("/v1/media/jobs/{job_id}")
@@ -7300,7 +7315,7 @@ async def media_job_cancel(job_id: str, authorization: str | None = Header(defau
             metadata={"previous_state": job["state"], "state": updated["state"], "runtime": updated.get("runtime"), "model_alias": updated.get("model_alias")},
             correlation_id=updated.get("correlation_id"),
         )
-    return jsonable_encoder(updated)
+    return public_job(updated)
 
 
 @app.get(
@@ -7335,7 +7350,7 @@ def job_event_stream(
             if not can_read_job(job):
                 yield format_sse_event("error", {"error": "job belongs to a different owner"})
                 return
-            yield format_sse_event("job", jsonable_encoder(job), event_id=job_event_id(job), retry_ms=1000)
+            yield format_sse_event("job", public_job(job), event_id=job_event_id(job), retry_ms=1000)
             emitted += 1
             if job["state"] in TERMINAL_JOB_STATES:
                 return

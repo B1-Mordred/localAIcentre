@@ -10,6 +10,7 @@ B1 AI Hub is LAN-internal by default. Do not configure router port forwarding fo
 - Runtime mutation is delegated to `runtime-agent`, whose `/v1/*` API is mTLS/token-protected, fail-closed when the token secret is missing, allowlisted, and audited.
 - Model imports, custom nodes, uploaded media, archives, and external runtime URLs must be validated before use.
 - Prompts, uploaded documents, voice samples, bearer tokens, API keys, and model-download credentials must never be logged.
+- Durable jobs may store raw request parameters for execution and idempotency, but API responses, Control Center views, and SSE streams must expose only `redacted_request`.
 - Remote/cloud providers remain disabled unless an administrator explicitly enables and labels them as external.
 
 ## Initial Operator Checklist
