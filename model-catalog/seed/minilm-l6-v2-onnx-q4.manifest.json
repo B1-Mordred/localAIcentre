@@ -76,7 +76,7 @@
   "measurements": {
     "schema": "b1-ai-hub-model-measurements/v1",
     "updated_at": "2026-07-23T04:05:00+00:00",
-    "source": "local docker smoke on b1-ai-hub-audio-cpu:latest",
+    "source": "local docker smoke on b1-ai-hub-audio-cpu validation build",
     "original_resource_estimate": {
       "vram_gib": 0,
       "ram_gib": 0.8,

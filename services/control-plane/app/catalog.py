@@ -689,6 +689,9 @@ def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
     for key in ("updated_at", "source"):
         if key in data and not isinstance(data[key], str):
             raise CatalogError(f"{context}.{key} must be a string")
+    source = data.get("source")
+    if isinstance(source, str) and ":latest" in source:
+        raise CatalogError(f"{context}.source must not reference floating latest tags")
     for key in ("original_resource_estimate", "latest_resource_estimate"):
         if key in data:
             _parse_resource(data[key], f"{context}.{key}")

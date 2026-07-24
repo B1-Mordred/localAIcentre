@@ -60,6 +60,45 @@ class CatalogTests(unittest.TestCase):
         for manifest_path in sorted((ROOT / "model-catalog" / "seed").glob("*.manifest.json")):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(set(manifest) - properties, set(), manifest_path.name)
+            measurements = manifest.get("measurements", {})
+            self.assertNotIn(":latest", measurements.get("source", ""), manifest_path.name)
+
+    def test_manifest_measurements_reject_floating_latest_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            seed.mkdir()
+            (seed / "aliases.json").write_text(
+                json.dumps({"aliases": [{"alias": "embedding-default", "modality": "embedding", "preferred_runtime": "audio-cpu", "status": "installed"}]}),
+                encoding="utf-8",
+            )
+            (seed / "embedding.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "id": "embedding-model",
+                        "version": "1.0.0",
+                        "display_name": "Embedding Model",
+                        "modality": "embedding",
+                        "operations": ["embedding"],
+                        "source": {"type": "catalog", "url": "https://models.ai.b1.germering/embedding", "revision": "1.0.0"},
+                        "files": [{"path": "embedding.onnx", "sha256": "1" * 64, "size_bytes": 12}],
+                        "runtimes": ["audio-cpu"],
+                        "preferred_runtime": "audio-cpu",
+                        "resource_estimate": {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1},
+                        "license": {"name": "test", "redistribution": "downloadable"},
+                        "execution_modes": ["hosted-inference"],
+                        "aliases": ["embedding-default"],
+                        "measurements": {
+                            "schema": "b1-ai-hub-model-measurements/v1",
+                            "source": "local docker smoke on b1-ai-hub-audio-cpu:latest",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(CatalogError, "floating latest tags"):
+                load_catalog(root, self.policy)
 
     def test_modelhub_versions_resolve_from_alias(self) -> None:
         versions = self.catalog.versions_for("tts-fast")
