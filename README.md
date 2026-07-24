@@ -80,13 +80,13 @@ For the real-runtime appliance path, copy the production template instead:
 cp .env.production.example .env
 ```
 
-Run the bootstrap checks and create the external data tree:
+Optional preflight for host permissions, generated secrets, and the external data tree:
 
 ```bash
 make bootstrap
 ```
 
-Start the stack:
+Start the stack. The Compose `bootstrap` service runs the same idempotent setup first, so this is the required fresh-install start command:
 
 ```bash
 docker compose up -d

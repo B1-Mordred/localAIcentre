@@ -296,6 +296,16 @@ class ComposePolicyTests(unittest.TestCase):
             {"localai", "comfyui", "audio-cpu", "voicebox"},
         )
 
+    def test_docs_keep_compose_up_as_fresh_install_start_command(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        production_env_text = (ROOT / ".env.production.example").read_text(encoding="utf-8")
+
+        self.assertIn("The Compose `bootstrap` service runs the same idempotent setup first", readme)
+        self.assertIn("It is not required for a fresh installation", installation)
+        self.assertIn("docker compose up -d", production_env_text)
+        self.assertNotIn("#   make bootstrap\n#   docker compose up -d", production_env_text)
+
     def test_production_env_disables_development_placeholders_and_cloud_by_default(self) -> None:
         self.assertEqual(self.production_env["B1_CPU_AUDIO_ENGINE"], "piper")
         self.assertEqual(self.production_env["B1_CPU_EMBEDDING_ENGINE"], "onnx")

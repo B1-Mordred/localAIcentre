@@ -25,7 +25,6 @@ For local development and repository validation, start the lightweight topology:
 
 ```bash
 cp .env.example .env
-make bootstrap
 docker compose up -d
 ```
 
@@ -33,13 +32,20 @@ For the production appliance path on `ai.b1.germering`, start from the productio
 
 ```bash
 cp .env.production.example .env
-make bootstrap
 docker compose up -d
 ```
 
 The production template sets `COMPOSE_FILE=compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml` and `COMPOSE_PROFILES=voicebox`, so Docker Compose selects the real-runtime overlays while the operator start command remains `docker compose up -d`. It also sets `B1_RUNTIME_DEPLOYMENT_MODE=production`, makes LocalAI, ComfyUI, Voicebox, and audio-cpu required for production readiness, disables CPU scaffold responses, and leaves external/cloud providers and Docker mutations disabled. Remove the Voicebox overlay/profile and remove `voicebox` from `B1_RUNTIME_PRODUCTION_REQUIRED` only when intentionally operating without managed Voicebox.
 
-Bootstrap creates external data directories and generated secrets under `/srv/b1-ai-hub` by default. It does not delete or overwrite existing stack data. The generated secrets include the runtime-agent bearer token plus a private runtime-agent mTLS CA, server certificate, and control-plane client certificate used for the internal `https://runtime-agent:8443` API.
+The Compose `bootstrap` service creates external data directories and generated secrets under `/srv/b1-ai-hub` by default before the stateful services start. It does not delete or overwrite existing stack data. The generated secrets include the runtime-agent bearer token plus a private runtime-agent mTLS CA, server certificate, and control-plane client certificate used for the internal `https://runtime-agent:8443` API.
+
+Optional preflight:
+
+```bash
+make bootstrap
+```
+
+This invokes the same idempotent bootstrap script before Compose starts, which is useful for inspecting generated files or catching host permission issues early. It is not required for a fresh installation; `docker compose up -d` runs the same bootstrap path through the Compose project.
 
 On startup, the `control-plane` container runs Alembic migrations with `python -m app.migrate upgrade head` before starting Uvicorn. This keeps the documented fresh-install command as `docker compose up -d` while creating a durable `alembic_version` record for future non-destructive schema upgrades. Set `B1_DB_MIGRATIONS_ENABLED=false` only for an externally managed deployment where migrations are applied separately; the application startup verifies required tables and columns and fails closed if the schema is not current.
 
