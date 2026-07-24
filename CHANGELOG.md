@@ -137,6 +137,7 @@
 - Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.
 - Added cooperative cancellation for blocking LocalAI and Voicebox GPU media runtime calls, aborting the control-plane request, marking the durable job cancelled, and requesting bounded runtime-agent recovery before releasing the GPU lease.
 - Added an opt-in live smoke test target for deployed health, authenticated model listing, async TTS media jobs, SSE event delivery, artifact download, and optional admin self-test.
+- Hardened the shared live smoke/integration acceptance client so bearer API keys are not sent over plain HTTP unless an explicit development-only opt-out is set.
 - Added an opt-in RTX 3060 cross-runtime GPU acceptance target that verifies production readiness, runtime-agent GPU metrics, LocalAI -> ComfyUI -> Voicebox switching, single reported GPU residency, sampled VRAM reserve compliance, and optional evidence capture.
 - Changed GPU runtime switching and idle cleanup to try runtime `/b1/runtime/unload` hooks before escalating to runtime-agent restart fallback, and made confirmed admin unloads clear persisted runtime-state residency.
 - Added Makefile targets for smoke, integration, compatibility, and security tests, with an opt-in live `/admin/runtimes` integration check and offline Compose exposure/privilege security checks.

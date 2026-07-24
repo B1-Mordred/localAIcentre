@@ -10,11 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed", "expired", "recovery_required"}
+ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
@@ -23,6 +24,13 @@ SMOKE_REQUIRED_CHECKS = (
     "job_events_streamed",
     "artifact_downloaded",
 )
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class LiveApiClient:
@@ -35,11 +43,13 @@ class LiveApiClient:
         timeout_seconds: float = 10.0,
         tls_verify: bool = True,
         ca_file: str = "",
+        allow_insecure_http: bool | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") + "/"
         self.api_key = api_key
         self.host_header = host_header
         self.timeout_seconds = timeout_seconds
+        self.allow_insecure_http = env_flag(ALLOW_INSECURE_HTTP_ENV) if allow_insecure_http is None else allow_insecure_http
         self.context = self.ssl_context(tls_verify, ca_file)
 
     def ssl_context(self, tls_verify: bool, ca_file: str) -> ssl.SSLContext | None:
@@ -77,6 +87,7 @@ class LiveApiClient:
             data = body
 
         req = Request(urljoin(self.base_url, path.lstrip("/")), data=data, headers=request_headers, method=method)
+        self.enforce_token_transport_security(req.full_url)
         try:
             with urlopen(req, timeout=self.timeout_seconds, context=self.context) as response:
                 return response.status, dict(response.headers), response.read()
@@ -84,6 +95,19 @@ class LiveApiClient:
             return exc.code, dict(exc.headers), exc.read()
         except URLError as exc:
             raise AssertionError(f"{method} {path} failed: {exc.reason}") from exc
+
+    def enforce_token_transport_security(self, url: str) -> None:
+        if not self.api_key:
+            return
+        parsed = urlsplit(url)
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and self.allow_insecure_http:
+            return
+        raise RuntimeError(
+            "refusing to send a B1 acceptance API key over plain HTTP; use HTTPS "
+            f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for an isolated development harness"
+        )
 
     def json_request(
         self,

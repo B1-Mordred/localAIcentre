@@ -118,4 +118,6 @@ Use the same TLS helper variables as smoke tests when testing through the Caddy 
 - `B1_INTEGRATION_TLS_VERIFY=0`
 - `B1_INTEGRATION_HOST_HEADER`
 
+All harnesses that use the shared live API client refuse to send bearer keys over plain HTTP unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run. Handoff evidence should use HTTPS and either trust the Caddy internal CA or set the relevant `*_CA_FILE`.
+
 Remaining integration coverage will expand to more native ComfyUI REST/WebSocket client behaviours, Voicebox external-server scenarios, and Model Hub blob semantics.

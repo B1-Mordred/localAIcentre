@@ -37,6 +37,8 @@ For temporary lab runs only, TLS verification can be disabled:
 export B1_SMOKE_TLS_VERIFY=0
 ```
 
+Smoke and integration harnesses refuse to send bearer API keys over plain HTTP by default. Use HTTPS for normal LAN validation, including temporary host-header testing. The override `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is only for isolated development harnesses where no real B1 API key or user data is at risk.
+
 The live suite currently checks:
 
 - gateway/control-plane `/healthz`
