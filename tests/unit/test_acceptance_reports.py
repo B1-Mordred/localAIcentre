@@ -100,6 +100,33 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "sample_count": 1,
             "sample_labels": ["tts-fast-non-comfy"],
+        },
+        "modelhub_client_sync": {
+            "available": True,
+            "format": "b1-ai-hub-modelhub-client-sync/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/modelhub-client-sync.json",
+            "generated_at": "2026-07-24T12:40:00+00:00",
+            "base_url": "https://models.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "catalog_visible",
+                "download_plan_created",
+                "range_resume_downloaded",
+                "cache_state_managed",
+                "dry_run_prune_safe",
+                "inference_only_download_blocked",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
+                "download_plan_created": {"status": "ok", "recorded_at": "2026-07-24T12:37:00+00:00"},
+                "range_resume_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:38:00+00:00"},
+                "cache_state_managed": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
+                "dry_run_prune_safe": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
+                "inference_only_download_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:40:00+00:00"},
+            },
+            "sample_count": 1,
+            "sample_labels": ["modelhub-client-sync"],
         }
     }
     payload.update(overrides)
@@ -216,6 +243,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("cross-runtime-gpu.json", markdown)
             self.assertIn("remote-nodes-non-comfy.json", markdown)
             self.assertIn("Remote-node non-Comfy compatibility", markdown)
+            self.assertIn("modelhub-client-sync.json", markdown)
+            self.assertIn("Model Hub client sync", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -344,6 +373,39 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_modelhub_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["modelhub_client_sync"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["modelhub_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("Model Hub client sync evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_modelhub_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["modelhub_client_sync"] = {
+            **live_evidence["modelhub_client_sync"],
+            "status": "incomplete",
+            "missing_checks": ["range_resume_downloaded"],
+            "checks": {
+                "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
+                "download_plan_created": {"status": "ok", "recorded_at": "2026-07-24T12:37:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["modelhub_evidence_ready"])
+        self.assertIn("Model Hub client sync evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "Model Hub client sync evidence is missing required checks: range_resume_downloaded",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -437,6 +499,27 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            modelhub = evidence_root / "modelhub-client-sync.json"
+            modelhub.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-modelhub-client-sync/v1",
+                        "generated_at": "2026-07-24T12:40:00+00:00",
+                        "base_url": "https://models.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "catalog_visible": {"status": "ok"},
+                            "download_plan_created": {"status": "ok"},
+                            "range_resume_downloaded": {"status": "ok"},
+                            "cache_state_managed": {"status": "ok"},
+                            "dry_run_prune_safe": {"status": "ok"},
+                            "inference_only_download_blocked": {"status": "ok"},
+                        },
+                        "samples": [{"label": "modelhub-client-sync"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -452,6 +535,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(remote_nodes["status"], "ok")
         self.assertEqual(remote_nodes["missing_checks"], [])
         self.assertEqual(remote_nodes["sample_count"], 1)
+        modelhub_sync = snapshot["modelhub_client_sync"]
+        self.assertTrue(modelhub_sync["available"])
+        self.assertEqual(modelhub_sync["source_path"], str(modelhub.resolve()))
+        self.assertEqual(modelhub_sync["status"], "ok")
+        self.assertEqual(modelhub_sync["missing_checks"], [])
+        self.assertEqual(modelhub_sync["sample_count"], 1)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
