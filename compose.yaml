@@ -89,6 +89,7 @@ services:
       B1_HOST_MODELS: ${B1_HOST_MODELS:-models.ai.b1.germering}
       B1_HOST_API: ${B1_HOST_API:-api.ai.b1.germering}
       B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
+      B1_CADDY_REQUEST_BODY_LIMIT: ${B1_CADDY_REQUEST_BODY_LIMIT:-268435456}
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/caddy-certs:/etc/caddy/external-certs:ro

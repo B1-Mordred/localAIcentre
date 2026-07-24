@@ -9,13 +9,14 @@ B1_DATA_ROOT ?= /srv/b1-ai-hub
 B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
+CADDY_IMAGE ?= caddy:2.10.2-alpine
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
 
-validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config unit
+validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit
 
 compose-config:
 	docker compose config --quiet
@@ -34,6 +35,10 @@ production-voicebox-compose-config:
 
 production-env-compose-config:
 	COMPOSE_FILE="$$(sed -n 's/^COMPOSE_FILE=//p' .env.production.example)" COMPOSE_PROFILES="$$(sed -n 's/^COMPOSE_PROFILES=//p' .env.production.example)" docker compose --env-file .env.production.example config --quiet
+
+caddy-config:
+	docker run --rm -v "$(CURDIR)/deploy/caddy:/etc/caddy:ro" "$(CADDY_IMAGE)" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+	docker run --rm -v "$(CURDIR)/deploy/caddy:/etc/caddy:ro" "$(CADDY_IMAGE)" caddy adapt --config /etc/caddy/Caddyfile.legacy-comfy >/dev/null
 
 unit:
 	python3 -m unittest discover -s tests/unit -v
