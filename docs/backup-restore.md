@@ -200,7 +200,7 @@ make old-stack-backup SCOPE=/srv/b1-ai-hub/backups/old-stack-scope.json
 make old-stack-backup-verify BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-120000
 ```
 
-The old-stack archive is read-only evidence for migration and rollback. Its manifest sets `old_stack_deletion_allowed=false`; successful backup verification is not permission to remove old volumes, model files, databases, Compose files, or configuration.
+The old-stack archive is read-only evidence for migration and rollback. Raw container inspect payloads are stored as sensitive rollback evidence, while redacted copies under `docker-inspect-redacted/containers/` are available for operator review without exposing environment variable values or token-like fields. Its manifest sets `old_stack_deletion_allowed=false`; successful backup verification is not permission to remove old volumes, model files, databases, Compose files, or configuration.
 
 After verification, generate the Open WebUI preservation plan:
 

@@ -36,6 +36,26 @@ SENSITIVE_HINTS = (
     "webui.db",
     "database.sqlite",
 )
+SENSITIVE_JSON_KEY_HINTS = (
+    "apikey",
+    "api-key",
+    "api_key",
+    "auth",
+    "bearer",
+    "credential",
+    "key",
+    "oauth",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+)
+SECRET_TEXT_PATTERNS = (
+    re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]+\b"),
+    re.compile(r"\bb1(?:k|adm|rt)_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+    re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key)(=|:)[^\s,;\"']+"),
+)
 FORBIDDEN_PATHS = (
     Path("/"),
     Path("/dev"),
@@ -61,6 +81,12 @@ class ArchiveFile:
 
 
 CommandRunner = Callable[[list[str]], dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class DockerInspectPayload:
+    raw: bytes
+    redacted: bytes
 
 
 def utc_stamp() -> str:
@@ -153,7 +179,14 @@ def iter_regular_files(source: Path) -> list[Path]:
     return files
 
 
-def add_bytes_member(archive: tarfile.TarFile, archive_path: str, content: bytes, mode: int = 0o600) -> ArchiveFile:
+def add_bytes_member(
+    archive: tarfile.TarFile,
+    archive_path: str,
+    content: bytes,
+    mode: int = 0o600,
+    *,
+    sensitive: bool = False,
+) -> ArchiveFile:
     archive_path = safe_archive_path(archive_path)
     info = tarfile.TarInfo(archive_path)
     info.size = len(content)
@@ -166,7 +199,7 @@ def add_bytes_member(archive: tarfile.TarFile, archive_path: str, content: bytes
         source_type="generated",
         size_bytes=len(content),
         sha256=sha256_bytes(content),
-        sensitive=False,
+        sensitive=sensitive,
     )
 
 
@@ -204,6 +237,51 @@ def load_inventory(path: Path) -> dict[str, Any]:
     if inventory.get("format") != INVENTORY_FORMAT:
         raise OldStackBackupError("unsupported inventory format")
     return inventory
+
+
+def redact_secret_text_match(match: re.Match[str]) -> str:
+    if match.lastindex == 1:
+        return match.group(1) + "<redacted>"
+    if match.lastindex and match.lastindex >= 2:
+        return f"{match.group(1)}{match.group(2)}<redacted>"
+    return "<redacted>"
+
+
+def redact_secret_text(value: str) -> str:
+    redacted = value
+    for pattern in SECRET_TEXT_PATTERNS:
+        redacted = pattern.sub(redact_secret_text_match, redacted)
+    return redacted
+
+
+def is_sensitive_json_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(hint in lowered for hint in SENSITIVE_JSON_KEY_HINTS)
+
+
+def redact_env_assignment(value: str) -> str:
+    if "=" not in value:
+        return "<redacted>"
+    name, _raw = value.split("=", 1)
+    return f"{name}=<redacted>"
+
+
+def redact_docker_inspect_json(value: Any, *, parent_key: str = "") -> Any:
+    if parent_key == "Env" and isinstance(value, list):
+        return [redact_env_assignment(item) if isinstance(item, str) else "<redacted>" for item in value]
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if is_sensitive_json_key(str(key)):
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = redact_docker_inspect_json(item, parent_key=str(key))
+        return redacted
+    if isinstance(value, list):
+        return [redact_docker_inspect_json(item, parent_key=parent_key) for item in value]
+    if isinstance(value, str):
+        return redact_secret_text(value)
+    return value
 
 
 def normalize_scope_items(raw: Any, key: str) -> list[dict[str, Any]]:
@@ -339,7 +417,7 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
     }
 
 
-def docker_inspect_container(name: str, runner: CommandRunner = run_command) -> bytes:
+def docker_inspect_container(name: str, runner: CommandRunner = run_command) -> DockerInspectPayload:
     name = validate_docker_name(name)
     result = runner(["docker", "inspect", name])
     if result.get("returncode") != 0:
@@ -349,7 +427,9 @@ def docker_inspect_container(name: str, runner: CommandRunner = run_command) -> 
         parsed = json.loads(payload)
     except json.JSONDecodeError as exc:
         raise OldStackBackupError(f"docker inspect returned invalid JSON for {name}") from exc
-    return (json.dumps(parsed, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    raw = (json.dumps(parsed, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    redacted = (json.dumps(redact_docker_inspect_json(parsed), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return DockerInspectPayload(raw=raw, redacted=redacted)
 
 
 def docker_volume_mountpoint(name: str, runner: CommandRunner = run_command) -> Path:
@@ -460,14 +540,18 @@ def backup_old_stack(
             if not isinstance(name_value, str) or not name_value:
                 raise OldStackBackupError("include_containers entries require name")
             container_name = validate_docker_name(name_value)
-            content = docker_inspect_container(container_name, command_runner)
+            inspect_payload = docker_inspect_container(container_name, command_runner)
             archive_name = f"docker-inspect/containers/{container_name}.json"
-            records.append(add_bytes_member(archive, archive_name, content, mode=0o600))
+            review_archive_name = f"docker-inspect-redacted/containers/{container_name}.json"
+            records.append(add_bytes_member(archive, archive_name, inspect_payload.raw, mode=0o600, sensitive=True))
+            records.append(add_bytes_member(archive, review_archive_name, inspect_payload.redacted, mode=0o600))
             source_index.append(
                 {
                     "type": "docker_container_metadata",
                     "name": container_name,
                     "archive_path": archive_name,
+                    "redacted_review_archive_path": review_archive_name,
+                    "raw_metadata_may_include_environment_secrets": True,
                     "reason": item.get("reason"),
                 }
             )

@@ -93,7 +93,19 @@ class OldStackBackupTests(unittest.TestCase):
             if command[:2] == ["docker", "inspect"]:
                 return {
                     "command": command,
-                    "stdout": json.dumps([{"Name": f"/{command[2]}", "Image": "ghcr.io/open-webui/open-webui:v0.6.30"}]),
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "Name": f"/{command[2]}",
+                                "Image": "ghcr.io/open-webui/open-webui:v0.6.30",
+                                "Config": {
+                                    "Env": ["OPEN_WEBUI_SECRET_KEY=unit-key", "PUID=1000"],
+                                    "Labels": {"public": "kept", "api_key": "unit-api"},
+                                    "Cmd": ["serve", "--token=unit-token"],
+                                },
+                            }
+                        ]
+                    ),
                     "stderr": "",
                     "returncode": 0,
                 }
@@ -173,10 +185,27 @@ class OldStackBackupTests(unittest.TestCase):
             archive_names = {item["archive_path"] for item in manifest["files"]}
             self.assertIn("docker-volumes/open-webui_data/webui.db", archive_names)
             self.assertIn("docker-inspect/containers/old-open-webui.json", archive_names)
+            self.assertIn("docker-inspect-redacted/containers/old-open-webui.json", archive_names)
             self.assertTrue(any(name.endswith("/compose.yaml") for name in archive_names))
             self.assertTrue(any(name.endswith("/custom.gguf") for name in archive_names))
+            file_records = {item["archive_path"]: item for item in manifest["files"]}
+            self.assertTrue(file_records["docker-inspect/containers/old-open-webui.json"]["sensitive"])
+            self.assertFalse(file_records["docker-inspect-redacted/containers/old-open-webui.json"]["sensitive"])
+            sources = {item["type"]: item for item in manifest["sources"]}
+            self.assertEqual(
+                sources["docker_container_metadata"]["redacted_review_archive_path"],
+                "docker-inspect-redacted/containers/old-open-webui.json",
+            )
             with tarfile.open(backup_dir / "payload.tar.gz", "r:gz") as archive:
                 self.assertIn("docker-volumes/open-webui_data/webui.db", archive.getnames())
+                redacted_member = archive.extractfile("docker-inspect-redacted/containers/old-open-webui.json")
+                self.assertIsNotNone(redacted_member)
+                assert redacted_member is not None
+                redacted_payload = json.loads(redacted_member.read().decode("utf-8"))
+                self.assertEqual(redacted_payload[0]["Config"]["Env"], ["OPEN_WEBUI_SECRET_KEY=<redacted>", "PUID=<redacted>"])
+                self.assertEqual(redacted_payload[0]["Config"]["Labels"]["api_key"], "<redacted>")
+                self.assertEqual(redacted_payload[0]["Config"]["Labels"]["public"], "kept")
+                self.assertEqual(redacted_payload[0]["Config"]["Cmd"], ["serve", "--token=<redacted>"])
 
     def test_backup_rejects_symlinked_old_stack_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
