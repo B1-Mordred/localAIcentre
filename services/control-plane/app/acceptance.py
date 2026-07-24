@@ -21,6 +21,14 @@ MAX_LIVE_EVIDENCE_AGE_SECONDS = 72 * 60 * 60
 MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS = 10 * 60
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
+SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
+SMOKE_REQUIRED_CHECKS = (
+    "healthz_ok",
+    "models_listed",
+    "tts_media_job_completed",
+    "job_events_streamed",
+    "artifact_downloaded",
+)
 LOCALAI_EVIDENCE_FORMAT = "b1-ai-hub-localai-runtime-acceptance/v1"
 LOCALAI_REQUIRED_CHECKS = ("streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified")
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
@@ -98,6 +106,7 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )
 LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("live_stack_smoke", "live stack smoke"),
     ("gpu_acceptance", "RTX 3060 GPU acceptance"),
     ("localai_runtime", "LocalAI runtime acceptance"),
     ("installed_workflows", "installed workflow acceptance"),
@@ -347,6 +356,36 @@ def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path 
     }
 
 
+def smoke_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != SMOKE_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported live smoke evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in SMOKE_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(SMOKE_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     if payload.get("format") != LOCALAI_EVIDENCE_FORMAT:
         return {"available": False, "reason": "unsupported LocalAI runtime acceptance evidence format"}
@@ -589,6 +628,7 @@ def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_pat
 
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
+        "live_stack_smoke": {"available": False, "reason": reason, "root": str(root)},
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
         "localai_runtime": {"available": False, "reason": reason, "root": str(root)},
         "installed_workflows": {"available": False, "reason": reason, "root": str(root)},
@@ -632,7 +672,10 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             continue
         if not isinstance(payload, dict):
             continue
-        if payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT and "gpu_acceptance" not in found:
+        if payload.get("format") == SMOKE_EVIDENCE_FORMAT and "live_stack_smoke" not in found:
+            snapshots["live_stack_smoke"] = smoke_evidence_snapshot(payload, path.resolve())
+            found.add("live_stack_smoke")
+        elif payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT and "gpu_acceptance" not in found:
             snapshots["gpu_acceptance"] = gpu_acceptance_evidence_snapshot(payload, path.resolve())
             found.add("gpu_acceptance")
         elif payload.get("format") == LOCALAI_EVIDENCE_FORMAT and "localai_runtime" not in found:
@@ -660,6 +703,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             snapshots["restart_reconciliation"] = restart_reconciliation_evidence_snapshot(payload, path.resolve())
             found.add("restart_reconciliation")
         if found == {
+            "live_stack_smoke",
             "gpu_acceptance",
             "localai_runtime",
             "installed_workflows",
@@ -782,6 +826,15 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
     blockers.extend(_live_evidence_freshness_failures(report).values())
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
+    if smoke_evidence.get("available") is not True:
+        blockers.append("live stack smoke evidence is unavailable")
+    else:
+        if smoke_evidence.get("status") != "ok":
+            blockers.append(f"live stack smoke evidence status is {smoke_evidence.get('status', 'unknown')}")
+        missing_checks = smoke_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("live stack smoke evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     if gpu_evidence.get("available") is not True:
         blockers.append("RTX 3060 GPU acceptance evidence is unavailable")
@@ -939,6 +992,7 @@ def build_report(
         "cutover_preservation": cutover_preservation or {"available": False, "reason": "not supplied"},
         "live_evidence": live_evidence
         or {
+            "live_stack_smoke": {"available": False, "reason": "not supplied"},
             "gpu_acceptance": {"available": False, "reason": "not supplied"},
             "localai_runtime": {"available": False, "reason": "not supplied"},
             "installed_workflows": {"available": False, "reason": "not supplied"},
@@ -1074,6 +1128,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         preservation_summary_rows.append([key, _format_value(preservation.get(key))])
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
@@ -1169,6 +1224,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
             "## Live Acceptance Evidence\n\n"
+            + _live_evidence_markdown("Live stack smoke", smoke_evidence, "No live stack smoke checks recorded.")
+            + "\n\n"
             + _live_evidence_markdown("GPU acceptance", gpu_evidence, "No live GPU acceptance checks recorded.")
             + "\n\n"
             + _live_evidence_markdown("LocalAI runtime acceptance", localai_evidence, "No LocalAI runtime acceptance checks recorded.")
@@ -1251,6 +1308,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
@@ -1265,6 +1323,12 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
     )
     freshness_failures = _live_evidence_freshness_failures(report)
+    smoke_evidence_ready = (
+        smoke_evidence.get("available") is True
+        and smoke_evidence.get("status") == "ok"
+        and not smoke_evidence.get("missing_checks")
+        and "live_stack_smoke" not in freshness_failures
+    )
     gpu_evidence_ready = (
         gpu_evidence.get("available") is True
         and gpu_evidence.get("status") == "ok"
@@ -1330,6 +1394,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
+        "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
         "localai_evidence_ready": localai_evidence_ready,
         "installed_workflows_evidence_ready": installed_workflows_evidence_ready,
@@ -1342,6 +1407,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "live_evidence_freshness_ready": not freshness_failures,
         "live_evidence_ready": (
             not freshness_failures
+            and smoke_evidence_ready
             and gpu_evidence_ready
             and localai_evidence_ready
             and installed_workflows_evidence_ready

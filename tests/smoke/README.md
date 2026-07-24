@@ -8,6 +8,7 @@ Run the first live path with a scoped key that has `models:read`, `jobs:read`, a
 export B1_SMOKE_LIVE_TEST=1
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
+export B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json
 python3 -m unittest discover -s tests/smoke -v
 ```
 
@@ -46,10 +47,13 @@ The live suite currently checks:
 - artifact listing and authenticated artifact download
 - optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` has sufficient scope
 
+When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, SSE events, or artifact download checks are absent or incomplete.
+
 Useful knobs:
 
 - `B1_SMOKE_TTS_MODEL`, default `tts-fast`
 - `B1_SMOKE_TTS_RUNTIME_POLICY`, default `non_comfy_only`
 - `B1_SMOKE_TTS_VOICE`, default `default`
+- `B1_SMOKE_EVIDENCE`, optional machine-readable handoff evidence path
 - `B1_SMOKE_JOB_TIMEOUT_SECONDS`, default `120`
 - `B1_SMOKE_HTTP_TIMEOUT_SECONDS`, default `10`

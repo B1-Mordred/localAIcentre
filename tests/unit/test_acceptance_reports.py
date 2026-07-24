@@ -68,6 +68,31 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
 
 def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     payload = {
+        "live_stack_smoke": {
+            "available": True,
+            "format": "b1-ai-hub-live-smoke/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/live-smoke.json",
+            "generated_at": "2026-07-24T12:25:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "healthz_ok",
+                "models_listed",
+                "tts_media_job_completed",
+                "job_events_streamed",
+                "artifact_downloaded",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
+                "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00"},
+                "tts_media_job_completed": {"status": "ok", "recorded_at": "2026-07-24T12:22:00+00:00"},
+                "job_events_streamed": {"status": "ok", "recorded_at": "2026-07-24T12:23:00+00:00"},
+                "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:24:00+00:00"},
+            },
+            "sample_count": 5,
+            "sample_labels": ["healthz", "models", "tts-job", "job-events", "artifact-download"],
+        },
         "gpu_acceptance": {
             "available": True,
             "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
@@ -414,6 +439,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("## Operator Evidence", markdown)
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
+            self.assertIn("live-smoke.json", markdown)
+            self.assertIn("Live stack smoke", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
             self.assertIn("installed-workflows.json", markdown)
             self.assertIn("Installed workflow acceptance", markdown)
@@ -552,6 +579,42 @@ class AcceptanceReportTests(unittest.TestCase):
         summary = acceptance.public_report_summary(report)
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("RTX 3060 GPU acceptance evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_smoke_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["live_stack_smoke"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["smoke_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("live stack smoke evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_smoke_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["live_stack_smoke"] = {
+            **live_evidence["live_stack_smoke"],
+            "status": "incomplete",
+            "missing_checks": ["artifact_downloaded"],
+            "checks": {
+                "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
+                "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00"},
+                "tts_media_job_completed": {"status": "ok", "recorded_at": "2026-07-24T12:22:00+00:00"},
+                "job_events_streamed": {"status": "ok", "recorded_at": "2026-07-24T12:23:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["smoke_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("live stack smoke evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "live stack smoke evidence is missing required checks: artifact_downloaded",
+            report["acceptance_blockers"],
+        )
 
     def test_report_blocks_handoff_for_incomplete_live_gpu_evidence(self) -> None:
         report = sample_report(
@@ -955,6 +1018,32 @@ class AcceptanceReportTests(unittest.TestCase):
             evidence_root.mkdir()
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+            smoke = evidence_root / "live-smoke.json"
+            smoke.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-live-smoke/v1",
+                        "generated_at": "2026-07-24T12:25:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "healthz_ok": {"status": "ok"},
+                            "models_listed": {"status": "ok"},
+                            "tts_media_job_completed": {"status": "ok"},
+                            "job_events_streamed": {"status": "ok"},
+                            "artifact_downloaded": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "healthz"},
+                            {"label": "models"},
+                            {"label": "tts-job"},
+                            {"label": "job-events"},
+                            {"label": "artifact-download"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             current = evidence_root / "cross-runtime-gpu.json"
             current.write_text(
                 json.dumps(
@@ -1177,6 +1266,12 @@ class AcceptanceReportTests(unittest.TestCase):
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
+        smoke_snapshot = snapshot["live_stack_smoke"]
+        self.assertTrue(smoke_snapshot["available"])
+        self.assertEqual(smoke_snapshot["source_path"], str(smoke.resolve()))
+        self.assertEqual(smoke_snapshot["status"], "ok")
+        self.assertEqual(smoke_snapshot["missing_checks"], [])
+        self.assertEqual(smoke_snapshot["sample_count"], 5)
         gpu = snapshot["gpu_acceptance"]
         self.assertTrue(gpu["available"])
         self.assertEqual(gpu["source_path"], str(current.resolve()))

@@ -6,6 +6,8 @@ import ssl
 import time
 import unittest
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
@@ -13,6 +15,14 @@ from urllib.request import Request, urlopen
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed", "expired", "recovery_required"}
+SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
+SMOKE_REQUIRED_CHECKS = (
+    "healthz_ok",
+    "models_listed",
+    "tts_media_job_completed",
+    "job_events_streamed",
+    "artifact_downloaded",
+)
 
 
 class LiveApiClient:
@@ -95,8 +105,13 @@ class LiveApiClient:
 
 @unittest.skipUnless(os.getenv("B1_SMOKE_LIVE_TEST") == "1", "set B1_SMOKE_LIVE_TEST=1 to run live stack smoke tests")
 class LiveStackSmokeTests(unittest.TestCase):
+    checks: dict[str, dict[str, Any]] = {}
+    samples: list[dict[str, Any]] = []
+
     @classmethod
     def setUpClass(cls) -> None:
+        cls.checks = {}
+        cls.samples = []
         tls_verify = os.getenv("B1_SMOKE_TLS_VERIFY", "1").strip().lower() not in {"0", "false", "no"}
         cls.client = LiveApiClient(
             os.getenv("B1_SMOKE_API_BASE") or os.getenv("B1_AI_HUB_API_BASE") or "https://api.ai.b1.germering",
@@ -108,6 +123,39 @@ class LiveStackSmokeTests(unittest.TestCase):
         )
         cls.job_timeout_seconds = float(os.getenv("B1_SMOKE_JOB_TIMEOUT_SECONDS", "120"))
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        evidence_path = os.getenv("B1_SMOKE_EVIDENCE", "").strip()
+        if not evidence_path:
+            return
+        path = Path(evidence_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in SMOKE_REQUIRED_CHECKS) else "incomplete"
+        path.write_text(
+            json.dumps(
+                {
+                    "format": SMOKE_EVIDENCE_FORMAT,
+                    "generated_at": datetime.now(tz=UTC).isoformat(),
+                    "base_url": cls.client.base_url,
+                    "status": status,
+                    "required_checks": list(SMOKE_REQUIRED_CHECKS),
+                    "checks": cls.checks,
+                    "samples": cls.samples,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
+        self.checks[name] = {
+            "status": status,
+            "recorded_at": datetime.now(tz=UTC).isoformat(),
+            **data,
+        }
+
     def assert_json_status(self, status: int, payload: Any, expected: int = 200) -> None:
         self.assertEqual(status, expected, payload)
         self.assertIsInstance(payload, dict)
@@ -116,12 +164,17 @@ class LiveStackSmokeTests(unittest.TestCase):
         status, _, payload = self.client.json_request("GET", "/healthz")
         self.assert_json_status(status, payload)
         self.assertEqual(payload.get("status"), "ok")
+        self.samples.append({"label": "healthz", "status": payload.get("status")})
+        self.record_check("healthz_ok")
 
     def test_models_endpoint_requires_real_auth_path(self) -> None:
         status, _, payload = self.client.json_request("GET", "/v1/models", require_auth=True)
         self.assert_json_status(status, payload)
         self.assertEqual(payload.get("object"), "list")
         self.assertIsInstance(payload.get("data"), list)
+        model_count = len(payload.get("data") or [])
+        self.samples.append({"label": "models", "model_count": model_count})
+        self.record_check("models_listed", model_count=model_count)
 
     def test_tts_media_job_reaches_terminal_state_and_serves_artifact(self) -> None:
         model = os.getenv("B1_SMOKE_TTS_MODEL", "tts-fast")
@@ -146,10 +199,14 @@ class LiveStackSmokeTests(unittest.TestCase):
         job_id = job["id"]
         final_job = self.wait_for_terminal_job(job_id)
         self.assertEqual(final_job.get("state"), "completed", final_job)
+        self.samples.append({"label": "tts-job", "job_id": job_id, "state": final_job.get("state"), "model": model})
+        self.record_check("tts_media_job_completed", job_id=job_id, model=model)
 
         status, _, events = self.client.request("GET", f"/v1/media/jobs/{job_id}/events", require_auth=True)
         self.assertEqual(status, 200, events[:500])
         self.assertIn(b"event: job", events)
+        self.samples.append({"label": "job-events", "job_id": job_id, "bytes": len(events)})
+        self.record_check("job_events_streamed", job_id=job_id, bytes=len(events))
 
         status, _, artifact_payload = self.client.json_request("GET", f"/v1/media/jobs/{job_id}/artifacts", require_auth=True)
         self.assert_json_status(status, artifact_payload)
@@ -163,6 +220,8 @@ class LiveStackSmokeTests(unittest.TestCase):
         self.assertEqual(status, 200, content[:200])
         self.assertGreater(len(content), 0)
         self.assertIn("content-length", {key.lower() for key in headers})
+        self.samples.append({"label": "artifact-download", "job_id": job_id, "bytes": len(content)})
+        self.record_check("artifact_downloaded", job_id=job_id, bytes=len(content))
 
     def test_admin_self_test_when_key_has_scope(self) -> None:
         api_key = os.getenv("B1_SMOKE_ADMIN_API_KEY") or self.client.api_key

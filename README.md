@@ -115,7 +115,10 @@ make sbom
 Run opt-in live smoke checks against a deployed stack:
 
 ```bash
-B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
+B1_SMOKE_LIVE_TEST=1 \
+B1_AI_HUB_API_KEY=... \
+B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json \
+make smoke
 ```
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS and temporary-host options.
