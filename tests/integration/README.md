@@ -76,4 +76,4 @@ Use the same TLS helper variables as smoke tests when testing through the Caddy 
 - `B1_INTEGRATION_TLS_VERIFY=0`
 - `B1_INTEGRATION_HOST_HEADER`
 
-Remaining integration coverage will expand to LocalAI streaming/unload internals, more native ComfyUI REST/WebSocket client behaviours, Voicebox external-server scenarios, Model Hub blob semantics, and artifact authorization.
+Remaining integration coverage will expand to LocalAI streaming/unload internals, more native ComfyUI REST/WebSocket client behaviours, Voicebox external-server scenarios, and Model Hub blob semantics.

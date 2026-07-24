@@ -24,6 +24,7 @@ SECURITY_REQUIRED_CHECKS = (
     "comfyui_management_routes_blocked",
     "import_ssrf_blocked",
     "artifact_traversal_blocked",
+    "artifact_authorization_enforced",
     "runtime_agent_mutation_guard",
     "logs_redacted",
 )
@@ -45,12 +46,16 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
     temp_api_client_id: str = ""
+    temp_artifact_reader_client_id: str = ""
+    artifact_reader_key: str = ""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.checks = {}
         cls.samples = []
         cls.temp_api_client_id = ""
+        cls.temp_artifact_reader_client_id = ""
+        cls.artifact_reader_key = os.getenv("B1_SECURITY_ARTIFACT_READER_API_KEY", "").strip()
         cls.api_base = os.getenv("B1_SECURITY_API_BASE", "https://api.ai.b1.germering").rstrip("/")
         cls.comfy_base = os.getenv("B1_SECURITY_COMFY_BASE", "https://comfy.ai.b1.germering").rstrip("/")
         cls.api_key = os.getenv("B1_SECURITY_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
@@ -66,6 +71,8 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             cls.under_scoped_key = cls.create_temp_under_scoped_client()
         if not cls.under_scoped_key:
             raise unittest.SkipTest("set B1_SECURITY_UNDERSCOPED_API_KEY or B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1")
+        if not cls.artifact_reader_key:
+            cls.artifact_reader_key = cls.create_temp_artifact_reader_client()
         if not cls.browser_cookie:
             cls.browser_cookie = cls.login_browser_session()
 
@@ -77,6 +84,17 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
                     cls.api_base,
                     "DELETE",
                     f"/admin/api-clients/{urllib.parse.quote(cls.temp_api_client_id)}",
+                    token=cls.api_key,
+                    allow_http_error=True,
+                )
+            except AssertionError:
+                pass
+        if cls.temp_artifact_reader_client_id:
+            try:
+                cls.request_json(
+                    cls.api_base,
+                    "DELETE",
+                    f"/admin/api-clients/{urllib.parse.quote(cls.temp_artifact_reader_client_id)}",
                     token=cls.api_key,
                     allow_http_error=True,
                 )
@@ -212,6 +230,22 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         return str(payload["api_key"])
 
     @classmethod
+    def create_temp_artifact_reader_client(cls) -> str:
+        display_name = f"artifact-auth-acceptance-{uuid.uuid4().hex[:8]}"
+        status, _headers, payload = cls.request_json(
+            cls.api_base,
+            "POST",
+            "/admin/api-clients",
+            body={"display_name": display_name, "role": "user", "scopes": ["jobs:read"], "cidr_allowlist": []},
+            token=cls.api_key,
+            allow_http_error=True,
+        )
+        if status != 200 or not isinstance(payload, dict) or not payload.get("api_key"):
+            raise unittest.SkipTest(f"could not create temporary artifact-reader API client: HTTP {status}")
+        cls.temp_artifact_reader_client_id = str(payload.get("id") or "")
+        return str(payload["api_key"])
+
+    @classmethod
     def login_browser_session(cls) -> str:
         username = os.getenv("B1_SECURITY_BROWSER_USERNAME", "").strip()
         password = os.getenv("B1_SECURITY_BROWSER_PASSWORD", "")
@@ -251,6 +285,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.verify_comfyui_management_route_blocked()
         self.verify_import_ssrf_blocked()
         self.verify_artifact_traversal_blocked()
+        self.verify_artifact_authorization_enforced()
         self.verify_runtime_agent_mutation_guard()
         self.verify_logs_redacted()
 
@@ -363,6 +398,97 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.assertLess(len(body), 4096)
         self.record_check("artifact_traversal_blocked", path=path, http_status=status, response_bytes=len(body))
         self.sample("artifact-traversal-denied", path=path, http_status=status)
+
+    def resolve_artifact_url_for_authorization_check(self) -> str:
+        configured_url = os.getenv("B1_SECURITY_ARTIFACT_URL", "").strip()
+        if configured_url:
+            return self.internal_artifact_path(configured_url)
+        job_id = os.getenv("B1_SECURITY_ARTIFACT_JOB_ID", "").strip()
+        if job_id:
+            status, _headers, payload = self.request_json(
+                self.api_base,
+                "GET",
+                f"/v1/media/jobs/{urllib.parse.quote(job_id)}/artifacts",
+                token=self.api_key,
+                allow_http_error=True,
+            )
+            self.assertEqual(status, 200, payload)
+            url = self.first_artifact_url(payload)
+            if url:
+                return url
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            "/admin/jobs?state=completed&limit=50",
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        for job in payload.get("data") or []:
+            if not isinstance(job, dict):
+                continue
+            url = self.first_artifact_url(job)
+            if url:
+                return url
+        raise AssertionError("set B1_SECURITY_ARTIFACT_URL or B1_SECURITY_ARTIFACT_JOB_ID; no recent completed artifact was found")
+
+    def first_artifact_url(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            return ""
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            url = artifact.get("url")
+            if isinstance(url, str) and url:
+                return self.internal_artifact_path(url)
+        return ""
+
+    def internal_artifact_path(self, value: str) -> str:
+        parsed = urllib.parse.urlsplit(value)
+        path = parsed.path if parsed.scheme or parsed.netloc else value
+        if not path.startswith("/artifacts/"):
+            raise AssertionError(f"artifact authorization check requires an internal /artifacts URL, got {value!r}")
+        return path
+
+    def verify_artifact_authorization_enforced(self) -> None:
+        path = self.resolve_artifact_url_for_authorization_check()
+        unauth_status, _unauth_headers, unauth_body = self.request_raw(self.api_base, "GET", path, allow_http_error=True)
+        self.assertEqual(unauth_status, 401, unauth_body[:300])
+        under_scoped_status, _under_headers, under_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.under_scoped_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(under_scoped_status, 403, under_body[:300])
+        other_owner_status, _other_headers, other_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.artifact_reader_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(other_owner_status, 403, other_body[:300])
+        self.record_check(
+            "artifact_authorization_enforced",
+            path=path,
+            unauthenticated_status=unauth_status,
+            under_scoped_status=under_scoped_status,
+            other_owner_status=other_owner_status,
+            temporary_reader_client=bool(self.temp_artifact_reader_client_id),
+        )
+        self.sample(
+            "artifact-authorization-denied",
+            path=path,
+            unauthenticated_status=unauth_status,
+            under_scoped_status=under_scoped_status,
+            other_owner_status=other_owner_status,
+        )
 
     def verify_runtime_agent_mutation_guard(self) -> None:
         status, _headers, payload = self.request_json(self.api_base, "GET", "/admin/self-test", token=self.api_key, allow_http_error=True)

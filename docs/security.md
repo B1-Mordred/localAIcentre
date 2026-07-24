@@ -32,12 +32,13 @@ export B1_SECURITY_API_KEY=...
 export B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1
 export B1_SECURITY_BROWSER_USERNAME=admin
 export B1_SECURITY_BROWSER_PASSWORD=...
+export B1_SECURITY_ARTIFACT_JOB_ID=<completed-job-with-artifact>
 export B1_SECURITY_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
 export B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json
 make security-acceptance
 ```
 
-The harness writes `b1-ai-hub-security-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/`. Acceptance reports require that evidence to show successful unauthenticated rejection, under-scoped rejection, credentialed CORS wildcard denial, browser CSRF rejection, ComfyUI management-route denial, model-import SSRF rejection, artifact traversal rejection, runtime-agent mutation-guard posture through `/admin/self-test`, and runtime-agent/control-plane log redaction. Set `B1_SECURITY_UNDERSCOPED_API_KEY` instead of `B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1` when using a pre-created low-scope key. Set `B1_SECURITY_BROWSER_SESSION_COOKIE` instead of browser username/password when an operator supplies an already valid browser session cookie for the CSRF probe.
+The harness writes `b1-ai-hub-security-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/`. Acceptance reports require that evidence to show successful unauthenticated rejection, under-scoped rejection, credentialed CORS wildcard denial, browser CSRF rejection, ComfyUI management-route denial, model-import SSRF rejection, artifact traversal rejection, artifact authorization rejection for unauthenticated, under-scoped, and different-owner clients, runtime-agent mutation-guard posture through `/admin/self-test`, and runtime-agent/control-plane log redaction. Set `B1_SECURITY_UNDERSCOPED_API_KEY` instead of `B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1` when using a pre-created low-scope key. Set `B1_SECURITY_BROWSER_SESSION_COOKIE` instead of browser username/password when an operator supplies an already valid browser session cookie for the CSRF probe. Set `B1_SECURITY_ARTIFACT_URL` or `B1_SECURITY_ARTIFACT_JOB_ID` to the artifact produced by the installed-workflow or smoke acceptance run; if neither is set, the harness searches recent completed jobs and fails clearly when no generated artifact exists.
 
 The control plane emits structured JSON logs through a single `log_event` helper. That helper recursively redacts sensitive keys such as prompts, messages, inputs, media, voice samples, documents, tokens, credentials, cookies, passwords, and API keys; it also redacts bearer-token strings, B1 API-key strings, GitHub PAT-shaped strings, and sensitive URL query parameters before writing to stdout/stderr. Long strings and long lists are bounded so logs cannot become a prompt or upload exfiltration path.
 

@@ -224,6 +224,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "comfyui_management_routes_blocked",
                 "import_ssrf_blocked",
                 "artifact_traversal_blocked",
+                "artifact_authorization_enforced",
                 "runtime_agent_mutation_guard",
                 "logs_redacted",
             ],
@@ -236,10 +237,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "artifact_authorization_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:49:30+00:00"},
                 "runtime_agent_mutation_guard": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
                 "logs_redacted": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
             },
-            "sample_count": 9,
+            "sample_count": 10,
             "sample_labels": [
                 "unauthenticated-admin",
                 "under-scoped-admin",
@@ -248,6 +250,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "comfyui-manager-denied",
                 "manifest-ssrf-denied",
                 "artifact-traversal-denied",
+                "artifact-authorization-denied",
                 "runtime-agent-mutation-guard",
                 "service-logs-redacted",
             ],
@@ -757,6 +760,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "artifact_authorization_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:49:30+00:00"},
                 "runtime_agent_mutation_guard": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
             },
         }
@@ -1016,6 +1020,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "comfyui_management_routes_blocked": {"status": "ok"},
                             "import_ssrf_blocked": {"status": "ok"},
                             "artifact_traversal_blocked": {"status": "ok"},
+                            "artifact_authorization_enforced": {"status": "ok"},
                             "runtime_agent_mutation_guard": {"status": "ok"},
                             "logs_redacted": {"status": "ok"},
                         },
@@ -1027,6 +1032,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "comfyui-manager-denied"},
                             {"label": "manifest-ssrf-denied"},
                             {"label": "artifact-traversal-denied"},
+                            {"label": "artifact-authorization-denied"},
                             {"label": "runtime-agent-mutation-guard"},
                             {"label": "service-logs-redacted"},
                         ],
@@ -1101,7 +1107,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(security_acceptance["source_path"], str(security.resolve()))
         self.assertEqual(security_acceptance["status"], "ok")
         self.assertEqual(security_acceptance["missing_checks"], [])
-        self.assertEqual(security_acceptance["sample_count"], 9)
+        self.assertEqual(security_acceptance["sample_count"], 10)
         restart = snapshot["restart_reconciliation"]
         self.assertTrue(restart["available"])
         self.assertEqual(restart["source_path"], str(restart_reconciliation.resolve()))

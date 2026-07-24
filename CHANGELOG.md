@@ -22,7 +22,7 @@
 - Added machine-readable remote-node non-Comfy compatibility evidence ingestion so handoff now requires proof that external ComfyUI B1 nodes complete a unified-API operation while server-side ComfyUI is stopped.
 - Added machine-readable Model Hub client sync evidence ingestion so handoff now requires proof of external catalog access, Range/resume blob sync, managed-cache state, safe prune behavior, and inference-only download blocking.
 - Added machine-readable Voicebox remote compatibility evidence ingestion and an opt-in live harness for native HTTP proxying, voice-profile lifecycle, scheduler-routed speech, and WebSocket-or-pinned-limitation proof.
-- Added machine-readable deployed security acceptance evidence ingestion and an opt-in live harness for auth rejection, under-scoped rejection, CORS/CSRF, ComfyUI route-policy, SSRF, traversal, and log-redaction proof.
+- Added machine-readable deployed security acceptance evidence ingestion and an opt-in live harness for auth rejection, under-scoped rejection, CORS/CSRF, ComfyUI route-policy, SSRF, traversal, artifact authorization, and log-redaction proof.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
 - Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.
@@ -82,6 +82,7 @@
 - Added runtime-agent mutation rate limiting, structured redacted mutation audit events, and dry-run enforcement for service/image mutation paths even when Docker mutations are enabled.
 - Added a runtime-agent mutation-guard self-test and acceptance-report handoff blocker so bearer auth, mTLS client enforcement, allowlists, and mutation rate limiting must be evidenced before cutover handoff.
 - Added runtime-agent mutation-guard proof to the live security acceptance evidence contract so stale security handoff files cannot omit the deployed agent posture.
+- Added artifact authorization proof to the live security acceptance evidence contract so stale handoff files cannot omit unauthenticated, under-scoped, and different-owner artifact download rejection.
 - Added a scheduler reconciliation admin endpoint, Control Center handoff gate, and opt-in live restart acceptance harness proving startup requeues interrupted `waiting_for_gpu` jobs and marks interrupted active jobs `recovery_required`.
 - Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
 - Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
