@@ -184,6 +184,23 @@ class ComposePolicyTests(unittest.TestCase):
             self.assertIn("import b1_tls", caddyfile[block_start:block_end], host_var)
         self.assertEqual(self.production_env["B1_CADDY_TLS_ARGS"], "internal")
 
+    def test_gateway_permissions_policy_scopes_browser_capture_to_interactive_hosts(self) -> None:
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        self.assertIn('Permissions-Policy "camera=(), microphone=(), geolocation=()"', caddyfile)
+        self.assertIn('Permissions-Policy "camera=(self), microphone=(self), geolocation=()"', caddyfile)
+        for host_var in ("B1_HOST_CHAT", "B1_HOST_MEDIA", "B1_HOST_VOICE"):
+            block_start = caddyfile.index("{$" + host_var)
+            block_end = caddyfile.find("\n}\n", block_start)
+            block = caddyfile[block_start:block_end]
+            self.assertIn("import media_capture_security_headers", block, host_var)
+            self.assertNotIn("import security_headers", block, host_var)
+        for host_var in ("B1_HOST_CONTROL", "B1_HOST_API", "B1_HOST_MODELS", "B1_HOST_COMFY"):
+            block_start = caddyfile.index("{$" + host_var)
+            block_end = caddyfile.find("\n}\n", block_start)
+            block = caddyfile[block_start:block_end]
+            self.assertIn("import security_headers", block, host_var)
+            self.assertNotIn("import media_capture_security_headers", block, host_var)
+
     def test_control_plane_mounts_artifacts_for_job_runner(self) -> None:
         service = self.compose["services"]["control-plane"]
         volumes = service.get("volumes", [])

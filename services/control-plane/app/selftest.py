@@ -10,7 +10,11 @@ REQUIRED_GATEWAY_SECURITY_HEADERS = {
     "x-content-type-options": ("nosniff",),
     "x-frame-options": ("deny",),
     "referrer-policy": ("no-referrer",),
-    "permissions-policy": ("camera=()", "microphone=()", "geolocation=()"),
+}
+SAFE_PERMISSIONS_POLICY_DIRECTIVES = {
+    "camera": ("camera=()", "camera=(self)"),
+    "microphone": ("microphone=()", "microphone=(self)"),
+    "geolocation": ("geolocation=()",),
 }
 
 
@@ -76,6 +80,21 @@ def gateway_security_header_failures(headers: Mapping[str, str]) -> list[str]:
         missing_tokens = [token for token in required_tokens if token not in value]
         if missing_tokens:
             failures.append(f"{header} missing {', '.join(missing_tokens)}")
+    permissions_policy = "".join(normalized.get("permissions-policy", "").split())
+    if not permissions_policy:
+        failures.append("missing permissions-policy")
+    else:
+        directives: dict[str, set[str]] = {}
+        for raw_directive in permissions_policy.split(","):
+            directive_name, separator, _directive_value = raw_directive.partition("=")
+            if separator:
+                directives.setdefault(directive_name, set()).add(raw_directive)
+        for directive, allowed_tokens in SAFE_PERMISSIONS_POLICY_DIRECTIVES.items():
+            configured = directives.get(directive, set())
+            if not configured:
+                failures.append(f"permissions-policy missing safe {directive} directive")
+            elif not configured <= set(allowed_tokens):
+                failures.append(f"permissions-policy has unsafe {directive} directive")
     return failures
 
 

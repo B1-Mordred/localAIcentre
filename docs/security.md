@@ -19,6 +19,8 @@ Controls implemented or planned:
 - pinned ComfyUI custom nodes
 - disabled cloud providers and telemetry by default
 
+Caddy applies deny-by-default browser capture policy to Control Center, the unified API, Model Hub, and native ComfyUI compatibility. Open WebUI, Media Studio, and the Voicebox compatibility host use a narrower media-capture header that allows camera and microphone only for the same origin, so browser voice/image workflows can work without granting capture permissions to administrative or machine API surfaces. Geolocation remains disabled on every host.
+
 The runtime-agent API is intentionally narrow. It is the only service that mounts `/var/run/docker.sock`; the control plane does not mount the Docker socket. Bootstrap generates `$B1_DATA_ROOT/secrets/runtime_agent_token`, a private runtime-agent CA, a runtime-agent server certificate, and a control-plane client certificate. Compose mounts those files read-only at `/run/secrets/*`. The default runtime-agent URL is `https://runtime-agent:8443`, Uvicorn requires a client certificate signed by the generated CA, and all runtime-agent `/v1/*` endpoints still require `Authorization: Bearer <token>` when that secret is present.
 
 During target-host acceptance, run the deployed security proof after production auth and runtime-agent log access are healthy:

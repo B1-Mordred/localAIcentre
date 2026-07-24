@@ -46,6 +46,18 @@ class SelfTestTests(unittest.TestCase):
             ),
             [],
         )
+        self.assertEqual(
+            selftest.gateway_security_header_failures(
+                {
+                    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
+                }
+            ),
+            [],
+        )
 
         failures = selftest.gateway_security_header_failures(
             {
@@ -57,6 +69,30 @@ class SelfTestTests(unittest.TestCase):
         self.assertIn("strict-transport-security missing includesubdomains", failures)
         self.assertIn("missing x-frame-options", failures)
         self.assertIn("missing permissions-policy", failures)
+
+        capture_failures = selftest.gateway_security_header_failures(
+            {
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "camera=*, microphone=(self), geolocation=()",
+            }
+        )
+
+        self.assertIn("permissions-policy has unsafe camera directive", capture_failures)
+
+        duplicate_capture_failures = selftest.gateway_security_header_failures(
+            {
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "camera=(), camera=*, microphone=(self), geolocation=()",
+            }
+        )
+
+        self.assertIn("permissions-policy has unsafe camera directive", duplicate_capture_failures)
 
     def test_runtime_production_readiness_warns_for_development_placeholders(self) -> None:
         result = selftest.runtime_production_readiness_check(
