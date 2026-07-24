@@ -24,6 +24,8 @@ VOICEBOX_REQUIRED_CHECKS = (
     "websocket_or_limitation_recorded",
 )
 
+ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
+
 
 def env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -104,6 +106,20 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         return urllib.parse.urljoin(base_url + "/", path.lstrip("/"))
 
     @classmethod
+    def enforce_token_transport_security(cls, url: str, *, token: str) -> None:
+        if not token:
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme in {"https", "wss"}:
+            return
+        if parsed.scheme in {"http", "ws"} and env_flag(ALLOW_INSECURE_HTTP_ENV):
+            return
+        raise RuntimeError(
+            "refusing to send a B1 Voicebox API key over plain HTTP/WebSocket; use HTTPS/WSS "
+            f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for an isolated development harness"
+        )
+
+    @classmethod
     def headers(cls, *, native: bool = False, accept: str = "application/json") -> dict[str, str]:
         token = cls.native_api_key if native else cls.api_key
         headers = {"Accept": accept}
@@ -131,7 +147,10 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         if payload is not None:
             data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(cls.build_url(base_url, path), data=data, headers=headers, method=method)
+        token = cls.native_api_key if native else cls.api_key
+        url = cls.build_url(base_url, path)
+        cls.enforce_token_transport_security(url, token=token)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context()) as response:
                 return int(getattr(response, "status", response.getcode())), dict(response.headers.items()), response.read()
@@ -285,6 +304,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             raise AssertionError("install the websockets package or record B1_VOICEBOX_WEBSOCKET_LIMITATION") from exc
         headers = self.headers(native=True, accept="*/*")
         headers.pop("Accept", None)
+        self.enforce_token_transport_security(self.websocket_url(), token=self.native_api_key)
         kwargs: dict[str, Any] = {"open_timeout": 10.0, "max_size": None}
         if self.websocket_url().startswith("wss://"):
             kwargs["ssl"] = self.ssl_context()

@@ -29,6 +29,21 @@ SECURITY_REQUIRED_CHECKS = (
     "logs_redacted",
 )
 
+ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
+SENSITIVE_BODY_KEYS = {
+    "api_key",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "cookie",
+    "csrf",
+    "key",
+    "password",
+    "secret",
+    "session",
+    "token",
+}
+
 
 def env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -39,6 +54,19 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def bounded(value: str, limit: int = 1000) -> str:
     return value.strip()[:limit]
+
+
+def body_has_sensitive_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(marker in lowered for marker in SENSITIVE_BODY_KEYS) and item is not None and item != "":
+                return True
+            if body_has_sensitive_value(item):
+                return True
+    if isinstance(value, list):
+        return any(body_has_sensitive_value(item) for item in value)
+    return False
 
 
 @unittest.skipUnless(os.getenv("B1_SECURITY_LIVE_TEST") == "1", "set B1_SECURITY_LIVE_TEST=1 to run deployed security acceptance")
@@ -143,6 +171,20 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         return cls.api_host_header
 
     @classmethod
+    def enforce_sensitive_transport_security(cls, url: str, *, token: str = "", cookie: str = "", body: Any = None) -> None:
+        if not (token or cookie or body_has_sensitive_value(body)):
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and env_flag(ALLOW_INSECURE_HTTP_ENV):
+            return
+        raise RuntimeError(
+            "refusing to send B1 security acceptance credentials over plain HTTP; use HTTPS "
+            f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for an isolated development harness"
+        )
+
+    @classmethod
     def request_raw(
         cls,
         base_url: str,
@@ -171,6 +213,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         else:
             data = body
         url = urllib.parse.urljoin(base_url + "/", path.lstrip("/"))
+        cls.enforce_sensitive_transport_security(url, token=token, cookie=cookie, body=body)
         request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context(base_url)) as response:

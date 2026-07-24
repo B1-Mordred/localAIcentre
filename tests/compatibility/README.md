@@ -15,7 +15,7 @@ export B1_NATIVE_COMFYUI_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/native-comfy
 python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
 ```
 
-For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_NATIVE_COMFYUI_CA_FILE=/path/to/root.crt`; use `B1_NATIVE_COMFYUI_TLS_VERIFY=0` only during an explicit LAN validation window. `B1_NATIVE_COMFYUI_PROMPT_JSON` may be used instead of `B1_NATIVE_COMFYUI_PROMPT_FILE` for a small inline native prompt.
+For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_NATIVE_COMFYUI_CA_FILE=/path/to/root.crt`; use `B1_NATIVE_COMFYUI_TLS_VERIFY=0` only during an explicit LAN validation window. The harness refuses to send `B1_NATIVE_COMFYUI_API_KEY` over plain HTTP or `ws://` unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run. `B1_NATIVE_COMFYUI_PROMPT_JSON` may be used instead of `B1_NATIVE_COMFYUI_PROMPT_FILE` for a small inline native prompt.
 
 When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, `/ws`, `/history`, `/history/{prompt_id}`, `POST /queue` deletion, targeted `POST /interrupt`, or `/view` artifact checks are absent or incomplete.
 
@@ -84,7 +84,7 @@ export B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.js
 python3 -m unittest tests.compatibility.test_voicebox_remote
 ```
 
-For temporary IP/host validation, set `B1_VOICEBOX_HOST_HEADER=voice.ai.b1.germering` and `B1_VOICEBOX_API_HOST_HEADER=api.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_VOICEBOX_CA_FILE=/path/to/root.crt`; use `B1_VOICEBOX_TLS_VERIFY=0` only during an explicit LAN validation window.
+For temporary IP/host validation, set `B1_VOICEBOX_HOST_HEADER=voice.ai.b1.germering` and `B1_VOICEBOX_API_HOST_HEADER=api.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_VOICEBOX_CA_FILE=/path/to/root.crt`; use `B1_VOICEBOX_TLS_VERIFY=0` only during an explicit LAN validation window. The harness refuses to send `B1_VOICEBOX_API_KEY` or `B1_VOICEBOX_NATIVE_API_KEY` over plain HTTP or `ws://` unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run.
 
 If the pinned Voicebox upstream version does not support a specific remote surface, record that limitation explicitly instead of treating the check as skipped:
 

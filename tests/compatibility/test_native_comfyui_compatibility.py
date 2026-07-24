@@ -34,6 +34,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "view_artifact_accessible",
 )
 
+ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
 COMFYUI_OUTPUT_KEYS = ("images", "videos", "gifs", "audio")
 TINY_PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a"
@@ -167,6 +168,20 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         return urllib.parse.urljoin(cls.base_url + "/", path.lstrip("/"))
 
     @classmethod
+    def enforce_token_transport_security(cls, url: str) -> None:
+        if not cls.api_key:
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme in {"https", "wss"}:
+            return
+        if parsed.scheme in {"http", "ws"} and env_flag(ALLOW_INSECURE_HTTP_ENV):
+            return
+        raise RuntimeError(
+            "refusing to send a B1 native ComfyUI API key over plain HTTP/WebSocket; use HTTPS/WSS "
+            f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for an isolated development harness"
+        )
+
+    @classmethod
     def websocket_url(cls) -> str:
         parsed = urllib.parse.urlparse(cls.url(f"/ws?clientId={urllib.parse.quote(cls.client_id)}"))
         scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -179,7 +194,9 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         if payload is not None:
             data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(cls.url(path), data=data, headers=headers, method=method)
+        url = cls.url(path)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             body = response.read()
         decoded = json.loads(body.decode("utf-8"))
@@ -191,7 +208,9 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
     def request_bytes(cls, method: str, path: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
         headers = cls.headers()
         headers["Accept"] = "*/*"
-        request = urllib.request.Request(cls.url(path), headers=headers, method=method)
+        url = cls.url(path)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             body = response.read()
             response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -212,7 +231,9 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         if payload is not None:
             data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(cls.url(path), data=data, headers=headers, method=method)
+        url = cls.url(path)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             body = response.read()
             response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -231,7 +252,9 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         body, content_type = multipart_form_data(fields, files)
         headers = cls.headers()
         headers["Content-Type"] = content_type
-        request = urllib.request.Request(cls.url(path), data=body, headers=headers, method=method)
+        url = cls.url(path)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             response_body = response.read()
         decoded = json.loads(response_body.decode("utf-8"))
@@ -325,6 +348,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
     async def connect_websocket(self):
         import websockets
 
+        self.enforce_token_transport_security(self.websocket_url())
         headers = self.headers()
         headers.pop("Accept", None)
         kwargs: dict[str, Any] = {"ssl": self.ssl_context()} if self.websocket_url().startswith("wss://") else {}

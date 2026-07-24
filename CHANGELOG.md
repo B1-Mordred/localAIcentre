@@ -24,6 +24,7 @@
 - Added machine-readable LocalAI runtime acceptance evidence ingestion and an opt-in live harness for streamed chat, single reported LocalAI GPU residency, and confirmed unload through the guarded admin route.
 - Added machine-readable installed workflow acceptance evidence ingestion and an opt-in live harness for chat, TTS, STT, CPU-audio no-GPU-lease proof, image generation, image edit, and short-video user paths backed by real installed models.
 - Added machine-readable native ComfyUI compatibility evidence ingestion and an opt-in live REST/WebSocket harness so handoff now requires proof of `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, native queue deletion, targeted interrupt, `/upload/image`, `/upload/mask`, native `POST /prompt`, `/ws`, `/history`, and `/history/{prompt_id}` through the gateway.
+- Hardened raw native ComfyUI, Voicebox, and deployed-security acceptance harnesses so API keys, browser cookies, and credential-bearing payloads are not sent over plain HTTP/WebSocket unless an explicit development-only opt-out is set.
 - Added native ComfyUI `/view` artifact retrieval to the live compatibility evidence gate so handoff proves generated outputs are downloadable through the gateway.
 - Added OpenAPI/source regression gates for the implementation-plan public API, Model Hub, runtime-reservation, SSE, and native compatibility passthrough route surfaces.
 - Aligned Model Hub model-detail OpenAPI paths with the implementation-plan `/modelhub/v1/models/{id}` and `/modelhub/v1/models/{id}/versions` contract.
