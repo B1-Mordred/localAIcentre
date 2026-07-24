@@ -362,6 +362,8 @@ type AcceptanceReportDetail = {
   report: Record<string, unknown>;
 };
 
+type AcceptanceReportFileName = "report.json" | "report.md" | "SHA256SUMS";
+
 type AcceptanceEvidenceDetail = {
   key: string;
   label: string;
@@ -983,6 +985,31 @@ async function downloadJobArtifact(artifact: JobArtifact, index: number): Promis
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
   return filename;
+}
+
+async function downloadAcceptanceReportFile(reportId: string, filename: AcceptanceReportFileName): Promise<string> {
+  const response = await apiFetch(`/admin/acceptance-reports/${encodeURIComponent(reportId)}/files/${encodeURIComponent(filename)}`, { method: "GET" });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const downloadName = `${reportId}-${filename}`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = downloadName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return downloadName;
 }
 
 function parseSseEvent(raw: string): { event: string; data: string } | null {
@@ -3390,6 +3417,15 @@ function System() {
       .finally(() => setBusy(false));
   };
 
+  const downloadAcceptanceReport = (reportId: string, filename: AcceptanceReportFileName) => {
+    setBusy(true);
+    setMessage(`downloading ${filename}`);
+    downloadAcceptanceReportFile(reportId, filename)
+      .then((downloadName) => setMessage(`downloaded ${downloadName}`))
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const createAcceptanceReport = () => {
     setBusy(true);
     setMessage("creating acceptance report");
@@ -3831,6 +3867,8 @@ function System() {
               <td>
                 <div className="table-actions">
                   <button title={`Inspect ${report.id}`} onClick={() => inspectAcceptanceReport(report.id)} disabled={busy}><ScrollText size={16} /></button>
+                  <button title={`Download Markdown for ${report.id}`} onClick={() => downloadAcceptanceReport(report.id, "report.md")} disabled={busy || !report.files?.markdown}><Download size={16} /></button>
+                  <button title={`Download checksums for ${report.id}`} onClick={() => downloadAcceptanceReport(report.id, "SHA256SUMS")} disabled={busy || !report.files?.sha256sums}><KeyRound size={16} /></button>
                 </div>
               </td>
             </tr>
@@ -3853,6 +3891,12 @@ function System() {
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
+          </div>
+          <div className="toolbar">
+            <button title={`Download Markdown for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "report.md")} disabled={busy || !selectedFiles.markdown}><Download size={16} />Markdown</button>
+            <button title={`Download JSON for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "report.json")} disabled={busy || !selectedFiles.json}><Download size={16} />JSON</button>
+            <button title={`Download checksums for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "SHA256SUMS")} disabled={busy || !selectedFiles.sha256sums}><KeyRound size={16} />Checksums</button>
+            <span className="toolbar-status">Downloads use the authenticated admin report file endpoint</span>
           </div>
           <div className="acceptance-detail-section">
             <h4>Acceptance Blockers</h4>

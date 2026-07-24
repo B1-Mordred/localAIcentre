@@ -5569,6 +5569,29 @@ async def admin_acceptance_report_get(report_id: str, authorization: str | None 
     }
 
 
+@app.get("/admin/acceptance-reports/{report_id}/files/{filename}")
+async def admin_acceptance_report_file(report_id: str, filename: str, authorization: str | None = Header(default=None)) -> Response:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "acceptance report files require administrator role")
+    try:
+        path = acceptance.report_file_path(acceptance_report_root_path(), report_id, filename)
+        content = await asyncio.to_thread(path.read_bytes)
+    except acceptance.AcceptanceReportError as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=404 if "not found" in detail else 400, detail=detail) from exc
+    media_type = {
+        "report.json": "application/json",
+        "report.md": "text/markdown; charset=utf-8",
+        "SHA256SUMS": "text/plain; charset=utf-8",
+    }[path.name]
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+    )
+
+
 @app.post("/admin/acceptance-reports")
 async def admin_acceptance_report_create(payload: AcceptanceReportCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)

@@ -380,12 +380,32 @@ class AcceptanceReportTests(unittest.TestCase):
             checksums = dict(line.split("  ", 1)[::-1] for line in checksum_lines)
             self.assertEqual(checksums["report.json"], hashlib.sha256(json_path.read_bytes()).hexdigest())
             self.assertEqual(checksums["report.md"], hashlib.sha256(markdown_path.read_bytes()).hexdigest())
+            self.assertEqual(acceptance.report_file_path(root, report["id"], "report.json"), json_path.resolve())
+            self.assertEqual(acceptance.report_file_path(root, report["id"], "report.md"), markdown_path.resolve())
+            self.assertEqual(acceptance.report_file_path(root, report["id"], "SHA256SUMS"), checksum_path.resolve())
 
             loaded = acceptance.load_report(root, report["id"])
             listed = acceptance.list_reports(root)
 
         self.assertEqual(loaded["format"], acceptance.REPORT_FORMAT)
         self.assertEqual([item["id"] for item in listed], [report["id"]])
+
+    def test_report_file_path_rejects_unknown_names_traversal_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = sample_report()
+            acceptance.write_report(root, report)
+
+            for filename in ("../report.json", "report.json/../report.md", "notes.txt", ""):
+                with self.subTest(filename=filename):
+                    with self.assertRaises(acceptance.AcceptanceReportError):
+                        acceptance.report_file_path(root, report["id"], filename)
+
+            (root / report["id"] / "report.md").unlink()
+            (root / report["id"] / "report.md").symlink_to(root / report["id"] / "report.json")
+            with self.assertRaises(acceptance.AcceptanceReportError) as raised:
+                acceptance.report_file_path(root, report["id"], "report.md")
+            self.assertIn("symlink", str(raised.exception))
 
     def test_report_blocks_handoff_for_degraded_development_snapshot(self) -> None:
         report = sample_report(
@@ -1018,11 +1038,17 @@ class AcceptanceReportApiTests(unittest.TestCase):
             )
             listed = asyncio.run(main.admin_acceptance_reports(authorization="Bearer key", limit=10))
             fetched = asyncio.run(main.admin_acceptance_report_get(created["report"]["id"], authorization="Bearer key"))
+            markdown_file = asyncio.run(
+                main.admin_acceptance_report_file(created["report"]["id"], "report.md", authorization="Bearer key")
+            )
 
         self.assertEqual(created["summary"]["status"], "ok")
         self.assertEqual(created["report"]["label"], "cutover")
         self.assertEqual(listed["data"][0]["id"], created["report"]["id"])
         self.assertEqual(fetched["report"]["id"], created["report"]["id"])
+        self.assertIn(b"# B1 AI Hub Acceptance Report", markdown_file.body)
+        self.assertEqual(markdown_file.headers["content-disposition"], 'attachment; filename="report.md"')
+        self.assertEqual(markdown_file.media_type, "text/markdown; charset=utf-8")
         self.assertEqual(audit_events[0]["event_type"], "acceptance_report.created")
         self.assertEqual(audit_events[0]["target_type"], "acceptance_report")
 

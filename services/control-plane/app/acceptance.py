@@ -12,6 +12,7 @@ from typing import Any
 
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
 REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
+REPORT_FILE_NAMES = frozenset({"report.json", "report.md", "SHA256SUMS"})
 SUMMARY_LIMIT = 200
 MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
 CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
@@ -108,6 +109,23 @@ def report_directory(root: Path, report_id: str) -> Path:
     target = (base / normalized).resolve()
     if target.parent != base:
         raise AcceptanceReportError("acceptance report path escapes the report root")
+    return target
+
+
+def report_file_path(root: Path, report_id: str, filename: str) -> Path:
+    name = filename.strip()
+    if name not in REPORT_FILE_NAMES:
+        raise AcceptanceReportError("invalid acceptance report filename")
+    directory = report_directory(root, report_id)
+    raw_target = directory / name
+    if raw_target.is_symlink():
+        raise AcceptanceReportError("acceptance report file path is a symlink")
+    target = raw_target.resolve()
+    directory_resolved = directory.resolve()
+    if target.parent != directory_resolved:
+        raise AcceptanceReportError("acceptance report file path escapes the report directory")
+    if not target.is_file():
+        raise AcceptanceReportError("acceptance report file not found")
     return target
 
 
