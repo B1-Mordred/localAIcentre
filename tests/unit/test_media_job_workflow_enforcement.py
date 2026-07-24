@@ -103,6 +103,20 @@ def media_payload(**overrides: Any) -> Any:
     return main.MediaJobCreate(**payload)
 
 
+def runtime_resolution(runtime: str) -> Any:
+    return main.RuntimeResolution(
+        public_alias="image-default",
+        model_id="image-model",
+        model_version="1.0.0",
+        resolved_model_version="image-model@1.0.0",
+        runtime=runtime,
+        preferred_runtime=runtime,
+        requires_gpu=runtime in {"comfyui", "localai", "voicebox"},
+        resource_label="expected",
+        runtime_policy="any",
+    )
+
+
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class MediaJobWorkflowEnforcementTests(unittest.TestCase):
     def patch_database(self, fake_database: FakeWorkflowDatabase) -> None:
@@ -138,6 +152,42 @@ class MediaJobWorkflowEnforcementTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 422)
         self.assertIn("model must match workflow value", caught.exception.detail)
+
+    def test_workflow_backend_policy_rejects_non_comfy_runtime_for_comfy_only_workflow(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            main.enforce_workflow_backend_policy(
+                {"id": "image-flow", "version": "1.0.0", "backend_policy": "comfyui-only"},
+                runtime_resolution("localai"),
+            )
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["message"], "workflow backend_policy requires ComfyUI runtime")
+        self.assertEqual(caught.exception.detail["resolved_runtime"], "localai")
+
+    def test_workflow_backend_policy_rejects_comfy_runtime_for_non_comfy_workflow(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            main.enforce_workflow_backend_policy(
+                {"id": "audio-flow", "version": "1.0.0", "backend_policy": "non-comfy-only"},
+                runtime_resolution("comfyui"),
+            )
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["message"], "workflow backend_policy forbids ComfyUI runtime")
+        self.assertEqual(caught.exception.detail["resolved_runtime"], "comfyui")
+
+    def test_workflow_backend_policy_allows_either_and_matching_runtime(self) -> None:
+        main.enforce_workflow_backend_policy(
+            {"id": "image-flow", "version": "1.0.0", "backend_policy": "comfyui-only"},
+            runtime_resolution("comfyui"),
+        )
+        main.enforce_workflow_backend_policy(
+            {"id": "audio-flow", "version": "1.0.0", "backend_policy": "non-comfy-only"},
+            runtime_resolution("audio-cpu"),
+        )
+        main.enforce_workflow_backend_policy(
+            {"id": "flex-flow", "version": "1.0.0", "backend_policy": "either"},
+            runtime_resolution("localai"),
+        )
 
 
 if __name__ == "__main__":

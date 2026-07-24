@@ -2260,6 +2260,32 @@ async def enforce_workflow_backed_media_job(auth: AuthContext, payload: MediaJob
     return workflow
 
 
+def enforce_workflow_backend_policy(workflow: dict[str, Any] | None, resolution: RuntimeResolution) -> None:
+    if workflow is None:
+        return
+    backend_policy = workflow.get("backend_policy")
+    if backend_policy == "comfyui-only" and resolution.runtime != "comfyui":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "workflow backend_policy requires ComfyUI runtime",
+                "workflow_id": workflow.get("id"),
+                "workflow_version": workflow.get("version"),
+                "resolved_runtime": resolution.runtime,
+            },
+        )
+    if backend_policy == "non-comfy-only" and resolution.runtime == "comfyui":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "workflow backend_policy forbids ComfyUI runtime",
+                "workflow_id": workflow.get("id"),
+                "workflow_version": workflow.get("version"),
+                "resolved_runtime": resolution.runtime,
+            },
+        )
+
+
 async def seed_workflows_from_directory(seed_dir: Path) -> dict[str, Any]:
     seeded: list[str] = []
     for workflow in load_workflows(seed_dir):
@@ -8080,8 +8106,9 @@ async def media_job_create(
             ensure_idempotent_job_matches(existing, payload)
             return public_job(existing)
     require_not_in_maintenance("media/jobs")
-    await enforce_workflow_backed_media_job(auth, payload)
+    workflow = await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
+    enforce_workflow_backend_policy(workflow, resolution)
     job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
     return public_job(job)
 
