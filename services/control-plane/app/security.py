@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
 PRIVATE_NETS = [
@@ -22,15 +22,38 @@ def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None) 
     parsed = urlparse(url)
     if parsed.scheme not in {"https"}:
         return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.fragment:
+        return False
+    try:
+        parsed.port
+    except ValueError:
+        return False
     if not parsed.hostname:
         return False
     hostname = parsed.hostname.lower().rstrip(".")
-    if approved_hosts and hostname not in approved_hosts:
+    normalized_approved_hosts = {host.lower().rstrip(".") for host in approved_hosts or set()}
+    if normalized_approved_hosts and hostname not in normalized_approved_hosts:
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+    decoded_path = unquote(parsed.path)
+    if any(part in {".", ".."} for part in decoded_path.split("/") if part):
         return False
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
         return True
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        return False
     return not any(ip in network for network in PRIVATE_NETS)
 
 
