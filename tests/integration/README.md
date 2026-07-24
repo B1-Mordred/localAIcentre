@@ -87,7 +87,17 @@ By default the harness requires at least one requeued waiting job and at least o
 
 ## Backup, Migration, and Rollback Evidence
 
-Backup, restore, migration, and rollback proof is generated from reviewed files rather than through a live API harness. After creating and verifying a B1 backup, restoring it to an alternate directory, verifying the old-stack backup, reviewing the Open WebUI migration plan and cutover plan, and writing a rollback rehearsal report, run:
+Backup, restore, migration, and rollback proof is generated from reviewed files rather than through a live API harness. After creating and verifying a B1 backup, restoring it to an alternate directory, verifying the old-stack backup, and reviewing the Open WebUI migration plan and cutover plan, generate the rollback rehearsal report:
+
+```bash
+make rollback-rehearsal-report \
+  CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \
+  REHEARSED_BY=operator-name \
+  ROLLBACK_COMMANDS_TESTED=1 \
+  OLD_RESOURCES_PRESERVED=1
+```
+
+Then run:
 
 ```bash
 make backup-migration-rollback-evidence \

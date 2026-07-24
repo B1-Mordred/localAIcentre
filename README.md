@@ -173,6 +173,12 @@ make security-acceptance
 Generate backup, migration, and rollback handoff evidence after B1 backup verification, alternate-directory restore rehearsal, old-stack migration review, and rollback rehearsal:
 
 ```bash
+make rollback-rehearsal-report \
+  CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \
+  REHEARSED_BY=operator-name \
+  ROLLBACK_COMMANDS_TESTED=1 \
+  OLD_RESOURCES_PRESERVED=1
+
 make backup-migration-rollback-evidence \
   B1_BACKUP_DIR=/srv/b1-ai-hub/backups/20260722-130000 \
   RESTORE_REPORT=/srv/b1-ai-hub/restore-tests/20260722-130000/restore-report.json \

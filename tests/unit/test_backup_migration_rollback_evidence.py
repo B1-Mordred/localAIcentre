@@ -23,6 +23,12 @@ sys.modules["b1_backup_migration_rollback_evidence"] = evidence
 assert spec.loader is not None
 spec.loader.exec_module(evidence)
 
+rollback_spec = importlib.util.spec_from_file_location("b1_rollback_rehearsal", SCRIPTS / "rollback_rehearsal.py")
+rollback_rehearsal = importlib.util.module_from_spec(rollback_spec)
+sys.modules["b1_rollback_rehearsal"] = rollback_rehearsal
+assert rollback_spec.loader is not None
+rollback_spec.loader.exec_module(rollback_rehearsal)
+
 
 class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
     def write_json(self, path: Path, payload: dict) -> Path:
@@ -109,22 +115,27 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "docker_volumes_preserved": [],
                     "host_paths_preserved": [str(root / "old-stack" / "docker-compose.yaml")],
                 },
+                "phases": [
+                    {
+                        "name": "rollback",
+                        "commands": [],
+                        "operator_actions": [
+                            "Revert DNS, reverse-proxy routes, or port bindings to the old stack.",
+                            "Leave B1 data and old-stack backups intact for diagnosis.",
+                        ],
+                    },
+                ],
                 "warnings": [],
             },
         )
-        rollback_report = self.write_json(
+        rollback_report = rollback_rehearsal.write_report(
             root / "rollback-rehearsal.json",
-            {
-                "format": "b1-ai-hub-rollback-rehearsal/v1",
-                "generated_at": "2026-07-24T12:56:00+00:00",
-                "status": "ok",
-                "cutover_plan": str(cutover_plan.resolve()),
-                "rehearsed_by": "operator",
-                "checks": {
-                    "rollback_commands_tested": {"status": "ok"},
-                    "old_resources_preserved": {"status": "ok"},
-                },
-            },
+            rollback_rehearsal.build_report(
+                cutover_plan_path=cutover_plan,
+                rehearsed_by="operator",
+                rollback_commands_tested=True,
+                old_resources_preserved=True,
+            ),
         )
         return inventory_path, open_webui_plan, cutover_plan, rollback_report
 

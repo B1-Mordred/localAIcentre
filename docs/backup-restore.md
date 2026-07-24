@@ -234,23 +234,19 @@ Control Center acceptance reports require machine-readable evidence that B1 back
 - that B1 backup was restored to an alternate directory and produced `restore-report.json`
 - the old-stack inventory, old-stack backup, Open WebUI migration plan, and cutover plan were reviewed
 - the cutover plan has no unresolved warnings
-- rollback commands were rehearsed and old resources remain preserved
+- rollback commands/actions were rehearsed and old resources remain preserved
 
-Create a rollback rehearsal report such as:
+Create the rollback rehearsal report after reviewing the rollback phase in the cutover plan and verifying that old-stack resources are still present:
 
-```json
-{
-  "format": "b1-ai-hub-rollback-rehearsal/v1",
-  "generated_at": "2026-07-24T12:56:00+00:00",
-  "status": "ok",
-  "cutover_plan": "/srv/b1-ai-hub/backups/cutover-plan.json",
-  "rehearsed_by": "operator-name",
-  "checks": {
-    "rollback_commands_tested": {"status": "ok"},
-    "old_resources_preserved": {"status": "ok"}
-  }
-}
+```bash
+make rollback-rehearsal-report \
+  CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \
+  REHEARSED_BY=operator-name \
+  ROLLBACK_COMMANDS_TESTED=1 \
+  OLD_RESOURCES_PRESERVED=1
 ```
+
+The helper writes `$B1_BACKUP_ROOT/rollback-rehearsal.json` in the `b1-ai-hub-rollback-rehearsal/v1` format. It does not execute rollback commands. It validates that the cutover plan has no unresolved warnings, forbids old-stack deletion, lists preserved rollback resources, and includes a rollback phase before accepting the explicit operator confirmations.
 
 Then generate the handoff evidence:
 

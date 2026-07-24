@@ -9,10 +9,12 @@ B1_DATA_ROOT ?= /srv/b1-ai-hub
 B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
+B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
 B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
+ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore backup-migration-rollback-evidence up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -112,6 +114,13 @@ cutover-plan:
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
 	@test -n "$(OPEN_WEBUI_PLAN)" || (echo "OPEN_WEBUI_PLAN=/path/to/open-webui-migration-plan.json is required" >&2; exit 2)
 	python3 deploy/scripts/cutover.py --inventory "$(INVENTORY)" --scope "$(SCOPE)" --backup "$(BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" --output "$(B1_BACKUP_ROOT)/cutover-plan.json"
+
+rollback-rehearsal-report:
+	@test -n "$(CUTOVER_PLAN)" || (echo "CUTOVER_PLAN=/path/to/cutover-plan.json is required" >&2; exit 2)
+	@test -n "$(REHEARSED_BY)" || (echo "REHEARSED_BY=operator-name is required" >&2; exit 2)
+	@test "$(ROLLBACK_COMMANDS_TESTED)" = "1" || (echo "ROLLBACK_COMMANDS_TESTED=1 is required after a non-destructive rollback rehearsal" >&2; exit 2)
+	@test "$(OLD_RESOURCES_PRESERVED)" = "1" || (echo "OLD_RESOURCES_PRESERVED=1 is required after verifying old resources remain preserved" >&2; exit 2)
+	python3 deploy/scripts/rollback_rehearsal.py --cutover-plan "$(CUTOVER_PLAN)" --rehearsed-by "$(REHEARSED_BY)" --rollback-commands-tested --old-resources-preserved --output "$(B1_ROLLBACK_REHEARSAL_REPORT)"
 
 backup:
 	python3 deploy/scripts/backup.py --root "$(B1_DATA_ROOT)" --backup-root "$(B1_BACKUP_ROOT)" --backup-encryption-mode "$(B1_BACKUP_ENCRYPTION_MODE)" --backup-encryption-key-file "$(B1_BACKUP_ENCRYPTION_KEY_FILE)"
