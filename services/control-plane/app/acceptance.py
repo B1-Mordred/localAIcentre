@@ -19,6 +19,46 @@ CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 MAX_LIVE_EVIDENCE_BYTES = 4 * 1024 * 1024
 MAX_LIVE_EVIDENCE_AGE_SECONDS = 72 * 60 * 60
 MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS = 10 * 60
+DEFAULT_HANDOFF_HOSTS = {
+    "chat": "ai.b1.germering",
+    "control": "control.ai.b1.germering",
+    "media": "media.ai.b1.germering",
+    "comfy": "comfy.ai.b1.germering",
+    "voice": "voice.ai.b1.germering",
+    "models": "models.ai.b1.germering",
+    "api": "api.ai.b1.germering",
+}
+HANDOFF_URL_PURPOSES = {
+    "chat": "Open WebUI for chat, RAG, voice, and ordinary users",
+    "control": "B1 AI Control Center",
+    "media": "Simplified image/audio/video Media Studio",
+    "comfy": "Native ComfyUI editor and complete native API",
+    "voice": "Managed Voicebox server/web mode, if enabled",
+    "models": "Model Hub catalog and authenticated blob distribution",
+    "api": "Unified inference and job API",
+}
+HANDOFF_COMMANDS = (
+    ("fresh_install", "cp .env.production.example .env && docker compose up -d"),
+    ("development_install", "cp .env.example .env && docker compose up -d"),
+    ("host_inventory", "make inventory"),
+    ("old_stack_scope", "make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-YYYYMMDD-HHMMSS.json"),
+    ("old_stack_backup", "make old-stack-backup SCOPE=/srv/b1-ai-hub/backups/old-stack-scope.json"),
+    ("old_stack_backup_verify", "make old-stack-backup-verify BACKUP=/srv/b1-ai-hub/backups/old-stack-YYYYMMDD-HHMMSS"),
+    ("open_webui_plan", "make open-webui-migration-plan INVENTORY=/srv/b1-ai-hub/backups/inventory-YYYYMMDD-HHMMSS.json BACKUP=/srv/b1-ai-hub/backups/old-stack-YYYYMMDD-HHMMSS"),
+    ("cutover_plan", "make cutover-plan INVENTORY=/srv/b1-ai-hub/backups/inventory-YYYYMMDD-HHMMSS.json SCOPE=/srv/b1-ai-hub/backups/old-stack-scope.json BACKUP=/srv/b1-ai-hub/backups/old-stack-YYYYMMDD-HHMMSS OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json"),
+    ("rollback_rehearsal", "make rollback-rehearsal-report"),
+    ("backup_migration_rollback_evidence", "Use Control Center Storage/System or POST /admin/migration/backup-migration-rollback-evidence"),
+    ("acceptance_report", "Use Control Center System or POST /admin/acceptance-reports"),
+)
+ADMIN_ONBOARDING_STEPS = (
+    "Trust the Caddy internal CA root on administrator workstations when B1_CADDY_TLS_ARGS=internal.",
+    "Open the Control Center URL and choose initial setup while no administrator account exists.",
+    "Enter the generated bootstrap key from {data_root}/secrets/admin_bootstrap_key.",
+    "Create an administrator username and a password of at least 12 characters using at least three character classes.",
+    "Sign in normally, then create scoped service/API clients from External Access instead of reusing the bootstrap key.",
+    "Install or import real model manifests, run smoke tests, publish workflows, and regenerate this acceptance report before cutover.",
+)
+RECOMMENDED_HARDWARE_UPGRADE = "Upgrade system RAM from 32 GB to at least 64 GB first; consider a larger VRAM GPU after RAM if video, large VLM, or higher-context workflows dominate."
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
@@ -1025,6 +1065,89 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def build_handoff_context(hosts: dict[str, str] | None = None, data_root: str = "/srv/b1-ai-hub") -> dict[str, Any]:
+    root = data_root.rstrip("/") or "/srv/b1-ai-hub"
+    merged_hosts = {**DEFAULT_HANDOFF_HOSTS, **{key: value for key, value in (hosts or {}).items() if value}}
+    default_urls = [
+        {
+            "key": key,
+            "url": f"https://{merged_hosts[key]}/",
+            "purpose": HANDOFF_URL_PURPOSES[key],
+        }
+        for key in ("chat", "control", "media", "comfy", "voice", "models", "api")
+    ]
+    commands = [
+        {
+            "key": key,
+            "command": command.replace("/srv/b1-ai-hub", root),
+        }
+        for key, command in HANDOFF_COMMANDS
+    ]
+    return {
+        "format": "b1-ai-hub-handoff/v1",
+        "default_urls": default_urls,
+        "commands": commands,
+        "admin_onboarding": [
+            {"step": index + 1, "action": step.format(data_root=root)}
+            for index, step in enumerate(ADMIN_ONBOARDING_STEPS)
+        ],
+        "recommended_hardware_upgrade": RECOMMENDED_HARDWARE_UPGRADE,
+    }
+
+
+def _normalize_handoff_context(handoff: dict[str, Any] | None) -> dict[str, Any]:
+    base = build_handoff_context()
+    if not isinstance(handoff, dict):
+        return base
+    normalized = dict(base)
+    if handoff.get("format"):
+        normalized["format"] = str(handoff.get("format"))
+    for key in ("default_urls", "commands", "admin_onboarding"):
+        if isinstance(handoff.get(key), list):
+            normalized[key] = [item for item in handoff[key] if isinstance(item, dict)]
+    if isinstance(handoff.get("recommended_hardware_upgrade"), str) and handoff["recommended_hardware_upgrade"].strip():
+        normalized["recommended_hardware_upgrade"] = handoff["recommended_hardware_upgrade"].strip()
+    if isinstance(handoff.get("known_limitations"), list):
+        normalized["known_limitations"] = [item for item in handoff["known_limitations"] if isinstance(item, dict)]
+    return normalized
+
+
+def _handoff_known_limitations(report: dict[str, Any], existing: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+    limitations: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(source: str, detail: Any) -> None:
+        text = str(detail or "").strip()
+        if not text:
+            return
+        key = (source, text)
+        if key in seen:
+            return
+        seen.add(key)
+        limitations.append({"source": source, "detail": text})
+
+    for item in existing or []:
+        if isinstance(item, dict):
+            add(str(item.get("source") or "operator"), item.get("detail"))
+    for blocker in report.get("acceptance_blockers") or []:
+        add("acceptance_blocker", blocker)
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    for section, evidence in live_evidence.items():
+        if not isinstance(evidence, dict):
+            continue
+        checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
+        for check_name, check in checks.items():
+            if not isinstance(check, dict):
+                continue
+            if check.get("limitation") or check.get("mode") == "upstream_limitation":
+                detail = check.get("limitation") or "Upstream limitation recorded"
+                upstream = f" ({check['upstream_version']})" if isinstance(check.get("upstream_version"), str) and check["upstream_version"] else ""
+                add(f"{section}.{check_name}", f"{detail}{upstream}")
+    if not limitations:
+        add("operator_report", "No known limitations recorded in this acceptance report.")
+    return limitations[:100]
+
+
 def build_report(
     *,
     report_id: str,
@@ -1048,6 +1171,7 @@ def build_report(
     operator_evidence_notes: dict[str, Any] | None = None,
     cutover_preservation: dict[str, Any] | None = None,
     live_evidence: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_id = validate_report_id(report_id)
     status = str(self_test.get("status") or "unknown")
@@ -1073,6 +1197,7 @@ def build_report(
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
         "cutover_preservation": cutover_preservation or {"available": False, "reason": "not supplied"},
+        "handoff": _normalize_handoff_context(handoff),
         "live_evidence": live_evidence
         or {
             "live_stack_smoke": {"available": False, "reason": "not supplied"},
@@ -1090,6 +1215,8 @@ def build_report(
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
     report["operator_handoff_ready"] = status == "ok" and not report["acceptance_blockers"]
+    existing_limitations = report["handoff"].get("known_limitations") if isinstance(report.get("handoff"), dict) else []
+    report["handoff"]["known_limitations"] = _handoff_known_limitations(report, existing_limitations if isinstance(existing_limitations, list) else [])
     return report
 
 
@@ -1314,6 +1441,23 @@ def markdown_report(report: dict[str, Any]) -> str:
     blockers = report.get("acceptance_blockers") or []
     blocker_lines = "\n".join(f"- {item}" for item in blockers) if blockers else "- none"
     notes = report.get("notes") or "none"
+    handoff = report.get("handoff") if isinstance(report.get("handoff"), dict) else {}
+    url_rows = [["URL", "Purpose"]]
+    for item in handoff.get("default_urls") or []:
+        if isinstance(item, dict):
+            url_rows.append([_format_value(item.get("url")), _format_value(item.get("purpose"))])
+    command_rows = [["Step", "Command"]]
+    for item in handoff.get("commands") or []:
+        if isinstance(item, dict):
+            command_rows.append([_format_value(item.get("key")), _format_value(item.get("command"))])
+    onboarding_rows = [["Step", "Action"]]
+    for item in handoff.get("admin_onboarding") or []:
+        if isinstance(item, dict):
+            onboarding_rows.append([_format_value(item.get("step")), _format_value(item.get("action"))])
+    limitation_rows = [["Source", "Detail"]]
+    for item in handoff.get("known_limitations") or []:
+        if isinstance(item, dict):
+            limitation_rows.append([_format_value(item.get("source")), _format_value(item.get("detail"))])
 
     return "\n\n".join(
         [
@@ -1330,6 +1474,17 @@ def markdown_report(report: dict[str, Any]) -> str:
             ),
             "## Acceptance Blockers\n\n" + blocker_lines,
             "## Operator Notes\n\n" + notes,
+            "## Handoff Quick Reference\n\n"
+            + "### Default URLs\n\n"
+            + (_table(url_rows) if len(url_rows) > 1 else "No default URLs recorded.")
+            + "\n\n### Installation And Migration Commands\n\n"
+            + (_table(command_rows) if len(command_rows) > 1 else "No installation or migration commands recorded.")
+            + "\n\n### Administrator Onboarding\n\n"
+            + (_table(onboarding_rows) if len(onboarding_rows) > 1 else "No administrator onboarding steps recorded.")
+            + "\n\n### Known Limitations\n\n"
+            + (_table(limitation_rows) if len(limitation_rows) > 1 else "No known limitations recorded.")
+            + "\n\n### Recommended Hardware Upgrade\n\n"
+            + _format_value(handoff.get("recommended_hardware_upgrade") or RECOMMENDED_HARDWARE_UPGRADE),
             "## Resource Policy\n\n" + _table(resource_rows),
             "## Source Control\n\n" + _table(source_rows),
             "## Deployment Services\n\n" + (_table(service_rows) if len(service_rows) > 1 else _format_value(deployment.get("error") or "No runtime-agent service inventory recorded.")),

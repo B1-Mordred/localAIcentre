@@ -68,6 +68,13 @@ class Settings:
     openai_compatible_base_url: str
     openai_compatible_api_key: str
     generic_http_base_url: str
+    host_chat: str
+    host_control: str
+    host_media: str
+    host_comfy: str
+    host_voice: str
+    host_models: str
+    host_api: str
     data_root: str
     backup_root: str
     restore_test_root: str
@@ -185,6 +192,13 @@ def load_settings() -> Settings:
         openai_compatible_base_url=os.getenv("B1_OPENAI_COMPATIBLE_BASE_URL", ""),
         openai_compatible_api_key=_read_secret(os.getenv("B1_OPENAI_COMPATIBLE_API_KEY_FILE"), os.getenv("B1_OPENAI_COMPATIBLE_API_KEY", "")),
         generic_http_base_url=os.getenv("B1_GENERIC_HTTP_BASE_URL", ""),
+        host_chat=host_chat,
+        host_control=host_control,
+        host_media=host_media,
+        host_comfy=host_comfy,
+        host_voice=host_voice,
+        host_models=host_models,
+        host_api=host_api,
         data_root=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"),
         backup_root=os.getenv("B1_BACKUP_ROOT", "/srv/b1-ai-hub/backups"),
         restore_test_root=os.getenv("B1_RESTORE_TEST_ROOT", "/srv/b1-ai-hub/restore-tests"),

@@ -6123,6 +6123,18 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         operator_evidence_notes=payload.operator_evidence_notes,
         cutover_preservation=cutover_preservation,
         live_evidence=live_evidence,
+        handoff=acceptance.build_handoff_context(
+            hosts={
+                "chat": settings.host_chat,
+                "control": settings.host_control,
+                "media": settings.host_media,
+                "comfy": settings.host_comfy,
+                "voice": settings.host_voice,
+                "models": settings.host_models,
+                "api": settings.host_api,
+            },
+            data_root=settings.data_root,
+        ),
     )
     return jsonable_encoder(report)
 

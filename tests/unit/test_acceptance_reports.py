@@ -501,6 +501,12 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertTrue(summary["operator_handoff_ready"])
             markdown = markdown_path.read_text(encoding="utf-8")
             self.assertIn("Operator handoff ready: true", markdown)
+            self.assertIn("## Handoff Quick Reference", markdown)
+            self.assertIn("https://control.ai.b1.germering/", markdown)
+            self.assertIn("cp .env.production.example .env && docker compose up -d", markdown)
+            self.assertIn("/srv/b1-ai-hub/secrets/admin_bootstrap_key", markdown)
+            self.assertIn("Upgrade system RAM from 32 GB to at least 64 GB first", markdown)
+            self.assertIn("No known limitations recorded in this acceptance report.", markdown)
             self.assertIn("## Deployment Services", markdown)
             self.assertIn("ghcr.io/b1/control-plane", markdown)
             self.assertIn("## Recent Update Records", markdown)
@@ -541,6 +547,8 @@ class AcceptanceReportTests(unittest.TestCase):
             listed = acceptance.list_reports(root)
 
         self.assertEqual(loaded["format"], acceptance.REPORT_FORMAT)
+        self.assertEqual(loaded["handoff"]["default_urls"][1]["url"], "https://control.ai.b1.germering/")
+        self.assertEqual(loaded["handoff"]["commands"][0]["key"], "fresh_install")
         self.assertEqual([item["id"] for item in listed], [report["id"]])
 
     def test_report_file_path_rejects_unknown_names_traversal_and_symlinks(self) -> None:
@@ -559,6 +567,29 @@ class AcceptanceReportTests(unittest.TestCase):
             with self.assertRaises(acceptance.AcceptanceReportError) as raised:
                 acceptance.report_file_path(root, report["id"], "report.md")
             self.assertIn("symlink", str(raised.exception))
+
+    def test_handoff_records_voicebox_upstream_limitations(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["voicebox_remote"]["checks"]["websocket_or_limitation_recorded"] = {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:44:00+00:00",
+            "mode": "upstream_limitation",
+            "upstream_version": "Jamie Pine Voicebox v0.5.0",
+            "limitation": "Pinned upstream exposes no stable WebSocket route for this profile.",
+        }
+
+        report = sample_report(live_evidence=live_evidence)
+        limitations = report["handoff"]["known_limitations"]
+
+        self.assertTrue(report["operator_handoff_ready"])
+        self.assertIn(
+            {
+                "source": "voicebox_remote.websocket_or_limitation_recorded",
+                "detail": "Pinned upstream exposes no stable WebSocket route for this profile. (Jamie Pine Voicebox v0.5.0)",
+            },
+            limitations,
+        )
+        self.assertIn("Pinned upstream exposes no stable WebSocket route", acceptance.markdown_report(report))
 
     def test_report_blocks_handoff_for_degraded_development_snapshot(self) -> None:
         report = sample_report(
@@ -1736,7 +1767,18 @@ class AcceptanceReportApiTests(unittest.TestCase):
         self.patch_attr("build_admin_metrics_payload", metrics)
         self.patch_attr("admission_report", admission_report)
         self.patch_attr("runtime_agent_get", runtime_agent_get)
-        self.patch_attr("settings", main.Settings(**{**main.settings.__dict__, "runtime_deployment_mode": "production"}))
+        self.patch_attr(
+            "settings",
+            main.Settings(
+                **{
+                    **main.settings.__dict__,
+                    "runtime_deployment_mode": "production",
+                    "host_control": "control.test.lan",
+                    "host_api": "api.test.lan",
+                    "data_root": "/data/b1-ai-hub",
+                }
+            ),
+        )
 
         snapshot = asyncio.run(
             main.build_acceptance_report_snapshot(
@@ -1748,6 +1790,10 @@ class AcceptanceReportApiTests(unittest.TestCase):
         self.assertEqual(snapshot["deployment"]["services"][0]["name"], "control-plane")
         self.assertEqual(snapshot["recent_updates"][0]["id"], "update_1")
         self.assertIn("source", snapshot["source_control"])
+        urls = {item["key"]: item["url"] for item in snapshot["handoff"]["default_urls"]}
+        self.assertEqual(urls["control"], "https://control.test.lan/")
+        self.assertEqual(urls["api"], "https://api.test.lan/")
+        self.assertIn("/data/b1-ai-hub/secrets/admin_bootstrap_key", snapshot["handoff"]["admin_onboarding"][2]["action"])
         self.assertFalse(snapshot["operator_handoff_ready"])
         self.assertIn("operator evidence missing", "; ".join(snapshot["acceptance_blockers"]))
 
