@@ -198,6 +198,15 @@ class BrowserAuthApiTests(unittest.TestCase):
     def response_json(self, response: Any) -> dict[str, Any]:
         return json.loads(response.body.decode("utf-8"))
 
+    def patch_auth_context(self, auth: Any) -> None:
+        original = main.authenticate
+
+        async def fake_authenticate(authorization: str | None = None) -> Any:
+            return auth
+
+        main.authenticate = fake_authenticate
+        self.addCleanup(lambda: setattr(main, "authenticate", original))
+
     def setup_admin(self) -> tuple[str, dict[str, Any]]:
         self.request_context(FakeRequest(method="POST", path="/auth/setup", headers={"user-agent": "test"}))
         response = asyncio.run(
@@ -268,6 +277,51 @@ class BrowserAuthApiTests(unittest.TestCase):
             )
 
         self.assertEqual(caught.exception.status_code, 403)
+
+    def test_credential_management_routes_require_admin_guard_in_source(self) -> None:
+        source = (ROOT / "services" / "control-plane" / "app" / "main.py").read_text(encoding="utf-8")
+        route_handlers = [
+            "admin_api_clients",
+            "admin_api_client_create",
+            "admin_api_client_cidr_update",
+            "admin_api_client_revoke",
+            "modelhub_clients",
+            "modelhub_client_create",
+            "modelhub_client_cidr_update",
+            "modelhub_client_policy_update",
+            "modelhub_client_delete",
+        ]
+        for handler in route_handlers:
+            with self.subTest(handler=handler):
+                start = source.index(f"async def {handler}")
+                end = source.find("\n@app.", start + 1)
+                body = source[start:] if end == -1 else source[start:end]
+                self.assertIn("require_credential_admin(auth)", body)
+
+    def test_operator_cannot_manage_credential_clients_even_with_admin_scopes(self) -> None:
+        self.patch_auth_context(
+            main.AuthContext(
+                subject_id="operator_1",
+                role=main.Role.OPERATOR,
+                scopes=frozenset({"admin:read", "admin:write"}),
+            )
+        )
+
+        attempts = [
+            lambda: main.admin_api_clients(),
+            lambda: main.admin_api_client_create(main.ApiClientCreate(display_name="worker", role=main.Role.SERVICE)),
+            lambda: main.modelhub_clients(),
+            lambda: main.modelhub_client_create(main.ModelHubClientCreate(display_name="sync-client")),
+        ]
+        for attempt in attempts:
+            with self.subTest(attempt=attempt):
+                with self.assertRaises(main.HTTPException) as caught:
+                    asyncio.run(attempt())
+                self.assertEqual(caught.exception.status_code, 403)
+                self.assertEqual(caught.exception.detail, "credential management requires administrator role")
+
+        self.assertEqual(self.database.api_clients, {})
+        self.assertEqual(self.database.modelhub_clients, {})
 
     def test_open_webui_api_client_is_provisioned_from_generated_secret(self) -> None:
         main.settings = replace(main.settings, open_webui_api_key="b1k_openwebui.test-secret")

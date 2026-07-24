@@ -27,7 +27,7 @@ Control Center and Media Studio authenticate through the control-plane `/auth/*`
 
 ## API Clients
 
-Administrators create scoped API clients from Control Center or the `/admin/api-clients` API. The full key is shown once and only a salted hash is stored.
+Administrators create scoped API clients from Control Center or the `/admin/api-clients` API. API client and Model Hub sync-client management is administrator-only because these routes issue or mutate credentials. The full key is shown once and only a salted hash is stored.
 
 `client_open_webui_internal` is system-managed. It is provisioned from `$B1_DATA_ROOT/secrets/open_webui_api_key` during control-plane startup and is the only key Open WebUI should use for the unified API. If this key must be rotated, update the generated secret and restart Open WebUI plus the control plane so the container environment and stored hash agree.
 

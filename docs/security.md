@@ -102,4 +102,6 @@ Initial roles are `admin`, `operator`, `creator`, `user`, and `service`.
 
 Administrative route families also apply role-specific guards where a broad scope could otherwise overlap with public clients. `/admin/models*` requires `admin` or `operator` role in addition to model/storage scopes, so service, creator, and user clients with `models:read` can discover usable aliases through `/v1/models` or Model Hub without gaining access to model installation, downloads, alias policy, smoke tests, or quarantine controls.
 
+API client and Model Hub client management is administrator-only because those routes issue or mutate credentials. `/admin/api-clients*` and `/modelhub/v1/clients*` require the `admin` role in addition to `admin:*` scopes; Model Hub data-plane routes such as catalog, model detail, sync plans, and blob downloads still use dedicated `modelhub:*` scopes and client allowlists.
+
 The default Compose configuration sets `B1_DEV_AUTH_BYPASS=false`. Set it to `true` only for isolated local development where bypassing all role checks is acceptable.

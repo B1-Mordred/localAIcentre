@@ -3575,6 +3575,10 @@ def require_secret_admin(auth: AuthContext) -> None:
     require_administrator(auth, "encrypted secret management requires administrator role")
 
 
+def require_credential_admin(auth: AuthContext) -> None:
+    require_administrator(auth, "credential management requires administrator role")
+
+
 def secret_master_key_status() -> dict[str, Any]:
     raw = settings.master_key.strip()
     status = {
@@ -4892,6 +4896,7 @@ async def runtime_agent_post(path: str, payload: dict[str, Any], timeout_seconds
 async def admin_api_clients(authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:read")
+    require_credential_admin(auth)
     return [public_api_client(client) for client in await database.list_api_clients()]
 
 
@@ -4899,6 +4904,7 @@ async def admin_api_clients(authorization: str | None = Header(default=None)) ->
 async def admin_api_client_create(payload: ApiClientCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     try:
         scopes = scopes_for_role(payload.role, payload.scopes)
     except ValueError as exc:
@@ -4944,6 +4950,7 @@ async def admin_api_client_cidr_update(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
     row = await database.update_api_client_cidr_allowlist(client_id, cidr_allowlist)
     if row is None:
@@ -4971,6 +4978,7 @@ async def admin_api_client_cidr_update(
 async def admin_api_client_revoke(client_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     row = await database.revoke_api_client(client_id)
     if row is None:
         raise HTTPException(status_code=404, detail="API client not found")
@@ -7918,6 +7926,7 @@ async def modelhub_sync_plan(payload: ModelHubSyncPlanRequest, authorization: st
 async def modelhub_clients(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:read")
+    require_credential_admin(auth)
     return {"object": "list", "data": [public_modelhub_client(row) for row in await database.list_modelhub_clients()]}
 
 
@@ -7925,6 +7934,7 @@ async def modelhub_clients(authorization: str | None = Header(default=None)) -> 
 async def modelhub_client_create(payload: ModelHubClientCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     allowed_models = validate_modelhub_allowed_models(payload.allowed_models)
     cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
     scopes = scopes_for_role(Role.SERVICE, ["modelhub:read", "modelhub:sync"])
@@ -7987,6 +7997,7 @@ async def modelhub_client_cidr_update(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
     row = await database.update_modelhub_client_cidr_allowlist(client_id, cidr_allowlist)
     if row is None:
@@ -8018,6 +8029,7 @@ async def modelhub_client_policy_update(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     existing = await database.get_modelhub_client(client_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Model Hub client not found")
@@ -8053,6 +8065,7 @@ async def modelhub_client_policy_update(
 async def modelhub_client_delete(client_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
+    require_credential_admin(auth)
     row = await database.revoke_modelhub_client(client_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Model Hub client not found")
