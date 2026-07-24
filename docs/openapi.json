@@ -4204,6 +4204,64 @@
         "summary": "Admin Metrics"
       }
     },
+    "/admin/metrics.prometheus": {
+      "get": {
+        "operationId": "admin_metrics_prometheus_admin_metrics_prometheus_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Metrics Prometheus"
+      }
+    },
     "/admin/migration/backup-migration-rollback-evidence": {
       "get": {
         "operationId": "admin_backup_migration_rollback_evidence_status_admin_migration_backup_migration_rollback_evidence_get",

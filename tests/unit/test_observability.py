@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app.observability import build_observability_report, parse_datetime, summarize_numbers  # noqa: E402
+from app.observability import build_observability_report, observability_report_to_prometheus, parse_datetime, summarize_numbers  # noqa: E402
 
 
 class ObservabilityTests(unittest.TestCase):
@@ -193,6 +193,75 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(report["gpu"]["memory_used_mib"], 5120)
         self.assertEqual(report["gpu"]["utilization_gpu_percent_max"], 72)
         self.assertEqual(report["host"]["storage"]["free_bytes"], 600)
+
+    def test_prometheus_export_formats_observability_report_without_sensitive_labels(self) -> None:
+        now = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        report = build_observability_report(
+            [
+                {
+                    "id": "job_1",
+                    "state": "completed",
+                    "runtime": "localai",
+                    "resolved_model_version": "llm:v1",
+                    "priority": "chat",
+                    "created_at": now - timedelta(minutes=2),
+                    "started_at": now - timedelta(minutes=1),
+                    "completed_at": now,
+                    "load_time_ms": 1000,
+                    "run_time_ms": 2500,
+                    "peak_vram_mib": 4096,
+                    "peak_ram_mib": 2048,
+                },
+                {
+                    "id": "job_2",
+                    "state": "queued",
+                    "priority": "single_image",
+                    "created_at": now - timedelta(seconds=45),
+                },
+            ],
+            state_counts=[{"state": "completed", "count": 1}, {"state": "queued", "count": 1}],
+            runtime_states=[{"runtime": 'localai"\n', "status": "idle", "stage": "idle", "active_model": "secret-model-name"}],
+            scheduler_lease={"owner": "gpu-runner"},
+            agent_metrics={
+                "cpu": {"available": True, "cpu_count": 12, "load1": 0.5},
+                "memory": {
+                    "available": True,
+                    "total_bytes": 32_000,
+                    "used_bytes": 12_000,
+                    "available_bytes": 20_000,
+                    "swap_total_bytes": 1000,
+                    "swap_used_bytes": 100,
+                    "swap_free_bytes": 900,
+                },
+                "disks": [{"path": "/srv/b1-ai-hub", "available": True, "total_bytes": 1000, "used_bytes": 250, "free_bytes": 750}],
+                "gpu": {
+                    "available": True,
+                    "devices": [
+                        {
+                            "memory_total_mib": 12288,
+                            "memory_used_mib": 4096,
+                            "memory_free_mib": 8192,
+                            "utilization_gpu_percent": 50,
+                            "temperature_c": 60,
+                            "power_watts": 90,
+                        }
+                    ],
+                },
+            },
+            agent_error=None,
+            now=now,
+        )
+
+        text = observability_report_to_prometheus(report)
+
+        self.assertIn("# HELP b1_ai_hub_queue_depth_total", text)
+        self.assertIn('b1_ai_hub_queue_state_total{state="queued"} 1', text)
+        self.assertIn('b1_ai_hub_jobs_last_hour_total{status="completed"} 1', text)
+        self.assertIn('b1_ai_hub_job_run_seconds{stat="max"} 2.5', text)
+        self.assertIn("b1_ai_hub_gpu_memory_used_mib 4096", text)
+        self.assertIn('b1_ai_hub_host_memory_bytes{kind="swap_used"} 100', text)
+        self.assertIn('b1_ai_hub_runtime_active{runtime="localai\\"\\n",stage="idle",status="idle"} 1', text)
+        self.assertNotIn("secret-model-name", text)
 
 
 if __name__ == "__main__":

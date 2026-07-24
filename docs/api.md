@@ -11,6 +11,7 @@ POST /auth/login
 POST /auth/logout
 GET  /admin/status
 GET  /admin/metrics
+GET  /admin/metrics.prometheus
 GET  /admin/admission
 GET  /admin/admission-policy
 POST /admin/admission-policy/validate
@@ -130,6 +131,8 @@ DELETE /modelhub/v1/clients/{id}
 `GET /admin/self-test` requires `admin:read` and returns an overall `ok`, `degraded`, or `failed` status plus individual checks for PostgreSQL, Redis, storage permissions, runtime health, runtime production-readiness, runtime-agent status, runtime-agent metrics, GPU metric availability, TLS gateway routing and Caddy security headers, a tiny embedding inference, runtime-agent unload capability, and artifact-server Range delivery.
 
 `GET /admin/metrics?limit=500` requires `admin:read` and returns the lightweight in-app observability report used by the Dashboard. It combines durable PostgreSQL job records, scheduler ownership, runtime state rows, and runtime-agent telemetry into queue depth/wait summaries, recent completed/failed/cancelled job counts, load/run-time summaries, peak RAM/VRAM summaries, model-switch counts from started jobs, active runtime status, host memory/storage, and normalized GPU utilization, temperature, power, and memory values. The endpoint remains reachable when runtime-agent metrics are unavailable; the response then sets `runtime_agent.available=false` and includes the error instead of failing the dashboard.
+
+`GET /admin/metrics.prometheus?limit=500` requires the same `admin:read` scope and returns the same observability snapshot as Prometheus text exposition with `text/plain; version=0.0.4`. It exposes queue depth/waits by state and priority, recent job outcome/load/run/resource summaries, model switches, runtime-state counts, runtime-agent availability, GPU telemetry, host memory/swap, CPU load, and configured storage counters. Labels are restricted to operational categories such as state, priority, runtime, status, stage, and summary statistic; prompts, model identifiers, owner IDs, job IDs, artifacts, paths, and credentials are not emitted as labels.
 
 `GET /admin/admission` requires `admin:read` and returns the current admission policy, queue counters, and artifact-storage headroom used before accepting new media jobs or uploads. The optional `owner_id` query parameter is restricted to administrators and operators; other authenticated subjects receive their own counters. `/admin/status` embeds the authenticated subject's same admission report for Dashboard display.
 

@@ -126,6 +126,11 @@ class ApiRouteSourceTests(unittest.TestCase):
             content = schema["paths"][path]["get"]["responses"]["200"]["content"]
             self.assertIn("text/event-stream", content)
 
+    def test_committed_openapi_documents_prometheus_metrics_as_text(self) -> None:
+        schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        content = schema["paths"]["/admin/metrics.prometheus"]["get"]["responses"]["200"]["content"]
+        self.assertIn("text/plain", content)
+
     def test_committed_openapi_exposes_plan_required_public_routes_and_methods(self) -> None:
         schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
         paths = schema["paths"]
@@ -156,6 +161,7 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/auth/login", paths)
         self.assertIn("/auth/logout", paths)
         self.assertIn("/admin/metrics", paths)
+        self.assertIn("/admin/metrics.prometheus", paths)
         self.assertIn("/admin/admission", paths)
         self.assertIn("/admin/admission-policy", paths)
         self.assertIn("/admin/admission-policy/validate", paths)

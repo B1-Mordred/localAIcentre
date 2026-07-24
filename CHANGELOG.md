@@ -88,6 +88,7 @@
 - Added a local `make frontend` quality gate that installs, builds, and production-audits both React web UIs.
 - Added a local `make quality` aggregate with an isolated Python 3.12 dependency environment or digest-pinned Python 3.12 container fallback for backend/Compose validation, OpenAPI drift checking, and frontend build/audit gates.
 - Documented `make quality` as the stronger local pre-push quality gate alongside the CI dependency-isolated backend checks.
+- Added an authenticated Prometheus text exposition at `GET /admin/metrics.prometheus` for scraper-friendly queue, job, runtime, GPU, host, and storage metrics without sensitive labels.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.

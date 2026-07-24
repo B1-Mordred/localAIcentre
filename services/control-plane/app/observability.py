@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from math import ceil
+from math import ceil, isfinite
 from typing import Any
 
 from .job_states import ACTIVE_JOB_STATES, PENDING_JOB_STATES
@@ -335,3 +335,115 @@ def build_observability_report(
         "gpu": summarize_gpu(gpu_metrics),
         "host": summarize_host(agent_metrics),
     }
+
+
+def prometheus_label_value(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def prometheus_number(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(number):
+        return None
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.6g}"
+
+
+def observability_report_to_prometheus(report: dict[str, Any]) -> str:
+    emitted: set[str] = set()
+    lines: list[str] = []
+
+    def emit(name: str, value: Any, labels: dict[str, Any] | None = None, help_text: str = "") -> None:
+        formatted = prometheus_number(value)
+        if formatted is None:
+            return
+        if name not in emitted:
+            help_line = help_text or name.replace("_", " ")
+            lines.append(f"# HELP {name} {help_line}")
+            lines.append(f"# TYPE {name} gauge")
+            emitted.add(name)
+        label_text = ""
+        if labels:
+            label_parts = [f'{key}="{prometheus_label_value(label_value)}"' for key, label_value in sorted(labels.items())]
+            label_text = "{" + ",".join(label_parts) + "}"
+        lines.append(f"{name}{label_text} {formatted}")
+
+    def emit_summary(name: str, summary: Any, help_text: str) -> None:
+        if not isinstance(summary, dict):
+            return
+        for stat in ("count", "min", "avg", "p50", "p95", "max"):
+            emit(name, summary.get(stat), {"stat": stat}, help_text)
+
+    queue = report.get("queue") if isinstance(report.get("queue"), dict) else {}
+    jobs = report.get("jobs") if isinstance(report.get("jobs"), dict) else {}
+    gpu = report.get("gpu") if isinstance(report.get("gpu"), dict) else {}
+    host = report.get("host") if isinstance(report.get("host"), dict) else {}
+    runtime_agent = report.get("runtime_agent") if isinstance(report.get("runtime_agent"), dict) else {}
+    runtimes = report.get("runtimes") if isinstance(report.get("runtimes"), dict) else {}
+    switches = report.get("model_switches_per_hour") if isinstance(report.get("model_switches_per_hour"), dict) else {}
+
+    emit("b1_ai_hub_runtime_agent_available", runtime_agent.get("available"), help_text="Runtime-agent metrics availability.")
+    emit("b1_ai_hub_scheduler_lease_active", bool(report.get("scheduler_lease")), help_text="Whether a scheduler owner row is currently present.")
+    emit("b1_ai_hub_queue_depth_total", queue.get("depth_total"), help_text="Pending durable job queue depth.")
+    emit("b1_ai_hub_queue_active_total", queue.get("active_total"), help_text="Active durable jobs currently in non-terminal execution states.")
+    emit("b1_ai_hub_queue_oldest_wait_seconds", queue.get("oldest_wait_seconds"), help_text="Oldest sampled pending job wait time in seconds.")
+    for state, count in sorted((queue.get("by_state") or {}).items()):
+        emit("b1_ai_hub_queue_state_total", count, {"state": state}, "Durable job count by state.")
+    for priority, count in sorted((queue.get("by_priority") or {}).items()):
+        emit("b1_ai_hub_queue_priority_total", count, {"priority": priority}, "Sampled pending job count by priority.")
+    emit_summary("b1_ai_hub_queue_wait_seconds", queue.get("wait_seconds"), "Sampled pending job wait time summary.")
+
+    for status, key in (
+        ("completed", "completed_last_hour"),
+        ("failed", "failed_last_hour"),
+        ("cancelled", "cancelled_last_hour"),
+        ("recovery_required", "recovery_required_last_hour"),
+    ):
+        emit("b1_ai_hub_jobs_last_hour_total", jobs.get(key), {"status": status}, "Recent durable jobs by terminal or recovery status.")
+    emit_summary("b1_ai_hub_job_load_seconds", jobs.get("load_seconds"), "Recent job model or pipeline load time summary.")
+    emit_summary("b1_ai_hub_job_run_seconds", jobs.get("run_seconds"), "Recent job runtime execution time summary.")
+    emit_summary("b1_ai_hub_job_peak_vram_mib", jobs.get("peak_vram_mib"), "Recent job peak VRAM summary.")
+    emit_summary("b1_ai_hub_job_peak_ram_mib", jobs.get("peak_ram_mib"), "Recent job peak host RAM summary.")
+
+    emit("b1_ai_hub_model_switches_last_hour", switches.get("last_hour"), help_text="Observed runtime/model switches in the last hour.")
+    for status, count in sorted((runtimes.get("by_status") or {}).items()):
+        emit("b1_ai_hub_runtime_state_total", count, {"status": status}, "Runtime state row count by status.")
+    for runtime in runtimes.get("active") or []:
+        if isinstance(runtime, dict):
+            emit(
+                "b1_ai_hub_runtime_active",
+                1,
+                {"runtime": runtime.get("runtime") or "unknown", "status": runtime.get("status") or "unknown", "stage": runtime.get("stage") or "unknown"},
+                "Runtime rows currently active or non-idle.",
+            )
+
+    emit("b1_ai_hub_gpu_available", gpu.get("available"), help_text="Whether GPU telemetry is available from runtime-agent.")
+    for key in (
+        "device_count",
+        "memory_total_mib",
+        "memory_used_mib",
+        "memory_free_mib",
+        "utilization_gpu_percent_avg",
+        "utilization_gpu_percent_max",
+        "temperature_c_max",
+        "power_watts_total",
+    ):
+        emit(f"b1_ai_hub_gpu_{key}", gpu.get(key), help_text=f"GPU {key.replace('_', ' ')}.")
+
+    memory = host.get("memory") if isinstance(host.get("memory"), dict) else {}
+    for key in ("total_bytes", "used_bytes", "available_bytes", "swap_total_bytes", "swap_used_bytes", "swap_free_bytes"):
+        emit("b1_ai_hub_host_memory_bytes", memory.get(key), {"kind": key.removesuffix("_bytes")}, "Host memory and swap counters.")
+    cpu = host.get("cpu") if isinstance(host.get("cpu"), dict) else {}
+    for key in ("cpu_count", "load1", "load5", "load15"):
+        emit(f"b1_ai_hub_host_cpu_{key}", cpu.get(key), help_text=f"Host CPU {key}.")
+    storage = host.get("storage") if isinstance(host.get("storage"), dict) else {}
+    for key in ("total_bytes", "used_bytes", "free_bytes"):
+        emit("b1_ai_hub_host_storage_bytes", storage.get(key), {"kind": key.removesuffix("_bytes")}, "Configured B1 storage path counters.")
+
+    return "\n".join(lines) + "\n"

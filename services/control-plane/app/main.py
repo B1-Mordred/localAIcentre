@@ -21,7 +21,7 @@ import httpx
 import redis.asyncio as redis
 from fastapi import Body, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
@@ -72,7 +72,7 @@ from .executor import (
     ModelDownloadRunner,
     RuntimePreparationError,
 )
-from .observability import build_observability_report
+from .observability import build_observability_report, observability_report_to_prometheus
 from .runtime_agent_http import runtime_agent_httpx_kwargs
 from .scheduler import JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
 from .settings import Settings, load_settings
@@ -3555,6 +3555,20 @@ async def admin_metrics(
     auth = await authenticate(authorization)
     require_scope(auth, "admin:read")
     return await build_admin_metrics_payload(limit=limit)
+
+
+@app.get("/admin/metrics.prometheus", response_class=PlainTextResponse)
+async def admin_metrics_prometheus(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=500, ge=1, le=500),
+) -> Response:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    payload = await build_admin_metrics_payload(limit=limit)
+    return Response(
+        content=observability_report_to_prometheus(payload),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/admin/admission")

@@ -118,6 +118,29 @@ class AdminMetricsApiTests(unittest.TestCase):
         self.assertEqual(result["gpu"]["memory_used_mib"], 4096)
         self.assertEqual(result["host"]["storage"]["free_bytes"], 90)
 
+    def test_admin_metrics_prometheus_returns_authenticated_text_exposition(self) -> None:
+        self.patch_auth(AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"admin:read"})))
+        self.patch_attr("database", FakeMetricsDatabase())
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return {
+                "gpu": {"available": False, "devices": []},
+                "memory": {"available": True, "total_bytes": 1024, "used_bytes": 256, "available_bytes": 768},
+                "disks": [],
+                "cpu": {"available": True, "cpu_count": 12},
+            }, None
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+
+        response = asyncio.run(main.admin_metrics_prometheus(authorization="Bearer key", limit=500))
+        body = response.body.decode("utf-8")
+
+        self.assertIn("text/plain", response.headers["content-type"])
+        self.assertIn("# TYPE b1_ai_hub_queue_depth_total gauge", body)
+        self.assertIn('b1_ai_hub_jobs_last_hour_total{status="completed"} 1', body)
+        self.assertIn("b1_ai_hub_gpu_available 0", body)
+
     def test_admin_metrics_requires_admin_read_scope(self) -> None:
         self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:read"})))
         self.patch_attr("database", FakeMetricsDatabase())
