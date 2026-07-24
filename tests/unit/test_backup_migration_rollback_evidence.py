@@ -183,6 +183,27 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     rollback_report=rollback_report,
                 )
 
+    def test_build_evidence_rejects_stale_rollback_rehearsal_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["phases"][0]["operator_actions"].append("Confirm old-stack services still start on the staging network.")
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover_plan_sha256"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -246,7 +246,7 @@ make rollback-rehearsal-report \
   OLD_RESOURCES_PRESERVED=1
 ```
 
-The helper writes `$B1_BACKUP_ROOT/rollback-rehearsal.json` in the `b1-ai-hub-rollback-rehearsal/v1` format. It does not execute rollback commands. It validates that the cutover plan has no unresolved warnings, forbids old-stack deletion, lists preserved rollback resources, and includes a rollback phase before accepting the explicit operator confirmations.
+The helper writes `$B1_BACKUP_ROOT/rollback-rehearsal.json` in the `b1-ai-hub-rollback-rehearsal/v1` format. It does not execute rollback commands. It validates that the cutover plan has no unresolved warnings, forbids old-stack deletion, lists preserved rollback resources, and includes a rollback phase before accepting the explicit operator confirmations. The report records the cutover-plan SHA-256, and final handoff evidence rejects the report if the cutover plan changes after the rehearsal.
 
 Then generate the handoff evidence:
 

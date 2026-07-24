@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -62,6 +63,14 @@ def load_json_file(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise EvidenceError(f"{path} must contain a JSON object")
     return payload
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def record_check(status: str = "ok", **data: Any) -> dict[str, Any]:
@@ -174,6 +183,11 @@ def verify_rollback_rehearsal(path: Path, cutover_plan_path: Path) -> dict[str, 
         raise EvidenceError("rollback rehearsal report status is not ok")
     if str(Path(str(payload.get("cutover_plan") or "")).resolve()) != str(cutover_plan_path.resolve()):
         raise EvidenceError("rollback rehearsal report does not reference the cutover plan")
+    reported_sha256 = str(payload.get("cutover_plan_sha256") or "")
+    if not reported_sha256:
+        raise EvidenceError("rollback rehearsal report is missing cutover_plan_sha256")
+    if reported_sha256 != sha256_file(cutover_plan_path):
+        raise EvidenceError("rollback rehearsal report cutover_plan_sha256 does not match the cutover plan")
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     rollback_check = checks.get("rollback_commands_tested") if isinstance(checks.get("rollback_commands_tested"), dict) else {}
     preserved_check = checks.get("old_resources_preserved") if isinstance(checks.get("old_resources_preserved"), dict) else {}

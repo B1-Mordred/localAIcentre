@@ -51,7 +51,7 @@
 - Propagated Open WebUI preservation readiness into Control Center acceptance reports so missing or still-review-required preservation evidence blocks operator handoff.
 - Made unresolved cutover-plan warnings block Control Center operator handoff instead of remaining informational-only.
 - Added machine-readable backup/migration/rollback handoff evidence and a generator that verifies B1 backup/restore reports, old-stack backup, migration plans, cutover plan, and rollback rehearsal before Control Center can mark handoff ready.
-- Added a non-destructive rollback rehearsal report generator and Make target so rollback handoff proof is produced from the reviewed cutover plan instead of hand-authored JSON.
+- Added a non-destructive rollback rehearsal report generator and Make target so rollback handoff proof is produced from the reviewed cutover plan instead of hand-authored JSON, with checksum validation to reject stale reports.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.
