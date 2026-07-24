@@ -623,8 +623,10 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(connected["url"], "ws://comfyui:8000/ws?clientId=client-1")
         self.assertEqual(connected["additional_headers"]["user-agent"], "native-client")
         self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
-        self.assertNotIn("authorization", {key.lower() for key in connected["additional_headers"]})
-        self.assertNotIn("sec-websocket-key", {key.lower() for key in connected["additional_headers"]})
+        forwarded_headers = {key.lower() for key in connected["additional_headers"]}
+        self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("sec-websocket-key", forwarded_headers)
+        self.assertNotIn("x-b1-compatibility", forwarded_headers)
 
     def test_websocket_bridge_forwards_browser_text_and_binary_to_runtime(self) -> None:
         websocket = FakeWebSocket(
@@ -692,8 +694,10 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(connected["url"], "ws://voicebox:17493/api/ws?session=abc")
         self.assertEqual(connected["additional_headers"]["user-agent"], "voicebox-client")
         self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
-        self.assertNotIn("authorization", {key.lower() for key in connected["additional_headers"]})
-        self.assertNotIn("sec-websocket-key", {key.lower() for key in connected["additional_headers"]})
+        forwarded_headers = {key.lower() for key in connected["additional_headers"]}
+        self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("sec-websocket-key", forwarded_headers)
+        self.assertNotIn("x-b1-compatibility", forwarded_headers)
         self.assertEqual(websocket.sent_bytes, [b"voicebox-event"])
 
     def test_websocket_events_update_job_progress_and_artifacts(self) -> None:
@@ -886,6 +890,57 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(proxied[0]["path"], "object_info")
+
+    def test_legacy_comfy_websocket_allows_core_ws_without_auth_and_strips_gateway_marker(self) -> None:
+        async def authenticate(_: str | None = None) -> Any:
+            raise AssertionError("legacy ComfyUI WebSocket access uses the gateway CIDR allowlist instead of bearer auth")
+
+        upstream = FakeUpstream()
+        connected: dict[str, Any] = {}
+
+        def connect(url: str, **kwargs: Any) -> FakeConnect:
+            connected.update({"url": url, **kwargs})
+            return FakeConnect(upstream)
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.websocket_connect = connect  # type: ignore[assignment]
+        websocket = FakeWebSocket(
+            headers={
+                "host": "legacy-client",
+                "x-b1-compatibility": "comfyui-legacy-8188",
+                "sec-websocket-key": "legacy-browser-key",
+                "user-agent": "legacy-comfy-client",
+                "x-b1-test": "forwarded",
+            },
+            receive_messages=[{"type": "websocket.disconnect", "code": 1000}],
+        )
+
+        asyncio.run(main.native_ws(websocket))
+
+        self.assertTrue(websocket.accepted)
+        self.assertEqual(connected["url"], "ws://comfyui:8000/ws?clientId=client-1")
+        self.assertEqual(connected["additional_headers"]["user-agent"], "legacy-comfy-client")
+        self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
+        forwarded_headers = {key.lower() for key in connected["additional_headers"]}
+        self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("sec-websocket-key", forwarded_headers)
+        self.assertNotIn("x-b1-compatibility", forwarded_headers)
+
+    def test_legacy_comfy_websocket_still_blocks_management_routes_without_auth(self) -> None:
+        async def authenticate(_: str | None = None) -> Any:
+            raise AssertionError("blocked legacy ComfyUI WebSocket routes must not require bearer auth")
+
+        def connect(*_: Any, **__: Any) -> FakeConnect:
+            raise AssertionError("blocked legacy ComfyUI WebSocket route must not be proxied")
+
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.websocket_connect = connect  # type: ignore[assignment]
+        websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-legacy-8188"})
+
+        asyncio.run(main.compatibility_ws("manager/ws", websocket))
+
+        self.assertFalse(websocket.accepted)
+        self.assertEqual(websocket.closed, [1008])
 
     def test_normal_comfy_websocket_rejects_missing_auth(self) -> None:
         async def authenticate(_: str | None = None) -> Any:

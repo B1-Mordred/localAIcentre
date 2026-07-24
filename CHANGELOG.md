@@ -29,6 +29,7 @@
 - Added machine-readable live stack smoke evidence output and acceptance-report gating for health, model listing, async TTS, SSE, and artifact download checks.
 - Hardened native ComfyUI custom-node mutating route passthrough so trusted prefixes must also be declared on an approved custom-node commit pin.
 - Hardened native ComfyUI compatibility WebSocket passthrough so non-core custom routes require write scope, trusted prefixes, and approved node pins while manager/internal paths are blocked.
+- Hardened ComfyUI and Voicebox WebSocket proxying so gateway compatibility markers are stripped before traffic reaches internal runtimes, including the optional legacy ComfyUI listener.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.
