@@ -90,6 +90,7 @@
 - Documented `make quality` as the stronger local pre-push quality gate alongside the CI dependency-isolated backend checks.
 - Added an authenticated Prometheus text exposition at `GET /admin/metrics.prometheus` for scraper-friendly queue, job, runtime, GPU, host, and storage metrics without sensitive labels.
 - Pinned GitHub Actions workflow runner labels, actions, and CI scanner containers to fixed Ubuntu, immutable commit SHA, and tag-plus-digest references.
+- Added CI workflow runner/action/scanner references to the generated CycloneDX SBOM.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.

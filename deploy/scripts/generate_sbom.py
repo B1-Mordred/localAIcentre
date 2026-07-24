@@ -37,6 +37,10 @@ DOCKERFILES = (
     "deploy/voicebox/Dockerfile",
     "integrations/b1-model-client/Dockerfile",
 )
+GITHUB_WORKFLOWS = (
+    ".github/workflows/ci.yaml",
+)
+CI_IMAGE_ENV_NAMES = {"TRIVY_IMAGE", "CYCLONEDX_CLI_IMAGE"}
 PINNED_RELEASE_ARTIFACTS = (
     {
         "type": "application",
@@ -100,6 +104,9 @@ PINNED_RELEASE_ARTIFACTS = (
 )
 PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9_.-]+)(?:\[([A-Za-z0-9_,.-]+)\])?==([A-Za-z0-9_.!+:-]+)\s*(?:#.*)?$")
 FROM_LINE = re.compile(r"^\s*FROM\s+([^\s]+)(?:\s+AS\s+([A-Za-z0-9_.-]+))?\s*$", re.IGNORECASE)
+GITHUB_ACTION_USE = re.compile(r"^\s*-\s+uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{40})\s*(?:#.*)?$")
+GITHUB_RUNNER = re.compile(r"^\s*runs-on:\s*([A-Za-z0-9_.-]+)\s*(?:#.*)?$")
+WORKFLOW_ENV = re.compile(r"^\s*([A-Z0-9_]+):\s*['\"]?([^'\"#\s]+)['\"]?\s*(?:#.*)?$")
 
 
 def normalize_name(value: str) -> str:
@@ -249,6 +256,68 @@ def parse_dockerfile(path: Path, relative_path: str) -> list[dict[str, Any]]:
     return components
 
 
+def parse_github_workflow(path: Path, relative_path: str) -> list[dict[str, Any]]:
+    components: list[dict[str, Any]] = []
+    if not path.is_file():
+        return components
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        action = GITHUB_ACTION_USE.match(line)
+        if action:
+            name, commit = action.groups()
+            components.append(
+                {
+                    "type": "application",
+                    "name": name,
+                    "version": commit,
+                    "purl": f"pkg:github/{name}@{commit}",
+                    "properties": [
+                        property_record("b1:source", relative_path),
+                        property_record("b1:line", str(line_number)),
+                        property_record("b1:ecosystem", "github-actions"),
+                        property_record("b1:pin", "commit-sha"),
+                    ],
+                }
+            )
+            continue
+        runner = GITHUB_RUNNER.match(line)
+        if runner:
+            label = runner.group(1)
+            components.append(
+                {
+                    "type": "operating-system",
+                    "name": "github-actions/runner-image",
+                    "version": label,
+                    "properties": [
+                        property_record("b1:source", relative_path),
+                        property_record("b1:line", str(line_number)),
+                        property_record("b1:ecosystem", "github-actions"),
+                        property_record("b1:pin", "fixed-runner-label"),
+                    ],
+                }
+            )
+            continue
+        env = WORKFLOW_ENV.match(line)
+        if env and env.group(1) in CI_IMAGE_ENV_NAMES:
+            env_name, image = env.groups()
+            name, version = split_image_reference(image)
+            components.append(
+                {
+                    "type": "container",
+                    "name": name,
+                    "version": version,
+                    "purl": f"pkg:docker/{name}@{version}",
+                    "properties": [
+                        property_record("b1:source", relative_path),
+                        property_record("b1:line", str(line_number)),
+                        property_record("b1:ecosystem", "ci-container"),
+                        property_record("b1:ci_env", env_name),
+                        property_record("b1:image_reference", image),
+                    ],
+                }
+            )
+    return components
+
+
 def collect_components(root: Path) -> list[dict[str, Any]]:
     components: list[dict[str, Any]] = []
     for relative in REQUIREMENTS_FILES:
@@ -257,6 +326,8 @@ def collect_components(root: Path) -> list[dict[str, Any]]:
         components.extend(parse_package_lock(root / relative, relative))
     for relative in DOCKERFILES:
         components.extend(parse_dockerfile(root / relative, relative))
+    for relative in GITHUB_WORKFLOWS:
+        components.extend(parse_github_workflow(root / relative, relative))
     components.extend(PINNED_RELEASE_ARTIFACTS)
 
     unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}

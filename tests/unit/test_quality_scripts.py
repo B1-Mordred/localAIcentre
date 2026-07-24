@@ -101,6 +101,76 @@ class SbomGenerationTests(unittest.TestCase):
         self.assertEqual(chatterbox["version"], "0.1.7")
         self.assertIn({"name": "b1:source", "value": "deploy/voicebox/constraints.txt"}, chatterbox["properties"])
 
+        checkout = next(component for component in components if component["name"] == "actions/checkout")
+        self.assertEqual(checkout["type"], "application")
+        self.assertEqual(checkout["version"], "11d5960a326750d5838078e36cf38b85af677262")
+        self.assertEqual(checkout["purl"], "pkg:github/actions/checkout@11d5960a326750d5838078e36cf38b85af677262")
+        self.assertIn({"name": "b1:ecosystem", "value": "github-actions"}, checkout["properties"])
+        self.assertIn({"name": "b1:pin", "value": "commit-sha"}, checkout["properties"])
+
+        runner = next(component for component in components if component["name"] == "github-actions/runner-image")
+        self.assertEqual(runner["type"], "operating-system")
+        self.assertEqual(runner["version"], "ubuntu-24.04")
+        self.assertIn({"name": "b1:pin", "value": "fixed-runner-label"}, runner["properties"])
+
+        trivy = next(component for component in components if component["name"] == "aquasec/trivy")
+        self.assertEqual(trivy["type"], "container")
+        self.assertEqual(trivy["version"], "0.66.0")
+        self.assertIn(
+            {
+                "name": "b1:image_reference",
+                "value": "aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e",
+            },
+            trivy["properties"],
+        )
+
+    def test_github_workflow_parser_records_ci_supply_chain_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workflow = root / "ci.yaml"
+            workflow.write_text(
+                "\n".join(
+                    [
+                        'TRIVY_IMAGE: "aquasec/trivy:0.66.0@sha256:' + "a" * 64 + '"',
+                        "jobs:",
+                        "  backend:",
+                        "    runs-on: ubuntu-24.04",
+                        "    steps:",
+                        "      - uses: actions/checkout@" + "b" * 40,
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            components = generate_sbom.parse_github_workflow(workflow, ".github/workflows/ci.yaml")
+
+        self.assertIn(
+            {
+                "type": "application",
+                "name": "actions/checkout",
+                "version": "b" * 40,
+                "purl": "pkg:github/actions/checkout@" + "b" * 40,
+                "properties": [
+                    {"name": "b1:source", "value": ".github/workflows/ci.yaml"},
+                    {"name": "b1:line", "value": "6"},
+                    {"name": "b1:ecosystem", "value": "github-actions"},
+                    {"name": "b1:pin", "value": "commit-sha"},
+                ],
+            },
+            components,
+        )
+        self.assertTrue(any(component["type"] == "operating-system" and component["version"] == "ubuntu-24.04" for component in components))
+        self.assertTrue(
+            any(
+                component["type"] == "container"
+                and component["name"] == "aquasec/trivy"
+                and component["version"] == "0.66.0"
+                and {"name": "b1:ci_env", "value": "TRIVY_IMAGE"} in component["properties"]
+                for component in components
+            )
+        )
+
     def test_npm_package_name_is_inferred_from_lockfile_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
