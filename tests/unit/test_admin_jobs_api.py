@@ -178,12 +178,15 @@ class AdminJobsApiTests(unittest.TestCase):
         result = main.public_job(
             job_row(
                 idempotency_key="idem_secret",
-                request_params={"input": {"prompt": "raw secret"}},
+                request_params={"input": {"workflow_id": "text-to-image", "parameters": {"prompt": "raw secret", "seed": 12}}},
                 redacted_request=None,
             )
         )
 
-        self.assertEqual(result["redacted_request"], {"input": "<redacted>"})
+        self.assertEqual(
+            result["redacted_request"],
+            {"input": {"workflow_id": "text-to-image", "parameters": {"prompt": "<redacted>", "seed": 12}}},
+        )
         self.assertNotIn("request_params", result)
         self.assertNotIn("idempotency_key", result)
         self.assertNotIn("raw secret", str(result))

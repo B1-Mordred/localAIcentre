@@ -37,6 +37,7 @@ from . import backup_schedule
 from . import compose_override as compose_override_policy
 from .job_events import format_sse_event, job_event_id
 from .job_states import TERMINAL_JOB_STATES
+from .job_redaction import redact_request
 from . import media_artifacts
 from . import model_lifecycle
 from . import modelhub as modelhub_policy
@@ -2751,14 +2752,6 @@ async def call_openai_runtime_stream(
             await release_inference_lease(owner)
 
     return StreamingResponse(chunks(), media_type="text/event-stream")
-
-
-def redact_request(payload: dict[str, Any]) -> dict[str, Any]:
-    redacted = dict(payload)
-    for key in list(redacted):
-        if key.lower() in {"prompt", "messages", "input", "voice", "file", "image", "audio", "authorization", "api_key"}:
-            redacted[key] = "<redacted>"
-    return redacted
 
 
 def public_job(row: dict[str, Any]) -> dict[str, Any]:
