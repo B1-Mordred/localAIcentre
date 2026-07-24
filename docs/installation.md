@@ -64,6 +64,19 @@ B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
 
 The smoke suite checks gateway health, authenticated model listing, an async `tts-fast` media job, SSE job events, artifact download, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt` or trust that root certificate on the test machine. See `tests/smoke/README.md` for temporary-host and TLS options.
 
+After installing real GPU model manifests and publishing at least one target-host ComfyUI API prompt/workflow, run the cross-runtime RTX acceptance suite during a maintenance validation window:
+
+```bash
+export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
+export B1_GPU_ACCEPTANCE_API_KEY=...
+export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
+export B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json
+make gpu-acceptance
+```
+
+The test uses the configured aliases `B1_GPU_ACCEPTANCE_CHAT_MODEL`, `B1_GPU_ACCEPTANCE_COMFY_MODEL`, and `B1_GPU_ACCEPTANCE_VOICEBOX_MODEL`, defaulting to `chat-default`, `image-default`, and `tts-quality`. It verifies production readiness, runtime-agent GPU metrics, LocalAI -> ComfyUI -> Voicebox switching, one reported GPU-resident pipeline at a time, and sampled VRAM within the configured reserve. Leave `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION=true` for cutover evidence; disable it only for an explicitly labelled dry run.
+
 Model storage under `$B1_DATA_ROOT/models` has three distinct responsibilities:
 
 - `blobs/` is the authoritative content-addressed library.

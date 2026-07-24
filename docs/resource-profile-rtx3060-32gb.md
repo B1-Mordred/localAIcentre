@@ -22,4 +22,15 @@ comfyui:
 
 The scheduler must keep at most one GPU-resident model or pipeline active. CPU-only embedding, TTS, or STT models may remain resident only when enabled by policy and when host RAM reserve remains available.
 
+Target-host acceptance evidence is produced with:
+
+```bash
+B1_GPU_ACCEPTANCE_LIVE_TEST=1 \
+B1_GPU_ACCEPTANCE_API_KEY=... \
+B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json \
+make gpu-acceptance
+```
+
+The acceptance suite samples `/admin/status`, `/admin/runtimes`, and `/admin/metrics` while running LocalAI chat, ComfyUI media generation, and Voicebox speech in sequence. It fails when more than one managed GPU runtime reports a resident model/pipeline or when runtime-agent GPU metrics show VRAM above the configured total-minus-reserve limit.
+
 Recommended first hardware upgrade: system RAM from 32 GB to at least 64 GB.

@@ -48,7 +48,7 @@ This repository currently contains the first runnable project slice:
 - Control Center generated-artifact retention planning and confirmed cleanup for old terminal job artifacts, with Voicebox sample protection, symlink/path-scope refusal, job metadata marking, and HTTP 410 for reclaimed artifact downloads
 - configurable media-job queue/rate admission and artifact-storage headroom checks exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing, returning HTTP 429 or 507 before work is accepted when limits would be exceeded
 - runtime reservation fleet visibility for administrators/operators with Jobs tab creation/cancellation controls and current GPU scheduler lease inspection
-- opt-in live smoke tests for deployed health, authenticated model listing, async TTS media jobs, SSE events, artifact download, and optional admin self-test
+- opt-in live smoke tests for deployed health, authenticated model listing, async TTS media jobs, SSE events, artifact download, optional admin self-test, and an RTX 3060 cross-runtime GPU acceptance sequence for LocalAI -> ComfyUI -> Voicebox switching
 
 The placeholder runtime containers are intentional at this stage. They keep `docker compose up -d` runnable on a small host without downloading model weights while the scheduler, registry, adapters, and UI flows are implemented. They are service-compatible placeholders to be replaced by pinned upstream runtime images/builds as each adapter reaches production readiness. The control plane now reports `runtimes:production-readiness` in `/admin/self-test` and `/admin/runtimes`: default `B1_RUNTIME_DEPLOYMENT_MODE=development` degrades when required runtimes are placeholders, while `B1_RUNTIME_DEPLOYMENT_MODE=production` fails self-test until `B1_RUNTIME_PRODUCTION_REQUIRED` runtimes are real, healthy, and non-placeholder.
 
@@ -119,6 +119,16 @@ B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
 ```
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS and temporary-host options.
+
+Run target-host cross-runtime GPU acceptance after real GPU models and a ComfyUI API prompt are installed:
+
+```bash
+B1_GPU_ACCEPTANCE_API_KEY=... \
+B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json \
+make gpu-acceptance
+```
+
+See [tests/integration/README.md](./tests/integration/README.md) for the full acceptance environment and evidence options.
 
 ## Default URLs
 
