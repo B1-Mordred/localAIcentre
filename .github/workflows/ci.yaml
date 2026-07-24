@@ -89,11 +89,19 @@ jobs:
           pip-audit -r services/artifact-server/requirements.txt
           pip-audit -r services/audio-cpu/requirements.txt
           pip-audit -r services/mock-runtime/requirements.txt
+      - name: Voicebox constraints vulnerability inventory
+        run: make voicebox-audit-inventory
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
           name: b1-ai-hub-sbom
           path: artifacts/sbom/b1-ai-hub.cdx.json
+          if-no-files-found: error
+      - name: Upload Voicebox vulnerability inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicebox-pip-audit
+          path: artifacts/pip-audit/voicebox-constraints.json
           if-no-files-found: error
 
   containers:

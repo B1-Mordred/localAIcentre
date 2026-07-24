@@ -11,10 +11,11 @@ B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
 B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
+B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -84,6 +85,11 @@ sbom:
 
 secret-scan:
 	python3 deploy/scripts/secret_scan.py
+
+voicebox-audit-inventory:
+	mkdir -p "$(dir $(B1_VOICEBOX_AUDIT_REPORT))"
+	pip-audit --no-deps --disable-pip -r deploy/voicebox/constraints.txt --format json --output "$(B1_VOICEBOX_AUDIT_REPORT)" || true
+	test -s "$(B1_VOICEBOX_AUDIT_REPORT)"
 
 db-migrate:
 	docker compose run --rm control-plane python -m app.migrate upgrade head

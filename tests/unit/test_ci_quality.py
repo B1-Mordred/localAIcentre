@@ -81,6 +81,16 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("mktemp -d", target)
         self.assertIn("rm -rf", target)
 
+    def test_voicebox_audit_inventory_records_upstream_vulnerabilities_without_failing(self) -> None:
+        target_start = self.makefile_text.index("voicebox-audit-inventory:")
+        target_end = self.makefile_text.index("\ndb-migrate:", target_start)
+        target = self.makefile_text[target_start:target_end]
+
+        self.assertIn("B1_VOICEBOX_AUDIT_REPORT", self.makefile_text)
+        self.assertIn("pip-audit --no-deps --disable-pip -r deploy/voicebox/constraints.txt", target)
+        self.assertIn("|| true", target)
+        self.assertIn("test -s", target)
+
     def test_frontend_job_builds_both_react_apps_and_audits_dependencies(self) -> None:
         frontend = self.workflow["jobs"]["frontend"]
 
@@ -102,8 +112,11 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("pip-audit==2.9.0", commands)
         self.assertIn("make secret-scan", commands)
         self.assertIn("make sbom", commands)
+        self.assertIn("make voicebox-audit-inventory", commands)
         self.assertIn("validate --input-file /sbom/b1-ai-hub.cdx.json", commands)
         self.assertIn("actions/upload-artifact@v4", commands)
+        self.assertIn("artifacts/pip-audit/voicebox-constraints.json", commands)
+        self.assertIn("voicebox-pip-audit", commands)
         for path in (
             "services/control-plane/requirements.txt",
             "services/runtime-agent/requirements.txt",
