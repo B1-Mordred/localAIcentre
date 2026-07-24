@@ -21,6 +21,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_OUTPUT_DIR = "b1-artifacts"
 DEFAULT_MAX_DATA_URL_BYTES = 256 * 1024 * 1024
 CONFIG_FILE_ENV = "B1_AI_HUB_CONFIG_FILE"
+API_KEY_ENV = "B1_AI_HUB_API_KEY"
+API_KEY_FILE_ENV = "B1_AI_HUB_API_KEY_FILE"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
@@ -50,15 +52,15 @@ def configured_config_file_path() -> tuple[Path, bool] | None:
     return default_config_file_path().expanduser(), False
 
 
-def local_config() -> dict[str, Any]:
+def local_config_with_path() -> tuple[dict[str, Any], Path | None]:
     candidate = configured_config_file_path()
     if candidate is None:
-        return {}
+        return {}, None
     path, explicit = candidate
     if not path.exists():
         if explicit:
             raise B1RemoteNodeError(f"B1 config file does not exist: {path}")
-        return {}
+        return {}, None
     if not path.is_file():
         raise B1RemoteNodeError(f"B1 config path is not a file: {path}")
     try:
@@ -69,7 +71,19 @@ def local_config() -> dict[str, Any]:
         raise B1RemoteNodeError(f"B1 config file must be JSON: {path}") from exc
     if not isinstance(parsed, dict):
         raise B1RemoteNodeError("B1 config file must contain a JSON object")
-    return parsed
+    return parsed, path
+
+
+def local_config() -> dict[str, Any]:
+    return local_config_with_path()[0]
+
+
+def require_private_file(path: Path, label: str) -> None:
+    if os.name == "nt":
+        return
+    mode = path.stat().st_mode & 0o077
+    if mode:
+        raise B1RemoteNodeError(f"{label} must not be readable, writable, or executable by group/other users; run chmod 600 {path}")
 
 
 def config_value(config_key: str, env_key: str, default: str = "") -> str:
@@ -85,6 +99,37 @@ def config_value(config_key: str, env_key: str, default: str = "") -> str:
     return value
 
 
+def config_string(config: dict[str, Any], key: str, env_key: str | None = None) -> str:
+    value = config.get(key)
+    if value is None and env_key is not None:
+        value = config.get(env_key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise B1RemoteNodeError(f"B1 config value {key} must be a string")
+    return value.strip()
+
+
+def resolve_secret_file_path(value: str, config_path: Path | None) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute() and config_path is not None:
+        path = config_path.parent / path
+    return path
+
+
+def read_api_key_file(path: Path) -> str:
+    if not path.is_file():
+        raise B1RemoteNodeError(f"B1 API key file is not a file: {path}")
+    require_private_file(path, "B1 API key file")
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise B1RemoteNodeError(f"B1 API key file is not readable: {path}") from exc
+    if not token:
+        raise B1RemoteNodeError(f"B1 API key file is empty: {path}")
+    return token
+
+
 def api_base() -> str:
     value = config_value("api_base", "B1_AI_HUB_API_BASE", "https://api.ai.b1.germering").strip().rstrip("/")
     parsed = urllib.parse.urlsplit(value)
@@ -96,7 +141,24 @@ def api_base() -> str:
 
 
 def api_key() -> str:
-    return config_value("api_key", "B1_AI_HUB_API_KEY", "")
+    env_value = os.getenv(API_KEY_ENV)
+    if env_value is not None:
+        return env_value
+    env_file = os.getenv(API_KEY_FILE_ENV)
+    if env_file is not None:
+        if not env_file.strip():
+            return ""
+        return read_api_key_file(Path(env_file).expanduser())
+    config, path = local_config_with_path()
+    inline_key = config_string(config, "api_key", API_KEY_ENV)
+    key_file = config_string(config, "api_key_file", API_KEY_FILE_ENV)
+    if inline_key and key_file:
+        raise B1RemoteNodeError("B1 config must not set both api_key and api_key_file")
+    if key_file:
+        return read_api_key_file(resolve_secret_file_path(key_file, path))
+    if inline_key and path is not None:
+        require_private_file(path, "B1 config file containing api_key")
+    return inline_key
 
 
 def configured_download_dir() -> Path:

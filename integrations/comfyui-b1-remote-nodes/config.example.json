@@ -1,6 +1,6 @@
 {
   "api_base": "https://api.ai.b1.germering",
-  "api_key": "replace-with-a-scoped-b1-api-key",
+  "api_key_file": "~/.config/b1-ai-hub/comfyui-remote-nodes.key",
   "download_dir": "~/ComfyUI/output/b1-ai-hub",
   "max_data_url_bytes": 268435456
 }

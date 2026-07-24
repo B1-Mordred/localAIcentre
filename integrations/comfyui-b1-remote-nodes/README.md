@@ -12,7 +12,7 @@ export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/path/to/comfyui/output/b1-ai-hub
 ```
 
-Environment variables take precedence. As a local ComfyUI-process config fallback, copy `config.example.json` to a private path such as `~/.config/b1-ai-hub/comfyui-remote-nodes.json`, set mode `0600`, and replace the key with a scoped B1 API key. You can also point at another file with `B1_AI_HUB_CONFIG_FILE=/path/to/comfyui-remote-nodes.json`. Set `B1_AI_HUB_CONFIG_FILE=` to disable config-file lookup.
+Environment variables take precedence. As a local ComfyUI-process config fallback, copy `config.example.json` to a private path such as `~/.config/b1-ai-hub/comfyui-remote-nodes.json`, write the scoped B1 API key to the referenced `api_key_file`, and set both files to mode `0600` on Linux/macOS. `api_key_file` paths in the JSON may be relative to the config file. Inline `api_key` is still supported for compatibility, but on POSIX the config file must be private or the nodes fail closed. You can also point at another file with `B1_AI_HUB_CONFIG_FILE=/path/to/comfyui-remote-nodes.json`. Set `B1_AI_HUB_CONFIG_FILE=` to disable config-file lookup.
 
 Available nodes:
 

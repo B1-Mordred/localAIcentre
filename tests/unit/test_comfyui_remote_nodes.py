@@ -65,6 +65,16 @@ def staged_reference(kind: str = "image", mime_type: str = "image/png") -> dict[
     }
 
 
+def chmod_private(path: Path) -> None:
+    if os.name != "nt":
+        path.chmod(0o600)
+
+
+def chmod_public(path: Path) -> None:
+    if os.name != "nt":
+        path.chmod(0o644)
+
+
 class ComfyUiRemoteNodesTests(unittest.TestCase):
     def setUp(self) -> None:
         original_config_file = os.environ.get(nodes.CONFIG_FILE_ENV)
@@ -112,12 +122,15 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
     def test_local_config_file_supplies_api_key_base_download_dir_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "b1-remote-nodes.json"
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_config.secret\n", encoding="utf-8")
+            chmod_private(key_path)
             download_dir = Path(tmp) / "downloads"
             config_path.write_text(
                 json.dumps(
                     {
                         "api_base": "http://api.test.local/base/",
-                        "api_key": "b1k_config.secret",
+                        "api_key_file": "api-key",
                         "download_dir": str(download_dir),
                         "max_data_url_bytes": 2,
                     }
@@ -142,6 +155,7 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "b1-remote-nodes.json"
             config_path.write_text(json.dumps({"api_base": "http://config.test", "api_key": "config-key"}), encoding="utf-8")
+            chmod_public(config_path)
             with EnvPatch(
                 B1_AI_HUB_CONFIG_FILE=str(config_path),
                 B1_AI_HUB_API_BASE="https://env.test.local/",
@@ -165,6 +179,50 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         with EnvPatch(B1_AI_HUB_CONFIG_FILE="/tmp/b1-ai-hub-missing-config.json", B1_AI_HUB_API_BASE=None):
             with self.assertRaises(nodes.B1RemoteNodeError):
                 nodes.api_base()
+
+    def test_api_key_file_env_reads_private_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_private(key_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=str(key_path)):
+                self.assertEqual(nodes.api_key(), "b1k_file.secret")
+
+    def test_api_key_file_rejects_group_or_world_accessible_file(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not portable on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_public(key_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=str(key_path)):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
+
+    def test_inline_config_api_key_requires_private_config_file(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not portable on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            config_path.write_text(json.dumps({"api_key": "b1k_inline.secret"}), encoding="utf-8")
+            chmod_public(config_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=None):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
+                chmod_private(config_path)
+                self.assertEqual(nodes.api_key(), "b1k_inline.secret")
+
+    def test_config_rejects_ambiguous_api_key_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_private(key_path)
+            config_path.write_text(json.dumps({"api_key": "b1k_inline.secret", "api_key_file": str(key_path)}), encoding="utf-8")
+            chmod_private(config_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=None):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
 
     def test_api_base_rejects_credentials_query_and_non_http_schemes(self) -> None:
         for value in [
