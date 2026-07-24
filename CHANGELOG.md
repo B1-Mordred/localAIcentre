@@ -70,6 +70,7 @@
 - Added structured media-job request redaction that preserves workflow IDs, versions, and safe runtime parameters while redacting prompts, uploads, paths, hashes, and credentials.
 - Added a Control Center job reproducibility summary beside the raw redacted request JSON for faster operator inspection.
 - Added authenticated Control Center job artifact downloads from the selected job detail panel.
+- Allowed Control Center queue administrators and operators to download artifacts for inspected jobs without requiring wildcard API scope, while preserving owner-only artifact access for ordinary clients.
 - Added Control Center External Access snippets for curl, Open WebUI, external ComfyUI, Voicebox, Python, and JavaScript clients.
 - Added a Control Center External Access snippet for `b1-model-client` Model Hub cache synchronization.
 - Added cutover-plan preservation capture to acceptance reports so the Markdown handoff lists old containers, Docker volumes, and host paths deliberately preserved for rollback and blocks handoff when that evidence is missing.

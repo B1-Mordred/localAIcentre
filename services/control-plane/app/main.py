@@ -8319,7 +8319,7 @@ async def artifact_download(artifact_path: str, request: Request, authorization:
     job = await database.get_job_by_artifact_url(artifact_url)
     if job is None or not artifact_policy.job_has_artifact_url(job, artifact_url):
         raise HTTPException(status_code=404, detail="artifact not found")
-    if not artifact_policy.subject_can_read_job_artifact(auth.subject_id, auth.scopes, job):
+    if not artifact_policy.subject_can_read_job_artifact(auth.subject_id, auth.scopes, job, auth.role.value):
         raise HTTPException(status_code=403, detail="artifact belongs to a different owner")
     artifact = job_artifact_by_url(job, artifact_url)
     if artifact and (artifact.get("deleted_at") or artifact.get("retention_status") == "deleted"):

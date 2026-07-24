@@ -102,9 +102,17 @@ class ArtifactCleanupApiTests(unittest.TestCase):
         setattr(main, name, value)
         self.addCleanup(lambda: setattr(main, name, original))
 
-    def patch_common(self, fake_database: FakeArtifactDatabase, audit_events: list[dict[str, Any]], *, scopes: frozenset[str] = frozenset({"*"})) -> None:
+    def patch_common(
+        self,
+        fake_database: FakeArtifactDatabase,
+        audit_events: list[dict[str, Any]],
+        *,
+        scopes: frozenset[str] = frozenset({"*"}),
+        role: Any = None,
+        subject_id: str = "admin_1",
+    ) -> None:
         async def authenticate(_: str | None = None) -> Any:
-            return AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=scopes)
+            return AuthContext(subject_id=subject_id, role=role or Role.ADMIN, scopes=scopes)
 
         async def record_audit_event(auth: Any, event_type: str, **kwargs: Any) -> None:
             audit_events.append({"event_type": event_type, **kwargs})
@@ -158,6 +166,35 @@ class ArtifactCleanupApiTests(unittest.TestCase):
                 asyncio.run(main.artifact_download("localai/job_old/0.png", request=object(), authorization="Bearer key"))
 
             self.assertEqual(caught.exception.status_code, 410)
+
+    def test_operator_can_download_inspected_job_artifacts_without_wildcard_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeArtifactDatabase(Path(tmp))
+            self.patch_common(fake_database, [], scopes=frozenset({"jobs:read"}), role=Role.OPERATOR, subject_id="operator_1")
+            proxied: dict[str, Any] = {}
+
+            async def proxy_http(base_url: str, path: str, request: object, extra_headers: dict[str, str] | None = None) -> Any:
+                proxied.update({"base_url": base_url, "path": path, "extra_headers": extra_headers})
+                return main.Response(content=b"data", status_code=200, media_type="image/png")
+
+            self.patch_attr("proxy_http", proxy_http)
+            self.patch_attr("artifact_server_auth_headers", lambda: {"Authorization": "Bearer service-token"})
+
+            response = asyncio.run(main.artifact_download("localai/job_old/0.png", request=object(), authorization="Bearer key"))
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(proxied["path"], "/artifacts/localai/job_old/0.png")
+            self.assertEqual(proxied["extra_headers"], {"Authorization": "Bearer service-token"})
+
+    def test_non_owner_user_cannot_download_other_job_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeArtifactDatabase(Path(tmp))
+            self.patch_common(fake_database, [], scopes=frozenset({"jobs:read"}), role=Role.USER, subject_id="other_user")
+
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(main.artifact_download("localai/job_old/0.png", request=object(), authorization="Bearer key"))
+
+            self.assertEqual(caught.exception.status_code, 403)
 
     def test_artifact_retention_requires_storage_read_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

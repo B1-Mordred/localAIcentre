@@ -23,7 +23,9 @@ def job_has_artifact_url(job: dict[str, Any], artifact_url: str) -> bool:
     return any(isinstance(artifact, dict) and artifact.get("url") == artifact_url for artifact in artifacts)
 
 
-def subject_can_read_job_artifact(subject_id: str, scopes: frozenset[str], job: dict[str, Any]) -> bool:
+def subject_can_read_job_artifact(subject_id: str, scopes: frozenset[str], job: dict[str, Any], role: str | None = None) -> bool:
     if "*" in scopes:
+        return True
+    if role in {"admin", "operator"}:
         return True
     return job.get("owner_id") == subject_id

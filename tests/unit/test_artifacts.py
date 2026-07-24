@@ -36,6 +36,9 @@ class ArtifactPolicyTests(unittest.TestCase):
         self.assertTrue(subject_can_read_job_artifact("client_1", frozenset({"jobs:read"}), job))
         self.assertFalse(subject_can_read_job_artifact("client_2", frozenset({"jobs:read"}), job))
         self.assertTrue(subject_can_read_job_artifact("admin", frozenset({"*"}), job))
+        self.assertTrue(subject_can_read_job_artifact("admin_session", frozenset({"jobs:read"}), job, "admin"))
+        self.assertTrue(subject_can_read_job_artifact("operator_session", frozenset({"jobs:read"}), job, "operator"))
+        self.assertFalse(subject_can_read_job_artifact("creator_session", frozenset({"jobs:read"}), job, "creator"))
 
 
 if __name__ == "__main__":
