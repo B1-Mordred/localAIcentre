@@ -2087,6 +2087,12 @@ def alias_visible_to_auth(alias: CatalogAlias, auth: AuthContext | None) -> bool
     return not roles or auth.role.value in roles
 
 
+def alias_manifest_allows_inference(alias: CatalogAlias, auth: AuthContext | None) -> bool:
+    if auth is None or auth.has_scope("*") or alias.manifest is None:
+        return True
+    return modelhub_policy.role_allowed_by_manifest_permissions(alias.manifest.to_dict(), auth.role.value, "inference")
+
+
 def require_catalog_alias(
     model_id: str,
     required_modality: str | None = None,
@@ -2110,6 +2116,8 @@ def require_catalog_alias(
         raise HTTPException(status_code=422, detail="requested alias has no compatible non-Comfy runtime")
     if alias.manifest is None:
         raise HTTPException(status_code=424, detail=f"alias {model_id} is not backed by an installed model manifest")
+    if not alias_manifest_allows_inference(alias, auth):
+        raise HTTPException(status_code=403, detail=f"alias {model_id} cannot be used for inference by this role")
     if not alias.decision.accepted:
         raise HTTPException(status_code=422, detail=f"alias {model_id} rejected by resource policy: {alias.decision.reason}")
     return alias
