@@ -68,8 +68,7 @@ text = text.replace(
 path.write_text(text, encoding="utf-8")
 PY
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir --prefix=/install -r backend/requirements.txt -c /tmp/voicebox-constraints.txt \
+RUN python -m pip install --no-cache-dir --prefix=/install -r backend/requirements.txt -c /tmp/voicebox-constraints.txt \
     && python -m pip install --no-cache-dir --prefix=/install --no-deps chatterbox-tts==0.1.7 \
     && python -m pip install --no-cache-dir --prefix=/install --no-deps hume-tada==0.1.9
 

@@ -161,6 +161,13 @@ class ComposePolicyTests(unittest.TestCase):
                     continue
                 self.assertRegex(line, SHA256_REF_RE, f"{dockerfile}:{line_number} base image must be digest-pinned")
 
+    def test_dockerfiles_avoid_broad_unpinned_upgrade_steps(self) -> None:
+        denied_patterns = ("apt-get upgrade", "apk upgrade", "--upgrade pip")
+        for dockerfile in DOCKERFILES_REQUIRING_PINNED_BASES:
+            text = dockerfile.read_text(encoding="utf-8")
+            for pattern in denied_patterns:
+                self.assertNotIn(pattern, text, f"{dockerfile} must not run broad mutable upgrade step {pattern!r}")
+
     def test_only_gateway_publishes_ports(self) -> None:
         for name, service in self.compose["services"].items():
             if name == "gateway":

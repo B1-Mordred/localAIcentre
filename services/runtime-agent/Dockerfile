@@ -6,10 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN groupadd --system b1 && useradd --system --gid b1 --home /app b1
 
 COPY requirements.txt .

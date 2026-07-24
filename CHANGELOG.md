@@ -78,6 +78,7 @@
 - Bound the Caddy admin API to loopback inside the gateway container and added Compose policy coverage so the normal HTTPS virtual hosts remain the only exposed gateway management surface.
 - Made `b1-model-client` recover stale partial blob downloads by retrying once from byte zero after an HTTP 416 resume rejection, while still verifying ETag, size, and SHA-256 before publication.
 - Digest-pinned the remaining base Compose images and B1-owned Dockerfile base images, with regression coverage for immutable third-party image references.
+- Removed broad mutable package-upgrade steps from B1-owned Dockerfiles and added policy coverage so rebuilds stay tied to pinned base images and locked dependencies.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.
