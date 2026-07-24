@@ -112,8 +112,14 @@ class FakeWebSocket:
         self.headers = headers or {
             "host": "comfy.ai.b1.germering",
             "authorization": "Bearer secret",
+            "cookie": "b1_session=browser-secret",
+            "forwarded": "for=203.0.113.8",
+            "x-b1-csrf": "csrf-secret",
             "x-b1-compatibility": "comfyui-native",
+            "x-forwarded-for": "203.0.113.8",
+            "x-real-ip": "203.0.113.8",
             "sec-websocket-key": "browser-key",
+            "upgrade": "websocket",
             "user-agent": "native-client",
             "x-b1-test": "forwarded",
         }
@@ -658,8 +664,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
         forwarded_headers = {key.lower() for key in connected["additional_headers"]}
         self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("cookie", forwarded_headers)
+        self.assertNotIn("forwarded", forwarded_headers)
+        self.assertNotIn("upgrade", forwarded_headers)
         self.assertNotIn("sec-websocket-key", forwarded_headers)
         self.assertNotIn("x-b1-compatibility", forwarded_headers)
+        self.assertNotIn("x-b1-csrf", forwarded_headers)
+        self.assertNotIn("x-forwarded-for", forwarded_headers)
+        self.assertNotIn("x-real-ip", forwarded_headers)
 
     def test_websocket_bridge_forwards_browser_text_and_binary_to_runtime(self) -> None:
         websocket = FakeWebSocket(
@@ -704,8 +716,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             headers={
                 "host": "voice.ai.b1.germering",
                 "authorization": "Bearer secret",
+                "cookie": "b1_session=browser-secret",
+                "forwarded": "for=203.0.113.8",
+                "x-b1-csrf": "csrf-secret",
                 "x-b1-compatibility": "voicebox-native",
+                "x-forwarded-for": "203.0.113.8",
+                "x-real-ip": "203.0.113.8",
                 "sec-websocket-key": "browser-key",
+                "upgrade": "websocket",
                 "user-agent": "voicebox-client",
                 "x-b1-test": "forwarded",
             },
@@ -729,8 +747,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
         forwarded_headers = {key.lower() for key in connected["additional_headers"]}
         self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("cookie", forwarded_headers)
+        self.assertNotIn("forwarded", forwarded_headers)
+        self.assertNotIn("upgrade", forwarded_headers)
         self.assertNotIn("sec-websocket-key", forwarded_headers)
         self.assertNotIn("x-b1-compatibility", forwarded_headers)
+        self.assertNotIn("x-b1-csrf", forwarded_headers)
+        self.assertNotIn("x-forwarded-for", forwarded_headers)
+        self.assertNotIn("x-real-ip", forwarded_headers)
         self.assertEqual(websocket.sent_bytes, [b"voicebox-event"])
 
     def test_websocket_events_update_job_progress_and_artifacts(self) -> None:
@@ -940,8 +964,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         websocket = FakeWebSocket(
             headers={
                 "host": "legacy-client",
+                "cookie": "b1_session=browser-secret",
+                "forwarded": "for=203.0.113.8",
                 "x-b1-compatibility": "comfyui-legacy-8188",
+                "x-b1-csrf": "csrf-secret",
+                "x-forwarded-for": "203.0.113.8",
+                "x-real-ip": "203.0.113.8",
                 "sec-websocket-key": "legacy-browser-key",
+                "upgrade": "websocket",
                 "user-agent": "legacy-comfy-client",
                 "x-b1-test": "forwarded",
             },
@@ -956,8 +986,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(connected["additional_headers"]["x-b1-test"], "forwarded")
         forwarded_headers = {key.lower() for key in connected["additional_headers"]}
         self.assertNotIn("authorization", forwarded_headers)
+        self.assertNotIn("cookie", forwarded_headers)
+        self.assertNotIn("forwarded", forwarded_headers)
+        self.assertNotIn("upgrade", forwarded_headers)
         self.assertNotIn("sec-websocket-key", forwarded_headers)
         self.assertNotIn("x-b1-compatibility", forwarded_headers)
+        self.assertNotIn("x-b1-csrf", forwarded_headers)
+        self.assertNotIn("x-forwarded-for", forwarded_headers)
+        self.assertNotIn("x-real-ip", forwarded_headers)
 
     def test_legacy_comfy_websocket_still_blocks_management_routes_without_auth(self) -> None:
         async def authenticate(_: str | None = None) -> Any:

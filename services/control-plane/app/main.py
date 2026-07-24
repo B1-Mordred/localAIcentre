@@ -1355,11 +1355,10 @@ def websocket_runtime_url(base_url: str, path: str, query: str = "") -> str:
 
 
 def websocket_forward_headers(websocket: WebSocket) -> dict[str, str]:
-    forbidden = {"host", "connection", "upgrade", "authorization", "cookie", "x-b1-compatibility"}
     headers: dict[str, str] = {}
     for key, value in websocket.headers.items():
         lowered = key.lower()
-        if lowered in forbidden or lowered.startswith("sec-websocket"):
+        if lowered in RUNTIME_PROXY_FORBIDDEN_REQUEST_HEADERS or lowered.startswith("sec-websocket"):
             continue
         headers[key] = value
     return headers
