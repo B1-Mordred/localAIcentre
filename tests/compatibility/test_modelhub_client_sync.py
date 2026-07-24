@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import tempfile
 import unittest
-import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +47,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         cls.samples = []
         cls.base_url = os.getenv("B1_MODELHUB_URL", "https://models.ai.b1.germering").rstrip("/")
         cls.token = os.getenv("B1_MODELHUB_TOKEN", "")
+        cls.ca_file = client.resolve_ca_file(argparse.Namespace(ca_file=None))
         cls.sync_model = os.getenv("B1_MODELHUB_SYNC_MODEL", "").strip()
         cls.inference_only_model = os.getenv("B1_MODELHUB_INFERENCE_ONLY_MODEL", "").strip()
         cls.accept_licenses = env_flag("B1_MODELHUB_ACCEPT_LICENSES", False)
@@ -95,7 +96,9 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         expected_size = int(action["expected_size"])
         configured_partial_size = int(os.getenv("B1_MODELHUB_PARTIAL_BYTES", "1048576"))
         partial_size = 1 if expected_size <= 1 else max(1, min(expected_size - 1, configured_partial_size))
-        request = urllib.request.Request(f"{self.base_url}/modelhub/v1/blobs/{blob}")
+        request = urllib.request.Request(
+            client.modelhub_request_url(self.base_url, f"/modelhub/v1/blobs/{blob}", self.token)
+        )
         request.add_header("Accept", "application/octet-stream")
         request.add_header("Authorization", f"Bearer {self.token}")
         request.add_header("Range", f"bytes=0-{partial_size - 1}")
@@ -103,7 +106,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
             accepted_refs = client.accepted_license_refs_for_action(action)
             if accepted_refs:
                 request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with client.modelhub_urlopen(request, timeout=120, ca_file=self.ca_file) as response:
             status = getattr(response, "status", response.getcode())
             self.assertEqual(status, 206, "Model Hub blob downloads must support HTTP Range resume")
             content = response.read()
@@ -114,7 +117,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         return partial_size
 
     def first_download_action(self, cache: Path) -> dict[str, Any]:
-        actions = client.planned_actions(self.base_url, self.token, cache, [self.sync_model])
+        actions = client.planned_actions(self.base_url, self.token, cache, [self.sync_model], ca_file=self.ca_file)
         candidates = [action for action in actions if action.get("action") in {"download", "replace"} and action.get("blob")]
         self.assertTrue(candidates, f"{self.sync_model} did not produce a downloadable Model Hub sync action: {actions}")
         action = candidates[0]
@@ -132,7 +135,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         return action
 
     def test_model_client_downloads_resumes_verifies_and_blocks_inference_only(self) -> None:
-        catalog = client.request_json(self.base_url, "/modelhub/v1/catalog", self.token)
+        catalog = client.request_json(self.base_url, "/modelhub/v1/catalog", self.token, ca_file=self.ca_file)
         self.assertTrue(catalog.get("aliases") or catalog.get("models"), "Model Hub catalog is empty or unavailable")
         self.record_check(
             "catalog_visible",
@@ -150,6 +153,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
                 cache,
                 [self.sync_model],
                 accept_licenses=self.accept_licenses,
+                ca_file=self.ca_file,
             )
             result_by_blob = {str(item.get("blob", "")).lower(): item for item in result.get("changes", []) if isinstance(item, dict)}
             blob = str(action["blob"]).lower()
@@ -175,7 +179,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
 
             unmanaged = cache / "blobs" / "operator-unmanaged-file"
             unmanaged.write_text("do not prune", encoding="utf-8")
-            prune = client.prune_plan(self.base_url, self.token, cache, [self.sync_model])
+            prune = client.prune_plan(self.base_url, self.token, cache, [self.sync_model], ca_file=self.ca_file)
             self.assertTrue(prune["unmanaged_files_ignored"])
             self.assertNotIn(str(unmanaged), [item.get("path") for item in prune["candidates"]])
             self.record_check(
@@ -185,7 +189,13 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory(prefix="b1-modelhub-policy-") as policy_tmp:
-            inference_actions = client.planned_actions(self.base_url, self.token, Path(policy_tmp), [self.inference_only_model])
+            inference_actions = client.planned_actions(
+                self.base_url,
+                self.token,
+                Path(policy_tmp),
+                [self.inference_only_model],
+                ca_file=self.ca_file,
+            )
         blocked = [
             action
             for action in inference_actions

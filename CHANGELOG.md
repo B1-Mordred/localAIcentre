@@ -80,6 +80,7 @@
 - Hardened `b1-model-client` credential and endpoint handling with token-file support, ambiguous-source rejection, POSIX private-file checks, and Model Hub base URL validation.
 - Hardened `b1-model-client` transport handling so bearer tokens are not sent over plain HTTP unless an explicit development-only opt-out is set.
 - Added `b1-model-client` CA bundle support through `--ca-file` and `B1_MODELHUB_CA_FILE` for LAN clients using the Caddy internal CA.
+- Hardened the live Model Hub compatibility harness so its direct Range/resume probe uses the `b1-model-client` CA bundle and token-transport guards.
 - Hardened Model Hub sync plans so downloadable version selection is filtered by the caller's Model Hub client allowlist and manifest role permissions before blob actions are returned.
 - Added public media-job history filters for `state`, `runtime`, and `modality` while preserving owner-scoped results for ordinary API clients.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.

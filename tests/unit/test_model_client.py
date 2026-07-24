@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -16,6 +17,16 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "integrations" / "b1-model-client"))
 
 from b1_model_client import __main__ as client  # noqa: E402
+
+
+def load_modelhub_compatibility_module() -> Any:
+    path = ROOT / "tests" / "compatibility" / "test_modelhub_client_sync.py"
+    spec = importlib.util.spec_from_file_location("b1_modelhub_client_sync_compatibility", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load compatibility test module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ModelClientTests(unittest.TestCase):
@@ -205,6 +216,87 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(seen["url"], "https://models.ai.b1.germering/modelhub/v1/catalog")
         self.assertEqual(seen["cafile"], ca_file)
         self.assertEqual(seen["context"], "ssl-context")
+
+    def test_modelhub_compatibility_range_probe_uses_hardened_transport_and_ca(self) -> None:
+        harness = load_modelhub_compatibility_module()
+        seen: dict[str, object] = {}
+
+        class FakeResponse:
+            status = 206
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self) -> bytes:
+                return b"abc"
+
+        def fake_modelhub_urlopen(request: object, *, timeout: int, ca_file: str | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+            seen["timeout"] = timeout
+            seen["ca_file"] = ca_file
+            return FakeResponse()
+
+        original = harness.client.modelhub_urlopen
+        try:
+            harness.client.modelhub_urlopen = fake_modelhub_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                test_case = harness.ModelHubClientSyncCompatibilityTests(
+                    methodName="test_model_client_downloads_resumes_verifies_and_blocks_inference_only"
+                )
+                test_case.base_url = "https://models.ai.b1.germering"
+                test_case.token = "secret-token"
+                test_case.ca_file = "/tmp/b1-caddy-root.crt"
+                test_case.accept_licenses = False
+                partial_size = test_case.range_seed_partial(Path(tmp), {"blob": "a" * 64, "expected_size": 4})
+                partial = Path(tmp) / "blobs" / f"{'a' * 64}.partial"
+                self.assertEqual(partial.read_bytes(), b"abc")
+        finally:
+            harness.client.modelhub_urlopen = original
+
+        self.assertEqual(partial_size, 3)
+        self.assertEqual(seen["url"], f"https://models.ai.b1.germering/modelhub/v1/blobs/{'a' * 64}")
+        self.assertEqual(seen["timeout"], 120)
+        self.assertEqual(seen["ca_file"], "/tmp/b1-caddy-root.crt")
+        headers = seen["headers"]
+        self.assertIsInstance(headers, dict)
+        self.assertEqual(headers["authorization"], "Bearer secret-token")
+        self.assertEqual(headers["range"], "bytes=0-2")
+
+    def test_modelhub_compatibility_range_probe_refuses_plain_http_token(self) -> None:
+        harness = load_modelhub_compatibility_module()
+        called = False
+
+        def fake_modelhub_urlopen(request: object, *, timeout: int, ca_file: str | None = None) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called when token transport is unsafe")
+
+        original = harness.client.modelhub_urlopen
+        try:
+            harness.client.modelhub_urlopen = fake_modelhub_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                test_case = harness.ModelHubClientSyncCompatibilityTests(
+                    methodName="test_model_client_downloads_resumes_verifies_and_blocks_inference_only"
+                )
+                test_case.base_url = "http://models.ai.b1.germering"
+                test_case.token = "secret-token"
+                test_case.ca_file = None
+                test_case.accept_licenses = False
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop(client.ALLOW_INSECURE_HTTP_ENV, None)
+                    with self.assertRaisesRegex(RuntimeError, "plain HTTP"):
+                        test_case.range_seed_partial(Path(tmp), {"blob": "b" * 64, "expected_size": 4})
+        finally:
+            harness.client.modelhub_urlopen = original
+
+        self.assertFalse(called)
 
     def test_planned_actions_skip_inference_only_models(self) -> None:
         self.force_local_planner()

@@ -60,6 +60,7 @@ The Model Hub compatibility path uses the real `b1-model-client` library against
 export B1_MODELHUB_LIVE_TEST=1
 export B1_MODELHUB_URL=https://models.ai.b1.germering
 export B1_MODELHUB_TOKEN=...
+export B1_MODELHUB_CA_FILE=/path/to/b1-caddy-root.crt
 export B1_MODELHUB_SYNC_MODEL=chat-default
 export B1_MODELHUB_INFERENCE_ONLY_MODEL=tts-quality
 export B1_MODELHUB_ACCEPT_LICENSES=1
@@ -67,7 +68,7 @@ export B1_MODELHUB_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/modelhub-client-sy
 python3 -m unittest tests.compatibility.test_modelhub_client_sync
 ```
 
-Set `B1_MODELHUB_ACCEPT_LICENSES=1` only after reviewing the sync plan and licence terms for the selected downloadable model. When `B1_MODELHUB_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if catalog access, plan creation, Range/resume download, managed cache state, safe prune behavior, or inference-only download policy checks are absent or incomplete.
+Set `B1_MODELHUB_CA_FILE` when the test host does not already trust the Caddy internal CA. The harness uses the same hardened transport helpers as `b1-model-client`, including the direct Range probe, and refuses to send `B1_MODELHUB_TOKEN` over plain HTTP unless `B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP=true` is set for an isolated development harness. Set `B1_MODELHUB_ACCEPT_LICENSES=1` only after reviewing the sync plan and licence terms for the selected downloadable model. When `B1_MODELHUB_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if catalog access, plan creation, Range/resume download, managed cache state, safe prune behavior, or inference-only download policy checks are absent or incomplete.
 
 ## Voicebox Remote/Server Compatibility
 
