@@ -13,6 +13,20 @@ from typing import Any
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
 REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
 SUMMARY_LIMIT = 200
+REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
+    ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
+    ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
+    ("chat_tts_image_video", "Chat, TTS/STT, image/edit, and short video workflows completed with installed models"),
+    ("native_comfyui_compatibility", "Native ComfyUI REST and WebSocket compatibility was validated externally"),
+    ("remote_nodes_non_comfy", "External ComfyUI remote nodes completed a non-Comfy operation with server ComfyUI stopped"),
+    ("modelhub_sync", "External Model Hub client synced, resumed, verified, and enforced download policy"),
+    ("voicebox_remote", "Voicebox remote/server integration was validated or a pinned upstream limitation was recorded"),
+    ("backup_verified", "B1 and old-stack backups were created and verified"),
+    ("restore_rehearsed", "Restore-to-alternate-directory rehearsal completed"),
+    ("migration_rehearsed", "Old-stack inventory, Open WebUI migration plan, and cutover plan were reviewed"),
+    ("rollback_rehearsed", "Rollback procedure was tested and old resources remain preserved"),
+    ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
+)
 
 
 class AcceptanceReportError(ValueError):
@@ -63,6 +77,27 @@ def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | Non
         if isinstance(check, dict) and check.get("name") == name:
             return check
     return None
+
+
+def required_operator_evidence_items() -> list[dict[str, str]]:
+    return [{"key": key, "label": label} for key, label in REQUIRED_OPERATOR_EVIDENCE]
+
+
+def normalize_operator_evidence(evidence: dict[str, Any] | None = None, notes: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    supplied = evidence or {}
+    supplied_notes = notes or {}
+    rows: list[dict[str, Any]] = []
+    for key, label in REQUIRED_OPERATOR_EVIDENCE:
+        note = supplied_notes.get(key)
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "passed": bool(supplied.get(key)),
+                "note": str(note).strip()[:1000] if note is not None else "",
+            }
+        )
+    return rows
 
 
 def _read_git_head(repo_root: Path) -> dict[str, Any]:
@@ -163,6 +198,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         "@sha256:" in str(image) for image in recent_image_refs
     ):
         blockers.append("deployment image evidence lacks image IDs or pinned digests")
+    for item in report.get("operator_evidence") or []:
+        if isinstance(item, dict) and not item.get("passed"):
+            blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
     return blockers
 
 
@@ -185,6 +223,8 @@ def build_report(
     deployment: dict[str, Any] | None = None,
     recent_updates: list[dict[str, Any]] | None = None,
     source_control: dict[str, Any] | None = None,
+    operator_evidence: dict[str, Any] | None = None,
+    operator_evidence_notes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_id = validate_report_id(report_id)
     status = str(self_test.get("status") or "unknown")
@@ -208,6 +248,7 @@ def build_report(
         "deployment": deployment or {},
         "recent_updates": recent_updates or [],
         "source_control": source_control or {},
+        "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
     report["operator_handoff_ready"] = status == "ok" and not report["acceptance_blockers"]
@@ -267,6 +308,15 @@ def markdown_report(report: dict[str, Any]) -> str:
                 _format_value(reservation.get("runtime")),
                 _format_value(reservation.get("resolved_model_version") or reservation.get("model_alias")),
                 _format_value(reservation.get("expires_at")),
+            ])
+
+    evidence_rows = [["Evidence", "Passed", "Note"]]
+    for item in report.get("operator_evidence") or []:
+        if isinstance(item, dict):
+            evidence_rows.append([
+                _format_value(item.get("label") or item.get("key")),
+                _format_value(bool(item.get("passed"))),
+                _format_value(item.get("note") or ""),
             ])
 
     source_control = report.get("source_control") or {}
@@ -348,6 +398,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Deployment Services\n\n" + (_table(service_rows) if len(service_rows) > 1 else _format_value(deployment.get("error") or "No runtime-agent service inventory recorded.")),
             "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
+            "## Operator Evidence\n\n" + _table(evidence_rows),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
             "## Active Runtime Reservations\n\n" + (_table(reservation_rows) if len(reservation_rows) > 1 else "No active runtime reservations recorded."),
@@ -393,6 +444,7 @@ def load_report(root: Path, report_id: str) -> dict[str, Any]:
 
 
 def public_report_summary(report: dict[str, Any], report_dir: Path | None = None) -> dict[str, Any]:
+    operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -402,6 +454,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "status": report.get("status"),
         "runtime_deployment_mode": report.get("runtime_deployment_mode"),
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
+        "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
     if report_dir is not None:

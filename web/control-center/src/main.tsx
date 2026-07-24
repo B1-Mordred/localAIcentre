@@ -337,6 +337,7 @@ type AcceptanceReportSummary = {
   status: string;
   runtime_deployment_mode?: string;
   operator_handoff_ready: boolean;
+  operator_evidence_ready?: boolean;
   acceptance_blockers: string[];
   files?: {
     directory?: string;
@@ -345,6 +346,27 @@ type AcceptanceReportSummary = {
     sha256sums?: string;
   };
 };
+
+const ACCEPTANCE_EVIDENCE_ITEMS = [
+  ["live_stack_smoke", "Live stack smoke"],
+  ["rtx3060_acceptance", "RTX 3060 acceptance"],
+  ["chat_tts_image_video", "Chat/TTS/image/video"],
+  ["native_comfyui_compatibility", "Native ComfyUI API"],
+  ["remote_nodes_non_comfy", "Remote nodes non-Comfy"],
+  ["modelhub_sync", "Model Hub sync"],
+  ["voicebox_remote", "Voicebox remote"],
+  ["backup_verified", "Backups verified"],
+  ["restore_rehearsed", "Restore rehearsal"],
+  ["migration_rehearsed", "Migration rehearsal"],
+  ["rollback_rehearsed", "Rollback rehearsal"],
+  ["security_review", "Security review"]
+] as const;
+
+type AcceptanceEvidenceKey = typeof ACCEPTANCE_EVIDENCE_ITEMS[number][0];
+type AcceptanceEvidenceState = Record<AcceptanceEvidenceKey, boolean>;
+const EMPTY_ACCEPTANCE_EVIDENCE: AcceptanceEvidenceState = Object.fromEntries(
+  ACCEPTANCE_EVIDENCE_ITEMS.map(([key]) => [key, false])
+) as AcceptanceEvidenceState;
 
 type AuditEvent = {
   id: string;
@@ -2890,6 +2912,7 @@ function System() {
   const [acceptanceReports, setAcceptanceReports] = useState<AcceptanceReportSummary[]>([]);
   const [acceptanceLabel, setAcceptanceLabel] = useState("");
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
+  const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [resourcePolicy, setResourcePolicy] = useState<ResourcePolicyPayload | null>(null);
   const [policyForm, setPolicyForm] = useState<Record<string, string>>({});
@@ -3006,7 +3029,11 @@ function System() {
     apiJson<{ summary: AcceptanceReportSummary; report: unknown }>(`/admin/acceptance-reports`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: acceptanceLabel.trim(), notes: acceptanceNotes.trim() })
+      body: JSON.stringify({
+        label: acceptanceLabel.trim(),
+        notes: acceptanceNotes.trim(),
+        operator_evidence: acceptanceEvidence
+      })
     })
       .then((payload) => {
         setMessage(`acceptance ${payload.summary.status}`);
@@ -3390,6 +3417,18 @@ function System() {
           <label>Status<input value={result?.status ?? "not run"} readOnly /></label>
         </div>
         <label>Notes<textarea rows={3} value={acceptanceNotes} onChange={(event) => setAcceptanceNotes(event.target.value)} maxLength={4000} /></label>
+        <div className="evidence-grid">
+          {ACCEPTANCE_EVIDENCE_ITEMS.map(([key, label]) => (
+            <label key={key} className="evidence-item">
+              <input
+                type="checkbox"
+                checked={acceptanceEvidence[key]}
+                onChange={(event) => setAcceptanceEvidence((current) => ({ ...current, [key]: event.target.checked }))}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
       </div>
       <div className="toolbar">
         <button title="Create acceptance report" onClick={createAcceptanceReport} disabled={busy}><Archive size={16} />Create</button>
@@ -3404,7 +3443,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : "operator review"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : report.operator_evidence_ready ? "system blockers" : "evidence missing"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>

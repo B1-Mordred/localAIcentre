@@ -32,6 +32,10 @@ else:
     MISSING_DEPENDENCY = ""
 
 
+def complete_operator_evidence() -> dict[str, bool]:
+    return {item["key"]: True for item in acceptance.required_operator_evidence_items()}
+
+
 def sample_report(**overrides: Any) -> dict[str, Any]:
     report_id = overrides.pop("report_id", "acceptance-20260724t120000z-deadbeef")
     self_test = overrides.pop(
@@ -95,6 +99,8 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 }
             ],
         ),
+        operator_evidence=overrides.pop("operator_evidence", complete_operator_evidence()),
+        operator_evidence_notes=overrides.pop("operator_evidence_notes", {}),
         source_control=overrides.pop(
             "source_control",
             {
@@ -132,6 +138,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("ghcr.io/b1/control-plane", markdown)
             self.assertIn("## Recent Update Records", markdown)
             self.assertIn("## Source Control", markdown)
+            self.assertIn("## Operator Evidence", markdown)
+            self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
 
             checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
             checksums = dict(line.split("  ", 1)[::-1] for line in checksum_lines)
@@ -161,6 +169,20 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("self-test status is degraded", report["acceptance_blockers"])
         self.assertIn("runtime deployment mode is not production", report["acceptance_blockers"])
         self.assertIn("required runtimes are not production-ready", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_required_operator_evidence(self) -> None:
+        report = sample_report(operator_evidence={"live_stack_smoke": True})
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(acceptance.public_report_summary(report)["operator_evidence_ready"])
+        self.assertIn(
+            "operator evidence missing: RTX 3060/32 GB cross-runtime acceptance completed with measured reserves",
+            report["acceptance_blockers"],
+        )
+        self.assertIn(
+            "operator evidence missing: Rollback procedure was tested and old resources remain preserved",
+            report["acceptance_blockers"],
+        )
 
     def test_report_blocks_handoff_without_deployment_image_evidence(self) -> None:
         report = sample_report(deployment={"services": []}, recent_updates=[])
@@ -328,6 +350,8 @@ class AcceptanceReportApiTests(unittest.TestCase):
         self.assertEqual(snapshot["deployment"]["services"][0]["name"], "control-plane")
         self.assertEqual(snapshot["recent_updates"][0]["id"], "update_1")
         self.assertIn("source", snapshot["source_control"])
+        self.assertFalse(snapshot["operator_handoff_ready"])
+        self.assertIn("operator evidence missing", "; ".join(snapshot["acceptance_blockers"]))
 
 
 if __name__ == "__main__":

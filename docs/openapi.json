@@ -14,6 +14,20 @@
             "maxLength": 4000,
             "title": "Notes",
             "type": "string"
+          },
+          "operator_evidence": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Operator Evidence",
+            "type": "object"
+          },
+          "operator_evidence_notes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Operator Evidence Notes",
+            "type": "object"
           }
         },
         "title": "AcceptanceReportCreate",

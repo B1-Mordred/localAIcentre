@@ -391,6 +391,34 @@ td small {
   min-height: 14px;
 }
 
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.evidence-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #d9e0d7;
+  background: #f8faf8;
+  padding: 6px 8px;
+}
+
+.evidence-item input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+}
+
+.evidence-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 th {
   color: #202421;
   font-weight: 700;
@@ -680,6 +708,7 @@ td {
   .split,
   .inline-form,
   .policy-grid,
+  .evidence-grid,
   .job-detail {
     grid-template-columns: 1fr;
   }

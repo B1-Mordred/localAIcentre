@@ -209,6 +209,8 @@ class RuntimeReservationCreate(BaseModel):
 class AcceptanceReportCreate(BaseModel):
     label: str = Field(default="", max_length=120)
     notes: str = Field(default="", max_length=4000)
+    operator_evidence: dict[str, bool] = Field(default_factory=dict)
+    operator_evidence_notes: dict[str, str] = Field(default_factory=dict)
 
 
 class RuntimeActionRequest(BaseModel):
@@ -5527,6 +5529,8 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         deployment=deployment,
         recent_updates=[public_update_plan(row) for row in await database.list_update_plans(limit=5)],
         source_control=acceptance.source_control_snapshot(Path.cwd()),
+        operator_evidence=payload.operator_evidence,
+        operator_evidence_notes=payload.operator_evidence_notes,
     )
     return jsonable_encoder(report)
 

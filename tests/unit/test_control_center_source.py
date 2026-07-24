@@ -33,6 +33,10 @@ class ControlCenterSourceTests(unittest.TestCase):
 
     def test_system_tab_surfaces_acceptance_reports(self) -> None:
         self.assertIn("type AcceptanceReportSummary", self.source)
+        self.assertIn("operator_evidence_ready?: boolean;", self.source)
+        self.assertIn("ACCEPTANCE_EVIDENCE_ITEMS", self.source)
+        self.assertIn("rtx3060_acceptance", self.source)
+        self.assertIn("operator_evidence: acceptanceEvidence", self.source)
         self.assertIn("/admin/acceptance-reports?limit=10", self.source)
         self.assertIn("/admin/acceptance-reports", self.source)
         self.assertIn("<h3>Acceptance Reports</h3>", self.source)

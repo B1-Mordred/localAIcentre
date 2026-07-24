@@ -15,6 +15,7 @@
 - Added configurable admission controls for media job queue/rate limits and artifact storage headroom, exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing.
 - Added an administrator/operator runtime reservation fleet view at `GET /admin/runtime-reservations` and Jobs tab controls for reservation creation, cancellation, filtering, and current GPU lease inspection.
 - Hardened runtime reservation creation against conflicting active GPU reservations so a second batch client cannot reserve the single GPU while another owner/model reservation is active.
+- Added structured operator evidence gates to acceptance reports so handoff readiness now requires explicit proof for live smoke, RTX 3060 acceptance, installed-model media paths, ComfyUI compatibility, external consumers, Model Hub sync, Voicebox, backups, restore, migration, rollback, and security review.
 - Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
