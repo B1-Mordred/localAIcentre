@@ -56,12 +56,67 @@ class ModelClientTests(unittest.TestCase):
             "https://models.ai.b1.germering/../admin",
             "https://models.ai.b1.germering/%2e%2e/admin",
             "https://models.ai.b1.germering/models%2fescape",
+            "https://models.ai.b1.germering/models%3ftoken",
+            "https://models.ai.b1.germering/models%23fragment",
+            "https://models.ai.b1.germering/models%00name",
             "https://models.ai.b1.germering:bad",
         ]
         for value in unsafe_values:
             with self.subTest(value=value):
                 with self.assertRaises(RuntimeError):
                     client.validate_base_url(value)
+
+    def test_model_id_validation_rejects_path_controls_before_requests(self) -> None:
+        unsafe_values = [
+            "",
+            "../chat-default",
+            "chat/default",
+            "chat%2Fdefault",
+            "chat%3Fdefault",
+            "chat%23default",
+            "chat default",
+            "-chat-default",
+            "a" * 129,
+        ]
+        for value in unsafe_values:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(RuntimeError, "model id or alias is unsafe"):
+                    client.normalize_model_id(value) if value == "" else client.normalize_model_list([value])
+
+        called = False
+
+        def fake_request_json(*args: object, **kwargs: object) -> dict[str, object]:
+            nonlocal called
+            called = True
+            raise AssertionError("unsafe model id must not reach the request layer")
+
+        original = client.request_json
+        try:
+            client.request_json = fake_request_json
+            with self.assertRaisesRegex(RuntimeError, "model id or alias is unsafe"):
+                client.model_record("https://models.ai.b1.germering", None, "chat/default")
+        finally:
+            client.request_json = original
+        self.assertFalse(called)
+
+    def test_catalog_default_models_rejects_unsafe_server_aliases(self) -> None:
+        def fake_request_json(
+            base_url: str,
+            path: str,
+            token: str | None,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            ca_file: str | None = None,
+        ) -> dict[str, object]:
+            return {"aliases": [{"id": "chat-default"}, {"id": "bad/alias"}]}
+
+        original = client.request_json
+        try:
+            client.request_json = fake_request_json
+            with self.assertRaisesRegex(RuntimeError, "model id or alias is unsafe"):
+                client.catalog_default_models("https://models.ai.b1.germering", None)
+        finally:
+            client.request_json = original
 
     def test_request_json_rejects_bad_base_url_before_network(self) -> None:
         called = False

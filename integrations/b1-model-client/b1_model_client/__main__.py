@@ -19,6 +19,7 @@ from typing import Any
 CHUNK_SIZE = 1024 * 1024
 CACHE_STATE_VERSION = "b1-model-client-cache/v1"
 CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 MODELHUB_URL_ENV = "B1_MODELHUB_URL"
 TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
@@ -31,9 +32,18 @@ def has_unsafe_path_segment(path: str) -> bool:
         if not segment:
             continue
         decoded = unquote(segment)
-        if decoded in {".", ".."} or "/" in decoded or "\\" in decoded:
+        if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
+            return True
+        if any(ord(character) < 32 or ord(character) == 127 for character in decoded):
             return True
     return False
+
+
+def normalize_model_id(value: str) -> str:
+    model_id = str(value or "").strip()
+    if not MODEL_ID_RE.fullmatch(model_id):
+        raise RuntimeError(f"model id or alias is unsafe: {value}")
+    return model_id
 
 
 def validate_base_url(value: str) -> str:
@@ -212,7 +222,7 @@ def save_state(cache: Path, state: dict[str, Any]) -> None:
 
 
 def normalize_model_list(models: list[str]) -> list[str]:
-    return sorted({model.strip() for model in models if model.strip()})
+    return sorted({normalize_model_id(model) for model in models if str(model or "").strip()})
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -250,11 +260,12 @@ def blob_target(cache: Path, sha256: str) -> Path:
 
 
 def model_record(base_url: str, token: str | None, model_id: str, ca_file: str | None = None) -> dict[str, Any]:
-    record = request_json(base_url, f"/modelhub/v1/models/{model_id}", token, ca_file=ca_file)
+    safe_model_id = normalize_model_id(model_id)
+    record = request_json(base_url, f"/modelhub/v1/models/{safe_model_id}", token, ca_file=ca_file)
     if record.get("resolved_model"):
-        versions = request_json(base_url, f"/modelhub/v1/models/{model_id}/versions", token, ca_file=ca_file).get("versions", [])
+        versions = request_json(base_url, f"/modelhub/v1/models/{safe_model_id}/versions", token, ca_file=ca_file).get("versions", [])
         if not versions:
-            raise RuntimeError(f"{model_id}: alias has no manifest versions")
+            raise RuntimeError(f"{safe_model_id}: alias has no manifest versions")
         return versions[0]
     return record
 
@@ -555,7 +566,7 @@ def plan(args: argparse.Namespace) -> int:
 
 
 def pinned_models(cache: Path) -> list[str]:
-    return sorted((load_state(cache).get("pins") or {}).keys())
+    return normalize_model_list(list((load_state(cache).get("pins") or {}).keys()))
 
 
 def pin(args: argparse.Namespace) -> int:
