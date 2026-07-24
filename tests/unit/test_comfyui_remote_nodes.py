@@ -193,6 +193,8 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
     def test_media_references_reject_local_paths(self) -> None:
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.require_media_reference("/home/user/private.png", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("https://example.test/image.png", "image")
         self.assertEqual(nodes.require_media_reference("/artifacts/images/job/0.png", "image"), "/artifacts/images/job/0.png")
         self.assertEqual(nodes.require_media_reference("data:image/png;base64,AAAA", "image"), "data:image/png;base64,AAAA")
 

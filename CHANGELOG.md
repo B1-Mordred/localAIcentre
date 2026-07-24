@@ -45,6 +45,7 @@
 - Hardened runtime WebSocket compatibility proxying with the same credential, CSRF, forwarded-client-IP, hop-by-hop, and handshake-header stripping used by the HTTP proxy.
 - Hardened OpenAI-compatible forwarding so caller-supplied `b1_*` extension fields are stripped, optional external speech providers use adapter URL/bearer-token handling, and those providers never receive B1 internal resolved-model metadata.
 - Hardened synchronous STT forwarding so caller-supplied `b1_*` fields are stripped before proxying transcription requests to the CPU audio runtime.
+- Hardened external ComfyUI B1 remote nodes so media-reference fields reject arbitrary external URLs and require staged uploads, internal artifacts, or data URLs.
 - Added a generated runtime-control bearer token for production LocalAI, ComfyUI, and Voicebox `/b1/runtime/*` lifecycle hooks so load, warm, smoke, and unload actions fail closed when the internal hook secret is missing or wrong.
 - Extended runtime-control bearer enforcement to the default `audio-cpu` `/b1/runtime/smoke` hook and mounted the generated token read-only into that service.
 - Aligned the external ComfyUI `B1 Speech To Text` node with the public OpenAI-compatible multipart transcription contract, including safe filename/header handling and no private model header.

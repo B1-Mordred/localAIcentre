@@ -158,12 +158,14 @@ def require_media_reference(value: str, kind: str) -> str:
     reference = value.strip()
     if not reference:
         raise B1RemoteNodeError(f"{kind} reference is required")
-    if reference.startswith("/artifacts/") or reference.startswith("data:") or reference.startswith("http://") or reference.startswith("https://"):
+    if reference.startswith("/artifacts/") or reference.startswith("data:"):
         return reference
     if reference.startswith("{"):
         parse_json_object(reference, f"{kind} reference")
         return reference
-    raise B1RemoteNodeError(f"{kind} must be a staged JSON reference, /artifacts URL, data URL, or HTTP(S) URL")
+    if reference.startswith("http://") or reference.startswith("https://"):
+        raise B1RemoteNodeError(f"{kind} must be uploaded to B1 or referenced as an internal artifact; external URLs are not accepted")
+    raise B1RemoteNodeError(f"{kind} must be a staged JSON reference, internal /artifacts URL, or data URL")
 
 
 def decode_base64_payload(value: str, expected_kind: str) -> bytes:

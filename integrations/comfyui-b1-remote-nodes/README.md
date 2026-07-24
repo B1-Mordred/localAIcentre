@@ -1,6 +1,6 @@
 # comfyui-b1-remote-nodes
 
-This package provides ComfyUI custom nodes that call the unified B1 AI Hub API. They do not call the server-side native ComfyUI endpoint and must not store API credentials inside workflow JSON.
+This package provides ComfyUI custom nodes that call the unified B1 AI Hub API. They do not call the server-side native ComfyUI endpoint and must not store API credentials inside workflow JSON. Media-reference inputs accept staged B1 upload JSON, authenticated `/artifacts/...` paths, or bounded data URLs; they reject local filesystem paths and arbitrary external URLs.
 
 Install by copying or cloning this directory into the external ComfyUI `custom_nodes/` directory, then restart that ComfyUI instance.
 
