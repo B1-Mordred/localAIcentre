@@ -51,7 +51,7 @@ python main.py --listen 0.0.0.0 --port 8188 --disable-auto-launch --log-stdout -
 
 Health checks use native `GET /system_stats` on internal port `8188`. The control plane uses `COMFYUI_URL=http://comfyui:8188`.
 
-Approved custom-node pins are tracked in `workflows/approved-node-pins.json`, not by editing workflow manifests alone. A published workflow that declares `{"type":"node","id":"...","version":"<commit>"}` becomes dependency-ready only when that exact commit appears in the registry with `status: approved`. Keep repository URLs HTTPS-only and record dependency-lock SHA-256 values when a node brings Python package changes.
+Approved custom-node pins are tracked in `workflows/approved-node-pins.json`, not by editing workflow manifests alone. A published workflow that declares `{"type":"node","id":"...","version":"<commit>"}` becomes dependency-ready only when that exact commit appears in the registry with `status: approved`. Keep repository URLs HTTPS-only and record dependency-lock SHA-256 values when a node brings Python package changes. If a pinned node exposes a required mutating HTTP API, add the audited path prefixes to that pin's `allowed_route_prefixes` and to `B1_COMFYUI_TRUSTED_ROUTE_PREFIXES`; the compatibility proxy requires both before forwarding custom mutating routes.
 
 ## B1 Runtime Hooks
 

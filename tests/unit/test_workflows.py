@@ -100,6 +100,7 @@ class WorkflowTests(unittest.TestCase):
                         "approved_by": "admin",
                         "approved_at": "2026-07-22",
                         "dependency_lock_sha256": "b" * 64,
+                        "allowed_route_prefixes": ["impact/wildcards"],
                     }
                 ],
             }
@@ -122,6 +123,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(by_id["comfyui-impact-pack"]["status"], "approved")
         self.assertEqual(by_id["comfyui-impact-pack"]["repository_url"], "https://github.com/ltdrdata/ComfyUI-Impact-Pack")
         self.assertEqual(by_id["comfyui-impact-pack"]["dependency_lock_sha256"], "b" * 64)
+        self.assertEqual(by_id["comfyui-impact-pack"]["allowed_route_prefixes"], ["impact/wildcards"])
 
     def test_dependency_report_rejects_unapproved_custom_node(self) -> None:
         commit = "a" * 40
@@ -227,6 +229,43 @@ class WorkflowTests(unittest.TestCase):
                     ],
                 }
             )
+
+    def test_parse_node_pin_registry_validates_allowed_route_prefixes(self) -> None:
+        commit = "a" * 40
+        registry = parse_node_pin_registry(
+            {
+                "schema_version": 1,
+                "nodes": [
+                    {
+                        "id": "comfyui-custom-api",
+                        "repository_url": "https://github.com/example/comfyui-custom-api",
+                        "commit": commit,
+                        "allowed_route_prefixes": ["/Custom/API", "custom/api"],
+                    }
+                ],
+            }
+        )
+
+        pin = registry[("comfyui-custom-api", commit)]
+        self.assertEqual(pin.allowed_route_prefixes, ["custom/api"])
+        self.assertEqual(pin.to_dict()["allowed_route_prefixes"], ["custom/api"])
+
+        for prefix in ("", "../escape", "https://example.com/api", "custom api", "custom?install=1"):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(NodePinError):
+                    parse_node_pin_registry(
+                        {
+                            "schema_version": 1,
+                            "nodes": [
+                                {
+                                    "id": "comfyui-custom-api",
+                                    "repository_url": "https://github.com/example/comfyui-custom-api",
+                                    "commit": commit,
+                                    "allowed_route_prefixes": [prefix],
+                                }
+                            ],
+                        }
+                    )
 
     def test_workflow_record_is_publishable_when_dependencies_ready(self) -> None:
         payload = {

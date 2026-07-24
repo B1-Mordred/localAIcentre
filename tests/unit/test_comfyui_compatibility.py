@@ -310,6 +310,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.original_fetch_history = main.fetch_comfyui_history
         self.original_history = main.comfyui_history_contains_prompt
         self.original_runtime_control_runner = main.runtime_control_runner
+        self.original_approved_node_pins = main.approved_node_pins
         main.settings = replace(
             main.settings,
             comfyui_prompt_wait_timeout_seconds=0,
@@ -334,6 +335,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         main.fetch_comfyui_history = self.original_fetch_history
         main.comfyui_history_contains_prompt = self.original_history
         main.runtime_control_runner = self.original_runtime_control_runner
+        main.approved_node_pins = self.original_approved_node_pins
 
     def test_prompt_acquires_lease_forwards_native_body_and_records_prompt_id(self) -> None:
         fake = FakeDatabase()
@@ -892,7 +894,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
                 self.assertEqual(raised.exception.status_code, 403)
                 self.assertEqual(raised.exception.detail["code"], "comfyui_route_denied")
 
-    def test_comfyui_passthrough_blocks_unknown_mutation_unless_prefix_is_trusted(self) -> None:
+    def test_comfyui_passthrough_blocks_unknown_mutation_unless_prefix_is_configured_and_pinned(self) -> None:
         proxied: list[str] = []
 
         async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
@@ -906,6 +908,19 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 403)
 
         main.settings = replace(main.settings, comfyui_trusted_route_prefixes=("trusted/custom",))
+        main.approved_node_pins = {}
+        with self.assertRaises(main.HTTPException) as unpinned:
+            asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
+        self.assertEqual(unpinned.exception.status_code, 403)
+
+        main.approved_node_pins = {
+            ("comfyui-custom-api", "a" * 40): main.ApprovedNodePin(
+                id="comfyui-custom-api",
+                repository_url="https://github.com/example/comfyui-custom-api",
+                commit="a" * 40,
+                allowed_route_prefixes=["trusted/custom"],
+            )
+        }
         response = asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
 
         self.assertEqual(response.status_code, 200)

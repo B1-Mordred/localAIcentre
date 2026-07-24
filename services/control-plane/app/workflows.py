@@ -65,11 +65,12 @@ class ApprovedNodePin:
     approved_by: str | None = None
     approved_at: str | None = None
     dependency_lock_sha256: str | None = None
+    allowed_route_prefixes: list[str] = field(default_factory=list)
     notes: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        return {key: value for key, value in data.items() if value is not None}
+        return {key: value for key, value in data.items() if value is not None and value != []}
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,7 @@ def node_dependency_status(
         "approved_by": pin_record.get("approved_by"),
         "approved_at": pin_record.get("approved_at"),
         "dependency_lock_sha256": pin_record.get("dependency_lock_sha256"),
+        "allowed_route_prefixes": pin_record.get("allowed_route_prefixes"),
     }
     if status != "approved":
         result["reason"] = f"custom node pin is {status}, not approved"
@@ -479,6 +481,7 @@ def _node_pin(value: Any, context: str) -> ApprovedNodePin:
         "approved_by",
         "approved_at",
         "dependency_lock_sha256",
+        "allowed_route_prefixes",
         "notes",
     }
     extra = set(value) - allowed
@@ -499,6 +502,7 @@ def _node_pin(value: Any, context: str) -> ApprovedNodePin:
     if dependency_lock_sha256 is not None:
         if not isinstance(dependency_lock_sha256, str) or not SHA256_RE.match(dependency_lock_sha256):
             raise NodePinError(f"{context}.dependency_lock_sha256 must be a lowercase SHA-256 digest")
+    allowed_route_prefixes = _route_prefixes(value.get("allowed_route_prefixes", []), f"{context}.allowed_route_prefixes")
     return ApprovedNodePin(
         id=node_id,
         commit=commit,
@@ -508,8 +512,36 @@ def _node_pin(value: Any, context: str) -> ApprovedNodePin:
         approved_by=_optional_string(value, "approved_by", context),
         approved_at=_optional_string(value, "approved_at", context),
         dependency_lock_sha256=dependency_lock_sha256,
+        allowed_route_prefixes=allowed_route_prefixes,
         notes=_optional_string(value, "notes", context),
     )
+
+
+def _route_prefixes(value: Any, context: str) -> list[str]:
+    if not isinstance(value, list):
+        raise NodePinError(f"{context} must be a list")
+    prefixes: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise NodePinError(f"{context}[{index}] must be a string")
+        prefix = _route_prefix(item, f"{context}[{index}]")
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+    return prefixes
+
+
+def _route_prefix(value: str, context: str) -> str:
+    if value != value.strip() or not value.strip():
+        raise NodePinError(f"{context} must be a non-empty relative route prefix")
+    if "\\" in value or "\x00" in value or any(ch.isspace() for ch in value):
+        raise NodePinError(f"{context} contains unsafe route characters")
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise NodePinError(f"{context} must be a relative route prefix without query or fragment")
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise NodePinError(f"{context} must not contain empty or traversal path segments")
+    return "/".join(parts).lower()
 
 
 def _https_git_url(value: str, context: str) -> str:

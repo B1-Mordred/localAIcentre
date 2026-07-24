@@ -2478,6 +2478,23 @@ def path_matches_prefix(normalized_path: str, prefix: str) -> bool:
     return path_lower == normalized_prefix or path_lower.startswith(f"{normalized_prefix}/")
 
 
+def approved_comfyui_route_prefixes() -> set[str]:
+    try:
+        pins = node_pin_registry_snapshot()
+    except WorkflowError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "comfyui_node_pin_registry_invalid", "message": str(exc)},
+        ) from exc
+    prefixes: set[str] = set()
+    for pin in pins.values():
+        if pin.status != "approved":
+            continue
+        for prefix in pin.allowed_route_prefixes:
+            prefixes.add(normalize_comfyui_passthrough_path(prefix).lower())
+    return prefixes
+
+
 def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
     normalized_path = normalize_comfyui_passthrough_path(path)
     path_lower = normalized_path.lower()
@@ -2499,8 +2516,11 @@ def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
             status_code=403,
             detail={"code": "comfyui_route_denied", "message": "ComfyUI custom-node management route is blocked by policy", "path": normalized_path},
         )
+    approved_prefixes = approved_comfyui_route_prefixes()
     for prefix in settings.comfyui_trusted_route_prefixes:
-        if path_matches_prefix(normalized_path, prefix):
+        if not path_matches_prefix(normalized_path, prefix):
+            continue
+        if any(path_matches_prefix(normalized_path, approved_prefix) for approved_prefix in approved_prefixes):
             return
     raise HTTPException(
         status_code=403,
