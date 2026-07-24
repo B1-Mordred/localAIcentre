@@ -77,16 +77,23 @@ def chmod_public(path: Path) -> None:
 
 class ComfyUiRemoteNodesTests(unittest.TestCase):
     def setUp(self) -> None:
-        original_config_file = os.environ.get(nodes.CONFIG_FILE_ENV)
+        original_values = {
+            nodes.CONFIG_FILE_ENV: os.environ.get(nodes.CONFIG_FILE_ENV),
+            nodes.CA_FILE_ENV: os.environ.get(nodes.CA_FILE_ENV),
+            nodes.ALLOW_INSECURE_HTTP_ENV: os.environ.get(nodes.ALLOW_INSECURE_HTTP_ENV),
+        }
         os.environ[nodes.CONFIG_FILE_ENV] = ""
+        os.environ.pop(nodes.CA_FILE_ENV, None)
+        os.environ.pop(nodes.ALLOW_INSECURE_HTTP_ENV, None)
 
-        def restore_config_file() -> None:
-            if original_config_file is None:
-                os.environ.pop(nodes.CONFIG_FILE_ENV, None)
-            else:
-                os.environ[nodes.CONFIG_FILE_ENV] = original_config_file
+        def restore_environment() -> None:
+            for key, value in original_values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
-        self.addCleanup(restore_config_file)
+        self.addCleanup(restore_environment)
 
     def patch_attr(self, name: str, value: Any) -> None:
         original = getattr(nodes, name)
@@ -119,6 +126,79 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(json.loads(seen["body"].decode("utf-8")), {"probe": True})
         self.assertEqual(seen["timeout"], 9)
 
+    def test_request_json_refuses_http_api_key_without_explicit_opt_in(self) -> None:
+        with EnvPatch(B1_AI_HUB_API_BASE="http://api.test.local", B1_AI_HUB_API_KEY="b1k_public.secret"):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "plain HTTP"):
+                nodes.build_request("/v1/models")
+
+    def test_request_json_allows_http_api_key_only_with_explicit_opt_in(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="http://api.test.local",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_ALLOW_INSECURE_HTTP="true",
+        ):
+            request = nodes.build_request("/v1/models")
+
+        self.assertEqual(request.full_url, "http://api.test.local/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer b1k_public.secret")
+
+    def test_ca_file_can_come_from_environment_or_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_ca = Path(tmp) / "env-root.crt"
+            config_ca = Path(tmp) / "config-root.crt"
+            config_path = Path(tmp) / "config.json"
+            env_ca.write_text("env-ca", encoding="utf-8")
+            config_ca.write_text("config-ca", encoding="utf-8")
+            config_path.write_text(json.dumps({"ca_file": "config-root.crt"}), encoding="utf-8")
+
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_CA_FILE=None):
+                self.assertEqual(nodes.ca_file(), str(config_ca))
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_CA_FILE=str(env_ca)):
+                self.assertEqual(nodes.ca_file(), str(env_ca))
+
+    def test_ca_file_rejects_missing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing-root.crt"
+            with EnvPatch(B1_AI_HUB_CA_FILE=str(missing)):
+                with self.assertRaisesRegex(nodes.B1RemoteNodeError, "B1 CA file is not a file"):
+                    nodes.ca_file()
+
+    def test_request_json_uses_configured_ca_file_for_https(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_create_default_context(*, cafile: str | None = None) -> str:
+            seen["cafile"] = cafile
+            return "ssl-context"
+
+        def fake_urlopen(request: Any, timeout: int = 0, context: Any | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["context"] = context
+            seen["timeout"] = timeout
+            return FakeResponse(json.dumps({"ok": True}).encode("utf-8"))
+
+        original_context = nodes.ssl.create_default_context
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.ssl.create_default_context = fake_create_default_context
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.ssl, "create_default_context", original_context))
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_path = Path(tmp) / "root.crt"
+            ca_path.write_text("test-ca", encoding="utf-8")
+            with EnvPatch(
+                B1_AI_HUB_API_BASE="https://api.test.local",
+                B1_AI_HUB_API_KEY="b1k_public.secret",
+                B1_AI_HUB_CA_FILE=str(ca_path),
+            ):
+                result = nodes.request_json("/v1/models", timeout_seconds=7)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://api.test.local/v1/models")
+        self.assertEqual(seen["cafile"], str(ca_path))
+        self.assertEqual(seen["context"], "ssl-context")
+        self.assertEqual(seen["timeout"], 7)
+
     def test_local_config_file_supplies_api_key_base_download_dir_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "b1-remote-nodes.json"
@@ -143,6 +223,7 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
                 B1_AI_HUB_API_KEY=None,
                 B1_AI_HUB_DOWNLOAD_DIR=None,
                 B1_AI_HUB_MAX_DATA_URL_BYTES=None,
+                B1_AI_HUB_ALLOW_INSECURE_HTTP="true",
             ):
                 request = nodes.build_request("/v1/models")
                 self.assertEqual(request.full_url, "http://api.test.local/base/v1/models")

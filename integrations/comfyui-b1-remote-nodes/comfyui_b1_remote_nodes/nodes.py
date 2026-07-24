@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 import secrets
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -23,6 +24,8 @@ DEFAULT_MAX_DATA_URL_BYTES = 256 * 1024 * 1024
 CONFIG_FILE_ENV = "B1_AI_HUB_CONFIG_FILE"
 API_KEY_ENV = "B1_AI_HUB_API_KEY"
 API_KEY_FILE_ENV = "B1_AI_HUB_API_KEY_FILE"
+CA_FILE_ENV = "B1_AI_HUB_CA_FILE"
+ALLOW_INSECURE_HTTP_ENV = "B1_AI_HUB_ALLOW_INSECURE_HTTP"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -122,6 +125,13 @@ def config_string(config: dict[str, Any], key: str, env_key: str | None = None) 
     return value.strip()
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def resolve_secret_file_path(value: str, config_path: Path | None) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute() and config_path is not None:
@@ -173,6 +183,22 @@ def api_key() -> str:
     return inline_key
 
 
+def ca_file() -> str:
+    env_value = os.getenv(CA_FILE_ENV)
+    if env_value is not None:
+        raw = env_value.strip()
+        config_path = None
+    else:
+        config, config_path = local_config_with_path()
+        raw = config_string(config, "ca_file", CA_FILE_ENV)
+    if not raw:
+        return ""
+    path = resolve_secret_file_path(raw, config_path)
+    if not path.is_file():
+        raise B1RemoteNodeError(f"B1 CA file is not a file: {path}")
+    return str(path)
+
+
 def configured_download_dir() -> Path:
     return Path(config_value("download_dir", "B1_AI_HUB_DOWNLOAD_DIR", DEFAULT_OUTPUT_DIR)).expanduser()
 
@@ -221,9 +247,32 @@ def build_request(
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     token = api_key()
+    enforce_token_transport_security(request.full_url, token)
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     return request
+
+
+def enforce_token_transport_security(url: str, token: str) -> None:
+    if not token:
+        return
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and env_bool(ALLOW_INSECURE_HTTP_ENV):
+        return
+    raise B1RemoteNodeError(
+        "refusing to send a B1 API key over plain HTTP; use HTTPS "
+        f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for isolated development"
+    )
+
+
+def b1_urlopen(request: urllib.request.Request, *, timeout: int) -> Any:
+    configured_ca = ca_file()
+    if not configured_ca:
+        return urllib.request.urlopen(request, timeout=timeout)
+    context = ssl.create_default_context(cafile=configured_ca)
+    return urllib.request.urlopen(request, timeout=timeout, context=context)
 
 
 def request_json(
@@ -236,7 +285,7 @@ def request_json(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(
+        with b1_urlopen(
             build_request(path, method=method, payload=payload, data=data, headers=headers),
             timeout=timeout_seconds,
         ) as response:
@@ -264,7 +313,7 @@ def request_bytes(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> tuple[bytes, dict[str, str]]:
     try:
-        with urllib.request.urlopen(
+        with b1_urlopen(
             build_request(path, method=method, payload=payload, data=data, headers=headers),
             timeout=timeout_seconds,
         ) as response:

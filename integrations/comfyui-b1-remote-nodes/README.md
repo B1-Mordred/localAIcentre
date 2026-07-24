@@ -8,11 +8,14 @@ Configure credentials through environment variables or a local JSON config file.
 
 ```bash
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_AI_HUB_CA_FILE=/path/to/b1-caddy-root.crt
 export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/path/to/comfyui/output/b1-ai-hub
 ```
 
-Environment variables take precedence. As a local ComfyUI-process config fallback, copy `config.example.json` to a private path such as `~/.config/b1-ai-hub/comfyui-remote-nodes.json`, write the scoped B1 API key to the referenced `api_key_file`, and set both files to mode `0600` on Linux/macOS. `api_key_file` paths in the JSON may be relative to the config file. Inline `api_key` is still supported for compatibility, but on POSIX the config file must be private or the nodes fail closed. You can also point at another file with `B1_AI_HUB_CONFIG_FILE=/path/to/comfyui-remote-nodes.json`. Set `B1_AI_HUB_CONFIG_FILE=` to disable config-file lookup.
+Environment variables take precedence. As a local ComfyUI-process config fallback, copy `config.example.json` to a private path such as `~/.config/b1-ai-hub/comfyui-remote-nodes.json`, write the scoped B1 API key to the referenced `api_key_file`, and set both files to mode `0600` on Linux/macOS. `api_key_file` and `ca_file` paths in the JSON may be relative to the config file. Inline `api_key` is still supported for compatibility, but on POSIX the config file must be private or the nodes fail closed. You can also point at another file with `B1_AI_HUB_CONFIG_FILE=/path/to/comfyui-remote-nodes.json`. Set `B1_AI_HUB_CONFIG_FILE=` to disable config-file lookup.
+
+If the B1 gateway uses Caddy's internal CA and this external ComfyUI process does not trust it globally, set `B1_AI_HUB_CA_FILE` or `ca_file` to the exported root certificate from `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt`. Requests with an API key refuse plain HTTP unless `B1_AI_HUB_ALLOW_INSECURE_HTTP=true` is set for an isolated development harness.
 
 Available nodes:
 
