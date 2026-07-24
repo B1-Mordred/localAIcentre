@@ -225,3 +225,44 @@ make cutover-plan \
 ```
 
 The cutover planner verifies the backup again, refuses resources classified as unrelated or current B1 AI Hub, refuses occupied temporary staging ports, validates the Open WebUI preservation plan input, and writes only a non-destructive plan. Existing production or optional legacy ComfyUI listeners are reported in `port_readiness`; intended virtual-host DNS records are reported in `dns_readiness`; Open WebUI preservation evidence is reported in `open_webui_preservation`, including the source-version compatibility status. Missing or divergent DNS records and unresolved Open WebUI preservation warnings become warnings for operator review. The planner never stops containers, rewrites DNS, deletes files, imports Open WebUI data, or marks the old stack removable.
+
+## Backup, Migration, and Rollback Evidence
+
+Control Center acceptance reports require machine-readable evidence that B1 backups, old-stack backups, restore rehearsal, migration review, and rollback rehearsal have all completed. Generate this evidence after:
+
+- a B1 backup was created and verified
+- that B1 backup was restored to an alternate directory and produced `restore-report.json`
+- the old-stack inventory, old-stack backup, Open WebUI migration plan, and cutover plan were reviewed
+- the cutover plan has no unresolved warnings
+- rollback commands were rehearsed and old resources remain preserved
+
+Create a rollback rehearsal report such as:
+
+```json
+{
+  "format": "b1-ai-hub-rollback-rehearsal/v1",
+  "generated_at": "2026-07-24T12:56:00+00:00",
+  "status": "ok",
+  "cutover_plan": "/srv/b1-ai-hub/backups/cutover-plan.json",
+  "rehearsed_by": "operator-name",
+  "checks": {
+    "rollback_commands_tested": {"status": "ok"},
+    "old_resources_preserved": {"status": "ok"}
+  }
+}
+```
+
+Then generate the handoff evidence:
+
+```bash
+make backup-migration-rollback-evidence \
+  B1_BACKUP_DIR=/srv/b1-ai-hub/backups/20260722-130000 \
+  RESTORE_REPORT=/srv/b1-ai-hub/restore-tests/20260722-130000/restore-report.json \
+  INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.json \
+  OLD_STACK_BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-120000 \
+  OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json \
+  CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \
+  ROLLBACK_REPORT=/srv/b1-ai-hub/backups/rollback-rehearsal.json
+```
+
+This writes `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` in the `b1-ai-hub-backup-migration-rollback-acceptance/v1` format. The generator verifies the B1 backup archive and PostgreSQL dump coverage, matches the restore report to that backup, verifies the old-stack backup archive, checks that the Open WebUI and cutover plans reference the same inventory and old-stack backup, rejects unresolved plan warnings, and refuses to emit green evidence without the rollback rehearsal checks.

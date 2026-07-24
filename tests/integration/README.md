@@ -85,6 +85,23 @@ make restart-reconciliation-acceptance
 
 By default the harness requires at least one requeued waiting job and at least one active job marked `recovery_required`. Override `B1_RESTART_RECONCILIATION_MIN_REQUEUED` or `B1_RESTART_RECONCILIATION_MIN_MARKED_RECOVERY_REQUIRED` only for a labelled development dry run; production handoff should keep both at their default value of `1`.
 
+## Backup, Migration, and Rollback Evidence
+
+Backup, restore, migration, and rollback proof is generated from reviewed files rather than through a live API harness. After creating and verifying a B1 backup, restoring it to an alternate directory, verifying the old-stack backup, reviewing the Open WebUI migration plan and cutover plan, and writing a rollback rehearsal report, run:
+
+```bash
+make backup-migration-rollback-evidence \
+  B1_BACKUP_DIR=/srv/b1-ai-hub/backups/20260722-130000 \
+  RESTORE_REPORT=/srv/b1-ai-hub/restore-tests/20260722-130000/restore-report.json \
+  INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.json \
+  OLD_STACK_BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-120000 \
+  OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json \
+  CUTOVER_PLAN=/srv/b1-ai-hub/backups/cutover-plan.json \
+  ROLLBACK_REPORT=/srv/b1-ai-hub/backups/rollback-rehearsal.json
+```
+
+The generator writes `b1-ai-hub-backup-migration-rollback-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/` and Control Center blocks handoff if any required check is missing or incomplete.
+
 Use the same TLS helper variables as smoke tests when testing through the Caddy internal CA or temporary hostnames:
 
 - `B1_INTEGRATION_CA_FILE`

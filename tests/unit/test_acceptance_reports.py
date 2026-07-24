@@ -358,6 +358,39 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "sample_count": 2,
             "sample_labels": ["startup-reconciliation", "recovered-job-counts"],
         },
+        "backup_migration_rollback": {
+            "available": True,
+            "format": "b1-ai-hub-backup-migration-rollback-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/backup-migration-rollback.json",
+            "generated_at": "2026-07-24T12:56:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "b1_backup_created",
+                "b1_backup_verified",
+                "b1_restore_rehearsed",
+                "old_stack_inventory_reviewed",
+                "old_stack_backup_verified",
+                "open_webui_migration_plan_reviewed",
+                "cutover_plan_reviewed",
+                "rollback_rehearsed",
+                "old_resources_preserved",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "b1_backup_created": {"status": "ok", "recorded_at": "2026-07-24T12:45:00+00:00"},
+                "b1_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
+                "b1_restore_rehearsed": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "old_stack_inventory_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
+                "old_stack_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "open_webui_migration_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "cutover_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
+                "rollback_rehearsed": {"status": "ok", "recorded_at": "2026-07-24T12:55:00+00:00"},
+                "old_resources_preserved": {"status": "ok", "recorded_at": "2026-07-24T12:56:00+00:00"},
+            },
+            "sample_count": 4,
+            "sample_labels": ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"],
+        },
     }
     payload.update(overrides)
     return payload
@@ -1039,6 +1072,45 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_backup_migration_rollback_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["backup_migration_rollback"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["backup_migration_rollback_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("backup, migration, and rollback evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_backup_migration_rollback_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["backup_migration_rollback"] = {
+            **live_evidence["backup_migration_rollback"],
+            "status": "incomplete",
+            "missing_checks": ["b1_restore_rehearsed", "rollback_rehearsed"],
+            "checks": {
+                "b1_backup_created": {"status": "ok", "recorded_at": "2026-07-24T12:45:00+00:00"},
+                "b1_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
+                "old_stack_inventory_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
+                "old_stack_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "open_webui_migration_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "cutover_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
+                "old_resources_preserved": {"status": "ok", "recorded_at": "2026-07-24T12:56:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["backup_migration_rollback_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("backup, migration, and rollback evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "backup, migration, and rollback evidence is missing required checks: b1_restore_rehearsed, rollback_rehearsed",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -1410,6 +1482,35 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            backup_rollback = evidence_root / "backup-migration-rollback.json"
+            backup_rollback.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-backup-migration-rollback-acceptance/v1",
+                        "generated_at": "2026-07-24T12:56:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "b1_backup_created": {"status": "ok"},
+                            "b1_backup_verified": {"status": "ok"},
+                            "b1_restore_rehearsed": {"status": "ok"},
+                            "old_stack_inventory_reviewed": {"status": "ok"},
+                            "old_stack_backup_verified": {"status": "ok"},
+                            "open_webui_migration_plan_reviewed": {"status": "ok"},
+                            "cutover_plan_reviewed": {"status": "ok"},
+                            "rollback_rehearsed": {"status": "ok"},
+                            "old_resources_preserved": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "b1-backup"},
+                            {"label": "restore-test"},
+                            {"label": "old-stack-backup"},
+                            {"label": "rollback-runbook"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -1473,6 +1574,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(restart["status"], "ok")
         self.assertEqual(restart["missing_checks"], [])
         self.assertEqual(restart["sample_count"], 2)
+        backup = snapshot["backup_migration_rollback"]
+        self.assertTrue(backup["available"])
+        self.assertEqual(backup["source_path"], str(backup_rollback.resolve()))
+        self.assertEqual(backup["status"], "ok")
+        self.assertEqual(backup["missing_checks"], [])
+        self.assertEqual(backup["sample_count"], 4)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):

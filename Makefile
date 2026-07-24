@@ -9,9 +9,10 @@ B1_DATA_ROOT ?= /srv/b1-ai-hub
 B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
+B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
 CADDY_IMAGE ?= caddy:2.10.2-alpine
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -119,6 +120,16 @@ restore:
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/backup is required" >&2; exit 2)
 	@test -n "$(RESTORE_ROOT)" || (echo "RESTORE_ROOT=/path/to/alternate/root is required" >&2; exit 2)
 	python3 deploy/scripts/restore.py --backup "$(BACKUP)" --target "$(RESTORE_ROOT)" --backup-encryption-key-file "$(B1_BACKUP_ENCRYPTION_KEY_FILE)"
+
+backup-migration-rollback-evidence:
+	@test -n "$(B1_BACKUP_DIR)" || (echo "B1_BACKUP_DIR=/path/to/b1-backup is required" >&2; exit 2)
+	@test -n "$(RESTORE_REPORT)" || (echo "RESTORE_REPORT=/path/to/restore-report.json is required" >&2; exit 2)
+	@test -n "$(INVENTORY)" || (echo "INVENTORY=/path/to/inventory.json is required" >&2; exit 2)
+	@test -n "$(OLD_STACK_BACKUP)" || (echo "OLD_STACK_BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
+	@test -n "$(OPEN_WEBUI_PLAN)" || (echo "OPEN_WEBUI_PLAN=/path/to/open-webui-migration-plan.json is required" >&2; exit 2)
+	@test -n "$(CUTOVER_PLAN)" || (echo "CUTOVER_PLAN=/path/to/cutover-plan.json is required" >&2; exit 2)
+	@test -n "$(ROLLBACK_REPORT)" || (echo "ROLLBACK_REPORT=/path/to/rollback-rehearsal.json is required" >&2; exit 2)
+	python3 deploy/scripts/backup_migration_rollback_evidence.py --b1-backup "$(B1_BACKUP_DIR)" --restore-report "$(RESTORE_REPORT)" --inventory "$(INVENTORY)" --old-stack-backup "$(OLD_STACK_BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" --cutover-plan "$(CUTOVER_PLAN)" --rollback-report "$(ROLLBACK_REPORT)" --output "$(B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE)" --backup-encryption-key-file "$(B1_BACKUP_ENCRYPTION_KEY_FILE)"
 
 up:
 	docker compose up -d

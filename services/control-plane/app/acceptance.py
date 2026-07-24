@@ -97,6 +97,18 @@ RESTART_RECONCILIATION_REQUIRED_CHECKS = (
     "waiting_jobs_requeued",
     "active_jobs_marked_recovery_required",
 )
+BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT = "b1-ai-hub-backup-migration-rollback-acceptance/v1"
+BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS = (
+    "b1_backup_created",
+    "b1_backup_verified",
+    "b1_restore_rehearsed",
+    "old_stack_inventory_reviewed",
+    "old_stack_backup_verified",
+    "open_webui_migration_plan_reviewed",
+    "cutover_plan_reviewed",
+    "rollback_rehearsed",
+    "old_resources_preserved",
+)
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -123,6 +135,7 @@ LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
     ("voicebox_remote", "Voicebox remote compatibility"),
     ("security_acceptance", "security acceptance"),
     ("restart_reconciliation", "restart reconciliation"),
+    ("backup_migration_rollback", "backup, migration, and rollback acceptance"),
 )
 
 
@@ -634,6 +647,36 @@ def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_pat
     }
 
 
+def backup_migration_rollback_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported backup/migration/rollback acceptance evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
         "live_stack_smoke": {"available": False, "reason": reason, "root": str(root)},
@@ -646,6 +689,7 @@ def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
         "voicebox_remote": {"available": False, "reason": reason, "root": str(root)},
         "security_acceptance": {"available": False, "reason": reason, "root": str(root)},
         "restart_reconciliation": {"available": False, "reason": reason, "root": str(root)},
+        "backup_migration_rollback": {"available": False, "reason": reason, "root": str(root)},
     }
 
 
@@ -710,6 +754,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == RESTART_RECONCILIATION_EVIDENCE_FORMAT and "restart_reconciliation" not in found:
             snapshots["restart_reconciliation"] = restart_reconciliation_evidence_snapshot(payload, path.resolve())
             found.add("restart_reconciliation")
+        elif payload.get("format") == BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT and "backup_migration_rollback" not in found:
+            snapshots["backup_migration_rollback"] = backup_migration_rollback_evidence_snapshot(payload, path.resolve())
+            found.add("backup_migration_rollback")
         if found == {
             "live_stack_smoke",
             "gpu_acceptance",
@@ -721,6 +768,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             "voicebox_remote",
             "security_acceptance",
             "restart_reconciliation",
+            "backup_migration_rollback",
         }:
             break
     return snapshots
@@ -934,6 +982,20 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append(
                 "restart reconciliation evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks)
             )
+    backup_evidence = (
+        live_evidence.get("backup_migration_rollback") if isinstance(live_evidence.get("backup_migration_rollback"), dict) else {}
+    )
+    if backup_evidence.get("available") is not True:
+        blockers.append("backup, migration, and rollback evidence is unavailable")
+    else:
+        if backup_evidence.get("status") != "ok":
+            blockers.append(f"backup, migration, and rollback evidence status is {backup_evidence.get('status', 'unknown')}")
+        missing_checks = backup_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append(
+                "backup, migration, and rollback evidence is missing required checks: "
+                + ", ".join(str(item) for item in missing_checks)
+            )
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     if preservation.get("available") is not True:
         blockers.append("cutover preservation plan is unavailable")
@@ -1023,6 +1085,7 @@ def build_report(
             "voicebox_remote": {"available": False, "reason": "not supplied"},
             "security_acceptance": {"available": False, "reason": "not supplied"},
             "restart_reconciliation": {"available": False, "reason": "not supplied"},
+            "backup_migration_rollback": {"available": False, "reason": "not supplied"},
         },
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
@@ -1145,9 +1208,9 @@ def markdown_report(report: dict[str, Any]) -> str:
         "source_path",
         "created_at",
         "reviewed_by",
-            "old_stack_backup_verification_status",
-            "resource_count",
-        ):
+        "old_stack_backup_verification_status",
+        "resource_count",
+    ):
         preservation_summary_rows.append([key, _format_value(preservation.get(key))])
     cutover_warnings = _as_string_list(preservation.get("warnings"))
     preservation_summary_rows.append(["warning_count", _format_value(len(cutover_warnings))])
@@ -1188,6 +1251,9 @@ def markdown_report(report: dict[str, Any]) -> str:
     security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
     restart_reconciliation_evidence = (
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
+    )
+    backup_evidence = (
+        live_evidence.get("backup_migration_rollback") if isinstance(live_evidence.get("backup_migration_rollback"), dict) else {}
     )
 
     source_control = report.get("source_control") or {}
@@ -1305,6 +1371,12 @@ def markdown_report(report: dict[str, Any]) -> str:
                 "Restart reconciliation",
                 restart_reconciliation_evidence,
                 "No restart reconciliation checks recorded.",
+            )
+            + "\n\n"
+            + _live_evidence_markdown(
+                "Backup, migration, and rollback acceptance",
+                backup_evidence,
+                "No backup, migration, and rollback checks recorded.",
             ),
             "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
@@ -1375,6 +1447,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     restart_reconciliation_evidence = (
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
     )
+    backup_evidence = (
+        live_evidence.get("backup_migration_rollback") if isinstance(live_evidence.get("backup_migration_rollback"), dict) else {}
+    )
     freshness_failures = _live_evidence_freshness_failures(report)
     smoke_evidence_ready = (
         smoke_evidence.get("available") is True
@@ -1436,6 +1511,12 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not restart_reconciliation_evidence.get("missing_checks")
         and "restart_reconciliation" not in freshness_failures
     )
+    backup_migration_rollback_evidence_ready = (
+        backup_evidence.get("available") is True
+        and backup_evidence.get("status") == "ok"
+        and not backup_evidence.get("missing_checks")
+        and "backup_migration_rollback" not in freshness_failures
+    )
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -1468,6 +1549,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "voicebox_evidence_ready": voicebox_evidence_ready,
         "security_evidence_ready": security_evidence_ready,
         "restart_reconciliation_evidence_ready": restart_reconciliation_evidence_ready,
+        "backup_migration_rollback_evidence_ready": backup_migration_rollback_evidence_ready,
         "live_evidence_freshness_ready": not freshness_failures,
         "live_evidence_ready": (
             not freshness_failures
@@ -1481,6 +1563,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and voicebox_evidence_ready
             and security_evidence_ready
             and restart_reconciliation_evidence_ready
+            and backup_migration_rollback_evidence_ready
         ),
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
