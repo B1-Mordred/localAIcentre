@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -17,6 +18,8 @@ ROLES = {"admin", "operator", "creator", "user", "service"}
 REDISTRIBUTION_POLICIES = {"downloadable", "inference-only", "restricted"}
 SOURCE_TYPES = {"catalog", "huggingface", "direct-url", "upload"}
 DEPRECATION_STATUSES = {"active", "deprecated", "replaced", "removed"}
+MEASUREMENT_SCHEMA = "b1-ai-hub-model-measurements/v1"
+MEASUREMENT_RUN_STATUSES = {"ok", "warning", "failed", "skipped", "unconfirmed"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
@@ -663,8 +666,26 @@ def _parse_deprecation(data: Any, context: str) -> ModelDeprecation:
     )
 
 
-def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
+def _validate_timestamp(value: str, context: str) -> None:
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CatalogError(f"{context} must be an ISO-8601 timestamp") from exc
+
+
+def _parse_measurements(
+    data: Any,
+    context: str,
+    *,
+    require_complete: bool = False,
+    manifest_id: str | None = None,
+    manifest_version: str | None = None,
+    runtimes: list[str] | None = None,
+    aliases: list[str] | None = None,
+) -> dict[str, Any]:
     if data is None:
+        if require_complete:
+            raise CatalogError(f"{context} is required for available model recommendations")
         return {}
     if not isinstance(data, dict):
         raise CatalogError(f"{context} must be an object")
@@ -683,21 +704,26 @@ def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
         raise CatalogError(f"{context} must be JSON serializable") from exc
     if len(encoded.encode("utf-8")) > 65536:
         raise CatalogError(f"{context} exceeds 65536 bytes")
-    schema = data.get("schema")
-    if schema is not None and schema != "b1-ai-hub-model-measurements/v1":
-        raise CatalogError(f"{context}.schema is unsupported: {schema}")
-    for key in ("updated_at", "source"):
-        if key in data and not isinstance(data[key], str):
-            raise CatalogError(f"{context}.{key} must be a string")
     source = data.get("source")
     if isinstance(source, str) and ":latest" in source:
         raise CatalogError(f"{context}.source must not reference floating latest tags")
+    _require_keys(data, allowed, context)
+    schema = data.get("schema")
+    if schema is not None and schema != MEASUREMENT_SCHEMA:
+        raise CatalogError(f"{context}.schema is unsupported: {schema}")
+    for key in ("updated_at", "source"):
+        if key in data and (not isinstance(data[key], str) or not data[key].strip()):
+            raise CatalogError(f"{context}.{key} must be a non-empty string")
+    if isinstance(data.get("updated_at"), str):
+        _validate_timestamp(data["updated_at"], f"{context}.updated_at")
     for key in ("original_resource_estimate", "latest_resource_estimate"):
         if key in data:
             _parse_resource(data[key], f"{context}.{key}")
     runs = data.get("runs", [])
     if not isinstance(runs, list):
         raise CatalogError(f"{context}.runs must be a list")
+    if not runs:
+        raise CatalogError(f"{context}.runs must contain at least one measured run")
     if len(runs) > 100:
         raise CatalogError(f"{context}.runs may keep at most 100 entries")
     run_allowed = {
@@ -719,23 +745,68 @@ def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
         "error",
     }
     for index, run in enumerate(runs):
+        run_context = f"{context}.runs[{index}]"
         if not isinstance(run, dict):
-            raise CatalogError(f"{context}.runs[{index}] must be an object")
-        _forbid_extra_keys(run, run_allowed, f"{context}.runs[{index}]")
+            raise CatalogError(f"{run_context} must be an object")
+        _forbid_extra_keys(run, run_allowed, run_context)
+        _require_keys(run, {"id", "type", "status", "runtime", "model_alias", "resolved_model_version", "peak_vram_mib"}, run_context)
         for key in ("id", "type", "status", "runtime", "model_alias", "resolved_model_version", "started_at", "completed_at", "error"):
-            if key in run and not isinstance(run[key], str):
-                raise CatalogError(f"{context}.runs[{index}].{key} must be a string")
+            if key in run and (not isinstance(run[key], str) or not run[key].strip()):
+                raise CatalogError(f"{run_context}.{key} must be a non-empty string")
+        if "status" in run and run["status"] not in MEASUREMENT_RUN_STATUSES:
+            raise CatalogError(f"{run_context}.status is unsupported: {run['status']}")
+        if "runtime" in run and run["runtime"] not in RUNTIME_NAMES:
+            raise CatalogError(f"{run_context}.runtime is unsupported: {run['runtime']}")
+        if require_complete and runtimes is not None and run.get("runtime") not in set(runtimes):
+            raise CatalogError(f"{run_context}.runtime must be listed in manifest runtimes")
+        if require_complete and aliases and run.get("model_alias") not in set(aliases):
+            raise CatalogError(f"{run_context}.model_alias must be listed in manifest aliases")
+        if require_complete and manifest_id and manifest_version:
+            expected = f"{manifest_id}@{manifest_version}"
+            if run.get("resolved_model_version") != expected:
+                raise CatalogError(f"{run_context}.resolved_model_version must be {expected}")
         for key in ("duration_ms", "load_time_ms", "run_time_ms", "peak_vram_mib", "peak_ram_mib"):
             if key in run and (not isinstance(run[key], int) or run[key] < 0):
-                raise CatalogError(f"{context}.runs[{index}].{key} must be a non-negative integer")
+                raise CatalogError(f"{run_context}.{key} must be a non-negative integer")
+        for key in ("started_at", "completed_at"):
+            if isinstance(run.get(key), str):
+                _validate_timestamp(run[key], f"{run_context}.{key}")
         if "resource_estimate" in run:
-            _parse_resource(run["resource_estimate"], f"{context}.runs[{index}].resource_estimate")
+            _parse_resource(run["resource_estimate"], f"{run_context}.resource_estimate")
         if "hook" in run and not isinstance(run["hook"], dict):
-            raise CatalogError(f"{context}.runs[{index}].hook must be an object")
+            raise CatalogError(f"{run_context}.hook must be an object")
+    if require_complete and not any(run.get("status") == "ok" for run in runs):
+        raise CatalogError(f"{context}.runs must contain at least one ok measurement")
     return dict(data)
 
 
-def _parse_manifest(data: dict[str, Any], context: str) -> ModelManifest:
+def _validate_available_recommendation(
+    context: str,
+    *,
+    source: ManifestSource,
+    license_info: ModelLicense,
+    aliases: list[str],
+) -> None:
+    if source.type == "upload":
+        raise CatalogError(f"{context}.source.type upload cannot be an available catalog recommendation")
+    if not source.url.strip() or not source.revision.strip():
+        raise CatalogError(f"{context}.source must declare a download URL and immutable revision")
+    if not aliases:
+        raise CatalogError(f"{context}.aliases must name at least one public alias for an available recommendation")
+    if not license_info.url:
+        raise CatalogError(f"{context}.license.url is required for available model recommendations")
+    if not license_info.attribution:
+        raise CatalogError(f"{context}.license.attribution is required for available model recommendations")
+    if license_info.acceptance_required is None:
+        raise CatalogError(f"{context}.license.acceptance_required must be declared for available model recommendations")
+
+
+def _parse_manifest(
+    data: dict[str, Any],
+    context: str,
+    *,
+    require_available_recommendation_metadata: bool = False,
+) -> ModelManifest:
     required = {"id", "version", "display_name", "modality", "operations", "source", "files", "runtimes", "preferred_runtime", "resource_estimate", "license", "execution_modes"}
     allowed = required | {
         "description",
@@ -769,28 +840,44 @@ def _parse_manifest(data: dict[str, Any], context: str) -> ModelManifest:
     license_info = _parse_license(data["license"], f"{context}.license")
     if license_info.redistribution == "inference-only" and set(execution_modes) - {"hosted-inference"}:
         raise CatalogError(f"{context} inference-only models cannot be downloadable or network-shared")
+    version = _string(data, "version", context)
+    source = _parse_source(data["source"], f"{context}.source")
+    files_parsed = [_parse_file(item, f"{context}.files[{index}]") for index, item in enumerate(files)]
+    resource_estimate = _parse_resource(data["resource_estimate"], f"{context}.resource_estimate")
+    aliases = [_validate_id(alias, f"{context}.aliases[]") for alias in _string_list(data, "aliases", context) if alias] if "aliases" in data else []
+    if installation_status == "available" and require_available_recommendation_metadata:
+        _validate_available_recommendation(context, source=source, license_info=license_info, aliases=aliases)
+    measurements = _parse_measurements(
+        data.get("measurements"),
+        f"{context}.measurements",
+        require_complete=installation_status == "available" and require_available_recommendation_metadata,
+        manifest_id=model_id,
+        manifest_version=version,
+        runtimes=runtimes,
+        aliases=aliases,
+    )
     return ModelManifest(
         id=model_id,
-        version=_string(data, "version", context),
+        version=version,
         display_name=_string(data, "display_name", context),
         description=_optional_string(data, "description", context),
         modality=modality,
         operations=_operation_list(data, "operations", modality, context),
-        source=_parse_source(data["source"], f"{context}.source"),
-        files=[_parse_file(item, f"{context}.files[{index}]") for index, item in enumerate(files)],
+        source=source,
+        files=files_parsed,
         runtimes=runtimes,
         preferred_runtime=preferred_runtime,
-        resource_estimate=_parse_resource(data["resource_estimate"], f"{context}.resource_estimate"),
+        resource_estimate=resource_estimate,
         license=license_info,
         execution_modes=execution_modes,
         installation_status=installation_status,
-        aliases=[_validate_id(alias, f"{context}.aliases[]") for alias in _string_list(data, "aliases", context) if alias] if "aliases" in data else [],
+        aliases=aliases,
         visibility_roles=_string_list(data, "visibility_roles", context, ROLES) if "visibility_roles" in data else [],
         permissions=_parse_permissions(data.get("permissions"), f"{context}.permissions"),
         runtime_adapter_versions=_parse_runtime_adapter_versions(data.get("runtime_adapter_versions"), runtimes, f"{context}.runtime_adapter_versions"),
         companion_files=_parse_companion_files(data.get("companion_files"), f"{context}.companion_files"),
         deprecation=_parse_deprecation(data.get("deprecation"), f"{context}.deprecation"),
-        measurements=_parse_measurements(data.get("measurements"), f"{context}.measurements"),
+        measurements=measurements,
     )
 
 
@@ -915,7 +1002,10 @@ def load_catalog(
     try:
         aliases = _parse_aliases(_read_json(aliases_path), str(aliases_path))
         aliases = _apply_alias_policies(aliases, alias_policies)
-        seed_manifests = [_parse_manifest(_read_json(path), str(path)) for path in sorted(seed_dir.glob("*.manifest.json"))]
+        seed_manifests = [
+            _parse_manifest(_read_json(path), str(path), require_available_recommendation_metadata=True)
+            for path in sorted(seed_dir.glob("*.manifest.json"))
+        ]
         installed_manifests = [
             replace(_parse_manifest(item, f"installed_manifests[{index}]"), installation_status="installed")
             for index, item in enumerate(extra_manifests or [])

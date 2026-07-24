@@ -226,10 +226,18 @@
     },
     "measurements": {
       "type": "object",
+      "required": [
+        "schema",
+        "updated_at",
+        "source",
+        "original_resource_estimate",
+        "latest_resource_estimate",
+        "runs"
+      ],
       "properties": {
         "schema": { "type": "string", "enum": ["b1-ai-hub-model-measurements/v1"] },
-        "updated_at": { "type": "string" },
-        "source": { "type": "string", "not": { "pattern": ":latest" } },
+        "updated_at": { "type": "string", "format": "date-time", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1, "not": { "pattern": ":latest" } },
         "original_resource_estimate": {
           "type": "object",
           "required": ["vram_gib", "ram_gib", "disk_gib"],
@@ -258,18 +266,20 @@
         },
         "runs": {
           "type": "array",
+          "minItems": 1,
           "maxItems": 100,
           "items": {
             "type": "object",
+            "required": ["id", "type", "status", "runtime", "model_alias", "resolved_model_version", "peak_vram_mib"],
             "properties": {
-              "id": { "type": "string" },
-              "type": { "type": "string" },
-              "status": { "type": "string" },
-              "runtime": { "type": "string" },
-              "model_alias": { "type": "string" },
-              "resolved_model_version": { "type": "string" },
-              "started_at": { "type": "string" },
-              "completed_at": { "type": "string" },
+              "id": { "type": "string", "minLength": 1 },
+              "type": { "type": "string", "minLength": 1 },
+              "status": { "type": "string", "enum": ["ok", "warning", "failed", "skipped", "unconfirmed"] },
+              "runtime": { "type": "string", "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+              "model_alias": { "type": "string", "minLength": 1 },
+              "resolved_model_version": { "type": "string", "minLength": 1 },
+              "started_at": { "type": "string", "format": "date-time" },
+              "completed_at": { "type": "string", "format": "date-time" },
               "duration_ms": { "type": "integer", "minimum": 0 },
               "load_time_ms": { "type": "integer", "minimum": 0 },
               "run_time_ms": { "type": "integer", "minimum": 0 },

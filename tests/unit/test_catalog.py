@@ -14,6 +14,36 @@ from app.catalog import CatalogError, load_catalog  # noqa: E402
 from app.scheduler import ResourcePolicy  # noqa: E402
 
 
+def recommendation_measurements(
+    *,
+    model_id: str = "embedding-model",
+    version: str = "1.0.0",
+    alias: str = "embedding-default",
+    runtime: str = "audio-cpu",
+    estimate: dict[str, float | int] | None = None,
+    source: str = "local docker smoke on b1-ai-hub-audio-cpu validation build",
+) -> dict[str, object]:
+    resource = estimate or {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1}
+    return {
+        "schema": "b1-ai-hub-model-measurements/v1",
+        "updated_at": "2026-07-23T00:00:00+00:00",
+        "source": source,
+        "original_resource_estimate": dict(resource),
+        "latest_resource_estimate": dict(resource),
+        "runs": [
+            {
+                "id": f"{model_id}-local-smoke-20260723",
+                "type": "catalog-smoke",
+                "status": "ok",
+                "runtime": runtime,
+                "model_alias": alias,
+                "resolved_model_version": f"{model_id}@{version}",
+                "peak_vram_mib": 0,
+            }
+        ],
+    }
+
+
 class CatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.policy = ResourcePolicy()
@@ -62,6 +92,14 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(set(manifest) - properties, set(), manifest_path.name)
             measurements = manifest.get("measurements", {})
             self.assertNotIn(":latest", measurements.get("source", ""), manifest_path.name)
+            if manifest.get("installation_status") == "available":
+                self.assertTrue(measurements, manifest_path.name)
+                self.assertIn("updated_at", measurements, manifest_path.name)
+                self.assertIn("latest_resource_estimate", measurements, manifest_path.name)
+                self.assertGreaterEqual(len(measurements.get("runs", [])), 1, manifest_path.name)
+                self.assertIn("url", manifest["license"], manifest_path.name)
+                self.assertIn("attribution", manifest["license"], manifest_path.name)
+                self.assertIn("acceptance_required", manifest["license"], manifest_path.name)
 
     def test_manifest_measurements_reject_floating_latest_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,7 +128,21 @@ class CatalogTests(unittest.TestCase):
                         "aliases": ["embedding-default"],
                         "measurements": {
                             "schema": "b1-ai-hub-model-measurements/v1",
+                            "updated_at": "2026-07-23T00:00:00+00:00",
                             "source": "local docker smoke on b1-ai-hub-audio-cpu:latest",
+                            "original_resource_estimate": {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1},
+                            "latest_resource_estimate": {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1},
+                            "runs": [
+                                {
+                                    "id": "embedding-model-local-smoke-20260723",
+                                    "type": "catalog-smoke",
+                                    "status": "ok",
+                                    "runtime": "audio-cpu",
+                                    "model_alias": "embedding-default",
+                                    "resolved_model_version": "embedding-model@1.0.0",
+                                    "peak_vram_mib": 0,
+                                }
+                            ],
                         },
                     }
                 ),
@@ -404,10 +456,23 @@ class CatalogTests(unittest.TestCase):
                 "runtimes": ["localai"],
                 "preferred_runtime": "localai",
                 "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
-                "license": {"name": "test", "redistribution": "downloadable"},
+                "license": {
+                    "name": "test",
+                    "url": "https://licenses.example.org/test",
+                    "redistribution": "downloadable",
+                    "attribution": "Synthetic catalog recommendation for parser tests.",
+                    "acceptance_required": False,
+                },
                 "execution_modes": ["hosted-inference", "downloadable"],
                 "installation_status": "available",
                 "aliases": ["chat-default"],
+                "measurements": recommendation_measurements(
+                    model_id="chat-candidate",
+                    version="1.0.0",
+                    alias="chat-default",
+                    runtime="localai",
+                    estimate={"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+                ),
             }
             (seed / "candidate.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -429,6 +494,60 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(installed_alias.manifest.installation_status, "installed")
             self.assertEqual(installed_candidate["status"], "installed")
             self.assertTrue(installed_candidate["downloadable"])
+
+    def test_available_manifest_requires_recommendation_evidence(self) -> None:
+        base_manifest = {
+            "id": "chat-candidate",
+            "version": "1.0.0",
+            "display_name": "Chat Candidate",
+            "modality": "llm",
+            "operations": ["chat"],
+            "source": {"type": "direct-url", "url": "https://downloads.example.org/models/", "revision": "1.0.0"},
+            "files": [{"path": "chat-candidate.gguf", "sha256": "1" * 64, "size_bytes": 12}],
+            "runtimes": ["localai"],
+            "preferred_runtime": "localai",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+            "license": {
+                "name": "test",
+                "url": "https://licenses.example.org/test",
+                "redistribution": "downloadable",
+                "attribution": "Synthetic catalog recommendation for parser tests.",
+                "acceptance_required": False,
+            },
+            "execution_modes": ["hosted-inference", "downloadable"],
+            "installation_status": "available",
+            "aliases": ["chat-default"],
+        }
+        cases = [
+            ({}, "measurements is required"),
+            ({"license": {"name": "test", "redistribution": "downloadable", "attribution": "missing URL", "acceptance_required": False}}, "license.url is required"),
+            (
+                {
+                    "measurements": recommendation_measurements(
+                        model_id="different-model",
+                        version="1.0.0",
+                        alias="chat-default",
+                        runtime="localai",
+                        estimate={"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+                    )
+                },
+                "resolved_model_version must be chat-candidate@1.0.0",
+            ),
+        ]
+        for overlay, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                seed = root / "seed"
+                seed.mkdir()
+                (seed / "aliases.json").write_text(
+                    json.dumps({"aliases": [{"alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled"}]}),
+                    encoding="utf-8",
+                )
+                manifest = {**base_manifest, **overlay}
+                (seed / "candidate.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(CatalogError, message):
+                    load_catalog(root, self.policy)
 
     def test_installed_manifest_exposes_smoke_measurements_and_measured_resource_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

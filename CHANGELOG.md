@@ -78,6 +78,7 @@
 - Bound the Caddy admin API to loopback inside the gateway container and added Compose policy coverage so the normal HTTPS virtual hosts remain the only exposed gateway management surface.
 - Made `b1-model-client` recover stale partial blob downloads by retrying once from byte zero after an HTTP 416 resume rejection, while still verifying ETag, size, and SHA-256 before publication.
 - Digest-pinned the remaining base Compose images and B1-owned Dockerfile base images, with regression coverage for immutable third-party image references.
+- Hardened seed model recommendations so `available` manifests must include auditable license/source metadata and complete measured-run evidence tied to the exact immutable model version.
 - Removed broad mutable package-upgrade steps from B1-owned Dockerfiles and added policy coverage so rebuilds stay tied to pinned base images and locked dependencies.
 - Added offline compatibility harness discovery and security policy checks to the default `make validate` path, with CI regression coverage so these non-live acceptance suites and the digest-pinned Caddy validation image cannot drift out of validation.
 - Added a repository-wide Python source compilation gate to `make validate`, using a temporary bytecode cache so validation does not depend on writable ignored `__pycache__` directories.
