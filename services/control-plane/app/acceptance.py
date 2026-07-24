@@ -952,6 +952,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("cutover hardware readiness is unavailable")
         elif hardware.get("accepted") is not True or hardware.get("operator_must_review_hardware") is True:
             blockers.append("cutover hardware readiness requires operator review")
+        open_webui = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
+        if open_webui.get("plan_supplied") is not True:
+            blockers.append("Open WebUI preservation plan is missing from cutover plan")
+        elif open_webui.get("operator_must_review_open_webui") is True:
+            blockers.append("Open WebUI preservation requires operator review before handoff")
     return blockers
 
 
@@ -1121,6 +1126,7 @@ def markdown_report(report: dict[str, Any]) -> str:
 
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
     preserved_rows = [["Class", "Value"]]
     resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
     for key, label in (
@@ -1151,6 +1157,15 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         if key in hardware_readiness:
             preservation_summary_rows.append([f"hardware.{key}", _format_value(hardware_readiness.get(key))])
+    for key in (
+        "plan_supplied",
+        "operator_must_review_open_webui",
+        "recommended_strategy",
+        "compatibility_status",
+        "requires_temporary_instance_validation",
+    ):
+        if key in open_webui_readiness:
+            preservation_summary_rows.append([f"open_webui.{key}", _format_value(open_webui_readiness.get(key))])
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
@@ -1333,6 +1348,10 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
+    open_webui_preservation_ready = (
+        open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True
+    )
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
@@ -1423,10 +1442,12 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and int(preservation.get("resource_count") or 0) > 0
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
-        and hardware_readiness.get("operator_must_review_hardware") is not True,
+        and hardware_readiness.get("operator_must_review_hardware") is not True
+        and open_webui_preservation_ready,
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,
+        "open_webui_preservation_ready": open_webui_preservation_ready,
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
         "localai_evidence_ready": localai_evidence_ready,

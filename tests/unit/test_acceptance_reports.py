@@ -1078,6 +1078,24 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_hardware_ready"])
         self.assertIn("cutover hardware readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_open_webui_preservation_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                open_webui_preservation={
+                    "plan_supplied": True,
+                    "operator_must_review_open_webui": True,
+                    "recommended_strategy": "back-up-open-webui-before-cutover",
+                    "plan_warnings": ["readable Open WebUI database was not preserved"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["open_webui_preservation_ready"])
+        self.assertIn("Open WebUI preservation requires operator review before handoff", report["acceptance_blockers"])
+
     def test_latest_cutover_preservation_snapshot_reads_only_direct_supported_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1097,7 +1115,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
-                "open_webui_preservation": {"plan_supplied": True},
+                "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
                 "warnings": ["review DNS"],
             }
             current = root / "cutover-plan.json"
@@ -1109,6 +1127,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["source_path"], str(current.resolve()))
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
+        self.assertFalse(snapshot["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
         self.assertEqual(snapshot["resource_count"], 3)
 

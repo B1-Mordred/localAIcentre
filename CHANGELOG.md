@@ -48,6 +48,7 @@
 - Aligned migration Makefile targets with `B1_BACKUP_ROOT` so old-stack inventory, scope, backup, migration-plan, and cutover-plan artifacts can be redirected away from an unwritable default `/srv` backup directory.
 - Added hardware-profile readiness to migration inventory, backup scopes, cutover plans, and live GPU acceptance so hosts below the initial 12 GB VRAM / 32 GB RAM baseline require explicit operator review and fail production handoff evidence.
 - Propagated cutover hardware-readiness into Control Center acceptance reports so below-baseline or missing hardware evidence blocks operator handoff.
+- Propagated Open WebUI preservation readiness into Control Center acceptance reports so missing or still-review-required preservation evidence blocks operator handoff.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.
