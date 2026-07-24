@@ -28,6 +28,17 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn("/v1/media/jobs/${job.id}/artifacts", self.source)
         self.assertIn("<History jobs={jobs} onRefresh={loadJobs} onSelect={loadHistoryArtifacts} />", self.source)
 
+    def test_artifact_outputs_are_previewed_with_authenticated_fetches(self) -> None:
+        self.assertIn("function artifactPreviewSource", self.source)
+        self.assertIn("attachAuthHeaders(headers, \"GET\")", self.source)
+        self.assertIn("fetch(apiUrl(artifact.url)", self.source)
+        self.assertIn("URL.createObjectURL(blob)", self.source)
+        self.assertIn("URL.revokeObjectURL(objectUrl)", self.source)
+        self.assertIn("function firstPreviewArtifact", self.source)
+        self.assertIn("mime.startsWith(\"image/\") || mime.startsWith(\"audio/\") || mime.startsWith(\"video/\")", self.source)
+        self.assertIn("<ArtifactPreview artifact={outputPreview} fallbackSource={preview} />", self.source)
+        self.assertIn("<ArtifactPreview artifact={outputPreview} />", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

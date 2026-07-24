@@ -326,6 +326,19 @@ textarea {
   overflow: hidden;
 }
 
+.preview.empty {
+  color: #66727d;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preview small {
+  color: #66727d;
+  max-width: calc(100% - 24px);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
 .preview img,
 .preview video {
   max-height: 260px;

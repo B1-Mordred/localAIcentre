@@ -245,6 +245,30 @@ async function downloadArtifact(artifact: Artifact): Promise<string> {
   return filename;
 }
 
+async function artifactPreviewSource(artifact: Artifact): Promise<{ src: string; mime: string }> {
+  const headers = new Headers();
+  attachAuthHeaders(headers, "GET");
+  const response = await fetch(apiUrl(artifact.url), {
+    credentials: "include",
+    headers
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+  const blob = await response.blob();
+  return {
+    src: URL.createObjectURL(blob),
+    mime: blob.type || artifact.mime_type || "application/octet-stream"
+  };
+}
+
 function parseSseEvent(raw: string): { event: string; data: string } | null {
   let event = "message";
   const data: string[] = [];
@@ -381,6 +405,67 @@ function previewSource(
     }
   }
   return null;
+}
+
+function firstPreviewArtifact(artifacts: Artifact[]): Artifact | null {
+  return artifacts.find((artifact) => {
+    const mime = artifact.mime_type || "";
+    return mime.startsWith("image/") || mime.startsWith("audio/") || mime.startsWith("video/");
+  }) ?? null;
+}
+
+function MediaPreview({ source, status }: { source: { src: string; mime: string } | null; status?: string }) {
+  return (
+    <div className={`preview ${source ? "" : "empty"}`}>
+      {source?.mime.startsWith("image/") && <img src={source.src} alt="" />}
+      {source?.mime.startsWith("audio/") && <audio src={source.src} controls />}
+      {source?.mime.startsWith("video/") && <video src={source.src} controls />}
+      {!source && (
+        <>
+          <Wand2 size={28} />
+          {status && <small>{status}</small>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ArtifactPreview({
+  artifact,
+  fallbackSource
+}: {
+  artifact: Artifact | null;
+  fallbackSource?: { src: string; mime: string } | null;
+}) {
+  const [loaded, setLoaded] = useState<{ src: string; mime: string } | null>(null);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    setLoaded(null);
+    setStatus(artifact ? "loading output preview" : "");
+    if (!artifact) return;
+    artifactPreviewSource(artifact)
+      .then((source) => {
+        objectUrl = source.src;
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setLoaded(source);
+        setStatus("");
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setStatus(error.message);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [artifact?.id, artifact?.url]);
+
+  return <MediaPreview source={loaded ?? fallbackSource ?? null} status={status || (artifact ? "preview unavailable" : "")} />;
 }
 
 function DependencyPill({ workflow }: { workflow: PublishedWorkflow }) {
@@ -550,6 +635,7 @@ function JobSummary({
   onDownload: (artifact: Artifact) => void;
 }) {
   const preview = previewSource(workflow, values, uploadPreviews);
+  const outputPreview = firstPreviewArtifact(artifacts);
   return (
     <aside className="resultpane">
       <div className="pane-title">
@@ -558,12 +644,7 @@ function JobSummary({
           <Square size={16} />Cancel
         </button>
       </div>
-      <div className="preview">
-        {preview?.mime.startsWith("image/") && <img src={preview.src} alt="" />}
-        {preview?.mime.startsWith("audio/") && <audio src={preview.src} controls />}
-        {preview?.mime.startsWith("video/") && <video src={preview.src} controls />}
-        {!preview && <Wand2 size={28} />}
-      </div>
+      <ArtifactPreview artifact={outputPreview} fallbackSource={preview} />
       <dl>
         <div><dt>Status</dt><dd>{job?.state ?? "idle"}</dd></div>
         <div><dt>Progress</dt><dd>{job?.progress ?? 0}%</dd></div>
@@ -920,6 +1001,7 @@ function HistoryDetail({
   };
   const formatPeak = (value?: number | null) => typeof value === "number" ? `${value} MiB` : "pending";
   const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : "pending";
+  const outputPreview = firstPreviewArtifact(artifacts);
 
   if (!job) {
     return (
@@ -938,6 +1020,7 @@ function HistoryDetail({
         <h2>Job Details</h2>
         <button title="Refresh artifacts" onClick={onRefreshArtifacts}><RefreshCw size={16} /></button>
       </div>
+      <ArtifactPreview artifact={outputPreview} />
       <dl>
         <div><dt>Job</dt><dd><code>{job.id}</code></dd></div>
         <div><dt>Status</dt><dd>{job.state} / {job.stage ?? "unknown"} / {job.progress ?? 0}%</dd></div>
