@@ -401,6 +401,8 @@ services:
       B1_CPU_EMBEDDING_ENGINE: ${B1_CPU_EMBEDDING_ENGINE:-}
       B1_CPU_STT_ENGINE: ${B1_CPU_STT_ENGINE:-}
       B1_CPU_AUDIO_ENABLE_PLACEHOLDER: ${B1_CPU_AUDIO_ENABLE_PLACEHOLDER:-true}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
       B1_CPU_AUDIO_MODEL_ROOT: /srv/b1-ai-hub/models
       B1_ONNX_EMBEDDING_MODEL_ROOT: /srv/b1-ai-hub/models
       B1_VOSK_STT_MODEL_ROOT: /srv/b1-ai-hub/models
@@ -421,6 +423,7 @@ services:
       B1_PIPER_TIMEOUT_SECONDS: ${B1_PIPER_TIMEOUT_SECONDS:-30}
     volumes:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/audio-cpu:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     networks:
       - runtime
       - app

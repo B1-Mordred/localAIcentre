@@ -297,9 +297,12 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assertEqual(environment["B1_CPU_AUDIO_ENGINE"], "${B1_CPU_AUDIO_ENGINE:-scaffold}")
         self.assertEqual(environment["B1_CPU_AUDIO_ENABLE_PLACEHOLDER"], "${B1_CPU_AUDIO_ENABLE_PLACEHOLDER:-true}")
+        self.assertEqual(environment["B1_RUNTIME_CONTROL_TOKEN_FILE"], "/run/secrets/runtime_control_token")
+        self.assertEqual(environment["B1_RUNTIME_CONTROL_REQUIRE_AUTH"], "${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}")
         self.assertEqual(environment["B1_CPU_AUDIO_MODEL_ROOT"], "/srv/b1-ai-hub/models")
         self.assertEqual(environment["B1_PIPER_BINARY"], "${B1_PIPER_BINARY:-/opt/piper/piper}")
         self.assertEqual(environment["B1_PIPER_MODEL_PATH"], "${B1_PIPER_MODEL_PATH:-}")
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", service.get("volumes", []))
 
     def test_production_env_selects_real_runtime_overlays_for_default_command(self) -> None:
         self.assertEqual(

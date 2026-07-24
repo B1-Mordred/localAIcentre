@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import math
@@ -43,6 +44,66 @@ def bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def read_secret_file(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def runtime_control_token() -> str:
+    value = os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip()
+    if value:
+        return value
+    token_file = os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip()
+    return read_secret_file(token_file) if token_file else ""
+
+
+def runtime_control_auth_required() -> bool:
+    configured = bool(os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip() or os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip())
+    return bool_env("B1_RUNTIME_CONTROL_REQUIRE_AUTH", configured)
+
+
+def bearer_token_from_header(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return ""
+    return token.strip()
+
+
+def authorization_header(headers: Any) -> str | None:
+    if not hasattr(headers, "get"):
+        return None
+    return headers.get("Authorization") or headers.get("authorization")
+
+
+def runtime_control_auth_failure(headers: Any) -> tuple[int, dict[str, Any]] | None:
+    token = runtime_control_token()
+    required = runtime_control_auth_required()
+    if not token and not required:
+        return None
+    if not token:
+        return 503, {
+            "status": "unconfigured",
+            "runtime": "audio-cpu",
+            "action": "auth",
+            "reason": "runtime_control_token_missing",
+            "gpu_lease_required": False,
+        }
+    supplied = bearer_token_from_header(authorization_header(headers))
+    if not hmac.compare_digest(supplied, token):
+        return 401, {
+            "status": "unauthorized",
+            "runtime": "audio-cpu",
+            "action": "auth",
+            "reason": "runtime_control_token_required",
+            "gpu_lease_required": False,
+        }
+    return None
 
 
 def configured_engine() -> str:
@@ -609,7 +670,11 @@ async def healthz() -> dict[str, Any]:
 
 
 @app.post("/b1/runtime/smoke")
-async def runtime_smoke(request: Request) -> dict[str, Any]:
+async def runtime_smoke(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
     payload = await json_body(request)
     engine = configured_engine()
     modality = str(payload.get("modality") or "").lower()

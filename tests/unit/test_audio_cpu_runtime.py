@@ -41,8 +41,9 @@ else:
 
 
 class FakeRequest:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], headers: dict[str, str] | None = None) -> None:
         self.payload = payload
+        self.headers = headers or {}
 
     async def json(self) -> dict[str, Any]:
         return self.payload
@@ -161,6 +162,31 @@ with wave.open(str(output), "wb") as wav:
         self.assertGreater(speech["measurements"]["speech_bytes"], 44)
         self.assertEqual(embedding["measurements"]["embedding_dimensions"], 16)
         self.assertTrue(embedding["measurements"]["embedding_nonzero"])
+
+    def test_runtime_smoke_requires_configured_runtime_control_token(self) -> None:
+        self.patch_env(
+            {
+                "B1_CPU_AUDIO_ENGINE": "scaffold",
+                "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true",
+                "B1_RUNTIME_CONTROL_TOKEN": "hook-token",
+                "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true",
+            }
+        )
+
+        missing = asyncio.run(audio_cpu_main.runtime_smoke(FakeRequest({"model": "b1-cpu-placeholder-tts", "modality": "tts"})))
+        accepted = asyncio.run(
+            audio_cpu_main.runtime_smoke(
+                FakeRequest(
+                    {"model": "b1-cpu-placeholder-tts", "modality": "tts"},
+                    headers={"Authorization": "Bearer hook-token"},
+                )
+            )
+        )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertIn(b"runtime_control_token_required", missing.body)
+        self.assertEqual(accepted["status"], "ok")
+        self.assertFalse(accepted["gpu_lease_required"])
 
     def test_placeholder_endpoints_fail_when_policy_disables_them(self) -> None:
         self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false"})
