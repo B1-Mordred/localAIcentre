@@ -273,6 +273,7 @@ services:
       B1_RUNTIME_ACTION_SERVICES: ${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,audio-cpu}
       B1_ENABLE_MUTATIONS: ${B1_ENABLE_MUTATIONS:-false}
       B1_RUNTIME_AGENT_TOKEN_FILE: /run/secrets/runtime_agent_token
+      B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH: ${B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH:-false}
       B1_RUNTIME_AGENT_MTLS_ENABLED: ${B1_RUNTIME_AGENT_MTLS_ENABLED:-true}
       B1_RUNTIME_AGENT_TLS_CERT_FILE: /run/secrets/runtime_agent_server.crt
       B1_RUNTIME_AGENT_TLS_KEY_FILE: /run/secrets/runtime_agent_server.key

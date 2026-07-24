@@ -312,6 +312,43 @@ class RuntimeAgentRollbackTests(unittest.TestCase):
         self.assertTrue(result["client_cert_required"])
         self.assertEqual(result["docker"]["version"], {"Version": "test"})
 
+    def test_v1_auth_fails_closed_when_token_is_missing(self) -> None:
+        self.patch_attr("ALLOW_MISSING_AUTH", False)
+        self.patch_attr("read_token", lambda: "")
+
+        with self.assertRaises(runtime_agent_main.HTTPException) as raised:
+            asyncio.run(runtime_agent_main.require_agent_auth(None))
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("not configured", raised.exception.detail)
+
+    def test_v1_auth_allows_explicit_missing_auth_development_bypass(self) -> None:
+        self.patch_attr("ALLOW_MISSING_AUTH", True)
+        self.patch_attr("read_token", lambda: "")
+
+        asyncio.run(runtime_agent_main.require_agent_auth(None))
+
+    def test_v1_auth_rejects_short_configured_token(self) -> None:
+        self.patch_attr("ALLOW_MISSING_AUTH", False)
+        self.patch_attr("read_token", lambda: "short")
+
+        with self.assertRaises(runtime_agent_main.HTTPException) as raised:
+            asyncio.run(runtime_agent_main.require_agent_auth("Bearer short"))
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("invalid", raised.exception.detail)
+
+    def test_v1_auth_accepts_only_matching_bearer_token(self) -> None:
+        token = "t" * 48
+        self.patch_attr("ALLOW_MISSING_AUTH", False)
+        self.patch_attr("read_token", lambda: token)
+
+        asyncio.run(runtime_agent_main.require_agent_auth(f"Bearer {token}"))
+
+        with self.assertRaises(runtime_agent_main.HTTPException) as raised:
+            asyncio.run(runtime_agent_main.require_agent_auth("Bearer wrong-token"))
+        self.assertEqual(raised.exception.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

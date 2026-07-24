@@ -7,7 +7,7 @@ B1 AI Hub is LAN-internal by default. Do not configure router port forwarding fo
 - Caddy is the only normal LAN entry point.
 - Backend services bind only to internal Docker networks.
 - The control plane must not mount `/var/run/docker.sock`.
-- Runtime mutation is delegated to `runtime-agent`, whose API is allowlisted and audited.
+- Runtime mutation is delegated to `runtime-agent`, whose `/v1/*` API is mTLS/token-protected, fail-closed when the token secret is missing, allowlisted, and audited.
 - Model imports, custom nodes, uploaded media, archives, and external runtime URLs must be validated before use.
 - Prompts, uploaded documents, voice samples, bearer tokens, API keys, and model-download credentials must never be logged.
 - Remote/cloud providers remain disabled unless an administrator explicitly enables and labels them as external.

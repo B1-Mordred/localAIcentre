@@ -43,6 +43,7 @@ RUNTIME_ACTION_SERVICES = parse_allowed_services(os.getenv("B1_RUNTIME_ACTION_SE
 MUTATIONS_ENABLED = bool_env("B1_ENABLE_MUTATIONS", False)
 MTLS_ENABLED = bool_env("B1_RUNTIME_AGENT_MTLS_ENABLED", True)
 CLIENT_CERT_REQUIRED = bool_env("B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED", True)
+ALLOW_MISSING_AUTH = bool_env("B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH", False)
 DOCKER_SOCKET = Path("/var/run/docker.sock")
 COMPOSE_PROJECT = os.getenv("B1_COMPOSE_PROJECT") or None
 B1_METRIC_PATHS = parse_metric_paths(os.getenv("B1_METRIC_PATHS", "/srv/b1-ai-hub,/tmp"))
@@ -82,10 +83,21 @@ def read_token() -> str:
 async def require_agent_auth(authorization: str | None = Header(default=None)) -> None:
     expected = read_token()
     if not expected:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
+        if ALLOW_MISSING_AUTH:
+            return
+        raise HTTPException(status_code=503, detail="runtime-agent bearer token is not configured")
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="runtime-agent bearer token is invalid")
+    if len(expected) > 4096:
+        raise HTTPException(status_code=503, detail="runtime-agent bearer token is invalid")
+    if not authorization:
         raise HTTPException(status_code=401, detail="missing runtime-agent bearer token")
-    supplied = authorization.removeprefix("Bearer ").strip()
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not supplied.strip():
+        raise HTTPException(status_code=401, detail="missing runtime-agent bearer token")
+    supplied = supplied.strip()
+    if len(supplied) > 4096:
+        raise HTTPException(status_code=403, detail="invalid runtime-agent bearer token")
     if not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="invalid runtime-agent bearer token")
 
@@ -110,6 +122,7 @@ async def status(_: None = Depends(require_agent_auth)) -> dict[str, Any]:
         "runtime_action_services": sorted(RUNTIME_ACTION_SERVICES),
         "compose_project": COMPOSE_PROJECT,
         "auth_configured": bool(read_token()),
+        "allow_missing_auth": ALLOW_MISSING_AUTH,
         "mtls_enabled": MTLS_ENABLED,
         "client_cert_required": CLIENT_CERT_REQUIRED if MTLS_ENABLED else False,
         "docker": {
