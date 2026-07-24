@@ -19,6 +19,7 @@ from typing import Any
 NATIVE_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-native-comfyui-compatibility/v1"
 NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "object_info_accessible",
+    "object_info_node_accessible",
     "system_stats_accessible",
     "models_accessible",
     "queue_accessible",
@@ -26,6 +27,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "upload_mask_accessible",
     "prompt_submission",
     "websocket_events",
+    "history_listing_accessible",
     "history_available",
     "queue_delete_accessible",
     "interrupt_accessible",
@@ -254,6 +256,22 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.samples.append({"label": path.strip("/") or "root", **sample})
         return payload
 
+    def verify_node_object_info(self, object_info: dict[str, Any] | list[Any]) -> None:
+        self.assertIsInstance(object_info, dict)
+        node_class = next(iter(sorted(str(key) for key in object_info.keys())))
+        payload = self.request_json("GET", f"/object_info/{urllib.parse.quote(node_class, safe='')}", timeout=60)
+        self.assertIsInstance(payload, dict)
+        self.assertIn(node_class, payload)
+        node_payload = payload.get(node_class)
+        node_keys = sorted(str(key) for key in node_payload.keys())[:20] if isinstance(node_payload, dict) else []
+        self.record_check(
+            "object_info_node_accessible",
+            path=f"/object_info/{node_class}",
+            node_class=node_class,
+            node_keys=node_keys,
+        )
+        self.samples.append({"label": "object-info-node", "node_class": node_class, "node_keys": node_keys})
+
     def verify_image_upload(self) -> dict[str, Any]:
         filename = f"b1-native-comfyui-upload-{uuid.uuid4().hex}.png"
         payload = self.request_multipart_json(
@@ -467,9 +485,20 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         )
         self.samples.append({"label": "targeted-interrupt", "prompt_id": prompt_id, "byte_count": len(body)})
 
+    def verify_history_listing(self) -> None:
+        payload = self.request_json("GET", "/history?max_items=1", timeout=60)
+        self.assertIsInstance(payload, dict)
+        self.record_check(
+            "history_listing_accessible",
+            path="/history?max_items=1",
+            history_keys=sorted(str(key) for key in payload.keys())[:20],
+        )
+        self.samples.append({"label": "history-listing", "history_count": len(payload)})
+
     def test_native_rest_websocket_prompt_history_and_metadata(self) -> None:
         object_info = self.record_metadata_check("object_info_accessible", "/object_info")
         self.assertTrue(object_info, "native /object_info response is empty")
+        self.verify_node_object_info(object_info)
         self.record_metadata_check("system_stats_accessible", "/system_stats")
         self.record_metadata_check("models_accessible", "/models")
         self.record_metadata_check("queue_accessible", "/queue")
@@ -484,6 +513,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             history_keys=sorted(str(key) for key in history.keys())[:20],
         )
         self.samples.append({"label": "prompt-submission", "prompt_id": prompt_id, "history_available": True})
+        self.verify_history_listing()
         self.verify_queue_delete(prompt_id)
         self.verify_targeted_interrupt(prompt_id)
         self.verify_view_artifact(prompt_id, history)

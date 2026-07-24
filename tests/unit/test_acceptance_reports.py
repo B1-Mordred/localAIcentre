@@ -164,6 +164,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "status": "ok",
             "required_checks": [
                 "object_info_accessible",
+                "object_info_node_accessible",
                 "system_stats_accessible",
                 "models_accessible",
                 "queue_accessible",
@@ -171,6 +172,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "upload_mask_accessible",
                 "prompt_submission",
                 "websocket_events",
+                "history_listing_accessible",
                 "history_available",
                 "queue_delete_accessible",
                 "interrupt_accessible",
@@ -179,6 +181,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_checks": [],
             "checks": {
                 "object_info_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "object_info_node_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "system_stats_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "models_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "queue_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
@@ -186,18 +189,21 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "upload_mask_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+                "history_listing_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "queue_delete_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "interrupt_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "view_artifact_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
             },
-            "sample_count": 8,
+            "sample_count": 10,
             "sample_labels": [
                 "object-info",
+                "object-info-node",
                 "upload-image",
                 "upload-mask",
                 "prompt-submission",
                 "websocket-completed",
+                "history-listing",
                 "queue-delete",
                 "targeted-interrupt",
                 "view-artifact",
@@ -806,7 +812,7 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
-    def test_native_comfyui_snapshot_requires_upload_mask_and_view_artifact_evidence(self) -> None:
+    def test_native_comfyui_snapshot_requires_metadata_upload_queue_and_view_evidence(self) -> None:
         snapshot = acceptance.native_comfyui_evidence_snapshot(
             {
                 "format": "b1-ai-hub-native-comfyui-compatibility/v1",
@@ -826,16 +832,20 @@ class AcceptanceReportTests(unittest.TestCase):
             }
         )
 
+        self.assertIn("object_info_node_accessible", snapshot["required_checks"])
         self.assertIn("upload_image_accessible", snapshot["required_checks"])
         self.assertIn("upload_mask_accessible", snapshot["required_checks"])
+        self.assertIn("history_listing_accessible", snapshot["required_checks"])
         self.assertIn("queue_delete_accessible", snapshot["required_checks"])
         self.assertIn("interrupt_accessible", snapshot["required_checks"])
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
         self.assertEqual(
             snapshot["missing_checks"],
             [
+                "object_info_node_accessible",
                 "upload_image_accessible",
                 "upload_mask_accessible",
+                "history_listing_accessible",
                 "queue_delete_accessible",
                 "interrupt_accessible",
                 "view_artifact_accessible",
@@ -1199,6 +1209,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "status": "ok",
                         "checks": {
                             "object_info_accessible": {"status": "ok"},
+                            "object_info_node_accessible": {"status": "ok"},
                             "system_stats_accessible": {"status": "ok"},
                             "models_accessible": {"status": "ok"},
                             "queue_accessible": {"status": "ok"},
@@ -1206,6 +1217,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "upload_mask_accessible": {"status": "ok"},
                             "prompt_submission": {"status": "ok"},
                             "websocket_events": {"status": "ok"},
+                            "history_listing_accessible": {"status": "ok"},
                             "history_available": {"status": "ok"},
                             "queue_delete_accessible": {"status": "ok"},
                             "interrupt_accessible": {"status": "ok"},
@@ -1213,10 +1225,12 @@ class AcceptanceReportTests(unittest.TestCase):
                         },
                         "samples": [
                             {"label": "object-info"},
+                            {"label": "object-info-node"},
                             {"label": "upload-image"},
                             {"label": "upload-mask"},
                             {"label": "prompt-submission"},
                             {"label": "websocket-completed"},
+                            {"label": "history-listing"},
                             {"label": "queue-delete"},
                             {"label": "targeted-interrupt"},
                             {"label": "view-artifact"},
@@ -1360,7 +1374,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
-        self.assertEqual(native["sample_count"], 8)
+        self.assertEqual(native["sample_count"], 10)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))

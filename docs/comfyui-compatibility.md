@@ -22,6 +22,7 @@ The proxy preserves the native path layout for:
 - `/upload/mask`
 - `/view`
 - `/object_info`
+- `/object_info/{node_class}`
 - `/system_stats`
 - `/models`
 
@@ -39,7 +40,7 @@ Native `/interrupt` and mutating `/queue` requests are forwarded to ComfyUI imme
 
 When ComfyUI reports image, video, GIF, or audio outputs through live `executed` events or `/history/{prompt_id}`, the control plane records authenticated `/artifacts/comfyui/...` artifact references on the durable job. Live WebSocket `executed` events now stream each referenced output from internal ComfyUI `/view` into `$B1_ARTIFACT_ROOT/comfyui/...`, hash it, record byte count and SHA-256 metadata, and mark the artifact as `source=artifact_store` before the job is updated. The history tracker repeats the same ingest step at completion, so a failed live ingest can still be retried from `/history/{prompt_id}`. If final history-time ingestion fails, the job enters `recovery_required` with `failure_category=artifact_ingest_failed` and retains the ComfyUI `/view` metadata for diagnosis or retry. The normal artifact endpoint serves stored files through the internal artifact-server after `jobs:read` owner/scope checks.
 
-The live native compatibility harness uploads a tiny generated PNG through `/upload/image`, uploads a tiny mask through `/upload/mask` against that image reference, deletes its completed prompt ID from the native queue, submits a targeted interrupt for that completed prompt ID, and fetches one generated artifact through the public `/view` route, recording `upload_image_accessible`, `upload_mask_accessible`, `queue_delete_accessible`, `interrupt_accessible`, and `view_artifact_accessible` evidence. Acceptance reports block handoff if any of those proofs are missing.
+The live native compatibility harness fetches root and node-specific `/object_info`, uploads a tiny generated PNG through `/upload/image`, uploads a tiny mask through `/upload/mask` against that image reference, fetches `/history`, deletes its completed prompt ID from the native queue, submits a targeted interrupt for that completed prompt ID, and fetches one generated artifact through the public `/view` route, recording `object_info_node_accessible`, `upload_image_accessible`, `upload_mask_accessible`, `history_listing_accessible`, `queue_delete_accessible`, `interrupt_accessible`, and `view_artifact_accessible` evidence. Acceptance reports block handoff if any of those proofs are missing.
 
 Queued `/v1/media/jobs` resolved to the `comfyui` runtime use the same global GPU lease but are not transparent passthrough. They submit a native payload supplied as `input.comfyui_payload`, `input.comfyui_prompt`, `input.native_prompt`, `input.workflow_json`, or from a published workflow's non-empty `workflow_json`; optional `comfyui_parameter_mappings` on the published workflow can write validated `input.parameters` values into graph paths, and simple placeholders can also be filled before submission. These jobs record the native prompt ID, poll native history, ingest outputs from `/view`, and then serve artifacts through the normal authenticated artifact endpoint.
 

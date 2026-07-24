@@ -55,6 +55,7 @@ MODELHUB_REQUIRED_CHECKS = (
 NATIVE_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-native-comfyui-compatibility/v1"
 NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "object_info_accessible",
+    "object_info_node_accessible",
     "system_stats_accessible",
     "models_accessible",
     "queue_accessible",
@@ -62,6 +63,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "upload_mask_accessible",
     "prompt_submission",
     "websocket_events",
+    "history_listing_accessible",
     "history_available",
     "queue_delete_accessible",
     "interrupt_accessible",
