@@ -21,7 +21,7 @@ The first live integration path checks `/admin/runtimes` adapter-contract, healt
 
 ## Installed Workflow Acceptance
 
-Run the installed workflow suite on the target host after the public aliases are backed by real installed models and approved workflows. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report.
+Run the installed workflow suite on the target host after the public aliases are backed by real installed models and approved workflows. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report. The API key must include normal inference scopes plus `runtimes:read` so the harness can read `/admin/scheduler/lease` before and after the CPU-audio probe.
 
 ```bash
 export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering
@@ -34,7 +34,7 @@ export B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflo
 B1_WORKFLOWS_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_installed_workflows
 ```
 
-The image, edit, and video job files should be full `POST /v1/media/jobs` JSON bodies that reference installed aliases and either published workflow IDs or native ComfyUI/LocalAI inputs validated for the RTX 3060 profile. The harness provides simple prompt defaults only to keep dry runs ergonomic; production acceptance should use explicit job files so the operator can review exact model/workflow dependencies. Set `B1_WORKFLOWS_ALLOW_PLACEHOLDER=1` only for a labelled development dry run; handoff evidence should leave it unset so placeholder TTS/STT output fails.
+The image, edit, and video job files should be full `POST /v1/media/jobs` JSON bodies that reference installed aliases and either published workflow IDs or native ComfyUI/LocalAI inputs validated for the RTX 3060 profile. The harness provides simple prompt defaults only to keep dry runs ergonomic; production acceptance should use explicit job files so the operator can review exact model/workflow dependencies. Set `B1_WORKFLOWS_CPU_TTS_MODEL` and `B1_WORKFLOWS_CPU_STT_MODEL` when CPU lease validation should use aliases different from the ordinary `tts-fast` and `stt-default` defaults. Set `B1_WORKFLOWS_ALLOW_PLACEHOLDER=1` only for a labelled development dry run; handoff evidence should leave it unset so placeholder TTS/STT output fails.
 
 ## RTX 3060 Cross-Runtime GPU Acceptance
 

@@ -129,7 +129,7 @@ B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.j
 make gpu-acceptance
 ```
 
-Run installed workflow acceptance after chat, TTS/STT, image, edit, and short-video aliases are backed by real installed models:
+Run installed workflow acceptance after chat, CPU TTS/STT, image, edit, and short-video aliases are backed by real installed models:
 
 ```bash
 B1_WORKFLOWS_LIVE_TEST=1 \

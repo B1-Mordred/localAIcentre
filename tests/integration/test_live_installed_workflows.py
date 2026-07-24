@@ -26,6 +26,7 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "chat_completed",
     "tts_completed",
     "stt_completed",
+    "cpu_audio_does_not_take_gpu_lease",
     "image_generation_completed",
     "image_edit_completed",
     "short_video_completed",
@@ -138,6 +139,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.verify_chat()
         self.verify_tts()
         self.verify_stt()
+        self.verify_cpu_audio_does_not_take_gpu_lease()
         self.verify_media_job(
             "image_generation_completed",
             "image-generation",
@@ -237,6 +239,95 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         text_length = len(str(payload.get("text") or ""))
         self.record_check("stt_completed", model=model, text_length=text_length)
         self.samples.append({"label": "stt", "model": model, "text_length": text_length})
+
+    def scheduler_lease_snapshot(self) -> dict[str, Any]:
+        status, _, payload = self.client.json_request("GET", "/admin/scheduler/lease", require_auth=True)
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        lease = payload.get("lease")
+        if lease is None:
+            return {}
+        self.assertIsInstance(lease, dict)
+        return lease
+
+    def lease_owner(self, lease: dict[str, Any]) -> str:
+        owner = lease.get("owner")
+        return str(owner) if owner else ""
+
+    def verify_cpu_audio_does_not_take_gpu_lease(self) -> None:
+        tts_model = os.getenv("B1_WORKFLOWS_CPU_TTS_MODEL", os.getenv("B1_WORKFLOWS_TTS_MODEL", "tts-fast"))
+        stt_model = os.getenv("B1_WORKFLOWS_CPU_STT_MODEL", os.getenv("B1_WORKFLOWS_STT_MODEL", "stt-default"))
+        runtime_policy = os.getenv("B1_WORKFLOWS_CPU_AUDIO_RUNTIME_POLICY", "non_comfy_only")
+        before = self.scheduler_lease_snapshot()
+
+        status, tts_headers, tts_content = self.client.request(
+            "POST",
+            "/v1/audio/speech",
+            body={
+                "model": tts_model,
+                "input": os.getenv("B1_WORKFLOWS_CPU_TTS_TEXT", "B1 AI Hub CPU audio lease acceptance speech."),
+                "voice": os.getenv("B1_WORKFLOWS_CPU_TTS_VOICE", "default"),
+                "response_format": os.getenv("B1_WORKFLOWS_CPU_TTS_FORMAT", "wav"),
+                "runtime_policy": runtime_policy,
+            },
+            headers={"Accept": "audio/*"},
+            require_auth=True,
+        )
+        self.assertEqual(status, 200, tts_content[:200])
+        self.assertGreater(len(tts_content), 0, "CPU TTS returned an empty response")
+        tts_header_map = {key.lower(): value for key, value in tts_headers.items()}
+        self.assertEqual(str(tts_header_map.get("x-b1-gpu-lease-required", "")).lower(), "false", tts_header_map)
+        self.assert_not_placeholder(tts_headers, None, "cpu-tts")
+
+        status, stt_headers, stt_payload = self.client.json_request(
+            "POST",
+            "/v1/audio/transcriptions",
+            body={
+                "model": stt_model,
+                "audio": os.getenv("B1_WORKFLOWS_CPU_STT_AUDIO_BASE64", "") or silence_wav_base64(),
+                "audio_mime_type": os.getenv("B1_WORKFLOWS_CPU_STT_AUDIO_MIME_TYPE", "audio/wav"),
+                "runtime_policy": runtime_policy,
+            },
+            require_auth=True,
+        )
+        self.assertEqual(status, 200, stt_payload)
+        self.assertIsInstance(stt_payload, dict)
+        self.assertIs(stt_payload.get("gpu_lease_required"), False, stt_payload)
+        self.assert_not_placeholder(stt_headers, stt_payload, "cpu-stt")
+
+        after = self.scheduler_lease_snapshot()
+        before_owner = self.lease_owner(before)
+        after_owner = self.lease_owner(after)
+        self.assertEqual(
+            after_owner,
+            before_owner,
+            {
+                "message": "CPU audio acceptance changed the GPU scheduler owner",
+                "before": before,
+                "after": after,
+            },
+        )
+        self.record_check(
+            "cpu_audio_does_not_take_gpu_lease",
+            tts_model=tts_model,
+            stt_model=stt_model,
+            runtime_policy=runtime_policy,
+            scheduler_owner_before=before_owner or "none",
+            scheduler_owner_after=after_owner or "none",
+            tts_gpu_lease_required=tts_header_map.get("x-b1-gpu-lease-required"),
+            stt_gpu_lease_required=stt_payload.get("gpu_lease_required"),
+            tts_byte_count=len(tts_content),
+            stt_text_length=len(str(stt_payload.get("text") or "")),
+        )
+        self.samples.append(
+            {
+                "label": "cpu-audio-no-gpu-lease",
+                "tts_model": tts_model,
+                "stt_model": stt_model,
+                "scheduler_owner_before": before_owner or "none",
+                "scheduler_owner_after": after_owner or "none",
+            }
+        )
 
     def media_job_body(
         self,

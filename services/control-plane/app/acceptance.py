@@ -24,6 +24,7 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "chat_completed",
     "tts_completed",
     "stt_completed",
+    "cpu_audio_does_not_take_gpu_lease",
     "image_generation_completed",
     "image_edit_completed",
     "short_video_completed",

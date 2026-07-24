@@ -95,6 +95,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "chat_completed",
                 "tts_completed",
                 "stt_completed",
+                "cpu_audio_does_not_take_gpu_lease",
                 "image_generation_completed",
                 "image_edit_completed",
                 "short_video_completed",
@@ -104,12 +105,13 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:26:00+00:00"},
                 "tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:27:00+00:00"},
                 "stt_completed": {"status": "ok", "recorded_at": "2026-07-24T12:28:00+00:00"},
+                "cpu_audio_does_not_take_gpu_lease": {"status": "ok", "recorded_at": "2026-07-24T12:28:30+00:00"},
                 "image_generation_completed": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
                 "image_edit_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
                 "short_video_completed": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
             },
-            "sample_count": 6,
-            "sample_labels": ["chat", "tts", "stt", "image-generation", "image-edit", "short-video"],
+            "sample_count": 7,
+            "sample_labels": ["chat", "tts", "stt", "cpu-audio-no-gpu-lease", "image-generation", "image-edit", "short-video"],
         },
         "native_comfyui_compatibility": {
             "available": True,
@@ -830,6 +832,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "chat_completed": {"status": "ok"},
                             "tts_completed": {"status": "ok"},
                             "stt_completed": {"status": "ok"},
+                            "cpu_audio_does_not_take_gpu_lease": {"status": "ok"},
                             "image_generation_completed": {"status": "ok"},
                             "image_edit_completed": {"status": "ok"},
                             "short_video_completed": {"status": "ok"},
@@ -838,6 +841,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "chat"},
                             {"label": "tts"},
                             {"label": "stt"},
+                            {"label": "cpu-audio-no-gpu-lease"},
                             {"label": "image-generation"},
                             {"label": "image-edit"},
                             {"label": "short-video"},
@@ -982,7 +986,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(workflows["source_path"], str(installed.resolve()))
         self.assertEqual(workflows["status"], "ok")
         self.assertEqual(workflows["missing_checks"], [])
-        self.assertEqual(workflows["sample_count"], 6)
+        self.assertEqual(workflows["sample_count"], 7)
         native = snapshot["native_comfyui_compatibility"]
         self.assertTrue(native["available"])
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
