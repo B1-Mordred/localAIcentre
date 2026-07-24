@@ -49,6 +49,13 @@ class OldStackBackupTests(unittest.TestCase):
                 "model_directories": [{"path": str(model_dir), "exists": True, "type": "directory"}],
             },
             "migration_readiness": {
+                "hardware_profile": {
+                    "profile": "rtx3060-32gb-initial",
+                    "accepted": False,
+                    "largest_gpu_vram_mib": 6144,
+                    "host_total_ram_mib": 32168,
+                    "warnings": ["largest detected GPU VRAM is 6144 MiB; required initial profile needs at least 12288 MiB"],
+                },
                 "port_review": {"ports_requiring_review": [80, 443, 11434]},
                 "model_storage": {"model_file_count": 3, "model_size_bytes": 4096},
                 "open_webui": {"database_candidate_count": 1, "readable_sqlite_count": 1},
@@ -142,6 +149,8 @@ class OldStackBackupTests(unittest.TestCase):
         self.assertEqual(template["candidates"]["ai_hint_volume_names"], ["open-webui_data"])
         self.assertEqual(template["candidates"]["open_webui_data_paths"], [str(root / "old-open-webui" / "data")])
         self.assertEqual(template["candidates"]["open_webui_unreadable_data_roots"], ["/var/lib/docker/volumes/open-webui/_data"])
+        self.assertFalse(template["inventory_review"]["hardware_profile"]["accepted"])
+        self.assertEqual(template["inventory_review"]["hardware_profile"]["largest_gpu_vram_mib"], 6144)
         self.assertEqual(template["inventory_review"]["port_review"]["ports_requiring_review"], [80, 443, 11434])
         self.assertEqual(template["inventory_review"]["model_storage"]["model_file_count"], 3)
         self.assertEqual(template["inventory_review"]["open_webui"]["readable_sqlite_count"], 1)

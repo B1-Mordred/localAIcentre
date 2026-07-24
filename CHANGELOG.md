@@ -46,6 +46,7 @@
 - Added Open WebUI migration-plan warnings for discovered but unreadable Open WebUI data roots so Docker-volume preservation gaps block silent cutover assumptions.
 - Hardened old-stack migration backups so raw container inspect metadata is marked sensitive while a redacted inspect companion is archived for operator review.
 - Aligned migration Makefile targets with `B1_BACKUP_ROOT` so old-stack inventory, scope, backup, migration-plan, and cutover-plan artifacts can be redirected away from an unwritable default `/srv` backup directory.
+- Added hardware-profile readiness to migration inventory, backup scopes, cutover plans, and live GPU acceptance so hosts below the initial 12 GB VRAM / 32 GB RAM baseline require explicit operator review and fail production handoff evidence.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.

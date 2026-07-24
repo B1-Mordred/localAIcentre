@@ -102,6 +102,9 @@ REVIEW_PORTS = {
     11434: "Ollama native API",
     11438: "Ollama/OpenAI-compatible proxy",
 }
+INITIAL_PROFILE_NAME = "rtx3060-32gb-initial"
+MIN_INITIAL_GPU_VRAM_MIB = 12 * 1024
+MIN_INITIAL_HOST_RAM_MIB = 32000
 
 
 def redact_text(value: str) -> str:
@@ -741,6 +744,34 @@ def summarize_open_webui_data_roots(roots: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def summarize_hardware_profile(gpu_devices: list[dict[str, Any]], memory: dict[str, Any]) -> dict[str, Any]:
+    gpu_totals = [item.get("memory_total_mib") for item in gpu_devices if isinstance(item.get("memory_total_mib"), int)]
+    largest_gpu_vram_mib = max(gpu_totals) if gpu_totals else None
+    mem = memory.get("mem") if isinstance(memory.get("mem"), dict) else {}
+    host_total_ram_mib = mem.get("total_mib") if isinstance(mem.get("total_mib"), int) else None
+    host_available_ram_mib = mem.get("available_mib") if isinstance(mem.get("available_mib"), int) else None
+    gpu_ok = largest_gpu_vram_mib is not None and largest_gpu_vram_mib >= MIN_INITIAL_GPU_VRAM_MIB
+    ram_ok = host_total_ram_mib is not None and host_total_ram_mib >= MIN_INITIAL_HOST_RAM_MIB
+    warnings: list[str] = []
+    if not gpu_ok:
+        observed = "unavailable" if largest_gpu_vram_mib is None else f"{largest_gpu_vram_mib} MiB"
+        warnings.append(f"largest detected GPU VRAM is {observed}; required initial profile needs at least {MIN_INITIAL_GPU_VRAM_MIB} MiB")
+    if not ram_ok:
+        observed = "unavailable" if host_total_ram_mib is None else f"{host_total_ram_mib} MiB"
+        warnings.append(f"detected host RAM is {observed}; required initial profile needs at least {MIN_INITIAL_HOST_RAM_MIB} MiB")
+    return {
+        "profile": INITIAL_PROFILE_NAME,
+        "accepted": gpu_ok and ram_ok,
+        "minimum_gpu_vram_mib": MIN_INITIAL_GPU_VRAM_MIB,
+        "minimum_host_ram_mib": MIN_INITIAL_HOST_RAM_MIB,
+        "detected_gpu_count": len(gpu_devices),
+        "largest_gpu_vram_mib": largest_gpu_vram_mib,
+        "host_total_ram_mib": host_total_ram_mib,
+        "host_available_ram_mib": host_available_ram_mib,
+        "warnings": warnings,
+    }
+
+
 def default_model_path_candidates(b1_root: Path) -> list[Path]:
     candidates = [
         b1_root / "models",
@@ -939,6 +970,9 @@ def build_inventory(
     model_directories = [summarize_model_directory(path) for path in model_path_candidates]
     open_webui_databases = [summarize_open_webui_database(Path(item["path"])) for item in find_named_files(open_webui_path_candidates, {"webui.db", "database.sqlite", "*.db"})]
 
+    gpu_devices = parse_nvidia_smi(captured["nvidia_smi"]["stdout"])
+    host_memory = parse_free_mib(captured["free"]["stdout"])
+
     return {
         "created_at": created_at.astimezone(UTC).isoformat(),
         "format": "b1-ai-hub-host-inventory/v1",
@@ -963,7 +997,7 @@ def build_inventory(
         "host": {
             "listening_tcp": listening_tcp,
             "gpu": {
-                "devices": parse_nvidia_smi(captured["nvidia_smi"]["stdout"]),
+                "devices": gpu_devices,
                 "nvidia_smi_available": captured["nvidia_smi"]["available"] and captured["nvidia_smi"]["returncode"] == 0,
             },
             "nvidia_container_toolkit": {
@@ -971,7 +1005,7 @@ def build_inventory(
                 "returncode": captured["nvidia_container_toolkit"]["returncode"],
                 "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
             },
-            "memory": parse_free_mib(captured["free"]["stdout"]),
+            "memory": host_memory,
             "disks": parse_df(captured["df"]["stdout"]),
             "mounts": parse_json_object(captured["mounts"]["stdout"]),
             "dns": {
@@ -990,6 +1024,7 @@ def build_inventory(
         },
         "migration_readiness": {
             "port_review": analyze_listening_tcp(listening_tcp),
+            "hardware_profile": summarize_hardware_profile(gpu_devices, host_memory),
             "model_storage": summarize_model_storage(model_directories),
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
             "open_webui_data_roots": summarize_open_webui_data_roots(open_webui_data_roots),

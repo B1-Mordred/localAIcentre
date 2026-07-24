@@ -160,6 +160,13 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             self.fail(f"{label}: runtime-agent GPU/NVML metrics are required for RTX acceptance")
         used = gpu.get("memory_used_mib")
         total = gpu.get("memory_total_mib")
+        configured_total_mib = int(float(policy.get("gpu_total_vram_gib", 0)) * 1024)
+        if isinstance(total, (int, float)) and configured_total_mib:
+            self.assertGreaterEqual(
+                int(total) + self.vram_tolerance_mib,
+                configured_total_mib,
+                f"{label}: physical GPU VRAM is below configured policy total",
+            )
         if isinstance(used, (int, float)) and isinstance(total, (int, float)) and reserve_mib:
             self.assertLessEqual(
                 int(used),

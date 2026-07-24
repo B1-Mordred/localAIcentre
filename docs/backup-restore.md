@@ -193,7 +193,7 @@ make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.
 
 The migration targets write generated inventory, scope, migration-plan, cutover-plan, and old-stack backup directories to `B1_BACKUP_ROOT`, defaulting to `$B1_DATA_ROOT/backups`. Set `B1_BACKUP_ROOT=/home/mordred/b1-ai-hub-inventory` or another protected location when the default root is not writable during discovery.
 
-The generated scope selects no resources by default. It carries the inventory's port-review, model-storage, and Open WebUI SQLite metadata summaries so operators can review old-stack evidence without reading prompts, chats, `.env` files, or database row contents. After reviewing the inventory, set `operator_reviewed=true`, fill `reviewed_by`, and add only confirmed old AI stack paths, Docker volumes, and container names. Unknown services and explicitly unrelated services remain out of scope.
+The generated scope selects no resources by default. It carries the inventory's hardware-profile, port-review, model-storage, and Open WebUI SQLite metadata summaries so operators can review old-stack evidence without reading prompts, chats, `.env` files, or database row contents. After reviewing the inventory, set `operator_reviewed=true`, fill `reviewed_by`, and add only confirmed old AI stack paths, Docker volumes, and container names. Unknown services and explicitly unrelated services remain out of scope.
 
 Then create and verify the old-stack backup:
 

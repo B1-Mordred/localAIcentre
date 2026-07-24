@@ -403,6 +403,7 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
             "model_directory_paths": existing_candidate_paths(paths.get("model_directories", [])),
         },
         "inventory_review": {
+            "hardware_profile": readiness.get("hardware_profile", {}),
             "port_review": readiness.get("port_review", {}),
             "model_storage": readiness.get("model_storage", {}),
             "open_webui": readiness.get("open_webui", {}),

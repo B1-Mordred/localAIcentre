@@ -68,6 +68,14 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(roots["existing_directory_count"], 1)
         self.assertEqual(roots["unreadable_or_unscannable"][0]["path"], "/var/lib/docker/volumes/open-webui/_data")
 
+        hardware = inventory.summarize_hardware_profile(
+            [{"memory_total_mib": 6144, "name": "NVIDIA GeForce RTX 3060 Laptop GPU"}],
+            {"mem": {"total_mib": 32168, "available_mib": 28000}},
+        )
+        self.assertFalse(hardware["accepted"])
+        self.assertEqual(hardware["largest_gpu_vram_mib"], 6144)
+        self.assertTrue(any("12288 MiB" in warning for warning in hardware["warnings"]))
+
     def test_build_inventory_classifies_old_ai_candidates_and_preserves_unrelated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -218,6 +226,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["migration_readiness"]["open_webui_data_roots"]["existing_directory_count"], 2)
         self.assertEqual(report["host"]["listening_tcp"][0]["port"], 11434)
         self.assertEqual(report["host"]["gpu"]["devices"][0]["memory_total_mib"], 12288)
+        self.assertTrue(report["migration_readiness"]["hardware_profile"]["accepted"])
+        self.assertEqual(report["migration_readiness"]["hardware_profile"]["largest_gpu_vram_mib"], 12288)
+        self.assertEqual(report["migration_readiness"]["hardware_profile"]["host_total_ram_mib"], 32168)
         self.assertTrue(any(item["path"].endswith("compose.yaml") for item in report["paths"]["compose_file_candidates"]))
         self.assertTrue(any(item["path"].endswith("webui.db") for item in report["paths"]["open_webui_database_candidates"]))
         self.assertTrue(any(item["path"].endswith("alternate.db") for item in report["paths"]["open_webui_database_candidates"]))

@@ -45,6 +45,17 @@ class CutoverPlanTests(unittest.TestCase):
         payload = {
             "format": "b1-ai-hub-host-inventory/v1",
             "created_at": "2026-07-23T10:00:00+00:00",
+            "migration_readiness": {
+                "hardware_profile": {
+                    "profile": "rtx3060-32gb-initial",
+                    "accepted": True,
+                    "minimum_gpu_vram_mib": 12288,
+                    "minimum_host_ram_mib": 32000,
+                    "largest_gpu_vram_mib": 12288,
+                    "host_total_ram_mib": 32168,
+                    "warnings": [],
+                }
+            },
             "classification": {
                 "containers": [
                     {"container": container, "classification": classification, "confidence": "medium"},
@@ -192,7 +203,45 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["open_webui_preservation"]["direct_database_reuse_approved_by_plan"])
         self.assertTrue(plan["open_webui_preservation"]["requires_temporary_instance_validation"])
         self.assertFalse(plan["open_webui_preservation"]["operator_must_review_open_webui"])
+        self.assertTrue(plan["hardware_readiness"]["accepted"])
+        self.assertFalse(plan["hardware_readiness"]["operator_must_review_hardware"])
         self.assertEqual(plan["warnings"], [])
+
+    def test_build_plan_warns_when_hardware_profile_is_below_initial_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inventory_payload = self.inventory()
+            inventory_payload["migration_readiness"]["hardware_profile"] = {
+                "profile": "rtx3060-32gb-initial",
+                "accepted": False,
+                "minimum_gpu_vram_mib": 12288,
+                "minimum_host_ram_mib": 32000,
+                "largest_gpu_vram_mib": 6144,
+                "host_total_ram_mib": 32168,
+                "warnings": ["largest detected GPU VRAM is 6144 MiB; required initial profile needs at least 12288 MiB"],
+            }
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+            open_webui_plan_path = self.write_open_webui_plan(root / "open-webui-plan.json", inventory_path, backup_dir)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                open_webui_plan_path=open_webui_plan_path,
+            )
+
+        self.assertFalse(plan["hardware_readiness"]["accepted"])
+        self.assertTrue(plan["hardware_readiness"]["operator_must_review_hardware"])
+        self.assertTrue(any("Hardware profile requires operator review" in warning for warning in plan["warnings"]))
 
     def test_build_plan_warns_when_open_webui_plan_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

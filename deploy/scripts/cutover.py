@@ -353,6 +353,20 @@ def analyze_open_webui_preservation(
     )
 
 
+def analyze_hardware_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    hardware = readiness.get("hardware_profile") if isinstance(readiness.get("hardware_profile"), dict) else {}
+    if not hardware:
+        return {"available": False, "accepted": False, "warnings": ["hardware profile readiness was not present in inventory"]}, [
+            "Hardware profile readiness was not present in inventory; rerun inventory before cutover"
+        ]
+    warnings = [str(item) for item in hardware.get("warnings", []) if isinstance(item, str)]
+    if hardware.get("accepted") is not True and not warnings:
+        warnings.append("hardware profile did not satisfy the initial B1 AI Hub resource baseline")
+    cutover_warnings = [f"Hardware profile requires operator review before cutover: {warning}" for warning in warnings]
+    return {**hardware, "available": True, "operator_must_review_hardware": bool(cutover_warnings)}, cutover_warnings
+
+
 def shell_join(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
@@ -410,6 +424,8 @@ def build_plan(
     warnings.extend(port_warnings)
     dns_readiness, dns_warnings = analyze_dns_readiness(inventory)
     warnings.extend(dns_warnings)
+    hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
+    warnings.extend(hardware_warnings)
     open_webui_preservation, open_webui_warnings = analyze_open_webui_preservation(
         open_webui_plan_path=open_webui_plan_path,
         inventory_path=inventory_path,
@@ -469,6 +485,7 @@ def build_plan(
             "production_hosts": list(PRODUCTION_HOSTS),
         },
         "port_readiness": port_readiness,
+        "hardware_readiness": hardware_readiness,
         "dns_readiness": dns_readiness,
         "open_webui_preservation": open_webui_preservation,
         "warnings": warnings,
@@ -479,6 +496,7 @@ def build_plan(
                     "Confirm the inventory is current and the old-stack scope includes only old AI resources.",
                     "Confirm no unrelated Hermes, Yggdrasil, Discord, DNS, database, or automation services are scoped.",
                     "Confirm temporary B1 staging ports are free and production port listeners are expected old-stack routes or reverse proxies.",
+                    "Confirm hardware_readiness satisfies the initial 12 GB VRAM / 32 GB RAM profile or document a reduced-resource plan before cutover.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",
                     "Confirm the verified old-stack backup is stored outside the old stack and is restorable.",
