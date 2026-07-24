@@ -27,6 +27,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "prompt_submission",
     "websocket_events",
     "history_available",
+    "queue_delete_accessible",
     "view_artifact_accessible",
 )
 
@@ -188,6 +189,27 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         headers = cls.headers()
         headers["Accept"] = "*/*"
         request = urllib.request.Request(cls.url(path), headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
+            body = response.read()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            status = int(getattr(response, "status", 200))
+        return body, response_headers, status
+
+    @classmethod
+    def request_status(
+        cls,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[bytes, dict[str, str], int]:
+        data = None
+        headers = cls.headers()
+        headers["Accept"] = "*/*"
+        if payload is not None:
+            data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(cls.url(path), data=data, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             body = response.read()
             response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -420,6 +442,18 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             }
         )
 
+    def verify_queue_delete(self, prompt_id: str) -> None:
+        body, headers, status = self.request_status("POST", "/queue", {"delete": [prompt_id]}, timeout=60)
+        self.assertEqual(status, 200)
+        self.record_check(
+            "queue_delete_accessible",
+            path="/queue",
+            prompt_id=prompt_id,
+            byte_count=len(body),
+            content_type=headers.get("content-type", ""),
+        )
+        self.samples.append({"label": "queue-delete", "prompt_id": prompt_id, "byte_count": len(body)})
+
     def test_native_rest_websocket_prompt_history_and_metadata(self) -> None:
         object_info = self.record_metadata_check("object_info_accessible", "/object_info")
         self.assertTrue(object_info, "native /object_info response is empty")
@@ -437,6 +471,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             history_keys=sorted(str(key) for key in history.keys())[:20],
         )
         self.samples.append({"label": "prompt-submission", "prompt_id": prompt_id, "history_available": True})
+        self.verify_queue_delete(prompt_id)
         self.verify_view_artifact(prompt_id, history)
 
 

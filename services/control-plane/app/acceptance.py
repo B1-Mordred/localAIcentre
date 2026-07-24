@@ -63,6 +63,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "prompt_submission",
     "websocket_events",
     "history_available",
+    "queue_delete_accessible",
     "view_artifact_accessible",
 )
 VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"

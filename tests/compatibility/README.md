@@ -4,7 +4,7 @@ Compatibility tests will cover native ComfyUI REST/WebSocket clients, the option
 
 ## Native ComfyUI Compatibility
 
-The native ComfyUI compatibility path uses the public `comfy.ai.b1.germering` gateway endpoint, not the internal `comfyui` container port. It verifies metadata routes, native image and mask uploads, native prompt submission, native WebSocket events, native history lookup, and `/view` artifact retrieval with a real API-format prompt supplied by the operator.
+The native ComfyUI compatibility path uses the public `comfy.ai.b1.germering` gateway endpoint, not the internal `comfyui` container port. It verifies metadata routes, native image and mask uploads, native prompt submission, native WebSocket events, native history lookup, native queue deletion, and `/view` artifact retrieval with a real API-format prompt supplied by the operator.
 
 ```bash
 export B1_NATIVE_COMFYUI_LIVE_TEST=1
@@ -17,7 +17,7 @@ python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
 
 For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_NATIVE_COMFYUI_CA_FILE=/path/to/root.crt`; use `B1_NATIVE_COMFYUI_TLS_VERIFY=0` only during an explicit LAN validation window. `B1_NATIVE_COMFYUI_PROMPT_JSON` may be used instead of `B1_NATIVE_COMFYUI_PROMPT_FILE` for a small inline native prompt.
 
-When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, `/ws`, `/history/{prompt_id}`, or `/view` artifact checks are absent or incomplete.
+When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, `/ws`, `/history/{prompt_id}`, `POST /queue` deletion, or `/view` artifact checks are absent or incomplete.
 
 ## Optional Legacy ComfyUI Listener
 
