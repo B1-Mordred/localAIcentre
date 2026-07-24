@@ -89,6 +89,7 @@
 - Added a local `make frontend` quality gate that installs, builds, and production-audits both React web UIs.
 - Added a local `make quality` aggregate with an isolated Python 3.12 dependency environment or digest-pinned Python 3.12 container fallback for backend/Compose validation, OpenAPI drift checking, and frontend build/audit gates.
 - Added a structured handoff quick reference to acceptance reports with configured URLs, install/migration commands, administrator onboarding, known limitations, and hardware guidance.
+- Added completed-download model installation from stored manifests, exposed in the Control Center Downloads table, so operators can publish verified downloaded blobs without re-entering the manifest URL.
 - Documented `make quality` as the stronger local pre-push quality gate alongside the CI dependency-isolated backend checks.
 - Added an authenticated Prometheus text exposition at `GET /admin/metrics.prometheus` for scraper-friendly queue, job, runtime, GPU, host, and storage metrics without sensitive labels.
 - Pinned GitHub Actions workflow runner labels, actions, and CI scanner containers to fixed Ubuntu, immutable commit SHA, and tag-plus-digest references.

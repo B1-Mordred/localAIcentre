@@ -908,10 +908,12 @@ type ModelDownloadRecord = {
   id: string;
   model_id: string;
   model_version: string;
+  model_ref?: string;
   status: string;
   stage: string;
   credential_secret_name?: string | null;
   authenticated?: boolean;
+  install_ready?: boolean;
   target_size_bytes: number;
   bytes_downloaded: number;
   progress_percent: number;
@@ -1686,6 +1688,28 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
+  const installDownloadedModel = (download: ModelDownloadRecord) => {
+    setBusy(true);
+    setMessage("installing downloaded model");
+    apiFetch(`/admin/models/downloads/${download.id}/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirm: true,
+        accept_license: true,
+        smoke_test: false
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setPlan(payload.plan);
+        setMessage(`installed ${payload.model.id}@${payload.model.version}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const quarantineModel = (record: ModelRecord) => {
     setBusy(true);
     setMessage("quarantining");
@@ -1934,6 +1958,7 @@ function Models() {
                 <button title={`Pause ${download.id}`} onClick={() => pauseDownload(download)} disabled={busy || !["queued", "running"].includes(download.status)}><PauseCircle size={16} /></button>
                 <button title={`Resume ${download.id}`} onClick={() => resumeDownload(download)} disabled={busy || download.status !== "paused"}><PlayCircle size={16} /></button>
                 <button title={`Retry ${download.id}`} onClick={() => retryDownload(download)} disabled={busy || !["failed", "cancelled"].includes(download.status)}><RotateCcw size={16} /></button>
+                <button title={`Install ${download.model_ref ?? `${download.model_id}@${download.model_version}`}`} onClick={() => installDownloadedModel(download)} disabled={busy || !download.install_ready}><CheckCircle2 size={16} /></button>
                 <button title={`Cancel ${download.id}`} onClick={() => cancelDownload(download)} disabled={busy || ["completed", "failed", "cancelled"].includes(download.status)}><Trash2 size={16} /></button>
               </div></td>
             </tr>

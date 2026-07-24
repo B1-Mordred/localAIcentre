@@ -938,6 +938,32 @@
         "title": "ModelDownloadCreate",
         "type": "object"
       },
+      "ModelDownloadInstallRequest": {
+        "properties": {
+          "accept_license": {
+            "default": false,
+            "title": "Accept License",
+            "type": "boolean"
+          },
+          "allow_resource_override": {
+            "default": false,
+            "title": "Allow Resource Override",
+            "type": "boolean"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "smoke_test": {
+            "default": false,
+            "title": "Smoke Test",
+            "type": "boolean"
+          }
+        },
+        "title": "ModelDownloadInstallRequest",
+        "type": "object"
+      },
       "ModelHubClientCreate": {
         "properties": {
           "allow_downloads": {
@@ -5028,6 +5054,73 @@
           }
         },
         "summary": "Admin Model Download Get"
+      }
+    },
+    "/admin/models/downloads/{download_id}/install": {
+      "post": {
+        "operationId": "admin_model_download_install_admin_models_downloads__download_id__install_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "download_id",
+            "required": true,
+            "schema": {
+              "title": "Download Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelDownloadInstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Download Install Admin Models Downloads  Download Id  Install Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Download Install"
       }
     },
     "/admin/models/downloads/{download_id}/pause": {

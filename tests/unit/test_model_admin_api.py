@@ -140,6 +140,12 @@ class FakeDatabase:
         self.model_downloads.append(row)
         return dict(row)
 
+    async def get_model_download(self, download_id: str) -> dict[str, Any] | None:
+        for row in self.model_downloads:
+            if row["id"] == download_id:
+                return dict(row)
+        return None
+
     async def request_model_download_pause(self, download_id: str) -> dict[str, Any] | None:
         for row in self.model_downloads:
             if row["id"] != download_id:
@@ -261,6 +267,7 @@ class ModelAdminApiTests(unittest.TestCase):
             "admin_model_download_pause",
             "admin_model_download_resume",
             "admin_model_download_retry",
+            "admin_model_download_install",
             "admin_model_install",
             "admin_model_smoke_test",
             "admin_model_remove",
@@ -852,6 +859,107 @@ class ModelAdminApiTests(unittest.TestCase):
             with self.assertRaises(main.HTTPException) as missing:
                 asyncio.run(main.admin_model_download_retry("modeldl_missing"))
             self.assertEqual(missing.exception.status_code, 404)
+
+    def test_completed_model_download_can_be_installed_from_stored_manifest(self) -> None:
+        data = b"downloaded model"
+        digest = hashlib.sha256(data).hexdigest()
+        payload = manifest_payload(digest, len(data))
+        payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_path = root / "models" / "blobs" / digest
+            blob_path.parent.mkdir(parents=True)
+            blob_path.write_bytes(data)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_completed",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": digest,
+                    "target_size_bytes": len(data),
+                    "bytes_downloaded": len(data),
+                    "status": "completed",
+                    "stage": "verified",
+                    "manifest": payload,
+                    "credential_secret_name": "model-download:hf",
+                    "error_category": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": now,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database, audit_events)
+
+            result = asyncio.run(
+                main.admin_model_download_install(
+                    "modeldl_completed",
+                    main.ModelDownloadInstallRequest(confirm=True, accept_license=True),
+                )
+            )
+
+        self.assertEqual(result["model"]["status"], "installed")
+        self.assertEqual(fake_database.row["id"], "chat-small")
+        self.assertEqual(fake_database.row["manifest"]["installation_status"], "installed")
+        self.assertEqual(result["runtime_views"][0]["runtime"], "localai")
+        self.assertEqual(audit_events[0]["event_type"], "model.installed")
+        self.assertEqual(audit_events[0]["metadata"]["source_download_id"], "modeldl_completed")
+        self.assertTrue(audit_events[0]["metadata"]["download_authenticated"])
+
+    def test_model_download_install_blocks_incomplete_or_missing_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.model_downloads.append(
+                {
+                    "id": "modeldl_running",
+                    "owner_id": "test-admin",
+                    "model_id": "chat-small",
+                    "model_version": "1.0.0",
+                    "source_url": "https://downloads.example.org/model.gguf",
+                    "target_sha256": "a" * 64,
+                    "target_size_bytes": 10,
+                    "bytes_downloaded": 4,
+                    "status": "running",
+                    "stage": "downloading",
+                    "manifest": manifest_payload("a" * 64, 10),
+                    "credential_secret_name": None,
+                    "error_category": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": None,
+                    "cancelled_at": None,
+                }
+            )
+            self.patch_common(root, fake_database)
+
+            with self.assertRaises(main.HTTPException) as active:
+                asyncio.run(
+                    main.admin_model_download_install(
+                        "modeldl_running",
+                        main.ModelDownloadInstallRequest(confirm=True),
+                    )
+                )
+            with self.assertRaises(main.HTTPException) as missing:
+                asyncio.run(
+                    main.admin_model_download_install(
+                        "modeldl_missing",
+                        main.ModelDownloadInstallRequest(confirm=True),
+                    )
+                )
+
+        self.assertEqual(active.exception.status_code, 409)
+        self.assertIn("not completed", active.exception.detail["message"])
+        self.assertEqual(active.exception.detail["download"]["install_ready"], False)
+        self.assertEqual(missing.exception.status_code, 404)
 
     def test_model_install_plan_accepts_remote_manifest_url(self) -> None:
         data = b"tiny remote model"

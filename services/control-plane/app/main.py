@@ -373,6 +373,13 @@ class ModelDownloadCreate(ModelInstallPlanRequest):
     credential_secret_name: str | None = Field(default=None, max_length=128)
 
 
+class ModelDownloadInstallRequest(BaseModel):
+    confirm: bool = False
+    accept_license: bool = False
+    allow_resource_override: bool = False
+    smoke_test: bool = False
+
+
 class ModelSmokeTestRequest(BaseModel):
     persist: bool = True
 
@@ -4408,6 +4415,7 @@ def public_model_download(row: dict[str, Any]) -> dict[str, Any]:
     public["file_count"] = len(manifest.get("files") or [])
     public["model_ref"] = f"{public.get('model_id')}@{public.get('model_version')}"
     public["authenticated"] = bool(public.get("credential_secret_name"))
+    public["install_ready"] = public.get("status") == "completed"
     return jsonable_encoder(public)
 
 
@@ -4416,6 +4424,13 @@ def parse_model_record_manifest(row: dict[str, Any]) -> Any:
         return model_lifecycle.parse_uploaded_manifest(row["manifest"])
     except (CatalogError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"stored manifest is invalid: {exc}") from exc
+
+
+def parse_download_manifest(row: dict[str, Any]) -> Any:
+    try:
+        return model_lifecycle.parse_uploaded_manifest(row["manifest"])
+    except (CatalogError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"stored download manifest is invalid: {exc}") from exc
 
 
 def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> dict[str, Any]:
@@ -4703,6 +4718,62 @@ async def smoke_test_model_record(row: dict[str, Any], auth: AuthContext, *, per
         },
     )
     return {"smoke_test": run, "model_record": updated_row, "measurement": measurement_info, "persisted": bool(persist and run.get("status") == "ok")}
+
+
+async def install_model_manifest(
+    *,
+    manifest: Any,
+    payload: ModelInstallRequest,
+    auth: AuthContext,
+    source_download: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    require_manifest_role_action(manifest, auth, "install")
+    plan = install_plan_for_manifest(manifest, payload)
+    try:
+        model_lifecycle.require_installable(plan, confirmed=payload.confirm)
+        runtime_views = model_lifecycle.create_runtime_views(manifest, data_root_path())
+    except model_lifecycle.ModelLifecycleError as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "plan": plan}) from exc
+    installed_manifest = {**manifest.to_dict(), "installation_status": "installed"}
+    row = await database.upsert_model_record(
+        {
+            "id": manifest.id,
+            "version": manifest.version,
+            "display_name": manifest.display_name,
+            "modality": manifest.modality,
+            "preferred_runtime": manifest.preferred_runtime,
+            "status": "installed",
+            "resource_label": plan["resource_decision"]["label"],
+            "manifest": installed_manifest,
+        }
+    )
+    await refresh_catalog_cache()
+    workflows = await refresh_workflow_dependency_statuses()
+    smoke_result: dict[str, Any] | None = None
+    if payload.smoke_test:
+        smoke_result = await smoke_test_model_record(row, auth, persist=True)
+        row = smoke_result["model_record"]
+    metadata: dict[str, Any] = {
+        "aliases": manifest.aliases,
+        "preferred_runtime": manifest.preferred_runtime,
+        "resource_label": row["resource_label"],
+        "total_size_bytes": plan["total_size_bytes"],
+        "workflow_dependencies_refreshed": workflows["count"],
+        "runtime_views": [{"runtime": view["runtime"], "host_path": view["host_path"], "container_path": view["container_path"]} for view in runtime_views],
+        "smoke_test": smoke_result["smoke_test"] if smoke_result else None,
+    }
+    if source_download is not None:
+        metadata["source_download_id"] = source_download["id"]
+        metadata["download_authenticated"] = bool(source_download.get("credential_secret_name"))
+    await record_audit_event(
+        auth,
+        "model.installed",
+        target_type="model",
+        target_id=plan["model_ref"],
+        summary=f"Installed model {plan['model_ref']}",
+        metadata=metadata,
+    )
+    return {"model": public_model_record(row), "plan": plan, "runtime_views": runtime_views, "workflow_refresh": workflows, "smoke_test": smoke_result}
 
 
 async def dependent_workflows_for_model(model_id: str, aliases: list[str]) -> list[dict[str, str]]:
@@ -7627,55 +7698,43 @@ async def admin_model_download_retry(download_id: str, authorization: str | None
     return public_model_download(row)
 
 
+@app.post("/admin/models/downloads/{download_id}/install")
+async def admin_model_download_install(
+    download_id: str,
+    payload: ModelDownloadInstallRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_model_admin(auth)
+    row = await database.get_model_download(download_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="model download not found")
+    if row.get("status") != "completed":
+        raise HTTPException(status_code=409, detail={"message": "model download is not completed", "download": public_model_download(row)})
+    manifest = parse_download_manifest(row)
+    install_payload = ModelInstallRequest(
+        manifest=manifest.to_dict(),
+        confirm=payload.confirm,
+        accept_license=payload.accept_license,
+        allow_resource_override=payload.allow_resource_override,
+        smoke_test=payload.smoke_test,
+    )
+    return await install_model_manifest(
+        manifest=manifest,
+        payload=install_payload,
+        auth=auth,
+        source_download=row,
+    )
+
+
 @app.post("/admin/models/install")
 async def admin_model_install(payload: ModelInstallRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
     require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
-    require_manifest_role_action(manifest, auth, "install")
-    plan = install_plan_for_manifest(manifest, payload)
-    try:
-        model_lifecycle.require_installable(plan, confirmed=payload.confirm)
-        runtime_views = model_lifecycle.create_runtime_views(manifest, data_root_path())
-    except model_lifecycle.ModelLifecycleError as exc:
-        raise HTTPException(status_code=409, detail={"message": str(exc), "plan": plan}) from exc
-    installed_manifest = {**manifest.to_dict(), "installation_status": "installed"}
-    row = await database.upsert_model_record(
-        {
-            "id": manifest.id,
-            "version": manifest.version,
-            "display_name": manifest.display_name,
-            "modality": manifest.modality,
-            "preferred_runtime": manifest.preferred_runtime,
-            "status": "installed",
-            "resource_label": plan["resource_decision"]["label"],
-            "manifest": installed_manifest,
-        }
-    )
-    await refresh_catalog_cache()
-    workflows = await refresh_workflow_dependency_statuses()
-    smoke_result: dict[str, Any] | None = None
-    if payload.smoke_test:
-        smoke_result = await smoke_test_model_record(row, auth, persist=True)
-        row = smoke_result["model_record"]
-    await record_audit_event(
-        auth,
-        "model.installed",
-        target_type="model",
-        target_id=plan["model_ref"],
-        summary=f"Installed model {plan['model_ref']}",
-        metadata={
-            "aliases": manifest.aliases,
-            "preferred_runtime": manifest.preferred_runtime,
-            "resource_label": row["resource_label"],
-            "total_size_bytes": plan["total_size_bytes"],
-            "workflow_dependencies_refreshed": workflows["count"],
-            "runtime_views": [{"runtime": view["runtime"], "host_path": view["host_path"], "container_path": view["container_path"]} for view in runtime_views],
-            "smoke_test": smoke_result["smoke_test"] if smoke_result else None,
-        },
-    )
-    return {"model": public_model_record(row), "plan": plan, "runtime_views": runtime_views, "workflow_refresh": workflows, "smoke_test": smoke_result}
+    return await install_model_manifest(manifest=manifest, payload=payload, auth=auth)
 
 
 @app.post("/admin/models/{model_id}/versions/{version}/smoke-test")
