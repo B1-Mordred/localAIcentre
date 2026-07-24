@@ -21,6 +21,22 @@ Controls implemented or planned:
 
 The runtime-agent API is intentionally narrow. It is the only service that mounts `/var/run/docker.sock`; the control plane does not mount the Docker socket. Bootstrap generates `$B1_DATA_ROOT/secrets/runtime_agent_token`, a private runtime-agent CA, a runtime-agent server certificate, and a control-plane client certificate. Compose mounts those files read-only at `/run/secrets/*`. The default runtime-agent URL is `https://runtime-agent:8443`, Uvicorn requires a client certificate signed by the generated CA, and all runtime-agent `/v1/*` endpoints still require `Authorization: Bearer <token>` when that secret is present.
 
+During target-host acceptance, run the deployed security proof after production auth and runtime-agent log access are healthy:
+
+```bash
+export B1_SECURITY_API_BASE=https://api.ai.b1.germering
+export B1_SECURITY_COMFY_BASE=https://comfy.ai.b1.germering
+export B1_SECURITY_API_KEY=...
+export B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1
+export B1_SECURITY_BROWSER_USERNAME=admin
+export B1_SECURITY_BROWSER_PASSWORD=...
+export B1_SECURITY_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json
+make security-acceptance
+```
+
+The harness writes `b1-ai-hub-security-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/`. Acceptance reports require that evidence to show successful unauthenticated rejection, under-scoped rejection, credentialed CORS wildcard denial, browser CSRF rejection, ComfyUI management-route denial, model-import SSRF rejection, artifact traversal rejection, and runtime-agent/control-plane log redaction. Set `B1_SECURITY_UNDERSCOPED_API_KEY` instead of `B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1` when using a pre-created low-scope key. Set `B1_SECURITY_BROWSER_SESSION_COOKIE` instead of browser username/password when an operator supplies an already valid browser session cookie for the CSRF probe.
+
 The control plane emits structured JSON logs through a single `log_event` helper. That helper recursively redacts sensitive keys such as prompts, messages, inputs, media, voice samples, documents, tokens, credentials, cookies, passwords, and API keys; it also redacts bearer-token strings, B1 API-key strings, GitHub PAT-shaped strings, and sensitive URL query parameters before writing to stdout/stderr. Long strings and long lists are bounded so logs cannot become a prompt or upload exfiltration path.
 
 The implemented runtime-agent surface validates service names against immutable allowlists, reports Docker/service status, retrieves bounded Docker logs with B1 API keys and bearer tokens redacted, and exposes start/stop/restart only for allowlisted B1 AI Hub services. Browser log access goes through `GET /admin/services/{service}/logs`, which adds administrator/operator authorization, a fixed service allowlist, a 500-line cap, and a second redaction/truncation pass before returning entries to Control Center. Predefined runtime `recover` and `unload` actions are restricted further by `B1_RUNTIME_ACTION_SERVICES` and currently map to bounded restarts of those runtime services. Update image inspect/pull endpoints accept only allowlisted services and image references pinned by `@sha256:<digest>`; `latest` and missing digests are rejected before Docker is contacted, and a real pull fails unless Docker inspection confirms the requested digest. Predefined rollback is restricted to the static `B1_ROLLBACK_SERVICES` restart plan; clients cannot submit arbitrary services, commands, environment variables, or mounts. Mutations remain disabled unless `B1_ENABLE_MUTATIONS=true` is set explicitly. Arbitrary commands, environment variables, mounts, container creation, exec, file writes, and Docker API passthrough are forbidden.

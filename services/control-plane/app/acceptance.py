@@ -55,6 +55,17 @@ VOICEBOX_REQUIRED_CHECKS = (
     "speech_or_limitation_recorded",
     "websocket_or_limitation_recorded",
 )
+SECURITY_EVIDENCE_FORMAT = "b1-ai-hub-security-acceptance/v1"
+SECURITY_REQUIRED_CHECKS = (
+    "unauthenticated_requests_rejected",
+    "under_scoped_requests_rejected",
+    "cors_credentials_not_wildcard",
+    "csrf_browser_mutation_rejected",
+    "comfyui_management_routes_blocked",
+    "import_ssrf_blocked",
+    "artifact_traversal_blocked",
+    "logs_redacted",
+)
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -402,6 +413,36 @@ def voicebox_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
     }
 
 
+def security_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != SECURITY_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported security acceptance evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in SECURITY_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(SECURITY_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
@@ -410,6 +451,7 @@ def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
         "remote_nodes_non_comfy": {"available": False, "reason": reason, "root": str(root)},
         "modelhub_client_sync": {"available": False, "reason": reason, "root": str(root)},
         "voicebox_remote": {"available": False, "reason": reason, "root": str(root)},
+        "security_acceptance": {"available": False, "reason": reason, "root": str(root)},
     }
 
 
@@ -462,6 +504,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == VOICEBOX_EVIDENCE_FORMAT and "voicebox_remote" not in found:
             snapshots["voicebox_remote"] = voicebox_evidence_snapshot(payload, path.resolve())
             found.add("voicebox_remote")
+        elif payload.get("format") == SECURITY_EVIDENCE_FORMAT and "security_acceptance" not in found:
+            snapshots["security_acceptance"] = security_evidence_snapshot(payload, path.resolve())
+            found.add("security_acceptance")
         if found == {
             "gpu_acceptance",
             "installed_workflows",
@@ -469,6 +514,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             "remote_nodes_non_comfy",
             "modelhub_client_sync",
             "voicebox_remote",
+            "security_acceptance",
         }:
             break
     return snapshots
@@ -634,6 +680,15 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = voicebox_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("Voicebox remote compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+    security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
+    if security_evidence.get("available") is not True:
+        blockers.append("security acceptance evidence is unavailable")
+    else:
+        if security_evidence.get("status") != "ok":
+            blockers.append(f"security acceptance evidence status is {security_evidence.get('status', 'unknown')}")
+        missing_checks = security_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("security acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     if preservation.get("available") is not True:
         blockers.append("cutover preservation plan is unavailable")
@@ -706,6 +761,7 @@ def build_report(
             "remote_nodes_non_comfy": {"available": False, "reason": "not supplied"},
             "modelhub_client_sync": {"available": False, "reason": "not supplied"},
             "voicebox_remote": {"available": False, "reason": "not supplied"},
+            "security_acceptance": {"available": False, "reason": "not supplied"},
         },
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
@@ -840,6 +896,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
+    security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
 
     source_control = report.get("source_control") or {}
     source_rows = [["Field", "Value"]]
@@ -944,7 +1001,9 @@ def markdown_report(report: dict[str, Any]) -> str:
             + "\n\n"
             + _live_evidence_markdown("Model Hub client sync", modelhub_evidence, "No Model Hub client sync checks recorded.")
             + "\n\n"
-            + _live_evidence_markdown("Voicebox remote compatibility", voicebox_evidence, "No Voicebox remote compatibility checks recorded."),
+            + _live_evidence_markdown("Voicebox remote compatibility", voicebox_evidence, "No Voicebox remote compatibility checks recorded.")
+            + "\n\n"
+            + _live_evidence_markdown("Security acceptance", security_evidence, "No security acceptance checks recorded."),
             "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
@@ -1002,6 +1061,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
+    security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
     gpu_evidence_ready = gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks")
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
@@ -1028,6 +1088,11 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and voicebox_evidence.get("status") == "ok"
         and not voicebox_evidence.get("missing_checks")
     )
+    security_evidence_ready = (
+        security_evidence.get("available") is True
+        and security_evidence.get("status") == "ok"
+        and not security_evidence.get("missing_checks")
+    )
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -1045,6 +1110,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "remote_nodes_evidence_ready": remote_nodes_evidence_ready,
         "modelhub_evidence_ready": modelhub_evidence_ready,
         "voicebox_evidence_ready": voicebox_evidence_ready,
+        "security_evidence_ready": security_evidence_ready,
         "live_evidence_ready": (
             gpu_evidence_ready
             and installed_workflows_evidence_ready
@@ -1052,6 +1118,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and remote_nodes_evidence_ready
             and modelhub_evidence_ready
             and voicebox_evidence_ready
+            and security_evidence_ready
         ),
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }

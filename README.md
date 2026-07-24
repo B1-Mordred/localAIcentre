@@ -21,7 +21,7 @@ This repository currently contains the first runnable project slice:
 - database-backed model install planning from catalog IDs, uploaded manifests, or bounded HTTPS manifest URLs; licence-gated resumable direct-url and Hugging Face repository blob downloads with Control Center pause/resume and retry/requeue; verified staged-blob publication; hardlinked or safely extracted per-runtime read-only model views; recoverable record/blob quarantine with confirmed quarantine retention cleanup; and catalog overlay refresh
 - runtime-agent with default-on internal mTLS, fail-closed token-protected allowlisted Docker status, bounded redacted logs surfaced through Control Center, disabled-by-default service mutations, and predefined runtime recover/unload actions
 - runtime-agent CPU/memory/disk/GPU metrics and Control Center system self-test with TLS route, tiny inference, dry-run unload, and artifact delivery probes
-- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/rollback/security, machine-readable RTX GPU, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, and Voicebox remote/server evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
+- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/rollback/security, machine-readable RTX GPU, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, and deployed security evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
 - lightweight Control Center observability backed by `GET /admin/metrics`, showing queue waits, recent job timing/resource summaries, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring Prometheus or Grafana for the base appliance
 - PostgreSQL-backed audit log for administrative changes with recursive metadata redaction and Control Center visibility
 - AES-GCM encrypted configuration-secret storage for provider credentials, download tokens, runtime credentials, and integrations, backed by the generated master key outside Git and exposed through redacted admin UI/API controls
@@ -152,7 +152,18 @@ B1_NATIVE_COMFYUI_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/native-comfyui.json
 python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
 ```
 
-See [tests/integration/README.md](./tests/integration/README.md) and [tests/compatibility/README.md](./tests/compatibility/README.md) for the full acceptance environment and evidence options.
+Run deployed security acceptance after production authentication and runtime-agent log access are configured:
+
+```bash
+B1_SECURITY_API_KEY=... \
+B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1 \
+B1_SECURITY_BROWSER_USERNAME=admin \
+B1_SECURITY_BROWSER_PASSWORD=... \
+B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json \
+make security-acceptance
+```
+
+See [tests/integration/README.md](./tests/integration/README.md), [tests/compatibility/README.md](./tests/compatibility/README.md), and [tests/security/README.md](./tests/security/README.md) for the full acceptance environment and evidence options.
 
 ## Default URLs
 

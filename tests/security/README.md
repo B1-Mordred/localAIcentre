@@ -2,13 +2,13 @@
 
 Security tests are offline policy checks and opt-in live checks for a deployed B1 AI Hub.
 
-Run the current offline security suite:
+Run the offline security suite:
 
 ```bash
 make security
 ```
 
-The first committed security suite validates Compose exposure policy:
+The offline suite validates Compose exposure policy and runtime-agent source policy:
 
 - only `gateway` may publish host ports
 - backend services must not publish LocalAI, ComfyUI, Voicebox, PostgreSQL, Redis, artifact-server, runtime-agent, Control Center, Media Studio, or Open WebUI ports
@@ -17,4 +17,20 @@ The first committed security suite validates Compose exposure policy:
 - runtime-agent mutating routes keep service allowlist guards, pinned-image guards, runtime-action guards, and bounded-log limits
 - runtime-agent source must not include Docker exec/container-create/build/volume/secret/plugin passthrough paths or arbitrary host command/environment/mount controls
 
-Future security tests will cover deployed authentication, under-scoped requests, traversal, symlink escape, archive bombs, SSRF, CORS, CSRF, custom-node installation policy, and secret redaction.
+Run deployed security acceptance on the target stack after production auth is configured:
+
+```bash
+export B1_SECURITY_API_BASE=https://api.ai.b1.germering
+export B1_SECURITY_COMFY_BASE=https://comfy.ai.b1.germering
+export B1_SECURITY_API_KEY=...
+export B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1
+export B1_SECURITY_BROWSER_USERNAME=admin
+export B1_SECURITY_BROWSER_PASSWORD=...
+export B1_SECURITY_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json
+make security-acceptance
+```
+
+`B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1` creates a temporary `user` API client with `models:read`, proves it cannot read `/admin/self-test`, and revokes it in teardown. Instead, set `B1_SECURITY_UNDERSCOPED_API_KEY` to a pre-created low-scope key when you want no client lifecycle mutation. For the CSRF check, either provide `B1_SECURITY_BROWSER_USERNAME`/`B1_SECURITY_BROWSER_PASSWORD` so the harness can log in and omit `X-B1-CSRF`, or provide a valid `B1_SECURITY_BROWSER_SESSION_COOKIE`.
+
+The live suite writes `b1-ai-hub-security-acceptance/v1` evidence covering unauthenticated rejection, under-scoped rejection, credentialed CORS wildcard denial, browser CSRF rejection, ComfyUI Manager/custom-node management denial, model-import SSRF rejection, artifact traversal rejection, and runtime-agent/control-plane log redaction. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` security evidence file and block handoff if any required check is absent or incomplete.

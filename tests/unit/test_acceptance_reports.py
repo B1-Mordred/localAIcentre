@@ -206,7 +206,47 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "sample_count": 3,
             "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voicebox-speech"],
-        }
+        },
+        "security_acceptance": {
+            "available": True,
+            "format": "b1-ai-hub-security-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/security-acceptance.json",
+            "generated_at": "2026-07-24T12:50:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "unauthenticated_requests_rejected",
+                "under_scoped_requests_rejected",
+                "cors_credentials_not_wildcard",
+                "csrf_browser_mutation_rejected",
+                "comfyui_management_routes_blocked",
+                "import_ssrf_blocked",
+                "artifact_traversal_blocked",
+                "logs_redacted",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "unauthenticated_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
+                "under_scoped_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "cors_credentials_not_wildcard": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "csrf_browser_mutation_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
+                "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
+                "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "logs_redacted": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+            },
+            "sample_count": 8,
+            "sample_labels": [
+                "unauthenticated-admin",
+                "under-scoped-admin",
+                "cors-denied-origin",
+                "csrf-missing-token",
+                "comfyui-manager-denied",
+                "manifest-ssrf-denied",
+                "artifact-traversal-denied",
+                "service-logs-redacted",
+            ],
+        },
     }
     payload.update(overrides)
     return payload
@@ -330,6 +370,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("Model Hub client sync", markdown)
             self.assertIn("voicebox-remote.json", markdown)
             self.assertIn("Voicebox remote compatibility", markdown)
+            self.assertIn("security-acceptance.json", markdown)
+            self.assertIn("Security acceptance", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -599,6 +641,44 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_security_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["security_acceptance"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["security_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("security acceptance evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_security_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["security_acceptance"] = {
+            **live_evidence["security_acceptance"],
+            "status": "incomplete",
+            "missing_checks": ["csrf_browser_mutation_rejected", "logs_redacted"],
+            "checks": {
+                "unauthenticated_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
+                "under_scoped_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "cors_credentials_not_wildcard": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
+                "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["security_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("security acceptance evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "security acceptance evidence is missing required checks: csrf_browser_mutation_rejected, logs_redacted",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -790,6 +870,38 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            security = evidence_root / "security-acceptance.json"
+            security.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-security-acceptance/v1",
+                        "generated_at": "2026-07-24T12:50:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "unauthenticated_requests_rejected": {"status": "ok"},
+                            "under_scoped_requests_rejected": {"status": "ok"},
+                            "cors_credentials_not_wildcard": {"status": "ok"},
+                            "csrf_browser_mutation_rejected": {"status": "ok"},
+                            "comfyui_management_routes_blocked": {"status": "ok"},
+                            "import_ssrf_blocked": {"status": "ok"},
+                            "artifact_traversal_blocked": {"status": "ok"},
+                            "logs_redacted": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "unauthenticated-admin"},
+                            {"label": "under-scoped-admin"},
+                            {"label": "cors-denied-origin"},
+                            {"label": "csrf-missing-token"},
+                            {"label": "comfyui-manager-denied"},
+                            {"label": "manifest-ssrf-denied"},
+                            {"label": "artifact-traversal-denied"},
+                            {"label": "service-logs-redacted"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -829,6 +941,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(voicebox_remote["status"], "ok")
         self.assertEqual(voicebox_remote["missing_checks"], [])
         self.assertEqual(voicebox_remote["sample_count"], 3)
+        security_acceptance = snapshot["security_acceptance"]
+        self.assertTrue(security_acceptance["available"])
+        self.assertEqual(security_acceptance["source_path"], str(security.resolve()))
+        self.assertEqual(security_acceptance["status"], "ok")
+        self.assertEqual(security_acceptance["missing_checks"], [])
+        self.assertEqual(security_acceptance["sample_count"], 8)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
