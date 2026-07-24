@@ -48,7 +48,15 @@ def if_none_match_matches(header_value: str | None, etag: str) -> bool:
     if not header_value:
         return False
     candidates = [candidate.strip() for candidate in header_value.split(",")]
-    return "*" in candidates or etag in candidates
+    normalized_etag = normalize_entity_tag(etag)
+    return "*" in candidates or any(normalize_entity_tag(candidate) == normalized_etag for candidate in candidates)
+
+
+def normalize_entity_tag(value: str) -> str:
+    candidate = value.strip()
+    if len(candidate) >= 2 and candidate[:2].lower() == "w/":
+        candidate = candidate[2:].strip()
+    return candidate
 
 
 def parse_byte_range(header_value: str | None, size: int) -> tuple[int, int] | None:

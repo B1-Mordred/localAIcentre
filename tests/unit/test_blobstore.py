@@ -51,6 +51,7 @@ class BlobStoreTests(unittest.TestCase):
         self.assertEqual(etag, '"sha256:' + digest + '"')
         self.assertTrue(if_none_match_matches(etag, etag))
         self.assertTrue(if_none_match_matches('W/"ignored", "sha256:' + digest + '"', etag))
+        self.assertTrue(if_none_match_matches('W/"sha256:' + digest + '"', etag))
         self.assertTrue(if_none_match_matches("*", etag))
         self.assertFalse(if_none_match_matches('"other"', etag))
 
