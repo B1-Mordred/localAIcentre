@@ -30,6 +30,36 @@ services:
       - app
       - data
     restart: "no"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ.get("B1_DATA_ROOT", "/srv/b1-ai-hub"))
+          required = (
+              "data/postgres",
+              "data/redis",
+              "data/open-webui",
+              "data/control-plane",
+              "models/blobs",
+              "models/runtime-views/localai",
+              "models/runtime-views/comfyui",
+              "models/runtime-views/audio-cpu",
+              "artifacts/temporary",
+              "secrets",
+              "backups",
+          )
+          missing = [relative for relative in required if not (root / relative).is_dir()]
+          if missing:
+              raise SystemExit("missing bootstrap directories: " + ", ".join(missing))
+          PY
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   gateway:
     image: caddy:2.10.2-alpine

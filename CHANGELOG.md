@@ -4,6 +4,7 @@
 
 - Added implementation plan for B1 AI Hub.
 - Added initial Docker Compose topology with pinned base images and internal networks.
+- Added a bootstrap Compose health check and policy coverage so every implementation-plan service declares a health check.
 - Added service scaffolds for the control plane, runtime agent, artifact server, CPU audio, and runtime placeholders.
 - Added Caddy gateway routing for the intended LAN virtual hosts.
 - Added bootstrap, inventory, backup, and validation entry points.

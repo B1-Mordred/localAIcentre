@@ -7,6 +7,22 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+REQUIRED_COMPOSE_SERVICES = {
+    "gateway",
+    "open-webui",
+    "control-plane",
+    "control-center",
+    "media-studio",
+    "runtime-agent",
+    "localai",
+    "comfyui",
+    "voicebox",
+    "audio-cpu",
+    "postgres",
+    "redis",
+    "artifact-server",
+    "bootstrap",
+}
 
 
 class ComposePolicyLoader(yaml.SafeLoader):
@@ -71,23 +87,15 @@ class ComposePolicyTests(unittest.TestCase):
 
     def test_required_services_exist(self) -> None:
         services = set(self.compose["services"])
-        required = {
-            "gateway",
-            "open-webui",
-            "control-plane",
-            "control-center",
-            "media-studio",
-            "runtime-agent",
-            "localai",
-            "comfyui",
-            "voicebox",
-            "audio-cpu",
-            "postgres",
-            "redis",
-            "artifact-server",
-            "bootstrap",
-        }
-        self.assertTrue(required.issubset(services), required - services)
+        self.assertTrue(REQUIRED_COMPOSE_SERVICES.issubset(services), REQUIRED_COMPOSE_SERVICES - services)
+
+    def test_required_services_have_healthchecks(self) -> None:
+        missing = sorted(
+            service_name
+            for service_name in REQUIRED_COMPOSE_SERVICES
+            if "healthcheck" not in self.compose["services"][service_name]
+        )
+        self.assertEqual(missing, [])
 
     def test_open_webui_uses_generated_internal_api_key(self) -> None:
         open_webui = self.compose["services"]["open-webui"]
