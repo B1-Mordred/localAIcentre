@@ -31,7 +31,7 @@ python3 deploy/scripts/inventory.py \
   --scan-root /home/mordred
 ```
 
-The inventory report redacts common bearer tokens, generated B1 keys, password-like fields, and token-like fields in captured command output. It does not read `.env` files or Open WebUI database row contents. SQLite inspection is opened read-only and records schema/table counts only, so operators can judge whether an old Open WebUI database is likely worth preserving without exposing chats or prompts in the report.
+The inventory report redacts common bearer tokens, generated B1 keys, password-like fields, and token-like fields in captured command output. It does not read `.env` files or Open WebUI database row contents. Docker container and volume inspection is whitelisted to safe metadata such as image, state, labels, networks, and mounts; environment variables are not stored in the report. SQLite inspection is opened read-only and records schema/table counts only, so operators can judge whether an old Open WebUI database is likely worth preserving without exposing chats or prompts in the report. If a discovered Docker volume path is not readable by the current user, the inventory records it under `open_webui_data_roots.unreadable_or_unscannable` instead of treating the database as absent.
 
 ## Reviewed Old-Stack Backup
 
@@ -41,7 +41,7 @@ After reviewing the inventory, generate an explicit backup scope template:
 make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.json
 ```
 
-This writes `$B1_DATA_ROOT/backups/old-stack-scope.json`. It lists candidate old AI containers, AI-hinted Docker volumes, Compose file paths, Open WebUI data/database paths, model directories, and the inventory's port/model/Open WebUI readiness summary, but it selects nothing automatically.
+This writes `$B1_DATA_ROOT/backups/old-stack-scope.json`. It lists candidate old AI containers, AI-hinted Docker volumes, Compose file paths, Open WebUI data/database paths, discovered but unreadable Open WebUI Docker data roots, model directories, and the inventory's port/model/Open WebUI readiness summary, but it selects nothing automatically.
 
 Edit the scope file only after operator review:
 

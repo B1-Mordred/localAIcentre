@@ -41,6 +41,10 @@ class OldStackBackupTests(unittest.TestCase):
             "paths": {
                 "compose_file_candidates": [{"path": str(compose_file), "exists": True, "type": "file"}],
                 "open_webui_data_candidates": [{"path": str(open_webui_data), "exists": True, "type": "directory"}],
+                "open_webui_data_roots": [
+                    {"path": str(open_webui_data), "exists": True, "type": "directory"},
+                    {"path": "/var/lib/docker/volumes/open-webui/_data", "exists": None, "error": "PermissionError: denied"},
+                ],
                 "open_webui_database_candidates": [{"path": str(open_webui_data / "webui.db"), "exists": True, "type": "file"}],
                 "model_directories": [{"path": str(model_dir), "exists": True, "type": "directory"}],
             },
@@ -48,6 +52,13 @@ class OldStackBackupTests(unittest.TestCase):
                 "port_review": {"ports_requiring_review": [80, 443, 11434]},
                 "model_storage": {"model_file_count": 3, "model_size_bytes": 4096},
                 "open_webui": {"database_candidate_count": 1, "readable_sqlite_count": 1},
+                "open_webui_data_roots": {
+                    "candidate_count": 2,
+                    "existing_directory_count": 1,
+                    "unreadable_or_unscannable": [
+                        {"path": "/var/lib/docker/volumes/open-webui/_data", "reason": "PermissionError: denied"}
+                    ],
+                },
             },
         }
 
@@ -117,9 +128,12 @@ class OldStackBackupTests(unittest.TestCase):
         self.assertEqual(template["candidates"]["old_ai_stack_container_names"], ["old-open-webui"])
         self.assertEqual(template["candidates"]["old_ai_stack_compose_projects"], ["old-ai"])
         self.assertEqual(template["candidates"]["ai_hint_volume_names"], ["open-webui_data"])
+        self.assertEqual(template["candidates"]["open_webui_data_paths"], [str(root / "old-open-webui" / "data")])
+        self.assertEqual(template["candidates"]["open_webui_unreadable_data_roots"], ["/var/lib/docker/volumes/open-webui/_data"])
         self.assertEqual(template["inventory_review"]["port_review"]["ports_requiring_review"], [80, 443, 11434])
         self.assertEqual(template["inventory_review"]["model_storage"]["model_file_count"], 3)
         self.assertEqual(template["inventory_review"]["open_webui"]["readable_sqlite_count"], 1)
+        self.assertEqual(template["inventory_review"]["open_webui_data_roots"]["candidate_count"], 2)
 
     def test_backup_requires_operator_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

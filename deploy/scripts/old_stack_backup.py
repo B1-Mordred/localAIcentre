@@ -265,6 +265,28 @@ def existing_candidate_paths(items: Any) -> list[str]:
     return sorted(paths)
 
 
+def unreadable_candidate_paths(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    paths: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("path")
+        if isinstance(value, str) and item.get("exists") is None and value not in paths:
+            paths.append(value)
+    return sorted(paths)
+
+
+def merge_candidate_paths(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for value in group:
+            if value not in merged:
+                merged.append(value)
+    return sorted(merged)
+
+
 def items_with_classification(items: Any, classification: str) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         return []
@@ -294,7 +316,11 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
             ),
             "ai_hint_volume_names": candidate_names(classification.get("volumes_with_ai_hints", []), "Name"),
             "compose_file_paths": existing_candidate_paths(paths.get("compose_file_candidates", [])),
-            "open_webui_data_paths": existing_candidate_paths(paths.get("open_webui_data_candidates", [])),
+            "open_webui_data_paths": merge_candidate_paths(
+                existing_candidate_paths(paths.get("open_webui_data_candidates", [])),
+                existing_candidate_paths(paths.get("open_webui_data_roots", [])),
+            ),
+            "open_webui_unreadable_data_roots": unreadable_candidate_paths(paths.get("open_webui_data_roots", [])),
             "open_webui_database_paths": existing_candidate_paths(paths.get("open_webui_database_candidates", [])),
             "model_directory_paths": existing_candidate_paths(paths.get("model_directories", [])),
         },
@@ -302,6 +328,7 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
             "port_review": readiness.get("port_review", {}),
             "model_storage": readiness.get("model_storage", {}),
             "open_webui": readiness.get("open_webui", {}),
+            "open_webui_data_roots": readiness.get("open_webui_data_roots", {}),
         },
         "safety": {
             "nothing_is_selected_automatically": True,

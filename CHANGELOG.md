@@ -42,6 +42,7 @@
 - Added a generated runtime-control bearer token for production LocalAI, ComfyUI, and Voicebox `/b1/runtime/*` lifecycle hooks so load, warm, smoke, and unload actions fail closed when the internal hook secret is missing or wrong.
 - Extended runtime-control bearer enforcement to the default `audio-cpu` `/b1/runtime/smoke` hook and mounted the generated token read-only into that service.
 - Aligned the external ComfyUI `B1 Speech To Text` node with the public OpenAI-compatible multipart transcription contract, including safe filename/header handling and no private model header.
+- Improved read-only migration inventory with safe Docker inspect mount discovery so volume-backed Open WebUI data roots and model mounts are surfaced without storing container environment secrets, and unscannable Open WebUI roots carry into the operator backup-scope template.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.

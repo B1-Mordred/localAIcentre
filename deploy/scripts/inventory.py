@@ -66,7 +66,7 @@ SECRET_PATTERNS = [
     re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
     re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"),
     re.compile(r"\bb1rt_[A-Za-z0-9_-]+\b"),
-    re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key)(=|:)[^\s,;]+"),
+    re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key)(=|:)[^\s,;\"']+"),
 ]
 MODEL_FILE_SUFFIXES = {
     ".bin",
@@ -83,6 +83,13 @@ MODEL_FILE_SUFFIXES = {
     ".tflite",
 }
 OPEN_WEBUI_TABLE_COUNT_CANDIDATES = ("user", "chat", "document", "file", "folder", "tag", "model", "config", "feedback")
+OPEN_WEBUI_MOUNT_DESTINATION_HINTS = ("/app/backend/data", "/data/open-webui", "/open-webui")
+DOCKER_COMPOSE_LABEL_PREFIX = "com.docker.compose."
+DOCKER_LABEL_ALLOWLIST = {
+    "org.opencontainers.image.title",
+    "org.opencontainers.image.version",
+    "org.opencontainers.image.source",
+}
 REVIEW_PORTS = {
     80: "production HTTP gateway",
     443: "production HTTPS gateway",
@@ -146,6 +153,13 @@ def parse_json_object(output: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return item if isinstance(item, dict) else {}
+
+
+def parse_json_payload(output: str) -> Any:
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
 
 
 def classify_text(text: str) -> dict[str, Any]:
@@ -325,6 +339,131 @@ def parse_docker_info(output: str) -> dict[str, Any]:
     }
 
 
+def docker_resource_identifier(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def safe_docker_labels(labels: Any) -> dict[str, str]:
+    if not isinstance(labels, dict):
+        return {}
+    safe: dict[str, str] = {}
+    for key, value in labels.items():
+        label = str(key)
+        if label.startswith(DOCKER_COMPOSE_LABEL_PREFIX) or label in DOCKER_LABEL_ALLOWLIST:
+            safe[label] = redact_text(str(value))[:500]
+    return dict(sorted(safe.items()))
+
+
+def safe_docker_mounts(mounts: Any) -> list[dict[str, Any]]:
+    if not isinstance(mounts, list):
+        return []
+    safe: list[dict[str, Any]] = []
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        safe.append(
+            {
+                "type": mount.get("Type"),
+                "name": mount.get("Name"),
+                "source": mount.get("Source"),
+                "destination": mount.get("Destination"),
+                "driver": mount.get("Driver"),
+                "mode": mount.get("Mode"),
+                "rw": mount.get("RW"),
+                "propagation": mount.get("Propagation"),
+            }
+        )
+    return safe
+
+
+def safe_container_inspect(item: dict[str, Any], identifier: str) -> dict[str, Any]:
+    config = item.get("Config") if isinstance(item.get("Config"), dict) else {}
+    state = item.get("State") if isinstance(item.get("State"), dict) else {}
+    network_settings = item.get("NetworkSettings") if isinstance(item.get("NetworkSettings"), dict) else {}
+    networks = network_settings.get("Networks") if isinstance(network_settings.get("Networks"), dict) else {}
+    return {
+        "identifier": identifier,
+        "id": item.get("Id"),
+        "name": str(item.get("Name") or "").lstrip("/"),
+        "image": config.get("Image") or item.get("Image"),
+        "labels": safe_docker_labels(config.get("Labels")),
+        "state": {
+            "status": state.get("Status"),
+            "running": state.get("Running"),
+            "started_at": state.get("StartedAt"),
+            "finished_at": state.get("FinishedAt"),
+        },
+        "mounts": safe_docker_mounts(item.get("Mounts")),
+        "networks": sorted(str(name) for name in networks.keys()),
+    }
+
+
+def safe_volume_inspect(item: dict[str, Any], identifier: str) -> dict[str, Any]:
+    return {
+        "identifier": identifier,
+        "name": item.get("Name"),
+        "driver": item.get("Driver"),
+        "mountpoint": item.get("Mountpoint"),
+        "scope": item.get("Scope"),
+        "labels": safe_docker_labels(item.get("Labels")),
+    }
+
+
+def parse_first_inspect_object(output: str) -> dict[str, Any]:
+    payload = parse_json_payload(output)
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def inspect_docker_containers(rows: list[dict[str, Any]], command_runner: Callable[[list[str]], dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        identifier = docker_resource_identifier(row, ("ID", "Names", "Name"))
+        if not identifier:
+            continue
+        result = command_runner(["docker", "container", "inspect", identifier])
+        record: dict[str, Any] = {
+            "identifier": identifier,
+            "available": bool(result.get("available")),
+            "returncode": result.get("returncode"),
+        }
+        if result.get("available") and result.get("returncode") == 0:
+            inspected = parse_first_inspect_object(str(result.get("stdout") or ""))
+            record.update(safe_container_inspect(inspected, identifier) if inspected else {"error": "invalid inspect JSON"})
+        else:
+            record["error"] = redact_text(str(result.get("stderr") or "inspect unavailable"))[:500]
+        records.append(record)
+    return records
+
+
+def inspect_docker_volumes(rows: list[dict[str, Any]], command_runner: Callable[[list[str]], dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        identifier = docker_resource_identifier(row, ("Name",))
+        if not identifier:
+            continue
+        result = command_runner(["docker", "volume", "inspect", identifier])
+        record: dict[str, Any] = {
+            "identifier": identifier,
+            "available": bool(result.get("available")),
+            "returncode": result.get("returncode"),
+        }
+        if result.get("available") and result.get("returncode") == 0:
+            inspected = parse_first_inspect_object(str(result.get("stdout") or ""))
+            record.update(safe_volume_inspect(inspected, identifier) if inspected else {"error": "invalid inspect JSON"})
+        else:
+            record["error"] = redact_text(str(result.get("stderr") or "inspect unavailable"))[:500]
+        records.append(record)
+    return records
+
+
 def path_type(path: Path) -> str:
     if path.is_symlink():
         return "symlink"
@@ -336,11 +475,17 @@ def path_type(path: Path) -> str:
 
 
 def summarize_path(path: Path, *, sample_limit: int = 25) -> dict[str, Any]:
-    summary: dict[str, Any] = {"path": str(path), "exists": path.exists()}
-    if not path.exists():
-        return summary
+    summary: dict[str, Any] = {"path": str(path)}
     try:
         stat = path.lstat()
+    except FileNotFoundError:
+        summary["exists"] = False
+        return summary
+    except OSError as exc:
+        summary.update({"exists": None, "error": f"{exc.__class__.__name__}: {exc}"})
+        return summary
+    summary["exists"] = True
+    try:
         summary.update({"type": path_type(path), "mode": oct(stat.st_mode & 0o777), "uid": stat.st_uid, "gid": stat.st_gid})
         if path.is_symlink():
             summary["target"] = os.readlink(path)
@@ -554,15 +699,45 @@ def summarize_model_storage(model_directories: list[dict[str, Any]]) -> dict[str
 def summarize_open_webui_inventory(databases: list[dict[str, Any]]) -> dict[str, Any]:
     existing = [item for item in databases if item.get("exists") and item.get("type") == "file"]
     readable = [item for item in existing if isinstance(item.get("sqlite"), dict) and item["sqlite"].get("readable")]
+    filename_counts: dict[str, int] = {}
+    for item in readable:
+        if isinstance(item.get("path"), str):
+            name = Path(item["path"]).name
+            filename_counts[name] = filename_counts.get(name, 0) + 1
+    known_table_counts: dict[str, dict[str, int]] = {}
+    known_table_counts_by_path: dict[str, dict[str, int]] = {}
+    for item in readable:
+        if not isinstance(item.get("path"), str):
+            continue
+        path = item["path"]
+        name = Path(path).name
+        table_counts = item["sqlite"].get("table_counts", {})
+        key = path if filename_counts.get(name, 0) > 1 else name
+        known_table_counts[key] = table_counts
+        known_table_counts_by_path[path] = table_counts
     return {
         "database_candidate_count": len(existing),
         "readable_sqlite_count": len(readable),
-        "known_table_counts": {
-            Path(item["path"]).name: item["sqlite"].get("table_counts", {})
-            for item in readable
-            if isinstance(item.get("path"), str)
-        },
+        "known_table_counts": known_table_counts,
+        "known_table_counts_by_path": known_table_counts_by_path,
         "content_rows_read": False,
+    }
+
+
+def summarize_open_webui_data_roots(roots: list[dict[str, Any]]) -> dict[str, Any]:
+    unreadable = [
+        {
+            "path": item.get("path"),
+            "reason": item.get("error") or "not readable by current user",
+        }
+        for item in roots
+        if item.get("exists") is None or (item.get("exists") is True and item.get("type") != "directory")
+    ]
+    existing_directories = [item for item in roots if item.get("exists") is True and item.get("type") == "directory"]
+    return {
+        "candidate_count": len(roots),
+        "existing_directory_count": len(existing_directories),
+        "unreadable_or_unscannable": unreadable,
     }
 
 
@@ -595,6 +770,103 @@ def default_open_webui_candidates(b1_root: Path) -> list[Path]:
             Path("/app/backend/data"),
         ]
     )
+
+
+def path_from_string(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.startswith("/"):
+        return None
+    return Path(value)
+
+
+def record_text_for_mount_hints(record: dict[str, Any]) -> str:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    return " ".join(
+        [
+            str(record.get("identifier") or ""),
+            str(record.get("name") or ""),
+            str(record.get("image") or ""),
+            " ".join(f"{key}={value}" for key, value in labels.items()),
+        ]
+    ).lower()
+
+
+def mount_text(mount: dict[str, Any]) -> str:
+    return " ".join(str(mount.get(key) or "") for key in ("type", "name", "source", "destination")).lower()
+
+
+def docker_open_webui_path_candidates(
+    container_inspects: list[dict[str, Any]], volume_inspects: list[dict[str, Any]]
+) -> list[Path]:
+    candidates: list[Path] = []
+    volume_mountpoints = {
+        str(item.get("name") or item.get("identifier")): item.get("mountpoint")
+        for item in volume_inspects
+        if isinstance(item.get("mountpoint"), str)
+    }
+    for record in container_inspects:
+        record_text = record_text_for_mount_hints(record)
+        if "open-webui" not in record_text and "open_webui" not in record_text:
+            continue
+        for mount in record.get("mounts") if isinstance(record.get("mounts"), list) else []:
+            if not isinstance(mount, dict):
+                continue
+            lowered = mount_text(mount)
+            destination = str(mount.get("destination") or "").lower()
+            if not (
+                any(destination.startswith(hint) for hint in OPEN_WEBUI_MOUNT_DESTINATION_HINTS)
+                or "open-webui" in lowered
+                or "open_webui" in lowered
+            ):
+                continue
+            source = path_from_string(mount.get("source"))
+            if source is not None:
+                candidates.append(source)
+                continue
+            mountpoint = path_from_string(volume_mountpoints.get(str(mount.get("name") or "")))
+            if mountpoint is not None:
+                candidates.append(mountpoint)
+    for volume in volume_inspects:
+        text = " ".join(str(volume.get(key) or "") for key in ("identifier", "name", "mountpoint")).lower()
+        if "open-webui" in text or "open_webui" in text:
+            mountpoint = path_from_string(volume.get("mountpoint"))
+            if mountpoint is not None:
+                candidates.append(mountpoint)
+    return unique_paths(candidates)
+
+
+def docker_model_path_candidates(container_inspects: list[dict[str, Any]], volume_inspects: list[dict[str, Any]]) -> list[Path]:
+    candidates: list[Path] = []
+    volume_mountpoints = {
+        str(item.get("name") or item.get("identifier")): item.get("mountpoint")
+        for item in volume_inspects
+        if isinstance(item.get("mountpoint"), str)
+    }
+    for record in container_inspects:
+        record_text = record_text_for_mount_hints(record)
+        record_is_ai = classify_text(record_text)["classification"] in {
+            "candidate-old-ai-stack-review-required",
+            "b1-ai-hub-current-preserve",
+        }
+        for mount in record.get("mounts") if isinstance(record.get("mounts"), list) else []:
+            if not isinstance(mount, dict):
+                continue
+            lowered = mount_text(mount)
+            if "model" not in lowered and not (record_is_ai and "/models" in lowered):
+                continue
+            source = path_from_string(mount.get("source"))
+            if source is not None:
+                candidates.append(source)
+                continue
+            mountpoint = path_from_string(volume_mountpoints.get(str(mount.get("name") or "")))
+            if mountpoint is not None:
+                candidates.append(mountpoint)
+    for volume in volume_inspects:
+        text = " ".join(str(volume.get(key) or "") for key in ("identifier", "name", "mountpoint")).lower()
+        if "model" in text:
+            mountpoint = path_from_string(volume.get("mountpoint"))
+            if mountpoint is not None:
+                candidates.append(mountpoint)
+    return unique_paths(candidates)
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -651,6 +923,8 @@ def build_inventory(
     compose_rows = parse_json_lines(captured["docker_compose_ls"]["stdout"])
     volume_rows = parse_json_lines(captured["docker_volume_ls"]["stdout"])
     network_rows = parse_json_lines(captured["docker_network_ls"]["stdout"])
+    container_inspects = inspect_docker_containers(docker_rows, command_runner)
+    volume_inspects = inspect_docker_volumes(volume_rows, command_runner)
     roots = scan_roots if scan_roots is not None else [Path("/srv"), Path("/opt"), Path("/home")]
     created_at = now or datetime.now(tz=UTC)
 
@@ -659,8 +933,11 @@ def build_inventory(
     old_stack_candidates = [item for item in container_classifications if item["classification"] == "candidate-old-ai-stack-review-required"]
     explicit_preserve = [item for item in container_classifications if item["classification"] in {"preserve-unrelated", "unknown-preserve-by-default"}]
     listening_tcp = parse_listening_tcp(captured["listening_tcp"]["stdout"])
-    model_directories = [summarize_model_directory(path) for path in default_model_path_candidates(b1_root)]
-    open_webui_databases = [summarize_open_webui_database(Path(item["path"])) for item in find_named_files(default_open_webui_candidates(b1_root), {"webui.db", "database.sqlite", "*.db"})]
+    model_path_candidates = unique_paths(default_model_path_candidates(b1_root) + docker_model_path_candidates(container_inspects, volume_inspects))
+    open_webui_path_candidates = unique_paths(default_open_webui_candidates(b1_root) + docker_open_webui_path_candidates(container_inspects, volume_inspects))
+    open_webui_data_roots = [summarize_path(path) for path in open_webui_path_candidates]
+    model_directories = [summarize_model_directory(path) for path in model_path_candidates]
+    open_webui_databases = [summarize_open_webui_database(Path(item["path"])) for item in find_named_files(open_webui_path_candidates, {"webui.db", "database.sqlite", "*.db"})]
 
     return {
         "created_at": created_at.astimezone(UTC).isoformat(),
@@ -678,6 +955,8 @@ def build_inventory(
             "compose_projects": compose_rows,
             "volumes": volume_rows,
             "networks": network_rows,
+            "container_inspects": container_inspects,
+            "volume_inspects": volume_inspects,
             "info": parse_docker_info(captured["docker_info"]["stdout"]),
             "version": parse_json_object(captured["docker_version"]["stdout"]),
         },
@@ -705,6 +984,7 @@ def build_inventory(
             "b1_root": summarize_path(b1_root),
             "model_directories": model_directories,
             "open_webui_data_candidates": [summarize_path(path) for path in default_open_webui_candidates(b1_root)],
+            "open_webui_data_roots": open_webui_data_roots,
             "compose_file_candidates": find_named_files(roots, {"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}),
             "open_webui_database_candidates": open_webui_databases,
         },
@@ -712,6 +992,7 @@ def build_inventory(
             "port_review": analyze_listening_tcp(listening_tcp),
             "model_storage": summarize_model_storage(model_directories),
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
+            "open_webui_data_roots": summarize_open_webui_data_roots(open_webui_data_roots),
             "notes": [
                 "Port listeners are review evidence only; do not stop services from the inventory report.",
                 "SQLite metadata reads schema and aggregate counts only, not Open WebUI row contents.",
