@@ -70,6 +70,7 @@
 - Hardened resumed model downloads so partial `206` responses must match the requested `Content-Range` and `Content-Length` before bytes are appended to staged blobs.
 - Hardened `b1-model-client` resumed blob sync with exact `Content-Range` parsing before appending server bytes to a local partial cache file.
 - Hardened Model Hub sync plans so downloadable version selection is filtered by the caller's Model Hub client allowlist and manifest role permissions before blob actions are returned.
+- Added public media-job history filters for `state`, `runtime`, and `modality` while preserving owner-scoped results for ordinary API clients.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
 - Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.

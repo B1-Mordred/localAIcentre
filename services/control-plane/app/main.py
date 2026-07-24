@@ -3168,6 +3168,12 @@ def public_jobs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [public_job(row) for row in rows]
 
 
+def optional_query_value(value: Any) -> Any | None:
+    if getattr(value, "default", object()) is None:
+        return None
+    return value
+
+
 def normalize_idempotency_key(idempotency_key: Any) -> str | None:
     if idempotency_key is None:
         return None
@@ -8225,11 +8231,25 @@ async def media_job_create(
 async def media_jobs(
     authorization: str | None = Header(default=None),
     limit: int = Query(default=50, ge=1, le=500),
+    state: JobState | None = Query(default=None),
+    runtime: str | None = Query(default=None, max_length=64),
+    modality: str | None = Query(default=None, max_length=64),
 ) -> list[dict[str, Any]]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
     owner_id = None if auth.has_scope("*") else auth.subject_id
-    return public_jobs(await database.list_jobs(limit=limit, owner_id=owner_id))
+    state = optional_query_value(state)
+    runtime = optional_query_value(runtime)
+    modality = optional_query_value(modality)
+    return public_jobs(
+        await database.list_jobs(
+            limit=limit,
+            owner_id=owner_id,
+            state=state.value if state else None,
+            runtime=runtime,
+            modality=modality,
+        )
+    )
 
 
 @app.get("/v1/media/jobs/{job_id}")

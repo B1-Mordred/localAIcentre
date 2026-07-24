@@ -21,7 +21,7 @@ REQUIRED_PUBLIC_ROUTE_METHODS = {
     "/v1/audio/transcriptions": {"post"},
     "/v1/images/generations": {"post"},
     "/v1/images/edits": {"post"},
-    "/v1/media/jobs": {"post"},
+    "/v1/media/jobs": {"get", "post"},
     "/v1/media/jobs/{job_id}": {"get", "delete"},
     "/v1/media/jobs/{job_id}/events": {"get"},
     "/v1/media/jobs/{job_id}/artifacts": {"get"},

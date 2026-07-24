@@ -147,7 +147,30 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("request_params", rows[0])
         self.assertNotIn("idempotency_key", rows[0])
         self.assertEqual(rows[0]["redacted_request"], {"prompt": "[redacted]"})
-        self.assertEqual(fake_database.list_kwargs, {"limit": 25, "owner_id": "client_1"})
+        self.assertEqual(fake_database.list_kwargs, {"limit": 25, "owner_id": "client_1", "state": None, "runtime": None, "modality": None})
+
+    def test_public_media_job_listing_passes_owner_scoped_filters(self) -> None:
+        fake_database = FakeJobsDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        rows = asyncio.run(main.media_jobs(limit=25, state=main.JobState.QUEUED, runtime="comfyui", modality="image"))
+
+        self.assertEqual(rows[0]["id"], "job_1")
+        self.assertEqual(
+            fake_database.list_kwargs,
+            {"limit": 25, "owner_id": "client_1", "state": "queued", "runtime": "comfyui", "modality": "image"},
+        )
+
+    def test_public_media_job_listing_allows_wildcard_admin_to_read_all(self) -> None:
+        fake_database = FakeJobsDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"*"})))
+
+        rows = asyncio.run(main.media_jobs(limit=10))
+
+        self.assertEqual(rows[0]["id"], "job_1")
+        self.assertEqual(fake_database.list_kwargs, {"limit": 10, "owner_id": None, "state": None, "runtime": None, "modality": None})
 
     def test_public_media_job_get_returns_redacted_job_payload(self) -> None:
         self.patch_attr(
