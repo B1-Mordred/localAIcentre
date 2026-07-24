@@ -465,8 +465,8 @@ def elapsed_milliseconds(start: float) -> int:
 
 
 def log_event(event: str, **fields: Any) -> None:
-    safe_fields = {key: value for key, value in fields.items() if key.lower() not in {"authorization", "token", "secret"}}
-    LOG.info(json.dumps({"event": event, "service": settings.service_name, "ts": now_iso(), **safe_fields}, default=str))
+    safe_fields = audit_policy.redact_log_fields(fields)
+    LOG.info(json.dumps({**safe_fields, "event": event, "service": settings.service_name, "ts": now_iso()}, default=str))
 
 
 def rate_limit_headers(limit: int, remaining: int, reset_seconds: int) -> dict[str, str]:

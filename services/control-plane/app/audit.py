@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,6 +10,19 @@ REDACTED = "<redacted>"
 MAX_STRING_LENGTH = 512
 MAX_LIST_ITEMS = 50
 MAX_DEPTH = 6
+LOG_MAX_STRING_LENGTH = 1024
+
+SECRET_STRING_PATTERNS = (
+    re.compile(r"(Authorization:\s*Bearer\s+)[^\s\"']+", re.IGNORECASE),
+    re.compile(r"(\bBearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+    re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]+\b"),
+    re.compile(
+        r"([?&](?:[^=&\s]*(?:api[_-]?key|authorization|bearer|credential|password|secret|token)[^=&\s]*)=)[^&#\s]+",
+        re.IGNORECASE,
+    ),
+)
 
 SENSITIVE_KEY_FRAGMENTS = {
     "api_key",
@@ -68,6 +82,48 @@ def redact_audit_metadata(value: Any, *, _depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)
+
+
+def redact_log_string(value: str) -> str:
+    redacted = value
+    for pattern in SECRET_STRING_PATTERNS:
+        redacted = pattern.sub(lambda match: match.group(1) + REDACTED if match.lastindex else REDACTED, redacted)
+    if len(redacted) > LOG_MAX_STRING_LENGTH:
+        return redacted[:LOG_MAX_STRING_LENGTH] + "...<truncated>"
+    return redacted
+
+
+def redact_log_value(value: Any, *, _depth: int = 0) -> Any:
+    if _depth > MAX_DEPTH:
+        return "<truncated>"
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            redacted[text_key] = REDACTED if is_sensitive_key(text_key) else redact_log_value(item, _depth=_depth + 1)
+        return redacted
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        output = [redact_log_value(item, _depth=_depth + 1) for item in items[:MAX_LIST_ITEMS]]
+        if len(items) > MAX_LIST_ITEMS:
+            output.append({"truncated_items": len(items) - MAX_LIST_ITEMS})
+        return output
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return f"<{len(value)} bytes>"
+    if isinstance(value, str):
+        return redact_log_string(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_log_string(str(value))
+
+
+def redact_log_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): REDACTED if is_sensitive_key(str(key)) else redact_log_value(value)
+        for key, value in fields.items()
+    }
 
 
 def make_audit_event(
