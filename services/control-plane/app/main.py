@@ -7221,6 +7221,7 @@ async def image_generations(
         if existing is not None:
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
+    require_not_in_maintenance("images/generations")
     model = job_payload.model
     resolution = resolve_catalog_alias_for_auth(model, "image", auth, payload.get("runtime_policy", "any"), operation="image-generation")
     job = await create_job_record(
@@ -7246,6 +7247,7 @@ async def image_edits(
         if existing is not None:
             ensure_existing_job_endpoint(existing, modality="image", operation="edit")
             return openai_image_job_response(existing)
+    require_not_in_maintenance("images/edits")
     payload = await image_edit_input_from_request(request, auth)
     model = payload.get("model") if isinstance(payload.get("model"), str) and payload.get("model") else "image-edit"
     runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
@@ -7294,6 +7296,7 @@ async def media_job_create(
         if existing is not None:
             ensure_idempotent_job_matches(existing, payload)
             return public_job(existing)
+    require_not_in_maintenance("media/jobs")
     await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
     job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)

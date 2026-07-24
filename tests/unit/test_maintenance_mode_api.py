@@ -60,6 +60,16 @@ class FakeMaintenanceDatabase:
         return payload
 
 
+class FakeRequest:
+    headers: dict[str, str] = {}
+
+    async def body(self) -> bytes:
+        return b"not read"
+
+    async def stream(self):
+        yield b"not read"
+
+
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class MaintenanceModeApiTests(unittest.TestCase):
     def patch_attr(self, name: str, value: Any) -> None:
@@ -75,6 +85,21 @@ class MaintenanceModeApiTests(unittest.TestCase):
             return AuthContext(subject_id="admin_1", role=role or Role.ADMIN, scopes=frozenset(scopes or {"*"}))
 
         self.patch_attr("authenticate", authenticate)
+
+    def enable_cached_maintenance(self, reason: str = "backup") -> None:
+        self.patch_attr(
+            "maintenance_state_cache",
+            {
+                "id": "default",
+                "enabled": True,
+                "reason": reason,
+                "started_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+                "ended_at": None,
+                "updated_by": "admin_1",
+                "created_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+            },
+        )
 
     def test_default_maintenance_state_is_disabled(self) -> None:
         state = main.current_maintenance_state()
@@ -175,19 +200,7 @@ class MaintenanceModeApiTests(unittest.TestCase):
 
     def test_chat_inference_is_blocked_before_runtime_resolution(self) -> None:
         self.patch_auth(scopes={"inference:write"})
-        self.patch_attr(
-            "maintenance_state_cache",
-            {
-                "id": "default",
-                "enabled": True,
-                "reason": "backup",
-                "started_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
-                "ended_at": None,
-                "updated_by": "admin_1",
-                "created_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
-                "updated_at": datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
-            },
-        )
+        self.enable_cached_maintenance()
 
         def resolver(*_: Any, **__: Any) -> Any:
             raise AssertionError("maintenance mode must block before runtime resolution")
@@ -199,6 +212,65 @@ class MaintenanceModeApiTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(caught.exception.detail["operation"], "chat/completions")
+
+    def test_image_generation_is_blocked_before_runtime_resolution(self) -> None:
+        fake = FakeMaintenanceDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"inference:write"})
+        self.enable_cached_maintenance()
+
+        def resolver(*_: Any, **__: Any) -> Any:
+            raise AssertionError("maintenance mode must block before image runtime resolution")
+
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.image_generations({"model": "image-default", "prompt": "castle"}, authorization="Bearer key"))
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["operation"], "images/generations")
+        self.assertEqual(fake.inserted_jobs, [])
+
+    def test_image_edit_is_blocked_before_request_body_processing(self) -> None:
+        fake = FakeMaintenanceDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"inference:write"})
+        self.enable_cached_maintenance()
+
+        async def fail_body_parser(*_: Any, **__: Any) -> dict[str, Any]:
+            raise AssertionError("maintenance mode must block before image edit body processing")
+
+        self.patch_attr("image_edit_input_from_request", fail_body_parser)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.image_edits(FakeRequest(), authorization="Bearer key"))
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["operation"], "images/edits")
+        self.assertEqual(fake.inserted_jobs, [])
+
+    def test_media_job_create_is_blocked_before_workflow_or_runtime_resolution(self) -> None:
+        fake = FakeMaintenanceDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"jobs:write"})
+        self.enable_cached_maintenance()
+
+        async def fail_workflow_check(*_: Any, **__: Any) -> Any:
+            raise AssertionError("maintenance mode must block before workflow validation")
+
+        def fail_resolver(*_: Any, **__: Any) -> Any:
+            raise AssertionError("maintenance mode must block before media runtime resolution")
+
+        self.patch_attr("enforce_workflow_backed_media_job", fail_workflow_check)
+        self.patch_attr("resolve_catalog_alias_for_auth", fail_resolver)
+        payload = main.MediaJobCreate(modality="image", operation="generation", model="image-default")
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.media_job_create(payload, authorization="Bearer key"))
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["operation"], "media/jobs")
+        self.assertEqual(fake.inserted_jobs, [])
 
 
 if __name__ == "__main__":
