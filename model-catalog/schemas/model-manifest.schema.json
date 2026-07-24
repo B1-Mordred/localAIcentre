@@ -163,6 +163,139 @@
       "type": "array",
       "items": { "type": "string", "enum": ["admin", "operator", "creator", "user", "service"] },
       "uniqueItems": true
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "visible_to": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["admin", "operator", "creator", "user", "service"] },
+          "uniqueItems": true
+        },
+        "installable_by": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["admin", "operator", "creator", "user", "service"] },
+          "uniqueItems": true
+        },
+        "downloadable_by": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["admin", "operator", "creator", "user", "service"] },
+          "uniqueItems": true
+        },
+        "inference_roles": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["admin", "operator", "creator", "user", "service"] },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime_adapter_versions": {
+      "type": "object",
+      "propertyNames": { "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "companion_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "description": { "type": "string" },
+          "required": { "type": "boolean" },
+          "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 1 },
+          "format": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "uniqueItems": true
+    },
+    "deprecation": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["active", "deprecated", "replaced", "removed"] },
+        "deprecated_at": { "type": "string" },
+        "message": { "type": "string" },
+        "replacement_model": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$" },
+        "replacement_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": "string", "enum": ["b1-ai-hub-model-measurements/v1"] },
+        "updated_at": { "type": "string" },
+        "source": { "type": "string" },
+        "original_resource_estimate": {
+          "type": "object",
+          "required": ["vram_gib", "ram_gib", "disk_gib"],
+          "properties": {
+            "vram_gib": { "type": "number", "minimum": 0 },
+            "ram_gib": { "type": "number", "minimum": 0 },
+            "disk_gib": { "type": "number", "minimum": 0 },
+            "context_tokens": { "type": "integer", "minimum": 0 },
+            "max_resolution": { "type": "string" },
+            "max_frames": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "latest_resource_estimate": {
+          "type": "object",
+          "required": ["vram_gib", "ram_gib", "disk_gib"],
+          "properties": {
+            "vram_gib": { "type": "number", "minimum": 0 },
+            "ram_gib": { "type": "number", "minimum": 0 },
+            "disk_gib": { "type": "number", "minimum": 0 },
+            "context_tokens": { "type": "integer", "minimum": 0 },
+            "max_resolution": { "type": "string" },
+            "max_frames": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "runs": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string" },
+              "status": { "type": "string" },
+              "runtime": { "type": "string" },
+              "model_alias": { "type": "string" },
+              "resolved_model_version": { "type": "string" },
+              "started_at": { "type": "string" },
+              "completed_at": { "type": "string" },
+              "duration_ms": { "type": "integer", "minimum": 0 },
+              "load_time_ms": { "type": "integer", "minimum": 0 },
+              "run_time_ms": { "type": "integer", "minimum": 0 },
+              "peak_vram_mib": { "type": "integer", "minimum": 0 },
+              "peak_ram_mib": { "type": "integer", "minimum": 0 },
+              "resource_estimate": {
+                "type": "object",
+                "required": ["vram_gib", "ram_gib", "disk_gib"],
+                "properties": {
+                  "vram_gib": { "type": "number", "minimum": 0 },
+                  "ram_gib": { "type": "number", "minimum": 0 },
+                  "disk_gib": { "type": "number", "minimum": 0 },
+                  "context_tokens": { "type": "integer", "minimum": 0 },
+                  "max_resolution": { "type": "string" },
+                  "max_frames": { "type": "integer", "minimum": 0 }
+                },
+                "additionalProperties": false
+              },
+              "hook": { "type": "object" },
+              "error": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

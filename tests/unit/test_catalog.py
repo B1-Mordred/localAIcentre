@@ -45,6 +45,22 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(catalog_models["b1-vosk-small-en-us-0.15"]["downloadable"])
         self.assertIn("stt-default", catalog_models["b1-vosk-small-en-us-0.15"]["aliases"])
 
+    def test_manifest_schema_declares_seed_and_governance_fields(self) -> None:
+        schema = json.loads((ROOT / "model-catalog" / "schemas" / "model-manifest.schema.json").read_text(encoding="utf-8"))
+        properties = set(schema["properties"])
+        expected_governance = {
+            "runtime_adapter_versions",
+            "companion_files",
+            "permissions",
+            "deprecation",
+            "measurements",
+        }
+
+        self.assertTrue(expected_governance <= properties)
+        for manifest_path in sorted((ROOT / "model-catalog" / "seed").glob("*.manifest.json")):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(set(manifest) - properties, set(), manifest_path.name)
+
     def test_modelhub_versions_resolve_from_alias(self) -> None:
         versions = self.catalog.versions_for("tts-fast")
         self.assertEqual(len(versions), 1)
@@ -199,6 +215,100 @@ class CatalogTests(unittest.TestCase):
                 )
                 manifest = {**base_manifest, "operations": operations}
                 (seed / "tts.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(CatalogError, message):
+                    load_catalog(root, self.policy)
+
+    def test_manifest_governance_metadata_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            seed.mkdir()
+            (seed / "aliases.json").write_text(
+                json.dumps({"aliases": [{"alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "installed"}]}),
+                encoding="utf-8",
+            )
+            manifest = {
+                "id": "chat-small",
+                "version": "1.0.0",
+                "display_name": "Chat Small",
+                "modality": "llm",
+                "operations": ["chat"],
+                "source": {"type": "catalog", "url": "https://models.ai.b1.germering/test", "revision": "1.0.0"},
+                "files": [{"path": "chat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}],
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "runtime_adapter_versions": {"localai": ">=4.7.1 <5"},
+                "companion_files": [
+                    {
+                        "path": "tokenizer.json",
+                        "required": True,
+                        "description": "Tokenizer companion file required by this profile.",
+                        "sha256": "2" * 64,
+                        "size_bytes": 128,
+                        "format": "tokenizer-json",
+                    }
+                ],
+                "permissions": {
+                    "visible_to": ["admin", "operator"],
+                    "installable_by": ["admin"],
+                    "downloadable_by": ["admin", "service"],
+                    "inference_roles": ["admin", "service"],
+                },
+                "deprecation": {
+                    "status": "replaced",
+                    "deprecated_at": "2026-07-24T00:00:00+00:00",
+                    "message": "Use chat-next for new aliases.",
+                    "replacement_model": "chat-next",
+                    "replacement_version": "2.0.0",
+                },
+                "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+                "license": {"name": "test", "redistribution": "downloadable"},
+                "execution_modes": ["hosted-inference", "downloadable"],
+                "aliases": ["chat-default"],
+            }
+            (seed / "chat.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            catalog = load_catalog(root, self.policy)
+            record = catalog.versions_for("chat-default")[0]
+
+            self.assertEqual(record["runtime_adapter_versions"], {"localai": ">=4.7.1 <5"})
+            self.assertEqual(record["companion_files"][0]["path"], "tokenizer.json")
+            self.assertEqual(record["permissions"]["downloadable_by"], ["admin", "service"])
+            self.assertEqual(record["deprecation"]["replacement_model"], "chat-next")
+
+    def test_manifest_governance_metadata_is_validated(self) -> None:
+        base_manifest = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "display_name": "Chat Small",
+            "modality": "llm",
+            "operations": ["chat"],
+            "source": {"type": "catalog", "url": "https://models.ai.b1.germering/test", "revision": "1.0.0"},
+            "files": [{"path": "chat-small.gguf", "sha256": "1" * 64, "size_bytes": 12}],
+            "runtimes": ["localai"],
+            "preferred_runtime": "localai",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+            "license": {"name": "test", "redistribution": "downloadable"},
+            "execution_modes": ["hosted-inference", "downloadable"],
+            "aliases": ["chat-default"],
+        }
+        cases = [
+            ({"runtime_adapter_versions": {"comfyui": ">=0.3.77"}}, "must also be listed in runtimes"),
+            ({"companion_files": [{"path": "../escape"}]}, "must not contain traversal"),
+            ({"permissions": {"downloadable_by": ["guest"]}}, "unsupported values"),
+            ({"deprecation": {"status": "replaced"}}, "replacement_model is required"),
+        ]
+        for overlay, message in cases:
+            with self.subTest(overlay=overlay), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                seed = root / "seed"
+                seed.mkdir()
+                (seed / "aliases.json").write_text(
+                    json.dumps({"aliases": [{"alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "installed"}]}),
+                    encoding="utf-8",
+                )
+                (seed / "chat.manifest.json").write_text(json.dumps({**base_manifest, **overlay}), encoding="utf-8")
 
                 with self.assertRaisesRegex(CatalogError, message):
                     load_catalog(root, self.policy)

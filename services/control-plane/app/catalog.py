@@ -16,6 +16,7 @@ INSTALLATION_STATUSES = {"available", "installed", "quarantined", "failed"}
 ROLES = {"admin", "operator", "creator", "user", "service"}
 REDISTRIBUTION_POLICIES = {"downloadable", "inference-only", "restricted"}
 SOURCE_TYPES = {"catalog", "huggingface", "direct-url", "upload"}
+DEPRECATION_STATUSES = {"active", "deprecated", "replaced", "removed"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
@@ -143,6 +144,45 @@ class ModelLicense:
 
 
 @dataclass(frozen=True)
+class ModelCompanionFile:
+    path: str
+    required: bool = True
+    description: str | None = None
+    sha256: str | None = None
+    size_bytes: int | None = None
+    format: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _without_none(asdict(self))
+
+
+@dataclass(frozen=True)
+class ModelPermissions:
+    visible_to: list[str] = field(default_factory=list)
+    installable_by: list[str] = field(default_factory=list)
+    downloadable_by: list[str] = field(default_factory=list)
+    inference_roles: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value}
+
+
+@dataclass(frozen=True)
+class ModelDeprecation:
+    status: str = "active"
+    deprecated_at: str | None = None
+    message: str | None = None
+    replacement_model: str | None = None
+    replacement_version: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = _without_none(asdict(self))
+        if data == {"status": "active"}:
+            return {}
+        return data
+
+
+@dataclass(frozen=True)
 class ModelManifest:
     id: str
     version: str
@@ -160,9 +200,15 @@ class ModelManifest:
     description: str | None = None
     aliases: list[str] = field(default_factory=list)
     visibility_roles: list[str] = field(default_factory=list)
+    permissions: ModelPermissions = field(default_factory=ModelPermissions)
+    runtime_adapter_versions: dict[str, str] = field(default_factory=dict)
+    companion_files: list[ModelCompanionFile] = field(default_factory=list)
+    deprecation: ModelDeprecation = field(default_factory=ModelDeprecation)
     measurements: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        permissions = self.permissions.to_dict()
+        deprecation = self.deprecation.to_dict()
         return _without_none(
             {
                 "id": self.id,
@@ -181,6 +227,10 @@ class ModelManifest:
                 "installation_status": self.installation_status,
                 "aliases": list(self.aliases),
                 "visibility_roles": list(self.visibility_roles),
+                "permissions": permissions if permissions else None,
+                "runtime_adapter_versions": dict(self.runtime_adapter_versions) if self.runtime_adapter_versions else None,
+                "companion_files": [item.to_dict() for item in self.companion_files] if self.companion_files else None,
+                "deprecation": deprecation if deprecation else None,
                 "measurements": dict(self.measurements) if self.measurements else None,
             }
         )
@@ -517,6 +567,102 @@ def _parse_license(data: dict[str, Any], context: str) -> ModelLicense:
     )
 
 
+def _parse_runtime_adapter_versions(data: Any, runtimes: list[str], context: str) -> dict[str, str]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    parsed: dict[str, str] = {}
+    runtime_set = set(runtimes)
+    for runtime, version in data.items():
+        if not isinstance(runtime, str) or runtime not in RUNTIME_NAMES:
+            raise CatalogError(f"{context} has unsupported runtime: {runtime}")
+        if runtime not in runtime_set:
+            raise CatalogError(f"{context}.{runtime} must also be listed in runtimes")
+        if not isinstance(version, str) or not version.strip():
+            raise CatalogError(f"{context}.{runtime} must be a non-empty version string")
+        parsed[runtime] = version.strip()
+    return parsed
+
+
+def _parse_companion_files(data: Any, context: str) -> list[ModelCompanionFile]:
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise CatalogError(f"{context} must be a list")
+    parsed: list[ModelCompanionFile] = []
+    seen: set[str] = set()
+    for index, item in enumerate(data):
+        item_context = f"{context}[{index}]"
+        if not isinstance(item, dict):
+            raise CatalogError(f"{item_context} must be an object")
+        _require_keys(item, {"path"}, item_context)
+        _forbid_extra_keys(item, {"path", "description", "required", "sha256", "size_bytes", "format"}, item_context)
+        path = _safe_relative_path(_string(item, "path", item_context), f"{item_context}.path")
+        if path in seen:
+            raise CatalogError(f"{context} has duplicate path: {path}")
+        seen.add(path)
+        required = item.get("required", True)
+        if not isinstance(required, bool):
+            raise CatalogError(f"{item_context}.required must be boolean")
+        size_bytes = item.get("size_bytes")
+        if size_bytes is not None and (not isinstance(size_bytes, int) or size_bytes < 1):
+            raise CatalogError(f"{item_context}.size_bytes must be a positive integer")
+        sha256 = item.get("sha256")
+        parsed.append(
+            ModelCompanionFile(
+                path=path,
+                required=required,
+                description=_optional_string(item, "description", item_context),
+                sha256=_validate_sha256(sha256, f"{item_context}.sha256") if sha256 is not None else None,
+                size_bytes=size_bytes,
+                format=_optional_string(item, "format", item_context),
+            )
+        )
+    return parsed
+
+
+def _parse_permissions(data: Any, context: str) -> ModelPermissions:
+    if data is None:
+        return ModelPermissions()
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    _forbid_extra_keys(data, {"visible_to", "installable_by", "downloadable_by", "inference_roles"}, context)
+    return ModelPermissions(
+        visible_to=_string_list(data, "visible_to", context, ROLES) if "visible_to" in data else [],
+        installable_by=_string_list(data, "installable_by", context, ROLES) if "installable_by" in data else [],
+        downloadable_by=_string_list(data, "downloadable_by", context, ROLES) if "downloadable_by" in data else [],
+        inference_roles=_string_list(data, "inference_roles", context, ROLES) if "inference_roles" in data else [],
+    )
+
+
+def _parse_deprecation(data: Any, context: str) -> ModelDeprecation:
+    if data is None:
+        return ModelDeprecation()
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    _require_keys(data, {"status"}, context)
+    _forbid_extra_keys(data, {"status", "deprecated_at", "message", "replacement_model", "replacement_version"}, context)
+    status = _string(data, "status", context)
+    if status not in DEPRECATION_STATUSES:
+        raise CatalogError(f"{context}.status is unsupported: {status}")
+    replacement_model = data.get("replacement_model")
+    replacement_version = data.get("replacement_version")
+    if replacement_model is not None:
+        replacement_model = _validate_id(_string(data, "replacement_model", context), f"{context}.replacement_model")
+    if replacement_version is not None:
+        replacement_version = _string(data, "replacement_version", context)
+    if status == "replaced" and replacement_model is None:
+        raise CatalogError(f"{context}.replacement_model is required when status is replaced")
+    return ModelDeprecation(
+        status=status,
+        deprecated_at=_optional_string(data, "deprecated_at", context),
+        message=_optional_string(data, "message", context),
+        replacement_model=replacement_model,
+        replacement_version=replacement_version,
+    )
+
+
 def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
     if data is None:
         return {}
@@ -588,7 +734,17 @@ def _parse_measurements(data: Any, context: str) -> dict[str, Any]:
 
 def _parse_manifest(data: dict[str, Any], context: str) -> ModelManifest:
     required = {"id", "version", "display_name", "modality", "operations", "source", "files", "runtimes", "preferred_runtime", "resource_estimate", "license", "execution_modes"}
-    allowed = required | {"description", "installation_status", "aliases", "visibility_roles", "measurements"}
+    allowed = required | {
+        "description",
+        "installation_status",
+        "aliases",
+        "visibility_roles",
+        "permissions",
+        "runtime_adapter_versions",
+        "companion_files",
+        "deprecation",
+        "measurements",
+    }
     _require_keys(data, required, context)
     _forbid_extra_keys(data, allowed, context)
 
@@ -627,6 +783,10 @@ def _parse_manifest(data: dict[str, Any], context: str) -> ModelManifest:
         installation_status=installation_status,
         aliases=[_validate_id(alias, f"{context}.aliases[]") for alias in _string_list(data, "aliases", context) if alias] if "aliases" in data else [],
         visibility_roles=_string_list(data, "visibility_roles", context, ROLES) if "visibility_roles" in data else [],
+        permissions=_parse_permissions(data.get("permissions"), f"{context}.permissions"),
+        runtime_adapter_versions=_parse_runtime_adapter_versions(data.get("runtime_adapter_versions"), runtimes, f"{context}.runtime_adapter_versions"),
+        companion_files=_parse_companion_files(data.get("companion_files"), f"{context}.companion_files"),
+        deprecation=_parse_deprecation(data.get("deprecation"), f"{context}.deprecation"),
         measurements=_parse_measurements(data.get("measurements"), f"{context}.measurements"),
     )
 
