@@ -87,8 +87,8 @@ class CpuJobRunner:
         self._stopped = asyncio.Event()
 
     async def reconcile_startup(self) -> dict[str, int]:
+        requeued = await database.requeue_interrupted_waiting_jobs(CPU_RUNTIMES)
         marked = await database.mark_interrupted_jobs_recovery_required(CPU_RUNTIMES)
-        requeued = await database.requeue_recovery_jobs(CPU_RUNTIMES)
         return {"marked_recovery_required": marked, "requeued": requeued}
 
     async def cancel_if_requested(self, job_id: str) -> bool:
@@ -328,8 +328,8 @@ class GpuJobRunner:
         self._stopped = asyncio.Event()
 
     async def reconcile_startup(self) -> dict[str, int]:
+        requeued = await database.requeue_interrupted_waiting_jobs(GPU_RUNTIMES)
         marked = await database.mark_interrupted_jobs_recovery_required(GPU_RUNTIMES)
-        requeued = await database.requeue_recovery_jobs(GPU_RUNTIMES)
         return {"marked_recovery_required": marked, "requeued": requeued}
 
     async def acquire_gpu_lease(self) -> bool:

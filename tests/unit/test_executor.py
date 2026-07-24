@@ -35,6 +35,7 @@ class FakeDatabase:
         self.runtime_states: dict[str, dict[str, Any]] = {}
         self.runtime_state_updates: list[dict[str, Any]] = []
         self.alias_policies: dict[str, dict[str, Any]] = {}
+        self.waiting_requeues = 1
         self.job = {
             "id": "job_gpu",
             "runtime": runtime,
@@ -86,8 +87,11 @@ class FakeDatabase:
     async def mark_interrupted_jobs_recovery_required(self, runtime_names: list[str]) -> int:
         return 2
 
+    async def requeue_interrupted_waiting_jobs(self, runtime_names: list[str]) -> int:
+        return self.waiting_requeues
+
     async def requeue_recovery_jobs(self, runtime_names: list[str]) -> int:
-        return 2
+        raise AssertionError("startup reconciliation must not requeue every recovery_required job")
 
     async def claim_next_model_download(self) -> dict[str, Any] | None:
         self.model_download_claims += 1
@@ -1328,7 +1332,17 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner = executor.GpuJobRunner(Path(tmp))
             result = asyncio.run(runner.reconcile_startup())
-            self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 2})
+            self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 1})
+
+    def test_cpu_runner_reconciles_waiting_claims_without_requeueing_recovery_required(self) -> None:
+        fake = FakeDatabase(runtime="audio-cpu")
+        fake.waiting_requeues = 3
+        self.patch_database(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.CpuJobRunner(Path(tmp))
+            result = asyncio.run(runner.reconcile_startup())
+
+        self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 3})
 
     def test_gpu_runner_recovers_when_vram_exceeds_reserve(self) -> None:
         fake = FakeDatabase(runtime="localai")

@@ -2058,7 +2058,6 @@ async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> i
                     jobs.c.runtime.in_(runtime_names),
                     jobs.c.state.in_(
                         [
-                            "waiting_for_gpu",
                             "unloading",
                             "verifying_vram",
                             "loading",
@@ -2070,7 +2069,38 @@ async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> i
                     ),
                 )
             )
-            .values(state="recovery_required", stage="recovery_required", progress=0, updated_at=now)
+            .values(
+                state="recovery_required",
+                stage="recovery_required",
+                progress=0,
+                completed_at=now,
+                failure_category="control_plane_interrupted",
+                failure_message="Control plane restarted while the job was active; operator retry is required",
+                updated_at=now,
+            )
+        )
+    return int(result.rowcount or 0)
+
+
+async def requeue_interrupted_waiting_jobs(runtime_names: list[str]) -> int:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    if not runtime_names:
+        return 0
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            update(jobs)
+            .where(and_(jobs.c.runtime.in_(runtime_names), jobs.c.state == "waiting_for_gpu"))
+            .values(
+                state="queued",
+                stage="queued",
+                progress=10,
+                completed_at=None,
+                failure_category=None,
+                failure_message=None,
+                updated_at=now,
+            )
         )
     return int(result.rowcount or 0)
 

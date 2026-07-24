@@ -43,6 +43,7 @@
 - Hardened shared model-import URL validation against localhost/internal targets, URL credentials, fragments, malformed ports, reserved/multicast/unspecified IP literals, and decoded path traversal.
 - Centralized credential-query detection for model source and remote-manifest URLs, including signed URL keys such as `download_token`, `X-Amz-Signature`, and `X-Goog-Credential`.
 - Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
+- Tightened runner startup reconciliation so only pre-runtime `waiting_for_gpu` claims are automatically requeued; jobs interrupted during runtime preparation or execution remain `recovery_required` for explicit operator retry.
 - Removed the fixed 120-second backend timeout from public and admin job SSE streams so long-running media jobs remain observable until terminal state or client disconnect.
 - Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.
 - Added an administrator/operator job SSE route at `GET /admin/jobs/{job_id}/events` so Control Center can observe any durable job without weakening public owner-scoped media streams.
