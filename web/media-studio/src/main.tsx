@@ -99,6 +99,7 @@ type MediaJob = {
   artifacts?: Artifact[];
   failure_category?: string | null;
   failure_message?: string | null;
+  redacted_request?: Record<string, JsonValue>;
 };
 
 type Artifact = {
@@ -414,6 +415,52 @@ function firstPreviewArtifact(artifacts: Artifact[]): Artifact | null {
   }) ?? null;
 }
 
+type ReproducibilityEntry = {
+  label: string;
+  value: string;
+};
+
+function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function shortText(value: string, limit = 96): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
+}
+
+function summarizeReproducibilityValue(value: JsonValue | undefined): string {
+  if (value === undefined || value === null) return "empty";
+  if (typeof value === "string") return shortText(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[array: ${value.length}]`;
+  if (isStagedUploadReference(value)) return `${value.kind} upload / ${shortText(value.filename, 42)} / ${formatBytes(value.bytes)}`;
+  const keys = Object.keys(value);
+  return keys.length ? `[object: ${keys.slice(0, 3).join(", ")}${keys.length > 3 ? ", ..." : ""}]` : "[object]";
+}
+
+function addReproducibilityEntry(entries: ReproducibilityEntry[], label: string, value: JsonValue | undefined): void {
+  if (value === undefined || value === null || value === "") return;
+  entries.push({ label, value: summarizeReproducibilityValue(value) });
+}
+
+function reproducibilityEntries(job: MediaJob | null): ReproducibilityEntry[] {
+  const request = job?.redacted_request;
+  if (!request) return [];
+  const input = jsonObject(request.input);
+  const parameters = jsonObject(input?.parameters);
+  const entries: ReproducibilityEntry[] = [];
+  addReproducibilityEntry(entries, "model", request.model);
+  addReproducibilityEntry(entries, "runtime policy", request.runtime_policy);
+  addReproducibilityEntry(entries, "priority", request.priority);
+  addReproducibilityEntry(entries, "workflow", input?.workflow_id);
+  addReproducibilityEntry(entries, "workflow version", input?.workflow_version);
+  Object.entries(parameters ?? {}).slice(0, 8).forEach(([name, value]) => {
+    addReproducibilityEntry(entries, labelFor(name), value);
+  });
+  return entries;
+}
+
 function MediaPreview({ source, status }: { source: { src: string; mime: string } | null; status?: string }) {
   return (
     <div className={`preview ${source ? "" : "empty"}`}>
@@ -466,6 +513,27 @@ function ArtifactPreview({
   }, [artifact?.id, artifact?.url]);
 
   return <MediaPreview source={loaded ?? fallbackSource ?? null} status={status || (artifact ? "preview unavailable" : "")} />;
+}
+
+function ReproducibilityMetadata({ job }: { job: MediaJob | null }) {
+  const rows = reproducibilityEntries(job);
+  return (
+    <section className="reproducibility" aria-label="Redacted reproducibility metadata">
+      <h3>Reproducibility</h3>
+      {rows.length ? (
+        <dl>
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <span className="toolbar-status">No redacted request metadata recorded</span>
+      )}
+    </section>
+  );
 }
 
 function DependencyPill({ workflow }: { workflow: PublishedWorkflow }) {
@@ -653,6 +721,7 @@ function JobSummary({
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>
+      <ReproducibilityMetadata job={job} />
       <div className="artifact-list">
         {artifacts.map((artifact) => (
           <button key={artifact.id} type="button" onClick={() => onDownload(artifact)}>
@@ -1033,6 +1102,7 @@ function HistoryDetail({
         <div><dt>Peak</dt><dd>VRAM {formatPeak(job.peak_vram_mib)} / RAM {formatPeak(job.peak_ram_mib)}</dd></div>
         {job.failure_category && <div><dt>Failure</dt><dd>{job.failure_category}<small>{job.failure_message ?? ""}</small></dd></div>}
       </dl>
+      <ReproducibilityMetadata job={job} />
       <div className="artifact-list">
         {artifacts.map((artifact) => (
           <button key={artifact.id} type="button" onClick={() => onDownload(artifact)}>

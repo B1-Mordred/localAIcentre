@@ -29,6 +29,7 @@ header {
 
 h1,
 h2,
+h3,
 p {
   margin: 0;
 }
@@ -40,6 +41,11 @@ h1 {
 
 h2 {
   font-size: 17px;
+  letter-spacing: 0;
+}
+
+h3 {
+  font-size: 14px;
   letter-spacing: 0;
 }
 
@@ -375,6 +381,30 @@ dd {
 .artifact-list {
   display: grid;
   gap: 8px;
+}
+
+.reproducibility {
+  border-top: 1px solid #e9eef2;
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding-top: 12px;
+}
+
+.reproducibility dl {
+  margin: 0;
+}
+
+.reproducibility dl div {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.reproducibility dd {
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .artifact-list a,
