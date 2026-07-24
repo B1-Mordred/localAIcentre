@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import stat
 import sys
@@ -73,6 +74,74 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertFalse((view_root / "bundle.zip").exists())
             self.assertEqual((view_root / "weights" / "model.gguf").read_bytes(), b"tiny model")
             self.assertEqual((view_root / "tokenizer.json").read_text(encoding="utf-8"), '{"model":"tiny"}')
+            view_manifest = json.loads((view_root / "manifest.b1.json").read_text(encoding="utf-8"))
+            self.assertNotIn(".staging", json.dumps(view_manifest))
+            self.assertEqual(view_manifest["files"][0]["view_path"], str(view_root))
+            self.assertEqual(view_manifest["files"][0]["extracted_files"][0]["destination"], str(view_root / "weights" / "model.gguf"))
+
+    def test_runtime_view_creation_cleans_staged_archive_failure(self) -> None:
+        data = b"archive bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            payload = manifest_payload(digest, len(data))
+            payload["files"] = [{"path": "bundle.zip", "sha256": digest, "size_bytes": len(data), "format": "zip"}]
+            manifest = parse_manifest_payload(payload)
+            original_extract = model_lifecycle.safe_extract_archive
+
+            def failing_extract(_archive_path: Path, target_dir: Path, **_kwargs: object) -> dict:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "partial.gguf").write_bytes(b"partial")
+                raise model_lifecycle.ModelLifecycleError("simulated extraction failure")
+
+            model_lifecycle.safe_extract_archive = failing_extract
+            try:
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "simulated extraction failure"):
+                    model_lifecycle.create_runtime_views(manifest, root)
+            finally:
+                model_lifecycle.safe_extract_archive = original_extract
+
+            view_root = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0"
+            staging_root = root / "models" / "runtime-views" / ".staging"
+            self.assertFalse(view_root.exists())
+            self.assertFalse(staging_root.exists() and any(staging_root.rglob("*")))
+
+    def test_runtime_view_creation_publishes_no_runtime_until_all_stage(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            manifest = parse_manifest_payload(
+                {
+                    **manifest_payload(digest, len(data)),
+                    "runtimes": ["localai", "comfyui"],
+                    "preferred_runtime": "localai",
+                }
+            )
+            original_hardlink = model_lifecycle.hardlink_blob_into_view
+
+            def failing_hardlink(target: Path, link_path: Path, view_root: Path) -> dict:
+                if "comfyui" in view_root.parts:
+                    raise model_lifecycle.ModelLifecycleError("simulated second-runtime failure")
+                return original_hardlink(target, link_path, view_root)
+
+            model_lifecycle.hardlink_blob_into_view = failing_hardlink
+            try:
+                with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "second-runtime failure"):
+                    model_lifecycle.create_runtime_views(manifest, root)
+            finally:
+                model_lifecycle.hardlink_blob_into_view = original_hardlink
+
+            self.assertFalse((root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0").exists())
+            self.assertFalse((root / "models" / "runtime-views" / "comfyui" / "chat-small" / "1.0.0").exists())
+            staging_root = root / "models" / "runtime-views" / ".staging"
+            self.assertFalse(staging_root.exists() and any(staging_root.rglob("*")))
 
     def test_safe_zip_archive_rejects_traversal(self) -> None:
         for member_name in ("../escape.gguf", "%2e%2e/escape.gguf", "weights/safe%2Fescape.gguf"):

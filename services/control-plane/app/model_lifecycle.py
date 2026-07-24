@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import tarfile
+import uuid
 import zipfile
 from contextlib import suppress
 from dataclasses import asdict
@@ -133,6 +134,17 @@ def runtime_manifest_view_root(data_root: Path, runtime: str, manifest: ModelMan
         / safe_component(runtime, "runtime")
         / safe_component(manifest.id, "model id")
         / safe_component(manifest.version, "model version")
+    )
+
+
+def runtime_manifest_staging_view_root(data_root: Path, runtime: str, manifest: ModelManifest, token: str) -> Path:
+    return (
+        runtime_view_root(data_root)
+        / ".staging"
+        / safe_component(runtime, "runtime")
+        / safe_component(manifest.id, "model id")
+        / safe_component(manifest.version, "model version")
+        / safe_component(token, "runtime view staging token")
     )
 
 
@@ -686,71 +698,196 @@ def hardlink_blob_into_view(target: Path, link_path: Path, view_root: Path) -> d
     return {"view_path": str(link_path), "blob_path": str(target), "link_type": "hardlink", "status": "linked"}
 
 
+def _published_path_string(value: str, staging_root: Path, final_root: Path) -> str:
+    path = Path(value)
+    staging_resolved = staging_root.resolve(strict=True)
+    resolved = path.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(staging_resolved)
+    except ValueError:
+        return value
+    return str(final_root.joinpath(*relative.parts))
+
+
+def _published_file_record(record: dict[str, Any], staging_root: Path, final_root: Path) -> dict[str, Any]:
+    published = dict(record)
+    for key in ("view_path", "destination"):
+        value = published.get(key)
+        if isinstance(value, str):
+            published[key] = _published_path_string(value, staging_root, final_root)
+    extracted = published.get("extracted_files")
+    if isinstance(extracted, list):
+        published["extracted_files"] = [
+            _published_file_record(item, staging_root, final_root) if isinstance(item, dict) else item
+            for item in extracted
+        ]
+    return published
+
+
+def _published_file_records(records: list[dict[str, Any]], staging_root: Path, final_root: Path) -> list[dict[str, Any]]:
+    return [_published_file_record(record, staging_root, final_root) for record in records]
+
+
+def _remove_staged_runtime_view(path: Path, runtime_views_root: Path) -> None:
+    try:
+        path.resolve(strict=False).relative_to(runtime_views_root.resolve(strict=True))
+    except ValueError as exc:
+        raise ModelLifecycleError(f"staged runtime view path escapes root: {path}") from exc
+    if path.is_symlink():
+        raise ModelLifecycleError(f"staged runtime view is a symlink and will not be removed: {path}")
+    if path.exists():
+        shutil.rmtree(path)
+    current = path.parent
+    staging_root = runtime_views_root / ".staging"
+    while current != runtime_views_root and current.exists():
+        if current == staging_root:
+            with suppress(OSError):
+                current.rmdir()
+            break
+        with suppress(OSError):
+            current.rmdir()
+        current = current.parent
+
+
+def _remove_published_runtime_view(path: Path, runtime_views_root: Path) -> None:
+    try:
+        path.resolve(strict=False).relative_to(runtime_views_root.resolve(strict=True))
+    except ValueError as exc:
+        raise ModelLifecycleError(f"published runtime view path escapes root: {path}") from exc
+    if path.is_symlink() or not path.is_dir():
+        raise ModelLifecycleError(f"published runtime view rollback path is unsafe: {path}")
+    manifest_path = path / "manifest.b1.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ModelLifecycleError(f"published runtime view rollback missing manifest marker: {path}")
+    shutil.rmtree(path)
+
+
+def _build_runtime_view_in_directory(
+    manifest: ModelManifest,
+    data_root: Path,
+    runtime: str,
+    view_root: Path,
+    final_view_root: Path,
+    file_status_by_sha: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    linked_files: list[dict[str, Any]] = []
+    for file in manifest.files:
+        file_record = file.to_dict()
+        if is_internal_placeholder_file(file_record, manifest.source.type):
+            linked_files.append({"path": file.path, "link_type": "internal-placeholder", "status": "skipped"})
+            continue
+        status = file_status_by_sha[file.sha256]
+        if not status.get("blob_path"):
+            raise ModelLifecycleError(f"verified file has no blob path: {file.path}")
+        archive_format = file_record_archive_format(file)
+        if archive_format:
+            archive_marker_path = safe_view_file_path(view_root, file.path)
+            extraction_root = archive_marker_path.parent
+            summary = safe_extract_archive(Path(status["blob_path"]), extraction_root, archive_format=archive_format)
+            linked_files.append(
+                {
+                    "path": file.path,
+                    "blob_path": status["blob_path"],
+                    "view_path": str(extraction_root),
+                    "link_type": "safe-archive-extract",
+                    "archive_format": archive_format,
+                    "status": "extracted",
+                    "file_count": summary["file_count"],
+                    "total_uncompressed_bytes": summary["total_uncompressed_bytes"],
+                    "extracted_files": summary["extracted_files"],
+                }
+            )
+            continue
+        link_path = safe_view_file_path(view_root, file.path)
+        linked_files.append(
+            {
+                "path": file.path,
+                **hardlink_blob_into_view(Path(status["blob_path"]), link_path, view_root),
+            }
+        )
+
+    published_files = _published_file_records(linked_files, view_root, final_view_root)
+    write_json_atomic(
+        view_root / "manifest.b1.json",
+        {
+            "format": "b1-ai-hub-runtime-view/v1",
+            "created_at": datetime.now(tz=UTC).isoformat(),
+            "runtime": runtime,
+            "model_ref": f"{manifest.id}@{manifest.version}",
+            "manifest": manifest.to_dict(),
+            "files": published_files,
+        },
+    )
+    return published_files
+
+
 def create_runtime_views(manifest: ModelManifest, data_root: Path) -> list[dict[str, Any]]:
     file_status = verify_manifest_files(manifest, data_root)
     if not all(item["verified"] for item in file_status):
         raise ModelLifecycleError("cannot create runtime views until every manifest file verifies")
     verified_by_sha = {item["sha256"]: item for item in file_status}
-    created: list[dict[str, Any]] = []
     root = runtime_view_root(data_root)
+    token = uuid.uuid4().hex
+    view_specs: list[dict[str, Any]] = []
     for runtime in manifest.runtimes:
-        view_root = runtime_manifest_view_root(data_root, runtime, manifest)
-        ensure_directory_inside(view_root, root)
-        linked_files: list[dict[str, Any]] = []
-        for file in manifest.files:
-            file_record = file.to_dict()
-            if is_internal_placeholder_file(file_record, manifest.source.type):
-                linked_files.append({"path": file.path, "link_type": "internal-placeholder", "status": "skipped"})
-                continue
-            status = verified_by_sha[file.sha256]
-            if not status.get("blob_path"):
-                raise ModelLifecycleError(f"verified file has no blob path: {file.path}")
-            archive_format = file_record_archive_format(file)
-            if archive_format:
-                archive_marker_path = safe_view_file_path(view_root, file.path)
-                extraction_root = archive_marker_path.parent
-                summary = safe_extract_archive(Path(status["blob_path"]), extraction_root, archive_format=archive_format)
-                linked_files.append(
-                    {
-                        "path": file.path,
-                        "blob_path": status["blob_path"],
-                        "view_path": str(extraction_root),
-                        "link_type": "safe-archive-extract",
-                        "archive_format": archive_format,
-                        "status": "extracted",
-                        "file_count": summary["file_count"],
-                        "total_uncompressed_bytes": summary["total_uncompressed_bytes"],
-                        "extracted_files": summary["extracted_files"],
-                    }
-                )
-                continue
-            link_path = safe_view_file_path(view_root, file.path)
-            linked_files.append(
+        final_view_root = runtime_manifest_view_root(data_root, runtime, manifest)
+        if final_view_root.is_symlink():
+            raise ModelLifecycleError(f"runtime view root is a symlink: {final_view_root}")
+        if final_view_root.exists():
+            raise ModelLifecycleError(f"runtime view root already exists: {final_view_root}")
+        ensure_directory_inside(final_view_root.parent, root)
+        staging_view_root = runtime_manifest_staging_view_root(data_root, runtime, manifest, token)
+        view_specs.append({"runtime": runtime, "final": final_view_root, "staging": staging_view_root})
+
+    staged: list[dict[str, Any]] = []
+    published_roots: list[Path] = []
+    try:
+        for spec in view_specs:
+            staging_view_root = spec["staging"]
+            final_view_root = spec["final"]
+            ensure_directory_inside(staging_view_root, root)
+            files = _build_runtime_view_in_directory(
+                manifest,
+                data_root,
+                spec["runtime"],
+                staging_view_root,
+                final_view_root,
+                verified_by_sha,
+            )
+            staged.append({**spec, "files": files})
+
+        created: list[dict[str, Any]] = []
+        for spec in staged:
+            final_view_root = spec["final"]
+            staging_view_root = spec["staging"]
+            if final_view_root.exists() or final_view_root.is_symlink():
+                raise ModelLifecycleError(f"runtime view root appeared before publication: {final_view_root}")
+            staging_view_root.replace(final_view_root)
+            published_roots.append(final_view_root)
+            created.append(
                 {
-                    "path": file.path,
-                    **hardlink_blob_into_view(Path(status["blob_path"]), link_path, view_root),
+                    "runtime": spec["runtime"],
+                    "host_path": str(final_view_root),
+                    "container_path": runtime_manifest_container_path(spec["runtime"], manifest),
+                    "files": spec["files"],
                 }
             )
-        write_json_atomic(
-            view_root / "manifest.b1.json",
-            {
-                "format": "b1-ai-hub-runtime-view/v1",
-                "created_at": datetime.now(tz=UTC).isoformat(),
-                "runtime": runtime,
-                "model_ref": f"{manifest.id}@{manifest.version}",
-                "manifest": manifest.to_dict(),
-                "files": linked_files,
-            },
-        )
-        created.append(
-            {
-                "runtime": runtime,
-                "host_path": str(view_root),
-                "container_path": runtime_manifest_container_path(runtime, manifest),
-                "files": linked_files,
-            }
-        )
-    return created
+        return created
+    except Exception:
+        cleanup_errors: list[str] = []
+        for published_root in reversed(published_roots):
+            try:
+                _remove_published_runtime_view(published_root, root)
+            except ModelLifecycleError as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc))
+        for spec in reversed(view_specs):
+            try:
+                _remove_staged_runtime_view(spec["staging"], root)
+            except ModelLifecycleError as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc))
+        if cleanup_errors:
+            raise ModelLifecycleError(f"runtime view publication failed and cleanup was incomplete: {'; '.join(cleanup_errors)}")
+        raise
 
 
 def quarantine_runtime_views(manifest: ModelManifest, data_root: Path, timestamp: datetime | None = None) -> list[dict[str, Any]]:
