@@ -110,6 +110,16 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("npm run build", commands)
         self.assertIn("npm audit --omit=dev --audit-level=high", commands)
 
+    def test_makefile_frontend_target_builds_and_audits_both_react_apps(self) -> None:
+        target_start = self.makefile_text.index("frontend: frontend-control-center frontend-media-studio")
+        target_end = self.makefile_text.index("\nunit:", target_start)
+        target = self.makefile_text[target_start:target_end]
+
+        for app in ("web/control-center", "web/media-studio"):
+            self.assertIn(f"npm --prefix {app} ci", target)
+            self.assertIn(f"npm --prefix {app} run build", target)
+            self.assertIn(f"npm --prefix {app} audit --omit=dev --audit-level=high", target)
+
     def test_security_job_runs_secret_scan_sbom_validation_and_python_audit(self) -> None:
         security = self.workflow["jobs"]["security-and-sbom"]
         commands = "\n".join(flatten_strings(security))

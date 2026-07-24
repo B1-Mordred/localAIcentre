@@ -15,7 +15,7 @@ B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
-.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -46,6 +46,18 @@ caddy-config:
 
 python-check:
 	tmpdir="$$(mktemp -d)"; trap 'rm -rf "$$tmpdir"' EXIT; PYTHONPYCACHEPREFIX="$$tmpdir/pycache" python3 -m compileall -q services deploy integrations tests
+
+frontend: frontend-control-center frontend-media-studio
+
+frontend-control-center:
+	npm --prefix web/control-center ci
+	npm --prefix web/control-center run build
+	npm --prefix web/control-center audit --omit=dev --audit-level=high
+
+frontend-media-studio:
+	npm --prefix web/media-studio ci
+	npm --prefix web/media-studio run build
+	npm --prefix web/media-studio audit --omit=dev --audit-level=high
 
 unit:
 	python3 -m unittest discover -s tests/unit -v
