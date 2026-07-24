@@ -50,6 +50,8 @@ The implemented runtime-agent surface validates service names against immutable 
 
 Artifact downloads are authorized by the control plane. An artifact path must normalize under `/artifacts`, must be present on a durable job record, and must belong to the requesting API client unless the caller has administrative wildcard scope. The artifact-server remains internal-only and also requires the generated `B1_ARTIFACT_SERVER_TOKEN_FILE` bearer token on artifact and Model Hub blob routes; only `/healthz` is unauthenticated for Docker health checks.
 
+Artifact URLs and Voicebox reference-sample links are decoded before path checks. Literal or percent-encoded traversal segments, path separators, and control characters are rejected before an artifact can be authorized, retained, exported, or linked as sensitive voice material.
+
 Media job visibility is owner-scoped on ordinary `/v1/media/jobs` routes. A service, creator, or user API key with `jobs:read` can list/read/cancel/event-stream only its own jobs unless it has wildcard administrative scope. Whole-system queue inspection and mutation use `/admin/jobs`, require `admin` or `operator` role, and audit priority, cancel, and retry mutations without storing prompts or media in audit metadata.
 
 Voicebox profile management is limited to `admin` and `operator` roles with runtime scopes. Profile metadata is JSON-size bounded and rejects inline audio/base64 payloads, local paths, secrets, prompts, and voice sample fields. Reference samples and cloned-voice material must be stored as artifacts and linked by normalized `/artifacts/...` references. Create, update, export, and soft-delete operations write audit events that include only public profile identifiers and counts, not raw audio or sample hashes.

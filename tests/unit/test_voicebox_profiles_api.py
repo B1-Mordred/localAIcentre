@@ -164,6 +164,33 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.assertEqual(audit_events[0]["metadata"]["sample_artifact_count"], 1)
         self.assertNotIn("sample_artifacts", audit_events[0]["metadata"])
 
+    def test_create_rejects_encoded_voice_sample_artifact_escape(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        self.patch_common(fake_database)
+
+        for unsafe_url in [
+            "/artifacts/voicebox/%2e%2e/private.wav",
+            "/artifacts/voicebox/safe%2Fprivate.wav",
+            "/artifacts/voicebox/%00sample.wav",
+        ]:
+            with self.subTest(unsafe_url=unsafe_url):
+                payload = main.VoiceProfileCreate(
+                    display_name="Unsafe",
+                    sample_artifacts=[
+                        main.VoiceProfileSampleArtifact(
+                            url=unsafe_url,
+                            sha256="a" * 64,
+                            mime_type="audio/wav",
+                            bytes=4096,
+                        )
+                    ],
+                )
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(main.admin_voice_profile_create(payload))
+                self.assertEqual(caught.exception.status_code, 422)
+
+        self.assertEqual(fake_database.rows, {})
+
     def test_create_rejects_inline_voice_sample_metadata(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
         self.patch_common(fake_database)

@@ -26,6 +26,17 @@ class ArtifactPolicyTests(unittest.TestCase):
         with self.assertRaises(ArtifactAccessError):
             artifact_url_for_path("temporary/./job.json")
 
+    def test_artifact_path_rejects_encoded_escape_segments(self) -> None:
+        for artifact_path in [
+            "voicebox/%2e%2e/private.wav",
+            "voicebox/safe%2Fprivate.wav",
+            "voicebox/safe%5Cprivate.wav",
+            "voicebox/%00sample.wav",
+        ]:
+            with self.subTest(artifact_path=artifact_path):
+                with self.assertRaises(ArtifactAccessError):
+                    artifact_url_for_path(artifact_path)
+
     def test_job_artifact_membership_uses_recorded_urls(self) -> None:
         job = {"artifacts": [{"url": "/artifacts/temporary/job.json"}, {"url": "/artifacts/images/result.png"}]}
         self.assertTrue(job_has_artifact_url(job, "/artifacts/images/result.png"))
