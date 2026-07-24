@@ -357,6 +357,34 @@ type AcceptanceReportSummary = {
   };
 };
 
+type AcceptanceReportDetail = {
+  summary: AcceptanceReportSummary;
+  report: Record<string, unknown>;
+};
+
+type AcceptanceEvidenceDetail = {
+  key: string;
+  label: string;
+  passed: boolean;
+  note: string;
+};
+
+type LiveEvidenceDetail = {
+  key: string;
+  label: string;
+  available: boolean;
+  status: string;
+  sourcePath: string;
+  missingChecks: string[];
+  samples: string[];
+};
+
+type PreservedResourceDetail = {
+  key: string;
+  label: string;
+  items: string[];
+};
+
 const ACCEPTANCE_EVIDENCE_ITEMS = [
   ["live_stack_smoke", "Live stack smoke"],
   ["rtx3060_acceptance", "RTX 3060 acceptance"],
@@ -370,6 +398,23 @@ const ACCEPTANCE_EVIDENCE_ITEMS = [
   ["migration_rehearsed", "Migration rehearsal"],
   ["rollback_rehearsed", "Rollback rehearsal"],
   ["security_review", "Security review"]
+] as const;
+
+const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
+  ["gpu_acceptance", "RTX 3060 GPU"],
+  ["installed_workflows", "Installed workflows"],
+  ["native_comfyui_compatibility", "Native ComfyUI"],
+  ["remote_nodes_non_comfy", "Remote nodes"],
+  ["modelhub_client_sync", "Model Hub sync"],
+  ["voicebox_remote", "Voicebox remote"],
+  ["security_acceptance", "Security acceptance"]
+] as const;
+
+const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
+  ["containers_to_restart_for_rollback", "Rollback containers"],
+  ["containers_to_stop_during_cutover", "Cutover stop list"],
+  ["docker_volumes_preserved", "Docker volumes"],
+  ["host_paths_preserved", "Host paths"]
 ] as const;
 
 type AcceptanceEvidenceKey = typeof ACCEPTANCE_EVIDENCE_ITEMS[number][0];
@@ -2069,6 +2114,56 @@ function objectOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string | number | boolean => ["string", "number", "boolean"].includes(typeof item))
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+}
+
+function acceptanceOperatorEvidenceRows(report: Record<string, unknown>): AcceptanceEvidenceDetail[] {
+  const rows = Array.isArray(report.operator_evidence) ? report.operator_evidence : [];
+  return rows
+    .map((item) => objectOrNull(item))
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      key: String(item.key ?? ""),
+      label: String(item.label ?? item.key ?? ""),
+      passed: item.passed === true,
+      note: typeof item.note === "string" ? item.note : ""
+    }))
+    .filter((item) => item.key || item.label);
+}
+
+function acceptanceLiveEvidenceRows(report: Record<string, unknown>): LiveEvidenceDetail[] {
+  const liveEvidence = objectOrNull(report.live_evidence) ?? {};
+  return ACCEPTANCE_LIVE_EVIDENCE_SECTIONS.map(([key, label]) => {
+    const snapshot = objectOrNull(liveEvidence[key]) ?? {};
+    const reason = typeof snapshot.reason === "string" ? snapshot.reason : "";
+    const status = typeof snapshot.status === "string" ? snapshot.status : reason || "missing";
+    return {
+      key,
+      label,
+      available: snapshot.available === true,
+      status,
+      sourcePath: typeof snapshot.source_path === "string" ? snapshot.source_path : "",
+      missingChecks: stringList(snapshot.missing_checks),
+      samples: stringList(snapshot.sample_labels)
+    };
+  });
+}
+
+function acceptancePreservedResourceRows(report: Record<string, unknown>): PreservedResourceDetail[] {
+  const preservation = objectOrNull(report.cutover_preservation) ?? {};
+  const resources = objectOrNull(preservation.resources) ?? {};
+  return ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS.map(([key, label]) => ({
+    key,
+    label,
+    items: stringList(resources[key])
+  }));
+}
+
 function labelFromKey(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
 }
@@ -3169,6 +3264,7 @@ function Storage() {
 function System() {
   const [result, setResult] = useState<SelfTestResult | null>(null);
   const [acceptanceReports, setAcceptanceReports] = useState<AcceptanceReportSummary[]>([]);
+  const [selectedAcceptanceReport, setSelectedAcceptanceReport] = useState<AcceptanceReportDetail | null>(null);
   const [acceptanceLabel, setAcceptanceLabel] = useState("");
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
@@ -3282,6 +3378,18 @@ function System() {
       .catch(() => setAcceptanceReports([]));
   };
 
+  const inspectAcceptanceReport = (reportId: string) => {
+    setBusy(true);
+    setMessage(`loading ${reportId}`);
+    apiJson<AcceptanceReportDetail>(`/admin/acceptance-reports/${encodeURIComponent(reportId)}`)
+      .then((payload) => {
+        setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
+        setMessage(`loaded ${reportId}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const createAcceptanceReport = () => {
     setBusy(true);
     setMessage("creating acceptance report");
@@ -3297,6 +3405,7 @@ function System() {
       .then((payload) => {
         setMessage(`acceptance ${payload.summary.status}`);
         setAcceptanceReports((current) => [payload.summary, ...current.filter((item) => item.id !== payload.summary.id)].slice(0, 10));
+        setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
         loadAudit();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -3476,6 +3585,15 @@ function System() {
     loadMaintenance();
     loadUpdates();
   }, []);
+
+  const selectedReport = selectedAcceptanceReport?.report ?? {};
+  const selectedSummary = selectedAcceptanceReport?.summary;
+  const selectedFiles = selectedSummary?.files ?? {};
+  const selectedSourceControl = detailRecord(selectedReport.source_control);
+  const selectedCutover = detailRecord(selectedReport.cutover_preservation);
+  const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
+  const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
+  const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
 
   return (
     <section className="panel wide">
@@ -3695,7 +3813,7 @@ function System() {
         <span className="toolbar-status">{acceptanceReports.length ? `${acceptanceReports.length} reports` : "no reports"}</span>
       </div>
       <table>
-        <thead><tr><th>Report</th><th>Status</th><th>Mode</th><th>Files</th><th>Blockers</th></tr></thead>
+        <thead><tr><th>Report</th><th>Status</th><th>Mode</th><th>Files</th><th>Blockers</th><th>Actions</th></tr></thead>
         <tbody>
           {acceptanceReports.map((report) => (
             <tr key={report.id}>
@@ -3710,11 +3828,95 @@ function System() {
                 {report.files?.sha256sums ? <small>{report.files.sha256sums}</small> : null}
               </td>
               <td>{report.acceptance_blockers.length ? report.acceptance_blockers.slice(0, 3).join("; ") : "none"}</td>
+              <td>
+                <div className="table-actions">
+                  <button title={`Inspect ${report.id}`} onClick={() => inspectAcceptanceReport(report.id)} disabled={busy}><ScrollText size={16} /></button>
+                </div>
+              </td>
             </tr>
           ))}
-          {!acceptanceReports.length && <tr><td colSpan={5}>No acceptance reports recorded</td></tr>}
+          {!acceptanceReports.length && <tr><td colSpan={6}>No acceptance reports recorded</td></tr>}
         </tbody>
       </table>
+      {selectedAcceptanceReport && selectedSummary && (
+        <div className="acceptance-detail">
+          <div className="subsection-title">
+            <ScrollText size={16} />
+            <h3>Acceptance Report Detail</h3>
+          </div>
+          <div className="acceptance-detail-grid">
+            <div><strong>Report</strong><small>{selectedSummary.id}</small></div>
+            <div><strong>Status</strong><small>{selectedSummary.status}</small></div>
+            <div><strong>Mode</strong><small>{selectedSummary.runtime_deployment_mode ?? "unknown"}</small></div>
+            <div><strong>Generated</strong><small>{formatDateTime(selectedSummary.generated_at)}</small></div>
+            <div><strong>Handoff</strong><small>{selectedSummary.operator_handoff_ready ? "ready" : "blocked"}</small></div>
+            <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
+            <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
+            <div><strong>Report files</strong><small>{selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Acceptance Blockers</h4>
+            {selectedSummary.acceptance_blockers.length ? (
+              <ul className="acceptance-blockers">
+                {selectedSummary.acceptance_blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+              </ul>
+            ) : (
+              <p>None</p>
+            )}
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Operator Evidence</h4>
+            <table>
+              <thead><tr><th>Evidence</th><th>Status</th><th>Note</th></tr></thead>
+              <tbody>
+                {selectedOperatorEvidence.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.label}<small>{item.key}</small></td>
+                    <td><span className={statusPillClass(item.passed ? "ok" : "warning")}>{item.passed ? "passed" : "missing"}</span></td>
+                    <td>{item.note || "none"}</td>
+                  </tr>
+                ))}
+                {!selectedOperatorEvidence.length && <tr><td colSpan={3}>No operator evidence recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Live Evidence</h4>
+            <table>
+              <thead><tr><th>Evidence</th><th>Status</th><th>Missing Checks</th><th>Source</th></tr></thead>
+              <tbody>
+                {selectedLiveEvidence.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.label}<small>{item.samples.length ? item.samples.join(", ") : item.key}</small></td>
+                    <td><span className={statusPillClass(item.available && item.status === "ok" ? "ok" : item.status)}>{item.status}</span></td>
+                    <td>{item.missingChecks.length ? item.missingChecks.join(", ") : "none"}</td>
+                    <td>{item.sourcePath || "not recorded"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Preserved Rollback Resources</h4>
+            <table>
+              <thead><tr><th>Resource</th><th>Count</th><th>Items</th></tr></thead>
+              <tbody>
+                {selectedPreservedResources.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.label}<small>{item.key}</small></td>
+                    <td>{item.items.length}</td>
+                    <td>{item.items.length ? item.items.join(", ") : "none"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <details className="acceptance-raw">
+            <summary>Raw JSON</summary>
+            <pre>{JSON.stringify(selectedReport, null, 2)}</pre>
+          </details>
+        </div>
+      )}
       <div className="subsection-title">
         <ScrollText size={16} />
         <h3>Service Logs</h3>

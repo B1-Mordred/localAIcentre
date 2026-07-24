@@ -94,6 +94,15 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("security proof missing", self.source)
         self.assertIn("/admin/acceptance-reports?limit=10", self.source)
         self.assertIn("/admin/acceptance-reports", self.source)
+        self.assertIn("type AcceptanceReportDetail", self.source)
+        self.assertIn("inspectAcceptanceReport", self.source)
+        self.assertIn("/admin/acceptance-reports/${encodeURIComponent(reportId)}", self.source)
+        self.assertIn("<h3>Acceptance Report Detail</h3>", self.source)
+        self.assertIn("acceptanceOperatorEvidenceRows", self.source)
+        self.assertIn("acceptanceLiveEvidenceRows", self.source)
+        self.assertIn("acceptancePreservedResourceRows", self.source)
+        self.assertIn("Preserved Rollback Resources", self.source)
+        self.assertIn("Raw JSON", self.source)
         self.assertIn("<h3>Acceptance Reports</h3>", self.source)
 
     def test_models_tab_supports_remote_manifest_url(self) -> None:

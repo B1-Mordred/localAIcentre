@@ -424,6 +424,74 @@ td small {
   overflow-wrap: anywhere;
 }
 
+.acceptance-detail {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 20px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0ec;
+}
+
+.acceptance-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.acceptance-detail-grid div {
+  border-left: 3px solid #1f6f5b;
+  background: #f8faf8;
+  min-height: 64px;
+  padding: 8px 10px;
+}
+
+.acceptance-detail-grid strong,
+.acceptance-detail-grid small {
+  display: block;
+}
+
+.acceptance-detail-grid small {
+  margin-top: 5px;
+  color: #5c675f;
+  overflow-wrap: anywhere;
+}
+
+.acceptance-detail-section {
+  display: grid;
+  gap: 8px;
+}
+
+.acceptance-blockers {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.acceptance-blockers li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.acceptance-raw {
+  display: grid;
+  gap: 8px;
+}
+
+.acceptance-raw summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.acceptance-raw pre {
+  margin: 0;
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid #cfd7cf;
+  background: #f8faf8;
+  padding: 10px;
+  font: 12px/1.45 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
 th {
   color: #202421;
   font-weight: 700;
@@ -830,6 +898,10 @@ td {
   .policy-grid,
   .evidence-grid,
   .job-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .acceptance-detail-grid {
     grid-template-columns: 1fr;
   }
 
