@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hmac
+import json
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 from fastapi import Depends, Header, HTTPException
@@ -16,6 +19,7 @@ from .docker_api import (
     DockerEngineClient,
     bound_log_lines,
     parse_allowed_services,
+    redact_line,
     require_allowed_service,
     require_runtime_action_service,
     validate_pinned_image_reference,
@@ -33,6 +37,17 @@ def bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def int_env(name: str, default: int, *, minimum: int = 1, maximum: int = 600) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
 ALLOWED_SERVICES = parse_allowed_services(
     os.getenv(
         "B1_ALLOWED_SERVICES",
@@ -41,6 +56,7 @@ ALLOWED_SERVICES = parse_allowed_services(
 )
 RUNTIME_ACTION_SERVICES = parse_allowed_services(os.getenv("B1_RUNTIME_ACTION_SERVICES", ",".join(sorted(DEFAULT_RUNTIME_ACTION_SERVICES))))
 MUTATIONS_ENABLED = bool_env("B1_ENABLE_MUTATIONS", False)
+MUTATION_RATE_LIMIT_PER_MINUTE = int_env("B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE", 12)
 MTLS_ENABLED = bool_env("B1_RUNTIME_AGENT_MTLS_ENABLED", True)
 CLIENT_CERT_REQUIRED = bool_env("B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED", True)
 ALLOW_MISSING_AUTH = bool_env("B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH", False)
@@ -56,6 +72,7 @@ RUNTIME_AGENT_TOKEN_FILE = os.getenv("B1_RUNTIME_AGENT_TOKEN_FILE", "")
 RUNTIME_AGENT_TOKEN = os.getenv("B1_RUNTIME_AGENT_TOKEN", "")
 CONFIG = AgentConfig(allowed_services=ALLOWED_SERVICES, docker_socket=DOCKER_SOCKET, compose_project=COMPOSE_PROJECT)
 DOCKER = DockerEngineClient(DOCKER_SOCKET)
+MUTATION_RATE_WINDOW: list[float] = []
 
 
 class ServiceMutation(BaseModel):
@@ -67,6 +84,7 @@ class ServiceMutation(BaseModel):
 class ImageAction(BaseModel):
     image: str = Field(min_length=1, max_length=512)
     reason: str = Field(min_length=1, max_length=500)
+    dry_run: bool = False
 
 
 def read_token() -> str:
@@ -118,6 +136,7 @@ async def status(_: None = Depends(require_agent_auth)) -> dict[str, Any]:
     return {
         "docker_socket_present": DOCKER_SOCKET.exists(),
         "mutations_enabled": MUTATIONS_ENABLED,
+        "mutation_rate_limit_per_minute": MUTATION_RATE_LIMIT_PER_MINUTE,
         "allowed_services": sorted(ALLOWED_SERVICES),
         "runtime_action_services": sorted(RUNTIME_ACTION_SERVICES),
         "compose_project": COMPOSE_PROJECT,
@@ -178,30 +197,73 @@ def require_pinned_image(image: str) -> str:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def mutation_disabled_response(service: str, action: str, payload: ServiceMutation) -> dict[str, Any]:
+def emit_runtime_audit(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def audit_mutation_event(
+    action: str,
+    status: str,
+    *,
+    service: str | None = None,
+    reason: str = "",
+    runtime_action: bool = False,
+    details: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "runtime-agent.mutation",
+        "timestamp": datetime.now(tz=UTC).isoformat(),
+        "action": action,
+        "status": status,
+        "reason": redact_line(reason)[:500],
+        "mutations_enabled": MUTATIONS_ENABLED,
+        "rate_limit_per_minute": MUTATION_RATE_LIMIT_PER_MINUTE,
+    }
+    if service:
+        payload["service"] = service
+    if runtime_action:
+        payload["runtime_action"] = True
+    if details:
+        payload["details"] = details
+    emit_runtime_audit(payload)
+
+
+def check_mutation_rate_limit(action: str, *, service: str | None = None, reason: str = "") -> None:
+    now = time.monotonic()
+    cutoff = now - 60.0
+    MUTATION_RATE_WINDOW[:] = [item for item in MUTATION_RATE_WINDOW if item >= cutoff]
+    if len(MUTATION_RATE_WINDOW) >= MUTATION_RATE_LIMIT_PER_MINUTE:
+        audit_mutation_event(action, "rate_limited", service=service, reason=reason)
+        raise HTTPException(status_code=429, detail="runtime-agent mutation rate limit exceeded")
+    MUTATION_RATE_WINDOW.append(now)
+
+
+def mutation_disabled_response(service: str, action: str, payload: ServiceMutation, *, runtime_action: bool = False) -> dict[str, Any]:
+    audit_mutation_event(action, "dry_run", service=service, reason=payload.reason, runtime_action=runtime_action)
     return {
         "service": service,
         "action": action,
         "status": "dry_run",
         "reason": payload.reason,
-        "message": "runtime-agent mutations are disabled",
+        "message": "runtime-agent dry run requested" if payload.dry_run else "runtime-agent mutations are disabled",
     }
 
 
 def image_mutation_disabled_response(service: str, action: str, payload: ImageAction, image: str) -> dict[str, Any]:
+    audit_mutation_event(action, "dry_run", service=service, reason=payload.reason, details={"image": image})
     return {
         "service": service,
         "action": action,
         "status": "dry_run",
         "image": image,
         "reason": payload.reason,
-        "message": "runtime-agent mutations are disabled",
+        "message": "runtime-agent dry run requested" if payload.dry_run else "runtime-agent mutations are disabled",
     }
 
 
 def runtime_action_disabled_response(service: str, action: str, payload: ServiceMutation) -> dict[str, Any]:
     return {
-        **mutation_disabled_response(service, action, payload),
+        **mutation_disabled_response(service, action, payload, runtime_action=True),
         "strategy": "restart_service",
         "runtime_action": True,
     }
@@ -210,8 +272,9 @@ def runtime_action_disabled_response(service: str, action: str, payload: Service
 def run_runtime_restart_action(service: str, action: str, payload: ServiceMutation) -> dict[str, Any]:
     if payload.dry_run or not MUTATIONS_ENABLED:
         return runtime_action_disabled_response(service, action, payload)
+    check_mutation_rate_limit(action, service=service, reason=payload.reason)
     try:
-        return {
+        result = {
             **DOCKER.restart_service(service, COMPOSE_PROJECT, payload.timeout_seconds),
             "status": "ok",
             "service": service,
@@ -219,7 +282,10 @@ def run_runtime_restart_action(service: str, action: str, payload: ServiceMutati
             "strategy": "restart_service",
             "runtime_action": True,
         }
+        audit_mutation_event(action, "ok", service=service, reason=payload.reason, runtime_action=True)
+        return result
     except DockerApiError as exc:
+        audit_mutation_event(action, "failed", service=service, reason=payload.reason, runtime_action=True)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -242,6 +308,7 @@ def rollback_plan_services() -> list[str]:
 
 
 def rollback_disabled_response(payload: ServiceMutation, services: list[str]) -> dict[str, Any]:
+    audit_mutation_event("rollback", "dry_run", reason=payload.reason, details={"services": services})
     return {
         "status": "dry_run",
         "action": "rollback",
@@ -256,12 +323,15 @@ def apply_predefined_rollback(payload: ServiceMutation) -> dict[str, Any]:
     services = rollback_plan_services()
     if payload.dry_run or not MUTATIONS_ENABLED:
         return rollback_disabled_response(payload, services)
+    check_mutation_rate_limit("rollback", reason=payload.reason)
     results: list[dict[str, Any]] = []
     try:
         for service in services:
             results.append(DOCKER.restart_service(service, COMPOSE_PROJECT, payload.timeout_seconds))
     except DockerApiError as exc:
+        audit_mutation_event("rollback", "failed", reason=payload.reason, details={"services": services})
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    audit_mutation_event("rollback", "ok", reason=payload.reason, details={"services": services})
     return {
         "status": "ok",
         "action": "rollback",
@@ -275,33 +345,45 @@ def apply_predefined_rollback(payload: ServiceMutation) -> dict[str, Any]:
 @app.post("/v1/services/{service_name}/restart")
 async def restart_service(service_name: str, payload: ServiceMutation, _: None = Depends(require_agent_auth)) -> dict[str, Any]:
     service = require_service(service_name)
-    if not MUTATIONS_ENABLED:
+    if payload.dry_run or not MUTATIONS_ENABLED:
         return mutation_disabled_response(service, "restart", payload)
+    check_mutation_rate_limit("restart", service=service, reason=payload.reason)
     try:
-        return {"status": "ok", **DOCKER.restart_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        result = {"status": "ok", **DOCKER.restart_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        audit_mutation_event("restart", "ok", service=service, reason=payload.reason)
+        return result
     except DockerApiError as exc:
+        audit_mutation_event("restart", "failed", service=service, reason=payload.reason)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/v1/services/{service_name}/start")
 async def start_service(service_name: str, payload: ServiceMutation, _: None = Depends(require_agent_auth)) -> dict[str, Any]:
     service = require_service(service_name)
-    if not MUTATIONS_ENABLED:
+    if payload.dry_run or not MUTATIONS_ENABLED:
         return mutation_disabled_response(service, "start", payload)
+    check_mutation_rate_limit("start", service=service, reason=payload.reason)
     try:
-        return {"status": "ok", **DOCKER.start_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        result = {"status": "ok", **DOCKER.start_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        audit_mutation_event("start", "ok", service=service, reason=payload.reason)
+        return result
     except DockerApiError as exc:
+        audit_mutation_event("start", "failed", service=service, reason=payload.reason)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/v1/services/{service_name}/stop")
 async def stop_service(service_name: str, payload: ServiceMutation, _: None = Depends(require_agent_auth)) -> dict[str, Any]:
     service = require_service(service_name)
-    if not MUTATIONS_ENABLED:
+    if payload.dry_run or not MUTATIONS_ENABLED:
         return mutation_disabled_response(service, "stop", payload)
+    check_mutation_rate_limit("stop", service=service, reason=payload.reason)
     try:
-        return {"status": "ok", **DOCKER.stop_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        result = {"status": "ok", **DOCKER.stop_service(service, COMPOSE_PROJECT, payload.timeout_seconds)}
+        audit_mutation_event("stop", "ok", service=service, reason=payload.reason)
+        return result
     except DockerApiError as exc:
+        audit_mutation_event("stop", "failed", service=service, reason=payload.reason)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -325,15 +407,19 @@ async def inspect_service_image(service_name: str, payload: ImageAction, _: None
 async def pull_service_image(service_name: str, payload: ImageAction, _: None = Depends(require_agent_auth)) -> dict[str, Any]:
     service = require_service(service_name)
     image = require_pinned_image(payload.image)
-    if not MUTATIONS_ENABLED:
+    if payload.dry_run or not MUTATIONS_ENABLED:
         return image_mutation_disabled_response(service, "pull", payload, image)
+    check_mutation_rate_limit("pull", service=service, reason=payload.reason)
     try:
-        return {
+        result = {
             "service": service,
             "reason": payload.reason,
             **DOCKER.pull_image(image),
         }
+        audit_mutation_event("pull", "ok", service=service, reason=payload.reason, details={"image": image})
+        return result
     except DockerApiError as exc:
+        audit_mutation_event("pull", "failed", service=service, reason=payload.reason, details={"image": image})
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

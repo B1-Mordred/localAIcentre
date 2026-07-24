@@ -272,6 +272,7 @@ services:
       B1_ALLOWED_SERVICES: control-plane,localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway
       B1_RUNTIME_ACTION_SERVICES: ${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,audio-cpu}
       B1_ENABLE_MUTATIONS: ${B1_ENABLE_MUTATIONS:-false}
+      B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE: ${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}
       B1_RUNTIME_AGENT_TOKEN_FILE: /run/secrets/runtime_agent_token
       B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH: ${B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH:-false}
       B1_RUNTIME_AGENT_MTLS_ENABLED: ${B1_RUNTIME_AGENT_MTLS_ENABLED:-true}

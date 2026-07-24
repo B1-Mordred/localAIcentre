@@ -79,6 +79,7 @@
 - Tightened maintenance-mode admission so image generation, image edit, and media-job creation fail before body staging, workflow validation, or alias/runtime resolution, while idempotent replays can still return existing jobs.
 - Added authentication gates for normal ComfyUI and Voicebox compatibility routes and gateway header stripping so clients cannot spoof the disabled-by-default legacy ComfyUI listener through ordinary API hosts.
 - Scoped gateway browser camera/microphone permissions to Open WebUI, Media Studio, and Voicebox same-origin workflows while keeping admin, API, Model Hub, and ComfyUI surfaces deny-by-default.
+- Added runtime-agent mutation rate limiting, structured redacted mutation audit events, and dry-run enforcement for service/image mutation paths even when Docker mutations are enabled.
 - Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
 - Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
 - Redacted manifest source URLs across public Model Hub catalog, model, and version responses so external sync clients do not receive upstream credentials, signed query strings, or fragments.

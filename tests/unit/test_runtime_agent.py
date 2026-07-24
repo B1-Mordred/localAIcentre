@@ -258,6 +258,21 @@ class RuntimeAgentRollbackTests(unittest.TestCase):
         self.assertEqual(result["services"], ["localai", "gateway"])
         self.assertEqual(fake_docker.calls, [("localai", "b1-ai-hub", 9), ("gateway", "b1-ai-hub", 9)])
 
+    def test_service_mutation_dry_run_does_not_restart_when_mutations_enabled(self) -> None:
+        class FakeDocker:
+            def restart_service(self, service: str, compose_project: str | None = None, timeout_seconds: int = 10) -> dict[str, Any]:
+                raise AssertionError("dry-run restart must not mutate containers")
+
+        self.patch_attr("ALLOWED_SERVICES", frozenset({"localai"}))
+        self.patch_attr("MUTATIONS_ENABLED", True)
+        self.patch_attr("DOCKER", FakeDocker())
+
+        payload = runtime_agent_main.ServiceMutation(reason="operator test", timeout_seconds=5, dry_run=True)
+        result = asyncio.run(runtime_agent_main.restart_service("localai", payload))
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["message"], "runtime-agent dry run requested")
+
     def test_runtime_unload_dry_run_does_not_restart_when_mutations_enabled(self) -> None:
         class FakeDocker:
             def restart_service(self, service: str, compose_project: str | None = None, timeout_seconds: int = 10) -> dict[str, Any]:
@@ -273,6 +288,35 @@ class RuntimeAgentRollbackTests(unittest.TestCase):
         self.assertEqual(result["service"], "localai")
         self.assertEqual(result["action"], "unload")
         self.assertTrue(result["runtime_action"])
+
+    def test_mutation_rate_limit_rejects_excessive_mutations_and_audits(self) -> None:
+        events: list[dict[str, Any]] = []
+        self.patch_attr("MUTATION_RATE_LIMIT_PER_MINUTE", 1)
+        self.patch_attr("MUTATION_RATE_WINDOW", [])
+        self.patch_attr("emit_runtime_audit", events.append)
+
+        runtime_agent_main.check_mutation_rate_limit("restart", service="localai", reason="first")
+        with self.assertRaises(runtime_agent_main.HTTPException) as raised:
+            runtime_agent_main.check_mutation_rate_limit("restart", service="localai", reason="second")
+
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(events[0]["status"], "rate_limited")
+        self.assertEqual(events[0]["action"], "restart")
+        self.assertEqual(events[0]["service"], "localai")
+
+    def test_mutation_audit_redacts_sensitive_reason_values(self) -> None:
+        events: list[dict[str, Any]] = []
+        self.patch_attr("emit_runtime_audit", events.append)
+
+        runtime_agent_main.mutation_disabled_response(
+            "localai",
+            "restart",
+            runtime_agent_main.ServiceMutation(reason="Authorization: Bearer b1k_public.secret", timeout_seconds=5),
+        )
+
+        self.assertEqual(events[0]["event"], "runtime-agent.mutation")
+        self.assertNotIn("b1k_public.secret", events[0]["reason"])
+        self.assertIn("<redacted>", events[0]["reason"])
 
     def test_image_pull_endpoint_is_dry_run_when_mutations_disabled(self) -> None:
         self.patch_attr("ALLOWED_SERVICES", frozenset({"control-plane"}))
@@ -305,11 +349,13 @@ class RuntimeAgentRollbackTests(unittest.TestCase):
         self.patch_attr("DOCKER", FakeDocker())
         self.patch_attr("MTLS_ENABLED", True)
         self.patch_attr("CLIENT_CERT_REQUIRED", True)
+        self.patch_attr("MUTATION_RATE_LIMIT_PER_MINUTE", 7)
 
         result = asyncio.run(runtime_agent_main.status())
 
         self.assertTrue(result["mtls_enabled"])
         self.assertTrue(result["client_cert_required"])
+        self.assertEqual(result["mutation_rate_limit_per_minute"], 7)
         self.assertEqual(result["docker"]["version"], {"Version": "test"})
 
     def test_v1_auth_fails_closed_when_token_is_missing(self) -> None:

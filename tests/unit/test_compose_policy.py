@@ -580,6 +580,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED"], "${B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED:-true}")
         self.assertEqual(environment["B1_METRIC_PATHS"], "/srv/b1-ai-hub,/tmp")
         self.assertEqual(environment["B1_ENABLE_MUTATIONS"], "${B1_ENABLE_MUTATIONS:-false}")
+        self.assertEqual(environment["B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE"], "${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}")
         self.assertEqual(environment["B1_RUNTIME_ACTION_SERVICES"], "${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,audio-cpu}")
         self.assertEqual(
             environment["B1_ROLLBACK_SERVICES"],

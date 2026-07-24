@@ -165,11 +165,11 @@ class RuntimeAgentSecurityPolicyTests(unittest.TestCase):
 
     def test_runtime_agent_mutating_routes_keep_required_guards(self) -> None:
         required_calls = {
-            "restart_service": {"require_service"},
-            "start_service": {"require_service"},
-            "stop_service": {"require_service"},
+            "restart_service": {"require_service", "check_mutation_rate_limit", "audit_mutation_event"},
+            "start_service": {"require_service", "check_mutation_rate_limit", "audit_mutation_event"},
+            "stop_service": {"require_service", "check_mutation_rate_limit", "audit_mutation_event"},
             "inspect_service_image": {"require_service", "require_pinned_image"},
-            "pull_service_image": {"require_service", "require_pinned_image"},
+            "pull_service_image": {"require_service", "require_pinned_image", "check_mutation_rate_limit", "audit_mutation_event"},
             "recover_runtime": {"require_runtime_service"},
             "unload_runtime": {"require_runtime_service"},
             "service_logs": {"require_service", "bound_log_lines"},
@@ -178,6 +178,11 @@ class RuntimeAgentSecurityPolicyTests(unittest.TestCase):
         for function_name, expected in required_calls.items():
             calls = call_names(function_by_name(self.main_tree, function_name))
             self.assertLessEqual(expected, calls, f"{function_name} is missing required guard calls")
+
+        for function_name in ("run_runtime_restart_action", "apply_predefined_rollback"):
+            calls = call_names(function_by_name(self.main_tree, function_name))
+            self.assertIn("check_mutation_rate_limit", calls, f"{function_name} must rate-limit real mutations")
+            self.assertIn("audit_mutation_event", calls, f"{function_name} must audit mutation outcomes")
 
     def test_runtime_agent_does_not_expose_arbitrary_docker_operations(self) -> None:
         source = RUNTIME_AGENT_DOCKER_API.read_text(encoding="utf-8")
