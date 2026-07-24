@@ -21,6 +21,7 @@
 - Added machine-readable installed workflow acceptance evidence ingestion and an opt-in live harness for chat, TTS, STT, CPU-audio no-GPU-lease proof, image generation, image edit, and short-video user paths backed by real installed models.
 - Added machine-readable native ComfyUI compatibility evidence ingestion and an opt-in live REST/WebSocket harness so handoff now requires proof of `/object_info`, `/system_stats`, `/models`, `/queue`, `/upload/image`, native `POST /prompt`, `/ws`, and `/history/{prompt_id}` through the gateway.
 - Added native ComfyUI `/view` artifact retrieval to the live compatibility evidence gate so handoff proves generated outputs are downloadable through the gateway.
+- Added an opt-in legacy ComfyUI listener compatibility harness for restricted `http://host:8188` clients, verifying unauthenticated metadata and WebSocket access through the scheduler-aware proxy.
 - Added machine-readable remote-node non-Comfy compatibility evidence ingestion so handoff now requires proof that external ComfyUI B1 nodes complete a unified-API operation while server-side ComfyUI is stopped.
 - Added machine-readable Model Hub client sync evidence ingestion so handoff now requires proof of external catalog access, Range/resume blob sync, managed-cache state, safe prune behavior, and inference-only download blocking.
 - Added machine-readable Voicebox remote compatibility evidence ingestion and an opt-in live harness for native HTTP proxying, voice-profile lifecycle, scheduler-routed speech, and WebSocket-or-pinned-limitation proof.

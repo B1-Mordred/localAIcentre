@@ -19,6 +19,19 @@ For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1
 
 When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `POST /prompt`, `/ws`, `/history/{prompt_id}`, or `/view` artifact checks are absent or incomplete.
 
+## Optional Legacy ComfyUI Listener
+
+The disabled-by-default legacy listener is only for clients that must use plain `http://host:8188` and cannot set API prefixes or bearer headers. Start it with the explicit legacy Compose profile, keep `B1_LEGACY_COMFY_ALLOW_CIDRS` narrow, then run:
+
+```bash
+export B1_LEGACY_COMFY_LIVE_TEST=1
+export B1_LEGACY_COMFY_BASE=http://ai.b1.germering:8188
+export B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener.json
+python3 -m unittest tests.compatibility.test_legacy_comfyui_listener
+```
+
+The legacy harness intentionally sends no bearer token. It verifies that `/object_info`, `/system_stats`, and `/ws` are reachable through the scheduler-aware Caddy/control-plane path. The evidence file is an operator artifact for optional legacy-client validation; it is not a substitute for the authenticated native ComfyUI compatibility evidence required for handoff.
+
 ## Remote Nodes Without Server-Side ComfyUI
 
 The first concrete remote-node scenario is the non-Comfy smoke path: run `integrations/comfyui-b1-remote-nodes/examples/tts-fast.non-comfy.workflow.json` from an external ComfyUI while the server-side B1 `comfyui` container is stopped. The workflow must complete through the unified API and the `audio-cpu`/`tts-fast` path.

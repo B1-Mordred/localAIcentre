@@ -53,3 +53,14 @@ docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-com
 ```
 
 The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend. This listener is the only ComfyUI compatibility path that may omit bearer authentication; use it only for clients that cannot set headers, keep the allowlist narrow, and prefer the authenticated HTTPS virtual host whenever possible.
+
+Validate the listener during the legacy-client compatibility window with:
+
+```bash
+B1_LEGACY_COMFY_LIVE_TEST=1 \
+B1_LEGACY_COMFY_BASE=http://ai.b1.germering:8188 \
+B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener.json \
+python3 -m unittest tests.compatibility.test_legacy_comfyui_listener
+```
+
+The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
