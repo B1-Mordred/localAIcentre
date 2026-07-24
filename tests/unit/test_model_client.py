@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +27,83 @@ class ModelClientTests(unittest.TestCase):
 
         client.sync_plan_from_server = unavailable
         self.addCleanup(lambda: setattr(client, "sync_plan_from_server", original))
+
+    def test_validate_base_url_canonicalizes_safe_http_endpoint(self) -> None:
+        self.assertEqual(
+            client.validate_base_url(" HTTPS://models.ai.b1.germering/modelhub/ "),
+            "https://models.ai.b1.germering/modelhub",
+        )
+
+    def test_validate_base_url_rejects_unsafe_endpoint_forms(self) -> None:
+        unsafe_values = [
+            "",
+            "models.ai.b1.germering",
+            "ftp://models.ai.b1.germering",
+            "https://user:pass@models.ai.b1.germering",
+            "https://models.ai.b1.germering?token=secret",
+            "https://models.ai.b1.germering/#fragment",
+            "https://models.ai.b1.germering/../admin",
+            "https://models.ai.b1.germering/%2e%2e/admin",
+            "https://models.ai.b1.germering/models%2fescape",
+            "https://models.ai.b1.germering:bad",
+        ]
+        for value in unsafe_values:
+            with self.subTest(value=value):
+                with self.assertRaises(RuntimeError):
+                    client.validate_base_url(value)
+
+    def test_request_json_rejects_bad_base_url_before_network(self) -> None:
+        called = False
+
+        def fake_urlopen(request: object, timeout: int = 30) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called for unsafe base URLs")
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with self.assertRaisesRegex(RuntimeError, "query string"):
+                client.request_json("https://models.ai.b1.germering?token=secret", "/modelhub/v1/catalog", None)
+        finally:
+            client.urllib.request.urlopen = original
+        self.assertFalse(called)
+
+    def test_resolve_token_reads_private_token_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("file-token\n", encoding="utf-8")
+            if os.name != "nt":
+                token_file.chmod(0o600)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(client.TOKEN_ENV, None)
+                os.environ.pop(client.TOKEN_FILE_ENV, None)
+                args = argparse.Namespace(token=None, token_file=str(token_file))
+                self.assertEqual(client.resolve_token(args), "file-token")
+
+    def test_resolve_token_rejects_ambiguous_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("file-token\n", encoding="utf-8")
+            if os.name != "nt":
+                token_file.chmod(0o600)
+            with patch.dict(os.environ, {client.TOKEN_ENV: "env-token"}, clear=False):
+                args = argparse.Namespace(token=None, token_file=str(token_file))
+                with self.assertRaisesRegex(RuntimeError, "ambiguous Model Hub credentials"):
+                    client.resolve_token(args)
+
+    @unittest.skipIf(os.name == "nt", "POSIX mode checks do not apply on Windows")
+    def test_resolve_token_rejects_group_readable_token_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("file-token\n", encoding="utf-8")
+            token_file.chmod(0o644)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(client.TOKEN_ENV, None)
+                os.environ.pop(client.TOKEN_FILE_ENV, None)
+                args = argparse.Namespace(token=None, token_file=str(token_file))
+                with self.assertRaisesRegex(RuntimeError, "chmod 0600"):
+                    client.resolve_token(args)
 
     def test_planned_actions_skip_inference_only_models(self) -> None:
         self.force_local_planner()

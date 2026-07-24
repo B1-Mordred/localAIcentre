@@ -13,7 +13,11 @@ Linux or macOS shell example:
 python -m pip install ./integrations/b1-model-client
 
 export B1_MODELHUB_URL=https://models.ai.b1.germering
-export B1_MODELHUB_TOKEN=...
+install -d -m 0700 ~/.config/b1-ai-hub
+printf '%s' "$B1_MODELHUB_TOKEN" > ~/.config/b1-ai-hub/modelhub-token
+chmod 0600 ~/.config/b1-ai-hub/modelhub-token
+unset B1_MODELHUB_TOKEN
+export B1_MODELHUB_TOKEN_FILE=~/.config/b1-ai-hub/modelhub-token
 
 b1-model-client list
 b1-model-client pin chat-default image-default --cache ~/.cache/b1-ai-hub/models
@@ -30,11 +34,17 @@ Windows PowerShell example:
 python -m pip install .\integrations\b1-model-client
 
 $env:B1_MODELHUB_URL = "https://models.ai.b1.germering"
-$env:B1_MODELHUB_TOKEN = "..."
+$tokenPath = "$env:APPDATA\B1 AI Hub\modelhub-token"
+New-Item -ItemType Directory -Force -Path (Split-Path $tokenPath)
+Set-Content -NoNewline -Path $tokenPath -Value $env:B1_MODELHUB_TOKEN
+Remove-Item Env:\B1_MODELHUB_TOKEN
+$env:B1_MODELHUB_TOKEN_FILE = $tokenPath
 
 b1-model-client.exe pin chat-default --cache "$env:LOCALAPPDATA\B1 AI Hub\models"
 b1-model-client.exe sync --cache "$env:LOCALAPPDATA\B1 AI Hub\models"
 ```
+
+Prefer `B1_MODELHUB_TOKEN_FILE` or `--token-file` for workstation and daemon deployments. POSIX token files must be private to the current user, for example mode `0600`; the client refuses group/world-readable token files. Inline `--token` and `B1_MODELHUB_TOKEN` remain available for short-lived interactive runs, but the client refuses to start when both token sources are set. `B1_MODELHUB_URL` and `--base-url` must be an HTTP(S) URL without credentials, query strings, fragments, encoded traversal, or unsafe path segments.
 
 When no model arguments are supplied, `plan`, `sync`, and `daemon` use locally pinned models. If no pins exist yet, they ask the server catalog for default public aliases. `pin` validates the model or alias against Model Hub but records only model metadata in `CACHE/b1-model-client-state.json`, not the bearer token. `unpin` removes local intent only; it does not delete blobs. `prune --dry-run` shows managed blobs that are no longer required by the selected or pinned models, and `prune` deletes only SHA-256-named files recorded in the local managed-blob state. Unmanaged files in the cache are ignored.
 
@@ -49,8 +59,9 @@ docker build -t b1-model-client integrations/b1-model-client
 docker volume create b1-model-cache
 docker run -d --name b1-model-client \
   -e B1_MODELHUB_URL=https://models.ai.b1.germering \
-  -e B1_MODELHUB_TOKEN="$B1_MODELHUB_TOKEN" \
+  -e B1_MODELHUB_TOKEN_FILE=/run/secrets/b1_modelhub_token \
   -e B1_MODEL_CLIENT_INTERVAL_SECONDS=3600 \
+  -v "$HOME/.config/b1-ai-hub/modelhub-token:/run/secrets/b1_modelhub_token:ro" \
   -v b1-model-cache:/cache \
   b1-model-client daemon --cache /cache --prune
 ```

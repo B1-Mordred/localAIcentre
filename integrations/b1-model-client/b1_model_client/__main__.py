@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import urllib.error
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,11 +18,92 @@ from typing import Any
 CHUNK_SIZE = 1024 * 1024
 CACHE_STATE_VERSION = "b1-model-client-cache/v1"
 CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
+MODELHUB_URL_ENV = "B1_MODELHUB_URL"
+TOKEN_ENV = "B1_MODELHUB_TOKEN"
+TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
+
+
+def has_unsafe_path_segment(path: str) -> bool:
+    for segment in path.split("/"):
+        if not segment:
+            continue
+        decoded = unquote(segment)
+        if decoded in {".", ".."} or "/" in decoded or "\\" in decoded:
+            return True
+    return False
+
+
+def validate_base_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise RuntimeError("Model Hub base URL is required")
+    try:
+        parsed = urlsplit(raw)
+        _ = parsed.port
+    except ValueError as exc:
+        raise RuntimeError(f"invalid Model Hub base URL: {raw}") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Model Hub base URL must be an http(s) URL with a host")
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise RuntimeError("Model Hub base URL must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("Model Hub base URL must not contain a query string or fragment")
+    if "\\" in parsed.netloc or "\\" in parsed.path or not parsed.hostname:
+        raise RuntimeError("Model Hub base URL contains unsafe characters")
+    path = parsed.path.rstrip("/")
+    if has_unsafe_path_segment(path):
+        raise RuntimeError("Model Hub base URL path contains unsafe traversal segments")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc, path, "", ""))
+
+
+def request_url(base_url: str, path: str) -> str:
+    if not path.startswith("/") or "?" in path or "#" in path or "\\" in path or has_unsafe_path_segment(path):
+        raise RuntimeError("Model Hub request path is unsafe")
+    return validate_base_url(base_url) + path
+
+
+def require_private_token_file(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect token file permissions: {path}") from exc
+    if mode & 0o077:
+        raise RuntimeError(f"token file must be private to the current user, for example chmod 0600: {path}")
+
+
+def read_token_file(path_value: str) -> str:
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f"token file is not a regular file: {path}")
+    require_private_token_file(path)
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read token file: {path}") from exc
+    if not token:
+        raise RuntimeError(f"token file is empty: {path}")
+    return token
+
+
+def resolve_token(args: argparse.Namespace) -> str | None:
+    token_value = args.token if getattr(args, "token", None) is not None else os.getenv(TOKEN_ENV)
+    token = str(token_value).strip() if token_value else None
+    token_file_value = getattr(args, "token_file", None)
+    if token_file_value is None:
+        token_file_value = os.getenv(TOKEN_FILE_ENV)
+    token_file = str(token_file_value).strip() if token_file_value else None
+    if token and token_file:
+        raise RuntimeError(f"ambiguous Model Hub credentials: use either --token/{TOKEN_ENV} or --token-file/{TOKEN_FILE_ENV}, not both")
+    if token_file:
+        return read_token_file(token_file)
+    return token
 
 
 def request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(base_url.rstrip("/") + path, data=data, method=method)
+    request = urllib.request.Request(request_url(base_url, path), data=data, method=method)
     request.add_header("Accept", "application/json")
     if payload is not None:
         request.add_header("Content-Type", "application/json")
@@ -359,7 +440,7 @@ def download_blob(
         resume_from = 0
 
     while True:
-        request = urllib.request.Request(base_url.rstrip("/") + f"/modelhub/v1/blobs/{sha256}")
+        request = urllib.request.Request(request_url(base_url, f"/modelhub/v1/blobs/{sha256}"))
         request.add_header("Accept", "application/octet-stream")
         if token:
             request.add_header("Authorization", f"Bearer {token}")
@@ -664,8 +745,9 @@ def daemon(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="B1 AI Hub model synchronisation client.")
-    parser.add_argument("--base-url", default=os.getenv("B1_MODELHUB_URL", "https://models.ai.b1.germering"))
-    parser.add_argument("--token", default=os.getenv("B1_MODELHUB_TOKEN"))
+    parser.add_argument("--base-url", default=os.getenv(MODELHUB_URL_ENV, "https://models.ai.b1.germering"))
+    parser.add_argument("--token", default=None, help=f"Model Hub bearer token. Defaults to {TOKEN_ENV} when omitted.")
+    parser.add_argument("--token-file", default=None, help=f"Read the Model Hub bearer token from a private file. Defaults to {TOKEN_FILE_ENV}.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list")
@@ -725,6 +807,8 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     try:
+        args.base_url = validate_base_url(args.base_url)
+        args.token = resolve_token(args)
         return int(args.func(args))
     except urllib.error.URLError as exc:
         print(f"b1-model-client: request failed: {exc}", file=sys.stderr)
