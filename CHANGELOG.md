@@ -80,6 +80,7 @@
 - Digest-pinned the remaining base Compose images and B1-owned Dockerfile base images, with regression coverage for immutable third-party image references.
 - Removed broad mutable package-upgrade steps from B1-owned Dockerfiles and added policy coverage so rebuilds stay tied to pinned base images and locked dependencies.
 - Added offline compatibility harness discovery and security policy checks to the default `make validate` path, with CI regression coverage so these non-live acceptance suites and the digest-pinned Caddy validation image cannot drift out of validation.
+- Added a repository-wide Python source compilation gate to `make validate`, using a temporary bytecode cache so validation does not depend on writable ignored `__pycache__` directories.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.

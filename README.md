@@ -38,7 +38,7 @@ This repository currently contains the first runnable project slice:
 - external `b1-model-client` CLI/container daemon with Model Hub sync-plan support, pin/unpin, resumable verified blob sync, and managed-only safe prune for workstation model caches
 - Model Hub blob delivery through the authenticated control-plane proxy with downloadable-policy checks, per-client allowlists, CIDR enforcement, a generated internal artifact-server bearer token, Range/ETag/checksum support, and per-subject rate-limit headers
 - committed OpenAPI 3.1 schema generated from the FastAPI app with a CI drift check
-- GitHub Actions quality gates for backend tests, Compose validation, offline compatibility/security harnesses, Alembic packaging, frontend builds, NPM audit, source secret scanning, CycloneDX SBOM generation/validation, Python dependency audit, service/frontend/integration container builds, strict Trivy scans for the smaller B1-owned images, and uploaded Trivy inventories for upstream-heavy Open WebUI, LocalAI, ComfyUI, and Voicebox images
+- GitHub Actions quality gates for backend tests, Compose validation, Python source compilation, offline compatibility/security harnesses, Alembic packaging, frontend builds, NPM audit, source secret scanning, CycloneDX SBOM generation/validation, Python dependency audit, service/frontend/integration container builds, strict Trivy scans for the smaller B1-owned images, and uploaded Trivy inventories for upstream-heavy Open WebUI, LocalAI, ComfyUI, and Voicebox images
 - artifact-server and CPU audio service scaffolds
 - placeholder internal `localai`, `comfyui`, and `voicebox` runtimes for scheduler/adapter development
 - production LocalAI Compose override that replaces the placeholder `localai` service with a B1 wrapper image built from the official pinned CUDA 12 LocalAI image, mounts only the read-only LocalAI model view plus LocalAI writable state, exposes LocalAI's native API through the internal `:8080` proxy, and adds scheduler lifecycle hooks for load/warm/smoke/unload probes
@@ -94,7 +94,7 @@ Start the stack. The Compose `bootstrap` service runs the same idempotent setup 
 docker compose up -d
 ```
 
-Validate the repository, Compose configuration, offline compatibility harnesses, and security policy checks:
+Validate the repository, Compose configuration, Python source syntax, offline compatibility harnesses, and security policy checks:
 
 ```bash
 make validate

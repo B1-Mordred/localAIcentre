@@ -58,6 +58,7 @@ class CiQualityGateTests(unittest.TestCase):
         )
 
         self.assertIn("unit", validate_line)
+        self.assertIn("python-check", validate_line)
         self.assertIn("compatibility", validate_line)
         self.assertIn("security", validate_line)
 
@@ -69,6 +70,16 @@ class CiQualityGateTests(unittest.TestCase):
 
         self.assertIn("@sha256:", image)
         self.assertNotIn(":latest", image)
+
+    def test_python_check_compiles_source_tree_without_writing_repo_bytecode(self) -> None:
+        target_start = self.makefile_text.index("python-check:")
+        target_end = self.makefile_text.index("\nunit:", target_start)
+        target = self.makefile_text[target_start:target_end]
+
+        self.assertIn("python3 -m compileall -q services deploy integrations tests", target)
+        self.assertIn("PYTHONPYCACHEPREFIX", target)
+        self.assertIn("mktemp -d", target)
+        self.assertIn("rm -rf", target)
 
     def test_frontend_job_builds_both_react_apps_and_audits_dependencies(self) -> None:
         frontend = self.workflow["jobs"]["frontend"]
