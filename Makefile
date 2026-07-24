@@ -86,15 +86,15 @@ db-current:
 	docker compose run --rm control-plane python -m app.migrate current --verbose
 
 inventory:
-	python3 deploy/scripts/inventory.py --output "$(B1_DATA_ROOT)/backups/inventory-$$(date +%Y%m%d-%H%M%S).json"
+	python3 deploy/scripts/inventory.py --output "$(B1_BACKUP_ROOT)/inventory-$$(date +%Y%m%d-%H%M%S).json"
 
 old-stack-scope:
 	@test -n "$(INVENTORY)" || (echo "INVENTORY=/path/to/inventory.json is required" >&2; exit 2)
-	python3 deploy/scripts/old_stack_backup.py plan --inventory "$(INVENTORY)" --output "$(B1_DATA_ROOT)/backups/old-stack-scope.json"
+	python3 deploy/scripts/old_stack_backup.py plan --inventory "$(INVENTORY)" --output "$(B1_BACKUP_ROOT)/old-stack-scope.json"
 
 old-stack-backup:
 	@test -n "$(SCOPE)" || (echo "SCOPE=/path/to/old-stack-scope.json is required" >&2; exit 2)
-	python3 deploy/scripts/old_stack_backup.py backup --scope "$(SCOPE)" --output-root "$(B1_DATA_ROOT)/backups"
+	python3 deploy/scripts/old_stack_backup.py backup --scope "$(SCOPE)" --output-root "$(B1_BACKUP_ROOT)"
 
 old-stack-backup-verify:
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
@@ -103,14 +103,14 @@ old-stack-backup-verify:
 open-webui-migration-plan:
 	@test -n "$(INVENTORY)" || (echo "INVENTORY=/path/to/inventory.json is required" >&2; exit 2)
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
-	python3 deploy/scripts/open_webui_migration.py --inventory "$(INVENTORY)" --backup "$(BACKUP)" --output "$(B1_DATA_ROOT)/backups/open-webui-migration-plan.json"
+	python3 deploy/scripts/open_webui_migration.py --inventory "$(INVENTORY)" --backup "$(BACKUP)" --output "$(B1_BACKUP_ROOT)/open-webui-migration-plan.json"
 
 cutover-plan:
 	@test -n "$(INVENTORY)" || (echo "INVENTORY=/path/to/inventory.json is required" >&2; exit 2)
 	@test -n "$(SCOPE)" || (echo "SCOPE=/path/to/old-stack-scope.json is required" >&2; exit 2)
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
 	@test -n "$(OPEN_WEBUI_PLAN)" || (echo "OPEN_WEBUI_PLAN=/path/to/open-webui-migration-plan.json is required" >&2; exit 2)
-	python3 deploy/scripts/cutover.py --inventory "$(INVENTORY)" --scope "$(SCOPE)" --backup "$(BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" --output "$(B1_DATA_ROOT)/backups/cutover-plan.json"
+	python3 deploy/scripts/cutover.py --inventory "$(INVENTORY)" --scope "$(SCOPE)" --backup "$(BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" --output "$(B1_BACKUP_ROOT)/cutover-plan.json"
 
 backup:
 	python3 deploy/scripts/backup.py --root "$(B1_DATA_ROOT)" --backup-root "$(B1_BACKUP_ROOT)" --backup-encryption-mode "$(B1_BACKUP_ENCRYPTION_MODE)" --backup-encryption-key-file "$(B1_BACKUP_ENCRYPTION_KEY_FILE)"

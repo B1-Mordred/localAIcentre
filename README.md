@@ -209,4 +209,6 @@ make cutover-plan \
   OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json
 ```
 
+These commands write generated migration artifacts to `B1_BACKUP_ROOT`, which defaults to `/srv/b1-ai-hub/backups`; set `B1_BACKUP_ROOT` to a protected writable directory when discovery is run before `/srv/b1-ai-hub` permissions are established.
+
 `make cutover-plan` writes a runbook only. It does not stop containers, change DNS, delete data, or mark old resources removable.

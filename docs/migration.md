@@ -6,7 +6,7 @@ Before touching the old deployment:
 make inventory
 ```
 
-The generated report is written under `$B1_DATA_ROOT/backups/` and is read-only. It captures:
+The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_DATA_ROOT/backups/`, and is read-only. It captures:
 
 - all Docker containers, Compose projects, volumes, networks, Docker version/info, and NVIDIA runtime availability
 - listening TCP sockets and processes
@@ -24,7 +24,7 @@ Optional bounded scans can be added when old Compose files are stored somewhere 
 
 ```bash
 python3 deploy/scripts/inventory.py \
-  --output "$B1_DATA_ROOT/backups/inventory-extra.json" \
+  --output "$B1_BACKUP_ROOT/inventory-extra.json" \
   --b1-root "$B1_DATA_ROOT" \
   --scan-root /srv \
   --scan-root /opt \
@@ -41,7 +41,7 @@ After reviewing the inventory, generate an explicit backup scope template:
 make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.json
 ```
 
-This writes `$B1_DATA_ROOT/backups/old-stack-scope.json`. It lists candidate old AI containers, AI-hinted Docker volumes, Compose file paths, Open WebUI data/database paths, discovered but unreadable Open WebUI Docker data roots, model directories, and the inventory's port/model/Open WebUI readiness summary, but it selects nothing automatically.
+This writes `$B1_BACKUP_ROOT/old-stack-scope.json`. It lists candidate old AI containers, AI-hinted Docker volumes, Compose file paths, Open WebUI data/database paths, discovered but unreadable Open WebUI Docker data roots, model directories, and the inventory's port/model/Open WebUI readiness summary, but it selects nothing automatically.
 
 Edit the scope file only after operator review:
 
@@ -97,7 +97,7 @@ make open-webui-migration-plan \
   BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-120000
 ```
 
-This writes `$B1_DATA_ROOT/backups/open-webui-migration-plan.json` in the `b1-ai-hub-open-webui-migration-plan/v1` format. The planner verifies the old-stack backup, correlates read-only Open WebUI SQLite database candidates from the inventory with files actually preserved in the backup, records Open WebUI container image/tag evidence from the inventory, and records a recommended strategy. It does not read chat rows, prompts, uploaded documents, or settings values; it uses only the inventory's table/count metadata, inventory image metadata, and the backup manifest.
+This writes `$B1_BACKUP_ROOT/open-webui-migration-plan.json` in the `b1-ai-hub-open-webui-migration-plan/v1` format. The planner verifies the old-stack backup, correlates read-only Open WebUI SQLite database candidates from the inventory with files actually preserved in the backup, records Open WebUI container image/tag evidence from the inventory, and records a recommended strategy. It does not read chat rows, prompts, uploaded documents, or settings values; it uses only the inventory's table/count metadata, inventory image metadata, and the backup manifest.
 
 If a readable Open WebUI database is not covered by the verified old-stack backup, the plan records a warning and recommends backing up Open WebUI before cutover. If the inventory discovered an Open WebUI Docker volume root but could not scan it, the plan records that unreadable root and warns that the operator must include the corresponding Docker volume in the reviewed old-stack backup or rerun inventory with read access. If the inventory cannot identify the old Open WebUI image/version, or if the source image uses a floating tag such as `latest`, the plan records a source-version warning. If the database is backed up, the plan still does not generate an automatic import or approve direct database reuse. Restore the backup to an alternate directory, start B1 on temporary ports, and test a supported Open WebUI migration/export/import path before pointing production Open WebUI at any preserved data. Keep the old database and volumes recoverable even after successful cutover.
 
@@ -113,7 +113,7 @@ make cutover-plan \
   OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json
 ```
 
-This writes `$B1_DATA_ROOT/backups/cutover-plan.json` in the `b1-ai-hub-cutover-plan/v1` format. The planner verifies the old-stack backup before writing the plan, refuses scoped containers that the inventory classified as `b1-ai-hub-current-preserve` or `preserve-unrelated`, refuses to write a staging plan when the selected temporary HTTP/HTTPS ports are already listening, validates that the Open WebUI preservation plan was generated from the same inventory and backup, and records warnings for explicitly scoped containers that were not present in the inventory or were `unknown-preserve-by-default`.
+This writes `$B1_BACKUP_ROOT/cutover-plan.json` in the `b1-ai-hub-cutover-plan/v1` format. The planner verifies the old-stack backup before writing the plan, refuses scoped containers that the inventory classified as `b1-ai-hub-current-preserve` or `preserve-unrelated`, refuses to write a staging plan when the selected temporary HTTP/HTTPS ports are already listening, validates that the Open WebUI preservation plan was generated from the same inventory and backup, and records warnings for explicitly scoped containers that were not present in the inventory or were `unknown-preserve-by-default`.
 
 The cutover plan is a reviewed runbook, not an executor. It includes commands to start B1 AI Hub on temporary ports, suggested validation commands, exact `docker stop` and rollback `docker start` commands for only the scoped old-stack containers, `port_readiness`, `dns_readiness`, and `open_webui_preservation` sections, and a production `docker compose up -d` command. If production ports `80` or `443` or the optional legacy ComfyUI port `8188` are already listening, the plan records warnings instead of assuming those listeners belong to the old AI stack. If any intended B1 virtual host is missing from the inventory DNS records, or if the virtual hosts do not share a common gateway address, the plan records DNS warnings and leaves route changes as explicit operator actions. If the Open WebUI preservation plan contains warnings, lacks source-version evidence, uses a floating source image tag, or uses a strategy that requires manual export/import, the cutover plan carries those warnings forward. Operators must still enter maintenance mode, drain work, validate temporary B1 services, resolve production port listeners, apply DNS or reverse-proxy changes, and run the listed commands manually during the cutover window.
 
