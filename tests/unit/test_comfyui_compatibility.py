@@ -1120,6 +1120,9 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             "models/%00secret",
             "models/%3fsecret",
             "models/%23secret",
+            "models/%",
+            "models/%2",
+            "models/%zz",
         ):
             with self.subTest(path=path):
                 with self.assertRaises(main.HTTPException) as raised:
@@ -1133,7 +1136,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
 
         main.websocket_connect = connect  # type: ignore[assignment]
 
-        for path in ("trusted/%2e%2e/ws", "trusted/%2fws", "trusted/%5cws", "trusted/%00ws"):
+        for path in ("trusted/%2e%2e/ws", "trusted/%2fws", "trusted/%5cws", "trusted/%00ws", "trusted/%/ws", "trusted/%zz/ws"):
             with self.subTest(path=path):
                 websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
 

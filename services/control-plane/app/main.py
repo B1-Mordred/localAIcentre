@@ -118,6 +118,7 @@ SERVICE_LOG_SECRET_PATTERNS = [
 ]
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
+COMFYUI_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 COMFYUI_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 COMFYUI_MUTATING_CORE_ROUTES: dict[str, set[str]] = {
     "interrupt": {"POST"},
@@ -2781,6 +2782,8 @@ def normalize_comfyui_passthrough_path(path: str) -> str:
     for part in path.strip("/").split("/"):
         if not part:
             continue
+        if COMFYUI_BAD_PERCENT_ESCAPE.search(part):
+            raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
         try:
             decoded = unquote(part, errors="strict")
         except UnicodeDecodeError as exc:
