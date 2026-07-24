@@ -227,6 +227,7 @@ class AudioSpeechApiTests(unittest.TestCase):
             requires_gpu=False,
             external=True,
             openai_compatible=True,
+            api_key="provider-secret",
         )
 
         class FakeRegistry:
@@ -250,13 +251,19 @@ class AudioSpeechApiTests(unittest.TestCase):
                 runtime_policy=runtime_policy,
             )
 
-        async def proxy_http_bytes(base_url: str, path: str, request: Any, body: bytes | None = None, timeout_seconds: float = 120.0) -> Any:
-            calls.append({"base_url": base_url, "path": path, "payload": json.loads(body or b"{}"), "timeout_seconds": timeout_seconds})
+        async def proxy_http_bytes_to_url(
+            url: str,
+            request: Any,
+            body: bytes | None = None,
+            timeout_seconds: float = 120.0,
+            extra_headers: dict[str, str] | None = None,
+        ) -> Any:
+            calls.append({"url": url, "payload": json.loads(body or b"{}"), "timeout_seconds": timeout_seconds, "extra_headers": extra_headers})
             return main.Response(content=b"external-wav", media_type="audio/wav")
 
         self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
         self.patch_attr("runtime_registry_snapshot", lambda: FakeRegistry())
-        self.patch_attr("proxy_http_bytes", proxy_http_bytes)
+        self.patch_attr("proxy_http_bytes_to_url", proxy_http_bytes_to_url)
 
         response = asyncio.run(
             main.audio_speech(
@@ -279,13 +286,13 @@ class AudioSpeechApiTests(unittest.TestCase):
             calls,
             [
                 {
-                    "base_url": "https://api.example.com/v1",
-                    "path": "/v1/audio/speech",
+                    "url": "https://api.example.com/v1/audio/speech",
                     "payload": {
                         "input": "hello",
                         "model": "external-voice",
                     },
                     "timeout_seconds": 1800.0,
+                    "extra_headers": {"Authorization": "Bearer provider-secret"},
                 }
             ],
         )

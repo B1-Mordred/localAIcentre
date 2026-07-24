@@ -1058,6 +1058,16 @@ async def proxy_http_bytes(
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
+    return await proxy_http_bytes_to_url(url, request, body=body, timeout_seconds=timeout_seconds, extra_headers=extra_headers)
+
+
+async def proxy_http_bytes_to_url(
+    url: str,
+    request: Request,
+    body: bytes | None = None,
+    timeout_seconds: float = 120.0,
+    extra_headers: dict[str, str] | None = None,
+) -> Response:
     request_body = await request.body() if body is None else body
     headers = {
         key: value
@@ -8061,6 +8071,14 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     prepared = False
     try:
         prepared = await prepare_sync_gpu_runtime(resolution, "audio-speech")
+        if adapter is not None and adapter.openai_compatible:
+            return await proxy_http_bytes_to_url(
+                adapter.openai_url("/v1/audio/speech"),
+                request,
+                body=forwarded_body,
+                timeout_seconds=1800.0,
+                extra_headers=adapter.request_headers(),
+            )
         return await proxy_http_bytes(base_url, "/v1/audio/speech", request, body=forwarded_body, timeout_seconds=1800.0)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
