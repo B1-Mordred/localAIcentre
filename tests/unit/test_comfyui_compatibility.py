@@ -900,11 +900,16 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         read_response = asyncio.run(main.proxy_comfyui_compatibility("models/checkpoints", FakeRequest({}, method="GET")))
         upload_response = asyncio.run(main.proxy_comfyui_compatibility("upload/image", FakeRequest({}, method="POST")))
         user_data_response = asyncio.run(main.proxy_comfyui_compatibility("api/userdata/workflows/example.json", FakeRequest({}, method="POST")))
+        encoded_read_response = asyncio.run(main.proxy_comfyui_compatibility("models/%63heckpoints", FakeRequest({}, method="GET")))
 
         self.assertEqual(read_response.status_code, 200)
         self.assertEqual(upload_response.status_code, 200)
         self.assertEqual(user_data_response.status_code, 200)
-        self.assertEqual([item["path"] for item in proxied], ["models/checkpoints", "upload/image", "api/userdata/workflows/example.json"])
+        self.assertEqual(encoded_read_response.status_code, 200)
+        self.assertEqual(
+            [item["path"] for item in proxied],
+            ["models/checkpoints", "upload/image", "api/userdata/workflows/example.json", "models/checkpoints"],
+        )
 
     def test_compatibility_passthrough_requires_gateway_header_and_auth(self) -> None:
         async def proxy(*_: Any, **__: Any) -> Response:
@@ -1172,12 +1177,12 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
                 allowed_route_prefixes=["trusted/custom"],
             )
         }
-        response = asyncio.run(main.proxy_comfyui_compatibility("trusted/custom/render", FakeRequest({}, method="POST")))
+        response = asyncio.run(main.proxy_comfyui_compatibility("trusted/%63ustom/render", FakeRequest({}, method="POST")))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(proxied, ["trusted/custom/render"])
 
-    def test_queue_delete_forwards_native_request_and_marks_matching_job_cancelling(self) -> None:
+    def test_queue_delete_forwards_normalized_native_request_and_marks_matching_job_cancelling(self) -> None:
         fake = FakeDatabase()
         fake.jobs["job_1"] = {"id": "job_1", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_1", "artifacts": []}
         fake.jobs["job_2"] = {"id": "job_2", "state": "running", "runtime": "comfyui", "native_prompt_id": "prompt_native_2", "artifacts": []}
@@ -1192,7 +1197,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         main.proxy_http_bytes = proxy  # type: ignore[assignment]
         request = FakeRequest({"delete": ["prompt_native_1"]}, method="POST")
 
-        response = asyncio.run(main.proxy_comfyui_compatibility("queue", request))
+        response = asyncio.run(main.proxy_comfyui_compatibility("que%75e", request))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(proxied["base_url"], "http://comfyui:8000")

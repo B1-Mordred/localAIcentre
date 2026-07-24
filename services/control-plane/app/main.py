@@ -2823,7 +2823,7 @@ def approved_comfyui_route_prefixes() -> set[str]:
     return prefixes
 
 
-def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
+def require_comfyui_passthrough_allowed(path: str, method: str) -> str:
     normalized_path = normalize_comfyui_passthrough_path(path)
     path_lower = normalized_path.lower()
     method_upper = method.upper()
@@ -2831,13 +2831,13 @@ def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
         raise HTTPException(
             status_code=403,
             detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility route is blocked by policy", "path": normalized_path},
-        )
+    )
     if method_upper in COMFYUI_READ_METHODS:
-        return
+        return normalized_path
     if method_upper in COMFYUI_MUTATING_CORE_ROUTES.get(path_lower, set()):
-        return
+        return normalized_path
     if any(method_upper in methods and path_lower.startswith(prefix) for prefix, methods in COMFYUI_MUTATING_CORE_PREFIXES.items()):
-        return
+        return normalized_path
     tokens = {part for part in path_lower.replace("-", "/").replace("_", "/").split("/") if part}
     if tokens & COMFYUI_DENIED_MUTATION_TOKENS:
         raise HTTPException(
@@ -2849,7 +2849,7 @@ def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
         if not path_matches_prefix(normalized_path, prefix):
             continue
         if any(path_matches_prefix(normalized_path, approved_prefix) for approved_prefix in approved_prefixes):
-            return
+            return normalized_path
     raise HTTPException(
         status_code=403,
         detail={"code": "comfyui_route_denied", "message": "ComfyUI mutating compatibility route is not approved", "path": normalized_path},
@@ -2916,13 +2916,13 @@ async def record_comfyui_native_cancel_request(prompt_ids: set[str] | None, reas
 
 
 async def proxy_comfyui_compatibility(path: str, request: Request) -> Response:
-    require_comfyui_passthrough_allowed(path, request.method)
+    normalized_path = require_comfyui_passthrough_allowed(path, request.method)
     body = await request.body()
-    should_track_cancel, prompt_ids = comfyui_native_cancel_target(path, request.method, body)
-    response = await proxy_http_bytes(settings.comfyui_url, path, request, body=body)
+    should_track_cancel, prompt_ids = comfyui_native_cancel_target(normalized_path, request.method, body)
+    response = await proxy_http_bytes(settings.comfyui_url, normalized_path, request, body=body)
     if should_track_cancel and response.status_code < 400:
         try:
-            await record_comfyui_native_cancel_request(prompt_ids, f"{request.method.upper()} /{path.strip('/')}")
+            await record_comfyui_native_cancel_request(prompt_ids, f"{request.method.upper()} /{normalized_path}")
         except Exception as exc:
             log_event("comfyui_native_cancel_tracking_failed", path=path, error=exc.__class__.__name__)
     return response

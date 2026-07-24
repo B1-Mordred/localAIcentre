@@ -14,6 +14,7 @@
 - Hardened model installation so runtime model views are built under a private staging directory and published only after every runtime view succeeds, preventing failed links or archive extractions from exposing partial final views.
 - Hardened `b1-model-client` model identifier handling so unsafe aliases, slashes, encoded path controls, query/fragment controls, whitespace, and malformed catalog defaults are rejected before request paths are built.
 - Hardened native ComfyUI compatibility route policy so malformed percent escapes plus percent-encoded traversal, separator, query/fragment, and control-byte path forms are rejected before HTTP or WebSocket proxying.
+- Hardened native ComfyUI compatibility proxying so approved decoded paths are forwarded consistently and native queue/interrupt cancellation mirroring cannot be bypassed with safe percent-encoded route characters.
 - Hardened ComfyUI custom-node pin validation so malformed percent escapes are rejected in approved repository URL paths and mutating route prefixes.
 - Added a PostgreSQL-backed ComfyUI custom-node approval registry with seed-file merge, administrator-only node-pin APIs, Control Center management, workflow dependency refresh, mutating-route prefix enforcement, audit records, and logical backup coverage.
 - Added Control Center and admin API Open WebUI migration-plan generation from constrained backup-root inventory/old-stack backup artifacts without reading chat rows, importing data, touching the old stack, or accepting arbitrary host paths.
