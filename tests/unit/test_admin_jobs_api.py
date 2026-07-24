@@ -281,6 +281,60 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertIn('"state":"recovery_required"', body)
         self.assertNotIn("event: timeout", body)
 
+    def test_event_stream_keeps_active_jobs_observable_without_backend_timeout(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(state="running", stage="running", progress=70))
+        self.patch_attr("database", fake_database)
+
+        async def collect_events() -> str:
+            response = main.job_event_stream("job_1", lambda _: True, poll_interval_seconds=0, max_events=3)
+            self.assertEqual(response.headers["cache-control"], "no-cache")
+            self.assertEqual(response.headers["x-accel-buffering"], "no")
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertEqual(body.count("event: job"), 3)
+        self.assertIn('"state":"running"', body)
+        self.assertNotIn("event: timeout", body)
+        self.assertNotIn("job event stream timed out", body)
+
+    def test_event_stream_runs_until_job_reaches_terminal_state(self) -> None:
+        class SequenceDatabase(FakeJobsDatabase):
+            def __init__(self) -> None:
+                super().__init__(job_row(state="queued", stage="queued", progress=10))
+                self.rows = [
+                    job_row(state="queued", stage="queued", progress=10),
+                    job_row(state="running", stage="running", progress=70),
+                    job_row(state="completed", stage="completed", progress=100),
+                ]
+
+            async def get_job(self, job_id: str) -> dict[str, Any] | None:
+                if job_id != "job_1":
+                    return None
+                if len(self.rows) > 1:
+                    return dict(self.rows.pop(0))
+                return dict(self.rows[0])
+
+        self.patch_attr("database", SequenceDatabase())
+
+        async def collect_events() -> str:
+            response = main.job_event_stream("job_1", lambda _: True, poll_interval_seconds=0)
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertEqual(body.count("event: job"), 3)
+        self.assertIn('"state":"queued"', body)
+        self.assertIn('"state":"running"', body)
+        self.assertIn('"state":"completed"', body)
+        self.assertNotIn("event: timeout", body)
+
     def test_admin_events_allow_operator_to_stream_other_owner_job(self) -> None:
         fake_database = FakeJobsDatabase(job_row(owner_id="client_1", state="recovery_required", stage="recovery_required", progress=0))
         self.patch_attr("database", fake_database)

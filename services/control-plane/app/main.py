@@ -7318,9 +7318,16 @@ async def media_job_events(job_id: str, authorization: str | None = Header(defau
     return job_event_stream(job_id, lambda current: subject_can_read_job(auth, current))
 
 
-def job_event_stream(job_id: str, can_read_job: Callable[[dict[str, Any]], bool]) -> StreamingResponse:
+def job_event_stream(
+    job_id: str,
+    can_read_job: Callable[[dict[str, Any]], bool],
+    *,
+    poll_interval_seconds: float = 1.0,
+    max_events: int | None = None,
+) -> StreamingResponse:
     async def events():
-        for _ in range(120):
+        emitted = 0
+        while True:
             job = await database.get_job(job_id)
             if job is None:
                 yield format_sse_event("error", {"error": "job not found"})
@@ -7329,12 +7336,21 @@ def job_event_stream(job_id: str, can_read_job: Callable[[dict[str, Any]], bool]
                 yield format_sse_event("error", {"error": "job belongs to a different owner"})
                 return
             yield format_sse_event("job", jsonable_encoder(job), event_id=job_event_id(job), retry_ms=1000)
+            emitted += 1
             if job["state"] in TERMINAL_JOB_STATES:
                 return
-            await asyncio.sleep(1)
-        yield format_sse_event("timeout", {"error": "job event stream timed out"})
+            if max_events is not None and emitted >= max_events:
+                return
+            await asyncio.sleep(max(0.0, poll_interval_seconds))
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/v1/media/jobs/{job_id}/artifacts")
