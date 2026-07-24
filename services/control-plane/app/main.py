@@ -5508,6 +5508,11 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
     now = datetime.now(tz=UTC)
     service_inventory, service_error = await runtime_agent_get("/v1/services")
     deployment = service_inventory or {"services": [], "error": service_error or "runtime-agent service inventory unavailable"}
+    backup_root = backup_root_path()
+    cutover_preservation, live_evidence = await asyncio.gather(
+        asyncio.to_thread(acceptance.latest_cutover_preservation_snapshot, backup_root),
+        asyncio.to_thread(acceptance.latest_live_evidence_snapshot, backup_root),
+    )
     report = acceptance.build_report(
         report_id=acceptance.new_report_id(now),
         created_by=auth.subject_id,
@@ -5531,7 +5536,8 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         source_control=acceptance.source_control_snapshot(Path.cwd()),
         operator_evidence=payload.operator_evidence,
         operator_evidence_notes=payload.operator_evidence_notes,
-        cutover_preservation=await asyncio.to_thread(acceptance.latest_cutover_preservation_snapshot, backup_root_path()),
+        cutover_preservation=cutover_preservation,
+        live_evidence=live_evidence,
     )
     return jsonable_encoder(report)
 

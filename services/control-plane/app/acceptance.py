@@ -15,6 +15,9 @@ REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
 SUMMARY_LIMIT = 200
 MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
 CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
+MAX_LIVE_EVIDENCE_BYTES = 4 * 1024 * 1024
+GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
+GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -182,6 +185,74 @@ def latest_cutover_preservation_snapshot(backup_root: Path) -> dict[str, Any]:
     return {"available": False, "reason": "no supported cutover plan found", "root": str(root)}
 
 
+def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != GPU_ACCEPTANCE_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported GPU acceptance evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in GPU_ACCEPTANCE_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
+def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
+    root = acceptance_root(backup_root).resolve()
+    if not root.exists():
+        return {
+            "gpu_acceptance": {"available": False, "reason": "acceptance evidence root does not exist", "root": str(root)}
+        }
+    if not root.is_dir() or root.is_symlink():
+        return {
+            "gpu_acceptance": {"available": False, "reason": "acceptance evidence root is not a directory", "root": str(root)}
+        }
+    candidates: list[tuple[float, str, Path]] = []
+    for path in root.glob("*.json"):
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent != root or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            stat_result = path.stat()
+            if stat_result.st_size > MAX_LIVE_EVIDENCE_BYTES:
+                continue
+        except OSError:
+            continue
+        candidates.append((stat_result.st_mtime, path.name, path))
+    candidates.sort(reverse=True)
+    for _, _, path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT:
+            return {"gpu_acceptance": gpu_acceptance_evidence_snapshot(payload, path.resolve())}
+    return {
+        "gpu_acceptance": {"available": False, "reason": "no supported GPU acceptance evidence found", "root": str(root)}
+    }
+
+
 def _read_git_head(repo_root: Path) -> dict[str, Any]:
     git_dir = repo_root / ".git"
     if not git_dir.exists():
@@ -283,6 +354,16 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
+    if gpu_evidence.get("available") is not True:
+        blockers.append("RTX 3060 GPU acceptance evidence is unavailable")
+    else:
+        if gpu_evidence.get("status") != "ok":
+            blockers.append(f"RTX 3060 GPU acceptance evidence status is {gpu_evidence.get('status', 'unknown')}")
+        missing_checks = gpu_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("RTX 3060 GPU acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     if preservation.get("available") is not True:
         blockers.append("cutover preservation plan is unavailable")
@@ -321,6 +402,7 @@ def build_report(
     operator_evidence: dict[str, Any] | None = None,
     operator_evidence_notes: dict[str, Any] | None = None,
     cutover_preservation: dict[str, Any] | None = None,
+    live_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_id = validate_report_id(report_id)
     status = str(self_test.get("status") or "unknown")
@@ -346,6 +428,7 @@ def build_report(
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
         "cutover_preservation": cutover_preservation or {"available": False, "reason": "not supplied"},
+        "live_evidence": live_evidence or {"gpu_acceptance": {"available": False, "reason": "not supplied"}},
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
     report["operator_handoff_ready"] = status == "ok" and not report["acceptance_blockers"]
@@ -437,6 +520,32 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         preservation_summary_rows.append([key, _format_value(preservation.get(key))])
 
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
+    gpu_evidence_summary_rows = [["Field", "Value"]]
+    for key in (
+        "available",
+        "source_path",
+        "generated_at",
+        "base_url",
+        "status",
+        "sample_count",
+    ):
+        gpu_evidence_summary_rows.append([key, _format_value(gpu_evidence.get(key))])
+    missing_checks = gpu_evidence.get("missing_checks")
+    if isinstance(missing_checks, list) and missing_checks:
+        gpu_evidence_summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_checks)])
+    check_rows_live = [["Check", "Status", "Recorded"]]
+    live_checks = gpu_evidence.get("checks") if isinstance(gpu_evidence.get("checks"), dict) else {}
+    for name in sorted(live_checks):
+        check = live_checks.get(name)
+        if isinstance(check, dict):
+            check_rows_live.append([
+                _format_value(name),
+                _format_value(check.get("status")),
+                _format_value(check.get("recorded_at")),
+            ])
+
     source_control = report.get("source_control") or {}
     source_rows = [["Field", "Value"]]
     for key in ("source", "version", "source_ref", "source_commit", "image_revision"):
@@ -517,6 +626,10 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
+            "## Live Acceptance Evidence\n\n"
+            + _table(gpu_evidence_summary_rows)
+            + "\n\n"
+            + (_table(check_rows_live) if len(check_rows_live) > 1 else _format_value(gpu_evidence.get("reason") or "No live GPU acceptance checks recorded.")),
             "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
@@ -565,6 +678,8 @@ def load_report(root: Path, report_id: str) -> dict[str, Any]:
 def public_report_summary(report: dict[str, Any], report_dir: Path | None = None) -> dict[str, Any]:
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -576,6 +691,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
+        "live_evidence_ready": gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks"),
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
     if report_dir is not None:

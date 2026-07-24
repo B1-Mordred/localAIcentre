@@ -66,6 +66,29 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
+    payload = {
+        "gpu_acceptance": {
+            "available": True,
+            "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json",
+            "generated_at": "2026-07-24T12:30:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": ["resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch"],
+            "missing_checks": [],
+            "checks": {
+                "resource_policy_and_runtime_readiness": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
+                "localai_comfyui_voicebox_switch": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
+            },
+            "sample_count": 6,
+            "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
+        }
+    }
+    payload.update(overrides)
+    return payload
+
+
 def sample_report(**overrides: Any) -> dict[str, Any]:
     report_id = overrides.pop("report_id", "acceptance-20260724t120000z-deadbeef")
     self_test = overrides.pop(
@@ -132,6 +155,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
         operator_evidence=overrides.pop("operator_evidence", complete_operator_evidence()),
         operator_evidence_notes=overrides.pop("operator_evidence_notes", {}),
         cutover_preservation=overrides.pop("cutover_preservation", sample_cutover_preservation()),
+        live_evidence=overrides.pop("live_evidence", sample_live_evidence()),
         source_control=overrides.pop(
             "source_control",
             {
@@ -171,6 +195,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("## Source Control", markdown)
             self.assertIn("## Operator Evidence", markdown)
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
+            self.assertIn("## Live Acceptance Evidence", markdown)
+            self.assertIn("cross-runtime-gpu.json", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -232,6 +258,40 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_preservation_ready"])
         self.assertIn("cutover preservation plan is unavailable", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_without_live_gpu_evidence(self) -> None:
+        report = sample_report(live_evidence={"gpu_acceptance": {"available": False, "reason": "missing"}})
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("RTX 3060 GPU acceptance evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_live_gpu_evidence(self) -> None:
+        report = sample_report(
+            live_evidence=sample_live_evidence(
+                gpu_acceptance={
+                    **sample_live_evidence()["gpu_acceptance"],
+                    "status": "incomplete",
+                    "missing_checks": ["localai_comfyui_voicebox_switch"],
+                    "checks": {
+                        "resource_policy_and_runtime_readiness": {
+                            "status": "ok",
+                            "recorded_at": "2026-07-24T12:29:00+00:00",
+                        }
+                    },
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("RTX 3060 GPU acceptance evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "RTX 3060 GPU acceptance evidence is missing required checks: localai_comfyui_voicebox_switch",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -279,6 +339,43 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
         self.assertEqual(snapshot["resource_count"], 3)
+
+    def test_latest_live_evidence_snapshot_reads_latest_direct_supported_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence_root = root / "acceptance"
+            evidence_root.mkdir()
+            ignored = evidence_root / "older.json"
+            ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+            current = evidence_root / "cross-runtime-gpu.json"
+            current.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
+                        "generated_at": "2026-07-24T12:30:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "resource_policy_and_runtime_readiness": {"status": "ok"},
+                            "localai_comfyui_voicebox_switch": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "initial-readiness"},
+                            {"label": "after-localai-chat"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = acceptance.latest_live_evidence_snapshot(root)
+
+        gpu = snapshot["gpu_acceptance"]
+        self.assertTrue(gpu["available"])
+        self.assertEqual(gpu["source_path"], str(current.resolve()))
+        self.assertEqual(gpu["status"], "ok")
+        self.assertEqual(gpu["missing_checks"], [])
+        self.assertEqual(gpu["sample_count"], 2)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):

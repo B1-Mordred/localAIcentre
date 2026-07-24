@@ -46,9 +46,12 @@ def load_json_from_env(value_name: str, file_name: str) -> dict[str, Any] | None
 @unittest.skipUnless(os.getenv("B1_GPU_ACCEPTANCE_LIVE_TEST") == "1", "set B1_GPU_ACCEPTANCE_LIVE_TEST=1 to run live RTX GPU acceptance checks")
 class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
     evidence: list[dict[str, Any]] = []
+    checks: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def setUpClass(cls) -> None:
+        cls.evidence = []
+        cls.checks = {}
         api_key = os.getenv("B1_GPU_ACCEPTANCE_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_GPU_ACCEPTANCE_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -77,12 +80,17 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             return
         path = Path(evidence_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        required_checks = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in required_checks) else "incomplete"
         path.write_text(
             json.dumps(
                 {
                     "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
                     "generated_at": datetime.now(tz=UTC).isoformat(),
                     "base_url": cls.client.base_url,
+                    "status": status,
+                    "required_checks": list(required_checks),
+                    "checks": cls.checks,
                     "samples": cls.evidence,
                 },
                 indent=2,
@@ -91,6 +99,13 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
+
+    def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
+        self.checks[name] = {
+            "status": status,
+            "recorded_at": datetime.now(tz=UTC).isoformat(),
+            **data,
+        }
 
     def json_request(self, method: str, path: str, *, body: dict[str, Any] | None = None, expected: int = 200) -> dict[str, Any]:
         status, _, payload = self.client.json_request(method, path, body=body, require_auth=True)
@@ -209,6 +224,11 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
 
         self.assert_single_gpu_runtime(expected_runtime=None, label="initial-readiness")
         self.assert_vram_within_policy("initial-readiness")
+        self.record_check(
+            "resource_policy_and_runtime_readiness",
+            runtime_deployment_mode=runtimes.get("runtime_deployment_mode"),
+            readiness_status=readiness.get("status"),
+        )
 
     def test_llm_comfyui_voicebox_switch_sequence_keeps_one_gpu_pipeline(self) -> None:
         chat_model = os.getenv("B1_GPU_ACCEPTANCE_CHAT_MODEL", "chat-default")
@@ -264,6 +284,14 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.assertEqual(voicebox_job.get("runtime"), "voicebox", voicebox_job)
         self.assert_single_gpu_runtime("voicebox", "after-voicebox-job")
         self.assert_vram_within_policy("after-voicebox-job")
+        self.record_check(
+            "localai_comfyui_voicebox_switch",
+            chat_model=chat_model,
+            comfyui_model=image_model,
+            voicebox_model=voicebox_model,
+            comfyui_job_id=comfy_job.get("id"),
+            voicebox_job_id=voicebox_job.get("id"),
+        )
 
     def test_predefined_runtime_recovery_action_is_available_when_enabled(self) -> None:
         if not env_flag("B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION", False):
@@ -277,6 +305,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         )
         self.evidence.append({"label": f"recover-{runtime}", "result": result})
         self.assertIn(result.get("status"), {"ok", "dry_run", "skipped", "unsupported", "unconfirmed"}, result)
+        self.record_check("runtime_recovery_action", runtime=runtime, result_status=result.get("status"))
 
 
 if __name__ == "__main__":
