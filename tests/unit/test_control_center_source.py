@@ -39,6 +39,16 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Object.entries(parameters ?? {}).slice(0, 10)", self.source)
         self.assertNotIn("request_params", self.source)
 
+    def test_jobs_tab_downloads_artifacts_with_authenticated_fetches(self) -> None:
+        self.assertIn("type JobArtifact", self.source)
+        self.assertIn("async function downloadJobArtifact", self.source)
+        self.assertIn('apiFetch(artifact.url, { method: "GET" })', self.source)
+        self.assertIn("URL.createObjectURL(blob)", self.source)
+        self.assertIn("URL.revokeObjectURL(url)", self.source)
+        self.assertIn("function artifactFilename", self.source)
+        self.assertIn("downloadSelectedArtifact(artifact, index)", self.source)
+        self.assertIn('title={`Download artifact ${index + 1}`}', self.source)
+
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 

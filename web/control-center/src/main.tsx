@@ -535,6 +535,13 @@ type RuntimeAdapterContract = {
   methods?: Record<string, string>;
 };
 
+type JobArtifact = {
+  url?: string;
+  mime_type?: string;
+  bytes?: number;
+  sha256?: string;
+};
+
 type ExternalRuntimeConfig = {
   runtime: string;
   source: string;
@@ -714,7 +721,7 @@ type JobRecord = {
   native_prompt_id?: string | null;
   failure_category?: string | null;
   failure_message?: string | null;
-  artifacts?: { url?: string; mime_type?: string; bytes?: number; sha256?: string }[];
+  artifacts?: JobArtifact[];
   redacted_request?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
@@ -817,6 +824,43 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(errorMessageFromBody(parsed, response));
   }
   return parsed as T;
+}
+
+function artifactFilename(artifact: JobArtifact, index: number): string {
+  const fallback = `job-artifact-${index + 1}`;
+  const raw = artifact.url?.split("?", 1)[0] ?? "";
+  const last = raw.split("/").filter(Boolean).pop() ?? fallback;
+  try {
+    return decodeURIComponent(last).replace(/[\\/:*?"<>|]/g, "_").slice(0, 160) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function downloadJobArtifact(artifact: JobArtifact, index: number): Promise<string> {
+  if (!artifact.url) throw new Error("artifact URL is missing");
+  const response = await apiFetch(artifact.url, { method: "GET" });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    throw new Error(errorMessageFromBody(parsed, response));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const filename = artifactFilename(artifact, index);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return filename;
 }
 
 function parseSseEvent(raw: string): { event: string; data: string } | null {
@@ -2163,6 +2207,15 @@ function Jobs() {
       .finally(() => setBusy(false));
   };
 
+  const downloadSelectedArtifact = (artifact: JobArtifact, index: number) => {
+    setBusy(true);
+    setMessage(`downloading artifact ${index + 1}`);
+    downloadJobArtifact(artifact, index)
+      .then((filename) => setMessage(`downloaded ${filename}`))
+      .catch((error: Error) => setMessage(error.message))
+      .finally(() => setBusy(false));
+  };
+
   return (
     <section className="panel wide">
       <SectionTitle icon={<ListChecks size={18} />} title="Jobs" />
@@ -2267,6 +2320,20 @@ function Jobs() {
             <strong>{(selected.artifacts ?? []).length} artifact{(selected.artifacts ?? []).length === 1 ? "" : "s"}</strong>
             <small>{(selected.artifacts ?? []).map((artifact) => artifact.url).filter(Boolean).join(" / ") || "none"}</small>
           </div>
+          {Boolean((selected.artifacts ?? []).length) && (
+            <section className="job-artifacts">
+              <h3>Artifacts</h3>
+              <div className="job-artifact-actions">
+                {(selected.artifacts ?? []).map((artifact, index) => (
+                  <button key={`${artifact.url ?? "artifact"}-${index}`} type="button" title={`Download artifact ${index + 1}`} onClick={() => downloadSelectedArtifact(artifact, index)} disabled={busy || !artifact.url}>
+                    <Download size={16} />
+                    <span>{artifact.url ?? `artifact ${index + 1}`}</span>
+                    <small>{artifact.mime_type ?? "unknown"} / {formatBytes(artifact.bytes)}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           <JobReproducibilitySummary job={selected} />
           <section className="job-redacted-request">
             <h3>Redacted Request</h3>

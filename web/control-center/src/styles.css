@@ -662,11 +662,47 @@ td {
   overflow-wrap: anywhere;
 }
 
+.job-artifacts,
 .job-reproducibility,
 .job-redacted-request {
   grid-column: 1 / -1;
   display: grid;
   gap: 8px;
+}
+
+.job-artifact-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.job-artifact-actions button {
+  align-items: center;
+  border: 1px solid #cfd7cf;
+  background: #ffffff;
+  color: #202421;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(110px, auto);
+  gap: 8px;
+  min-height: 38px;
+  padding: 7px 10px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.job-artifact-actions button:disabled {
+  color: #89928b;
+  cursor: not-allowed;
+}
+
+.job-artifact-actions span,
+.job-artifact-actions small {
+  overflow-wrap: anywhere;
+}
+
+.job-artifact-actions small {
+  color: #5c675f;
+  text-align: right;
 }
 
 .job-reproducibility dl {

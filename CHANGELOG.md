@@ -28,6 +28,7 @@
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.
 - Added structured media-job request redaction that preserves workflow IDs, versions, and safe runtime parameters while redacting prompts, uploads, paths, hashes, and credentials.
 - Added a Control Center job reproducibility summary beside the raw redacted request JSON for faster operator inspection.
+- Added authenticated Control Center job artifact downloads from the selected job detail panel.
 - Added cutover-plan preservation capture to acceptance reports so the Markdown handoff lists old containers, Docker volumes, and host paths deliberately preserved for rollback and blocks handoff when that evidence is missing.
 - Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
 - Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
