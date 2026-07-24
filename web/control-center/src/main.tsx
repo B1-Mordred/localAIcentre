@@ -6,6 +6,7 @@ import {
   Archive,
   CheckCircle2,
   Boxes,
+  Clipboard,
   Database,
   Download,
   Gauge,
@@ -542,6 +543,12 @@ type JobArtifact = {
   sha256?: string;
 };
 
+type AccessSnippet = {
+  id: string;
+  label: string;
+  code: string;
+};
+
 type ExternalRuntimeConfig = {
   runtime: string;
   source: string;
@@ -788,6 +795,67 @@ const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
 
 function apiUrl(path: string): string {
   return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;
+}
+
+function accessSnippets(): AccessSnippet[] {
+  const unifiedBase = `${API_BASE}/v1`;
+  return [
+    {
+      id: "curl",
+      label: "curl",
+      code: `curl -s ${unifiedBase}/chat/completions \\
+  -H "Authorization: Bearer <B1_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"chat-default","messages":[{"role":"user","content":"ping"}]}'`
+    },
+    {
+      id: "open-webui",
+      label: "Open WebUI",
+      code: `OpenAI API base URL: ${unifiedBase}
+OpenAI API key: <B1_API_KEY>
+Default model: chat-default`
+    },
+    {
+      id: "external-comfyui",
+      label: "External ComfyUI",
+      code: `export B1_API_BASE=${API_BASE}
+export B1_API_KEY=<B1_API_KEY>
+python -m pip install ./integrations/comfyui-b1-remote-nodes`
+    },
+    {
+      id: "voicebox",
+      label: "Voicebox",
+      code: `Server URL: https://voice.ai.b1.germering
+Authorization: Bearer <B1_API_KEY>
+Speech endpoint: ${unifiedBase}/audio/speech`
+    },
+    {
+      id: "python",
+      label: "Python",
+      code: `import requests
+
+response = requests.post(
+    "${unifiedBase}/responses",
+    headers={"Authorization": "Bearer <B1_API_KEY>"},
+    json={"model": "chat-default", "input": "ping"},
+    timeout=60,
+)
+print(response.json())`
+    },
+    {
+      id: "javascript",
+      label: "JavaScript",
+      code: `const response = await fetch("${unifiedBase}/responses", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer <B1_API_KEY>",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ model: "chat-default", input: "ping" })
+});
+console.log(await response.json());`
+    }
+  ];
 }
 
 function storeAuthStatus(status: AuthStatus | null): void {
@@ -2375,6 +2443,7 @@ function ExternalAccess() {
   const [secretDescription, setSecretDescription] = useState("");
   const [secretValue, setSecretValue] = useState("");
   const [oneTimeKey, setOneTimeKey] = useState<{ label: string; value: string } | null>(null);
+  const [copiedSnippet, setCopiedSnippet] = useState("");
 
   const loadClients = () => {
     setMessage("loading");
@@ -2551,6 +2620,19 @@ function ExternalAccess() {
       .finally(() => setBusy(false));
   };
 
+  const copySnippet = (snippet: AccessSnippet) => {
+    if (!navigator.clipboard) {
+      setMessage("clipboard is unavailable");
+      return;
+    }
+    navigator.clipboard.writeText(snippet.code)
+      .then(() => {
+        setCopiedSnippet(snippet.id);
+        setMessage(`copied ${snippet.label}`);
+      })
+      .catch((err: Error) => setMessage(err.message));
+  };
+
   return (
     <section className="panel wide">
       <SectionTitle icon={<KeyRound size={18} />} title="External Access" />
@@ -2585,6 +2667,23 @@ function ExternalAccess() {
           <label className="inline-check"><input type="checkbox" checked={hubAllowDownloads} onChange={(event) => setHubAllowDownloads(event.target.checked)} />Downloads</label>
           <button title="Create Model Hub client" disabled={busy || !hubDisplayName.trim()}><Archive size={16} />Create</button>
         </form>
+      </div>
+      <div className="subsection-title">
+        <TerminalSquare size={16} />
+        <h3>Client Snippets</h3>
+      </div>
+      <div className="snippet-grid">
+        {accessSnippets().map((snippet) => (
+          <section className="snippet-card" key={snippet.id}>
+            <div className="snippet-title">
+              <h4>{snippet.label}</h4>
+              <button title={`Copy ${snippet.label} snippet`} type="button" onClick={() => copySnippet(snippet)}>
+                <Clipboard size={16} />{copiedSnippet === snippet.id ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <pre>{snippet.code}</pre>
+          </section>
+        ))}
       </div>
       <div className="subsection-title">
         <ShieldCheck size={16} />

@@ -31,6 +31,7 @@ main {
 h1,
 h2,
 h3,
+h4,
 p {
   margin: 0;
 }
@@ -192,6 +193,10 @@ p {
 
 .subsection-title h3 {
   font-size: 15px;
+}
+
+h4 {
+  font-size: 14px;
 }
 
 .metrics {
@@ -642,6 +647,52 @@ td {
   overflow-wrap: anywhere;
 }
 
+.snippet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.snippet-card {
+  border: 1px solid #d8ded7;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.snippet-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.snippet-title button {
+  align-items: center;
+  border: 1px solid #cfd7cf;
+  background: #ffffff;
+  color: #202421;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 9px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.snippet-card pre {
+  margin: 0;
+  min-height: 130px;
+  overflow: auto;
+  border: 1px solid #cfd7cf;
+  background: #f8faf8;
+  padding: 10px;
+  font: 12px/1.45 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
 .job-detail {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -773,6 +824,7 @@ td {
   .panel-grid,
   .metrics,
   .metrics.compact,
+  .snippet-grid,
   .split,
   .inline-form,
   .policy-grid,
