@@ -48,6 +48,26 @@ class UpdatePolicyTests(unittest.TestCase):
         with self.assertRaises(update_policy.UpdatePolicyError):
             update_policy.build_update_preflight("0.2.0", [{"service": "gateway", "image": f"caddy@sha256:{GOOD_DIGEST}"}], "https://user:pass@example.org/release")
 
+    def test_source_url_rejects_internal_targets_and_secret_bearing_components(self) -> None:
+        image_refs = [{"service": "gateway", "image": f"caddy@sha256:{GOOD_DIGEST}"}]
+        unsafe_urls = [
+            "https://127.0.0.1/release",
+            "https://[::1]/release",
+            "https://192.168.2.10/release",
+            "https://169.254.169.254/latest/meta-data",
+            "https://localhost/release",
+            "https://updates.localhost/release",
+            "https://example.org/release?token=secret",
+            "https://example.org/release#sha256",
+            "https://example.org/../release",
+            "https://example.org:badport/release",
+        ]
+
+        for source_url in unsafe_urls:
+            with self.subTest(source_url=source_url):
+                with self.assertRaises(update_policy.UpdatePolicyError):
+                    update_policy.build_update_preflight("0.2.0", image_refs, source_url)
+
 
 if __name__ == "__main__":
     unittest.main()
