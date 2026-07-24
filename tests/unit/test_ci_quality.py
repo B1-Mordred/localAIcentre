@@ -33,6 +33,7 @@ class CiQualityGateTests(unittest.TestCase):
         cls.workflow_text = cls.workflow_path.read_text(encoding="utf-8")
         cls.workflow = yaml.safe_load(cls.workflow_text)
         cls.workflow_strings = "\n".join(flatten_strings(cls.workflow))
+        cls.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
 
     def test_expected_jobs_are_present(self) -> None:
         self.assertEqual(
@@ -50,6 +51,24 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("deploy/scripts/bootstrap.py", commands)
         self.assertIn("PyYAML==6.0.2", commands)
         self.assertIn("services/control-plane/requirements.txt", commands)
+
+    def test_default_validation_runs_security_and_compatibility_harnesses(self) -> None:
+        validate_line = next(
+            line for line in self.makefile_text.splitlines() if line.startswith("validate:")
+        )
+
+        self.assertIn("unit", validate_line)
+        self.assertIn("compatibility", validate_line)
+        self.assertIn("security", validate_line)
+
+    def test_makefile_caddy_validation_image_is_digest_pinned(self) -> None:
+        caddy_line = next(
+            line for line in self.makefile_text.splitlines() if line.startswith("CADDY_IMAGE ?=")
+        )
+        image = caddy_line.split("?=", 1)[1].strip()
+
+        self.assertIn("@sha256:", image)
+        self.assertNotIn(":latest", image)
 
     def test_frontend_job_builds_both_react_apps_and_audits_dependencies(self) -> None:
         frontend = self.workflow["jobs"]["frontend"]

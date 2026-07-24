@@ -12,14 +12,14 @@ B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
 B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
-CADDY_IMAGE ?= caddy:2.10.2-alpine
+CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
 .PHONY: bootstrap validate compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
 
-validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit
+validate: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config unit compatibility security
 
 compose-config:
 	docker compose config --quiet
