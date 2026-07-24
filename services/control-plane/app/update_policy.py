@@ -4,7 +4,7 @@ import ipaddress
 import re
 import socket
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
@@ -74,6 +74,18 @@ def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
     return addresses
 
 
+def source_url_path_is_safe(path: str) -> bool:
+    for part in [item for item in path.split("/") if item]:
+        decoded = unquote(part)
+        if decoded in {".", ".."}:
+            return False
+        if "/" in decoded or "\\" in decoded:
+            return False
+        if any(ord(character) < 32 for character in decoded):
+            return False
+    return True
+
+
 def validate_source_url(value: str, *, resolver: HostnameResolver | None = None) -> str:
     source_url = value.strip()
     if not source_url:
@@ -94,9 +106,8 @@ def validate_source_url(value: str, *, resolver: HostnameResolver | None = None)
         raise UpdatePolicyError("source_url must include a hostname")
     if hostname == "localhost" or hostname.endswith(".localhost"):
         raise UpdatePolicyError("source_url must not target localhost")
-    path_parts = [part for part in parsed.path.split("/") if part]
-    if any(part in {".", ".."} for part in path_parts):
-        raise UpdatePolicyError("source_url path must not contain relative segments")
+    if not source_url_path_is_safe(parsed.path):
+        raise UpdatePolicyError("source_url path must not contain relative or encoded path-control segments")
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:

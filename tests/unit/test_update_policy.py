@@ -77,6 +77,10 @@ class UpdatePolicyTests(unittest.TestCase):
             "https://example.org/release?token=secret",
             "https://example.org/release#sha256",
             "https://example.org/../release",
+            "https://example.org/releases/%2e%2e/admin",
+            "https://example.org/releases/safe%2Fadmin",
+            "https://example.org/releases/safe%5Cadmin",
+            "https://example.org/releases/%00admin",
             "https://example.org:badport/release",
         ]
 

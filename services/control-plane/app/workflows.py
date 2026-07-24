@@ -7,7 +7,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
@@ -536,6 +536,15 @@ def _route_prefixes(value: Any, context: str) -> list[str]:
     return prefixes
 
 
+def _decoded_path_part_is_safe(part: str) -> bool:
+    decoded = unquote(part)
+    if decoded in {".", ".."}:
+        return False
+    if "/" in decoded or "\\" in decoded:
+        return False
+    return not any(ord(character) < 32 for character in decoded)
+
+
 def _route_prefix(value: str, context: str) -> str:
     if value != value.strip() or not value.strip():
         raise NodePinError(f"{context} must be a non-empty relative route prefix")
@@ -545,7 +554,7 @@ def _route_prefix(value: str, context: str) -> str:
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
         raise NodePinError(f"{context} must be a relative route prefix without query or fragment")
     parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if not parts or any(part in {".", ".."} for part in parts):
+    if not parts or any(not _decoded_path_part_is_safe(part) for part in parts):
         raise NodePinError(f"{context} must not contain empty or traversal path segments")
     return "/".join(parts).lower()
 
@@ -558,6 +567,8 @@ def _https_git_url(value: str, context: str) -> str:
         raise NodePinError(f"{context} must not include credentials")
     if parsed.query or parsed.fragment:
         raise NodePinError(f"{context} must not include query strings or fragments")
+    if any(not _decoded_path_part_is_safe(part) for part in parsed.path.split("/") if part):
+        raise NodePinError(f"{context} must not contain relative or encoded path-control segments")
     return value
 
 
