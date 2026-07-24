@@ -825,7 +825,8 @@ python -m pip install ./integrations/comfyui-b1-remote-nodes`
     {
       id: "modelhub-sync",
       label: "Model Hub Sync",
-      code: `export B1_MODELHUB_URL=https://models.ai.b1.germering
+      code: `python -m pip install ./integrations/b1-model-client
+export B1_MODELHUB_URL=https://models.ai.b1.germering
 export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>
 b1-model-client plan --cache ~/.cache/b1-ai-hub/models chat-default
 b1-model-client sync --cache ~/.cache/b1-ai-hub/models chat-default`

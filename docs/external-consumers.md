@@ -10,6 +10,8 @@ The `integrations/b1-model-client` package supports `list`, `plan`, `pin`, `unpi
 Linux or macOS shell example:
 
 ```bash
+python -m pip install ./integrations/b1-model-client
+
 export B1_MODELHUB_URL=https://models.ai.b1.germering
 export B1_MODELHUB_TOKEN=...
 
@@ -25,6 +27,8 @@ b1-model-client prune --cache ~/.cache/b1-ai-hub/models --dry-run
 Windows PowerShell example:
 
 ```powershell
+python -m pip install .\integrations\b1-model-client
+
 $env:B1_MODELHUB_URL = "https://models.ai.b1.germering"
 $env:B1_MODELHUB_TOKEN = "..."
 
