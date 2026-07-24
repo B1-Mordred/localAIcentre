@@ -112,6 +112,69 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(actions[0]["path"], str(cache / "blobs" / digest))
         self.assertEqual(actions[0]["resume_from"], 0)
 
+    def test_server_sync_plan_rejects_non_sha_blob_before_path_derivation(self) -> None:
+        def fake_request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {"actions": [{"model": "chat-default", "blob": "../escape", "action": "download", "expected_size": 12}]}
+
+        original = client.request_json
+        try:
+            client.request_json = fake_request_json
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(RuntimeError, "sync plan blob must be a 64-character SHA-256"):
+                    client.planned_actions("http://modelhub", "token", Path(tmp), ["chat-default"])
+        finally:
+            client.request_json = original
+
+    def test_sync_once_recomputes_download_path_from_verified_blob(self) -> None:
+        digest = "b" * 64
+        seen: dict[str, object] = {}
+
+        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "action": "download",
+                    "blob": digest.upper(),
+                    "expected_size": 7,
+                    "path": str(cache.parent / "outside-cache"),
+                    "partial": str(cache.parent / "outside-cache.partial"),
+                }
+            ]
+
+        def fake_download(
+            base_url: str,
+            token: str | None,
+            sha256: str,
+            expected_size: int,
+            target: Path,
+            *,
+            source: dict[str, Any] | None = None,
+            accept_licenses: bool = False,
+        ) -> dict[str, Any]:
+            seen.update({"sha256": sha256, "target": target, "source": source})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"payload")
+            return {"blob": sha256, "status": "downloaded", "path": str(target), "size_bytes": expected_size}
+
+        original_plan = client.planned_actions
+        original_download = client.download_blob
+        try:
+            client.planned_actions = fake_actions
+            client.download_blob = fake_download
+            with tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp) / "cache"
+                payload = client.sync_once("http://modelhub", "sync-token", cache, ["chat-default"])
+                state = client.load_state(cache)
+        finally:
+            client.planned_actions = original_plan
+            client.download_blob = original_download
+
+        expected_target = Path(payload["cache"]) / "blobs" / digest
+        self.assertEqual(seen["sha256"], digest)
+        self.assertEqual(seen["target"], expected_target)
+        self.assertEqual(seen["source"]["path"], str(expected_target))
+        self.assertIn(digest, state["managed_blobs"])
+        self.assertEqual(state["managed_blobs"][digest]["source"]["path"], str(expected_target))
+
     def test_local_blob_inventory_reports_only_hash_verified_blobs(self) -> None:
         valid_payload = b"verified-model-blob"
         valid_digest = hashlib.sha256(valid_payload).hexdigest()

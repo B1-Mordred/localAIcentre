@@ -69,6 +69,7 @@
 - Hardened model-download and remote-manifest execution so worker stream requests revalidate public DNS/import policy immediately before connecting, reject unsafe redirects, and ignore ambient proxy environment variables.
 - Hardened resumed model downloads so partial `206` responses must match the requested `Content-Range` and `Content-Length` before bytes are appended to staged blobs.
 - Hardened `b1-model-client` resumed blob sync with exact `Content-Range` parsing before appending server bytes to a local partial cache file.
+- Hardened `b1-model-client` sync plans so server-provided blob IDs must be SHA-256 digests and local write paths are recomputed under the managed cache.
 - Hardened Model Hub sync plans so downloadable version selection is filtered by the caller's Model Hub client allowlist and manifest role permissions before blob actions are returned.
 - Added public media-job history filters for `state`, `runtime`, and `modality` while preserving owner-scoped results for ordinary API clients.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.

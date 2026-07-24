@@ -107,6 +107,17 @@ def is_sha256(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def normalize_sha256(value: Any, *, label: str = "sha256") -> str:
+    digest = str(value or "").strip().lower()
+    if not is_sha256(digest):
+        raise RuntimeError(f"{label} must be a 64-character SHA-256 hex digest")
+    return digest
+
+
+def blob_target(cache: Path, sha256: str) -> Path:
+    return cache / "blobs" / normalize_sha256(sha256, label="blob")
+
+
 def model_record(base_url: str, token: str | None, model_id: str) -> dict[str, Any]:
     record = request_json(base_url, f"/modelhub/v1/models/{model_id}", token)
     if record.get("resolved_model"):
@@ -210,9 +221,9 @@ def sync_plan_from_server(base_url: str, token: str | None, cache: Path, models:
     for action in actions:
         if not isinstance(action, dict):
             continue
-        blob = str(action.get("blob") or "").lower()
-        if action.get("action") in {"download", "replace", "keep"} and blob:
-            target = cache / "blobs" / blob
+        if action.get("action") in {"download", "replace", "keep"}:
+            blob = normalize_sha256(action.get("blob"), label="sync plan blob")
+            target = blob_target(cache, blob)
             action = {
                 **action,
                 "blob": blob,
@@ -243,8 +254,8 @@ def planned_actions(base_url: str, token: str | None, cache: Path, models: list[
             actions.append({"model": model_id, "action": "skip", "reason": "model is not downloadable", **metadata})
             continue
         for file_record in record.get("files", []):
-            sha256 = file_record["sha256"].lower()
-            target = cache / "blobs" / sha256
+            sha256 = normalize_sha256(file_record["sha256"], label=f"{model_id} file sha256")
+            target = blob_target(cache, sha256)
             if target.exists() and sha256_file(target) == sha256:
                 actions.append({"model": model_id, "blob": sha256, "action": "keep", "path": str(target), **metadata})
                 continue
@@ -333,6 +344,7 @@ def download_blob(
     source: dict[str, Any] | None = None,
     accept_licenses: bool = False,
 ) -> dict[str, Any]:
+    sha256 = normalize_sha256(sha256, label="blob")
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".partial")
     if target.exists() and sha256_file(target) == sha256:
@@ -516,27 +528,31 @@ def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], 
     results = []
     for action in actions:
         if action["action"] == "keep" and action.get("blob"):
+            blob = normalize_sha256(action["blob"], label="sync action blob")
+            path = blob_target(cache, blob)
             size = action.get("expected_size")
-            if size is None and action.get("path"):
-                path = Path(str(action["path"]))
+            if size is None:
                 size = path.stat().st_size if path.is_file() else 0
             if size:
-                mark_managed_blob(state, action["blob"], int(size), action)
-            results.append(action)
+                mark_managed_blob(state, blob, int(size), action)
+            results.append({**action, "blob": blob, "path": str(path), "partial": str(path.with_suffix(".partial"))})
             continue
         if action["action"] not in {"download", "replace"}:
             results.append(action)
             continue
+        blob = normalize_sha256(action["blob"], label="sync action blob")
+        target = blob_target(cache, blob)
+        normalized_action = {**action, "blob": blob, "path": str(target), "partial": str(target.with_suffix(".partial"))}
         result = download_blob(
             base_url,
             token,
-            action["blob"],
+            blob,
             int(action["expected_size"]),
-            Path(action["path"]),
-            source=action,
+            target,
+            source=normalized_action,
             accept_licenses=accept_licenses,
         )
-        mark_managed_blob(state, action["blob"], int(action["expected_size"]), action)
+        mark_managed_blob(state, blob, int(action["expected_size"]), normalized_action)
         results.append(result)
     save_state(cache, state)
     return {"action": "sync", "dry_run": False, "cache": str(cache), "models": models, "changes": results}
@@ -546,7 +562,7 @@ def required_blobs_for_models(base_url: str, token: str | None, cache: Path, mod
     required: set[str] = set()
     for action in planned_actions(base_url, token, cache, models):
         if action.get("action") in {"keep", "download", "replace"} and action.get("blob"):
-            required.add(str(action["blob"]).lower())
+            required.add(normalize_sha256(action["blob"], label="required blob"))
     return required
 
 
