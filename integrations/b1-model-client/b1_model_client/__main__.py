@@ -186,9 +186,12 @@ def local_blob_inventory(cache: Path) -> list[dict[str, Any]]:
     for path in sorted(blobs.iterdir()):
         if not path.is_file() or path.name.endswith(".partial"):
             continue
-        if not is_sha256(path.name.lower()):
+        digest = path.name.lower()
+        if not is_sha256(digest):
             continue
-        inventory.append({"sha256": path.name.lower(), "size_bytes": path.stat().st_size})
+        if sha256_file(path) != digest:
+            continue
+        inventory.append({"sha256": digest, "size_bytes": path.stat().st_size})
     return inventory
 
 

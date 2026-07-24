@@ -112,6 +112,24 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(actions[0]["path"], str(cache / "blobs" / digest))
         self.assertEqual(actions[0]["resume_from"], 0)
 
+    def test_local_blob_inventory_reports_only_hash_verified_blobs(self) -> None:
+        valid_payload = b"verified-model-blob"
+        valid_digest = hashlib.sha256(valid_payload).hexdigest()
+        corrupt_digest = hashlib.sha256(b"expected-other-content").hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            blobs = cache / "blobs"
+            blobs.mkdir(parents=True)
+            (blobs / valid_digest).write_bytes(valid_payload)
+            (blobs / corrupt_digest).write_bytes(b"corrupt-but-sha-named")
+            (blobs / "not-a-digest").write_bytes(b"ignored")
+            (blobs / f"{valid_digest}.partial").write_bytes(valid_payload)
+
+            inventory = client.local_blob_inventory(cache)
+
+        self.assertEqual(inventory, [{"sha256": valid_digest, "size_bytes": len(valid_payload)}])
+
     def test_pin_and_unpin_persist_local_state_without_plaintext_tokens(self) -> None:
         original = client.model_record
         try:
