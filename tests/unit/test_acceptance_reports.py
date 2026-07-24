@@ -252,6 +252,31 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "service-logs-redacted",
             ],
         },
+        "restart_reconciliation": {
+            "available": True,
+            "format": "b1-ai-hub-restart-reconciliation-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/restart-reconciliation.json",
+            "generated_at": "2026-07-24T12:55:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "control_plane_restarted",
+                "cpu_runner_reconciled",
+                "gpu_runner_reconciled",
+                "waiting_jobs_requeued",
+                "active_jobs_marked_recovery_required",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "control_plane_restarted": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
+                "cpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
+                "gpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
+                "waiting_jobs_requeued": {"status": "ok", "recorded_at": "2026-07-24T12:53:00+00:00"},
+                "active_jobs_marked_recovery_required": {"status": "ok", "recorded_at": "2026-07-24T12:54:00+00:00"},
+            },
+            "sample_count": 2,
+            "sample_labels": ["startup-reconciliation", "recovered-job-counts"],
+        },
     }
     payload.update(overrides)
     return payload
@@ -382,6 +407,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("Voicebox remote compatibility", markdown)
             self.assertIn("security-acceptance.json", markdown)
             self.assertIn("Security acceptance", markdown)
+            self.assertIn("restart-reconciliation.json", markdown)
+            self.assertIn("Restart reconciliation", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -745,6 +772,41 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_restart_reconciliation_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["restart_reconciliation"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["restart_reconciliation_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("restart reconciliation evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_restart_reconciliation_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["restart_reconciliation"] = {
+            **live_evidence["restart_reconciliation"],
+            "status": "incomplete",
+            "missing_checks": ["waiting_jobs_requeued", "active_jobs_marked_recovery_required"],
+            "checks": {
+                "control_plane_restarted": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
+                "cpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
+                "gpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["restart_reconciliation_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("restart reconciliation evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "restart reconciliation evidence is missing required checks: waiting_jobs_requeued, active_jobs_marked_recovery_required",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -972,6 +1034,29 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            restart_reconciliation = evidence_root / "restart-reconciliation.json"
+            restart_reconciliation.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-restart-reconciliation-acceptance/v1",
+                        "generated_at": "2026-07-24T12:55:00+00:00",
+                        "base_url": "https://api.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "control_plane_restarted": {"status": "ok"},
+                            "cpu_runner_reconciled": {"status": "ok"},
+                            "gpu_runner_reconciled": {"status": "ok"},
+                            "waiting_jobs_requeued": {"status": "ok"},
+                            "active_jobs_marked_recovery_required": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "startup-reconciliation"},
+                            {"label": "recovered-job-counts"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -1017,6 +1102,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(security_acceptance["status"], "ok")
         self.assertEqual(security_acceptance["missing_checks"], [])
         self.assertEqual(security_acceptance["sample_count"], 9)
+        restart = snapshot["restart_reconciliation"]
+        self.assertTrue(restart["available"])
+        self.assertEqual(restart["source_path"], str(restart_reconciliation.resolve()))
+        self.assertEqual(restart["status"], "ok")
+        self.assertEqual(restart["missing_checks"], [])
+        self.assertEqual(restart["sample_count"], 2)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):

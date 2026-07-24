@@ -72,6 +72,45 @@ def unsupported_operation_message(job: dict[str, Any]) -> str:
     return f"Runtime {runtime} does not implement {modality}/{operation} jobs for {model}"
 
 
+def pending_startup_reconciliation(runtime_names: list[str]) -> dict[str, Any]:
+    return {
+        "status": "pending",
+        "runtime_names": list(runtime_names),
+        "started_at": "",
+        "completed_at": "",
+        "marked_recovery_required": 0,
+        "requeued": 0,
+    }
+
+
+async def record_runner_startup_reconciliation(runner: Any, runtime_names: list[str]) -> dict[str, Any]:
+    started_at = datetime.now(tz=UTC)
+    runner.startup_reconciliation = {
+        **pending_startup_reconciliation(runtime_names),
+        "status": "running",
+        "started_at": started_at.isoformat(),
+    }
+    try:
+        result = await runner.reconcile_startup()
+    except Exception as exc:
+        runner.startup_reconciliation = {
+            **runner.startup_reconciliation,
+            "status": "failed",
+            "completed_at": datetime.now(tz=UTC).isoformat(),
+            "error": exc.__class__.__name__,
+        }
+        raise
+    runner.startup_reconciliation = {
+        "status": "ok",
+        "runtime_names": list(runtime_names),
+        "started_at": started_at.isoformat(),
+        "completed_at": datetime.now(tz=UTC).isoformat(),
+        "marked_recovery_required": int(result.get("marked_recovery_required") or 0),
+        "requeued": int(result.get("requeued") or 0),
+    }
+    return runner.startup_reconciliation
+
+
 class CpuJobRunner:
     def __init__(
         self,
@@ -85,6 +124,7 @@ class CpuJobRunner:
         self.audio_cpu_url = audio_cpu_url.rstrip("/")
         self.pause_check = pause_check
         self._stopped = asyncio.Event()
+        self.startup_reconciliation = pending_startup_reconciliation(CPU_RUNTIMES)
 
     async def reconcile_startup(self) -> dict[str, int]:
         requeued = await database.requeue_interrupted_waiting_jobs(CPU_RUNTIMES)
@@ -272,7 +312,7 @@ class CpuJobRunner:
         return True
 
     async def run_forever(self) -> None:
-        await self.reconcile_startup()
+        await record_runner_startup_reconciliation(self, CPU_RUNTIMES)
         while not self._stopped.is_set():
             processed = await self.run_once()
             if not processed:
@@ -326,6 +366,7 @@ class GpuJobRunner:
         self.pause_check = pause_check
         self.runtime_cancel_poll_seconds = max(0.05, float(runtime_cancel_poll_seconds))
         self._stopped = asyncio.Event()
+        self.startup_reconciliation = pending_startup_reconciliation(GPU_RUNTIMES)
 
     async def reconcile_startup(self) -> dict[str, int]:
         requeued = await database.requeue_interrupted_waiting_jobs(GPU_RUNTIMES)
@@ -1390,7 +1431,7 @@ class GpuJobRunner:
         return True
 
     async def run_forever(self) -> None:
-        await self.reconcile_startup()
+        await record_runner_startup_reconciliation(self, GPU_RUNTIMES)
         while not self._stopped.is_set():
             processed = await self.run_once()
             if not processed:

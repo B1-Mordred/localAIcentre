@@ -1331,6 +1331,21 @@ class ExecutorTests(unittest.TestCase):
             result = asyncio.run(runner.reconcile_startup())
             self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 1})
 
+    def test_gpu_runner_records_startup_reconciliation(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            result = asyncio.run(executor.record_runner_startup_reconciliation(runner, executor.GPU_RUNTIMES))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["runtime_names"], executor.GPU_RUNTIMES)
+        self.assertEqual(result["marked_recovery_required"], 2)
+        self.assertEqual(result["requeued"], 1)
+        self.assertTrue(result["started_at"])
+        self.assertTrue(result["completed_at"])
+        self.assertEqual(runner.startup_reconciliation, result)
+
     def test_cpu_runner_reconciles_waiting_claims_without_requeueing_recovery_required(self) -> None:
         fake = FakeDatabase(runtime="audio-cpu")
         fake.waiting_requeues = 3

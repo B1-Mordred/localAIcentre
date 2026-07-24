@@ -5879,6 +5879,54 @@
         "summary": "Admin Scheduler Lease Acquire"
       }
     },
+    "/admin/scheduler/reconciliation": {
+      "get": {
+        "operationId": "admin_scheduler_reconciliation_get_admin_scheduler_reconciliation_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Scheduler Reconciliation Get Admin Scheduler Reconciliation Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Scheduler Reconciliation Get"
+      }
+    },
     "/admin/secrets": {
       "get": {
         "operationId": "admin_encrypted_secrets_admin_secrets_get",

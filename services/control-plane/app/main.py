@@ -91,6 +91,7 @@ network_policy_cache: dict[str, Any] | None = None
 approved_node_pins: dict[tuple[str, str], ApprovedNodePin] | None = None
 job_runners: list[Any] = []
 job_runner_tasks: list[asyncio.Task[None]] = []
+control_plane_started_at: datetime | None = None
 backup_operation_lock = asyncio.Lock()
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("b1_current_request", default=None)
 modelhub_blob_rate_windows: dict[str, tuple[int, float]] = {}
@@ -2917,7 +2918,8 @@ async def create_job_record(
 
 @app.on_event("startup")
 async def startup() -> None:
-    global redis_client, job_runners, job_runner_tasks
+    global redis_client, job_runners, job_runner_tasks, control_plane_started_at
+    control_plane_started_at = datetime.now(tz=UTC)
     settings_for_startup = load_settings()
     globals()["settings"] = settings_for_startup
     database.configure_engine(settings_for_startup.database_url)
@@ -4967,12 +4969,60 @@ async def admin_encrypted_secret_delete(name: str, authorization: str | None = H
     return public
 
 
+def runner_reconciliation_name(runner: Any) -> str:
+    if isinstance(runner, CpuJobRunner):
+        return "cpu-job-runner"
+    if isinstance(runner, GpuJobRunner):
+        return "gpu-job-runner"
+    if isinstance(runner, ModelDownloadRunner):
+        return "model-download-runner"
+    return runner.__class__.__name__
+
+
+def scheduler_reconciliation_report() -> dict[str, Any]:
+    required_runners: list[str] = []
+    if settings.job_runner_enabled:
+        required_runners.append("cpu-job-runner")
+    if settings.gpu_job_runner_enabled:
+        required_runners.append("gpu-job-runner")
+
+    records: list[dict[str, Any]] = []
+    for runner in job_runners:
+        record = getattr(runner, "startup_reconciliation", None)
+        if not isinstance(record, dict):
+            continue
+        records.append({"runner": runner_reconciliation_name(runner), **record})
+
+    recorded_names = {str(record.get("runner")) for record in records}
+    missing_required = [name for name in required_runners if name not in recorded_names]
+    incomplete = [
+        str(record.get("runner"))
+        for record in records
+        if str(record.get("runner")) in required_runners and record.get("status") != "ok"
+    ]
+    status = "ok" if not missing_required and not incomplete else "degraded"
+    return {
+        "status": status,
+        "control_plane_started_at": control_plane_started_at,
+        "required_runners": required_runners,
+        "missing_required_runners": missing_required,
+        "records": records,
+    }
+
+
 @app.get("/admin/scheduler/lease")
 async def admin_scheduler_lease_get(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "runtimes:read")
     row = await database.get_scheduler_owner()
     return {"lease": jsonable_encoder(row)}
+
+
+@app.get("/admin/scheduler/reconciliation")
+async def admin_scheduler_reconciliation_get(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "runtimes:read")
+    return jsonable_encoder(scheduler_reconciliation_report())
 
 
 @app.post("/admin/scheduler/lease")

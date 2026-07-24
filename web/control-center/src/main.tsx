@@ -378,6 +378,7 @@ type AcceptanceReportSummary = {
   modelhub_evidence_ready?: boolean;
   voicebox_evidence_ready?: boolean;
   security_evidence_ready?: boolean;
+  restart_reconciliation_evidence_ready?: boolean;
   live_evidence_ready?: boolean;
   acceptance_blockers: string[];
   files?: {
@@ -429,6 +430,7 @@ const ACCEPTANCE_EVIDENCE_ITEMS = [
   ["backup_verified", "Backups verified"],
   ["restore_rehearsed", "Restore rehearsal"],
   ["migration_rehearsed", "Migration rehearsal"],
+  ["restart_reconciliation", "Restart reconciliation"],
   ["rollback_rehearsed", "Rollback rehearsal"],
   ["security_review", "Security review"]
 ] as const;
@@ -440,7 +442,8 @@ const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
   ["remote_nodes_non_comfy", "Remote nodes"],
   ["modelhub_client_sync", "Model Hub sync"],
   ["voicebox_remote", "Voicebox remote"],
-  ["security_acceptance", "Security acceptance"]
+  ["security_acceptance", "Security acceptance"],
+  ["restart_reconciliation", "Restart reconciliation"]
 ] as const;
 
 const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
@@ -4004,7 +4007,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.cutover_preservation_ready ? "rollback proof missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.cutover_preservation_ready ? "rollback proof missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>

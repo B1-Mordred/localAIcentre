@@ -82,6 +82,7 @@
 - Added runtime-agent mutation rate limiting, structured redacted mutation audit events, and dry-run enforcement for service/image mutation paths even when Docker mutations are enabled.
 - Added a runtime-agent mutation-guard self-test and acceptance-report handoff blocker so bearer auth, mTLS client enforcement, allowlists, and mutation rate limiting must be evidenced before cutover handoff.
 - Added runtime-agent mutation-guard proof to the live security acceptance evidence contract so stale security handoff files cannot omit the deployed agent posture.
+- Added a scheduler reconciliation admin endpoint, Control Center handoff gate, and opt-in live restart acceptance harness proving startup requeues interrupted `waiting_for_gpu` jobs and marks interrupted active jobs `recovery_required`.
 - Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
 - Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
 - Redacted manifest source URLs across public Model Hub catalog, model, and version responses so external sync clients do not receive upstream credentials, signed query strings, or fragments.

@@ -69,6 +69,14 @@ SECURITY_REQUIRED_CHECKS = (
     "runtime_agent_mutation_guard",
     "logs_redacted",
 )
+RESTART_RECONCILIATION_EVIDENCE_FORMAT = "b1-ai-hub-restart-reconciliation-acceptance/v1"
+RESTART_RECONCILIATION_REQUIRED_CHECKS = (
+    "control_plane_restarted",
+    "cpu_runner_reconciled",
+    "gpu_runner_reconciled",
+    "waiting_jobs_requeued",
+    "active_jobs_marked_recovery_required",
+)
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -80,6 +88,7 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("backup_verified", "B1 and old-stack backups were created and verified"),
     ("restore_rehearsed", "Restore-to-alternate-directory rehearsal completed"),
     ("migration_rehearsed", "Old-stack inventory, Open WebUI migration plan, and cutover plan were reviewed"),
+    ("restart_reconciliation", "Control-plane restart reconciliation requeued waiting jobs and marked interrupted active jobs for recovery"),
     ("rollback_rehearsed", "Rollback procedure was tested and old resources remain preserved"),
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )
@@ -463,6 +472,36 @@ def security_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
     }
 
 
+def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != RESTART_RECONCILIATION_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported restart reconciliation acceptance evidence format"}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in RESTART_RECONCILIATION_REQUIRED_CHECKS
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(RESTART_RECONCILIATION_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+
+
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
@@ -472,6 +511,7 @@ def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
         "modelhub_client_sync": {"available": False, "reason": reason, "root": str(root)},
         "voicebox_remote": {"available": False, "reason": reason, "root": str(root)},
         "security_acceptance": {"available": False, "reason": reason, "root": str(root)},
+        "restart_reconciliation": {"available": False, "reason": reason, "root": str(root)},
     }
 
 
@@ -527,6 +567,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == SECURITY_EVIDENCE_FORMAT and "security_acceptance" not in found:
             snapshots["security_acceptance"] = security_evidence_snapshot(payload, path.resolve())
             found.add("security_acceptance")
+        elif payload.get("format") == RESTART_RECONCILIATION_EVIDENCE_FORMAT and "restart_reconciliation" not in found:
+            snapshots["restart_reconciliation"] = restart_reconciliation_evidence_snapshot(payload, path.resolve())
+            found.add("restart_reconciliation")
         if found == {
             "gpu_acceptance",
             "installed_workflows",
@@ -535,6 +578,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             "modelhub_client_sync",
             "voicebox_remote",
             "security_acceptance",
+            "restart_reconciliation",
         }:
             break
     return snapshots
@@ -714,6 +758,21 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = security_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("security acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+    restart_reconciliation_evidence = (
+        live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
+    )
+    if restart_reconciliation_evidence.get("available") is not True:
+        blockers.append("restart reconciliation evidence is unavailable")
+    else:
+        if restart_reconciliation_evidence.get("status") != "ok":
+            blockers.append(
+                f"restart reconciliation evidence status is {restart_reconciliation_evidence.get('status', 'unknown')}"
+            )
+        missing_checks = restart_reconciliation_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append(
+                "restart reconciliation evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks)
+            )
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     if preservation.get("available") is not True:
         blockers.append("cutover preservation plan is unavailable")
@@ -787,6 +846,7 @@ def build_report(
             "modelhub_client_sync": {"available": False, "reason": "not supplied"},
             "voicebox_remote": {"available": False, "reason": "not supplied"},
             "security_acceptance": {"available": False, "reason": "not supplied"},
+            "restart_reconciliation": {"available": False, "reason": "not supplied"},
         },
     }
     report["acceptance_blockers"] = _acceptance_blockers(report)
@@ -922,6 +982,9 @@ def markdown_report(report: dict[str, Any]) -> str:
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
     security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
+    restart_reconciliation_evidence = (
+        live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
+    )
 
     source_control = report.get("source_control") or {}
     source_rows = [["Field", "Value"]]
@@ -1028,7 +1091,13 @@ def markdown_report(report: dict[str, Any]) -> str:
             + "\n\n"
             + _live_evidence_markdown("Voicebox remote compatibility", voicebox_evidence, "No Voicebox remote compatibility checks recorded.")
             + "\n\n"
-            + _live_evidence_markdown("Security acceptance", security_evidence, "No security acceptance checks recorded."),
+            + _live_evidence_markdown("Security acceptance", security_evidence, "No security acceptance checks recorded.")
+            + "\n\n"
+            + _live_evidence_markdown(
+                "Restart reconciliation",
+                restart_reconciliation_evidence,
+                "No restart reconciliation checks recorded.",
+            ),
             "## Old Resources Preserved For Rollback\n\n" + _table(preservation_summary_rows) + "\n\n" + (_table(preserved_rows) if len(preserved_rows) > 1 else _format_value(preservation.get("reason") or "No preserved old resources recorded.")),
             "## Runtime Metrics\n\n" + _table(metric_rows),
             "## Runtime State\n\n" + (_table(runtime_rows) if len(runtime_rows) > 1 else "No runtime state rows recorded."),
@@ -1087,6 +1156,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
     security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
+    restart_reconciliation_evidence = (
+        live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
+    )
     gpu_evidence_ready = gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks")
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
@@ -1118,6 +1190,11 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and security_evidence.get("status") == "ok"
         and not security_evidence.get("missing_checks")
     )
+    restart_reconciliation_evidence_ready = (
+        restart_reconciliation_evidence.get("available") is True
+        and restart_reconciliation_evidence.get("status") == "ok"
+        and not restart_reconciliation_evidence.get("missing_checks")
+    )
     summary = {
         "id": report.get("id"),
         "format": report.get("format"),
@@ -1136,6 +1213,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "modelhub_evidence_ready": modelhub_evidence_ready,
         "voicebox_evidence_ready": voicebox_evidence_ready,
         "security_evidence_ready": security_evidence_ready,
+        "restart_reconciliation_evidence_ready": restart_reconciliation_evidence_ready,
         "live_evidence_ready": (
             gpu_evidence_ready
             and installed_workflows_evidence_ready
@@ -1144,6 +1222,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and modelhub_evidence_ready
             and voicebox_evidence_ready
             and security_evidence_ready
+            and restart_reconciliation_evidence_ready
         ),
         "acceptance_blockers": list(report.get("acceptance_blockers") or []),
     }
