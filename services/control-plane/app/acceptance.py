@@ -292,6 +292,7 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
             "unknown_resources_preserved_by_default": bool(safety.get("unknown_resources_preserved_by_default")),
         },
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
+        "hardware_readiness": plan.get("hardware_readiness") if isinstance(plan.get("hardware_readiness"), dict) else {"available": False},
         "open_webui_preservation": plan.get("open_webui_preservation") if isinstance(plan.get("open_webui_preservation"), dict) else {},
         "warnings": _as_string_list(plan.get("warnings")),
         "resources": resources,
@@ -946,6 +947,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("old-stack backup verification evidence is missing from cutover plan")
         if int(preservation.get("resource_count") or 0) <= 0:
             blockers.append("cutover preservation plan lists no old rollback resources")
+        hardware = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+        if hardware.get("available") is not True:
+            blockers.append("cutover hardware readiness is unavailable")
+        elif hardware.get("accepted") is not True or hardware.get("operator_must_review_hardware") is True:
+            blockers.append("cutover hardware readiness requires operator review")
     return blockers
 
 
@@ -1114,6 +1120,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             ])
 
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
+    hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     preserved_rows = [["Class", "Value"]]
     resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
     for key, label in (
@@ -1133,6 +1140,17 @@ def markdown_report(report: dict[str, Any]) -> str:
         "resource_count",
     ):
         preservation_summary_rows.append([key, _format_value(preservation.get(key))])
+    for key in (
+        "profile",
+        "accepted",
+        "largest_gpu_vram_mib",
+        "minimum_gpu_vram_mib",
+        "host_total_ram_mib",
+        "minimum_host_ram_mib",
+        "operator_must_review_hardware",
+    ):
+        if key in hardware_readiness:
+            preservation_summary_rows.append([f"hardware.{key}", _format_value(hardware_readiness.get(key))])
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
@@ -1314,6 +1332,7 @@ def load_report(root: Path, report_id: str) -> dict[str, Any]:
 def public_report_summary(report: dict[str, Any], report_dir: Path | None = None) -> dict[str, Any]:
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
+    hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
@@ -1400,7 +1419,14 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "runtime_deployment_mode": report.get("runtime_deployment_mode"),
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
-        "cutover_preservation_ready": preservation.get("available") is True and int(preservation.get("resource_count") or 0) > 0,
+        "cutover_preservation_ready": preservation.get("available") is True
+        and int(preservation.get("resource_count") or 0) > 0
+        and hardware_readiness.get("available") is True
+        and hardware_readiness.get("accepted") is True
+        and hardware_readiness.get("operator_must_review_hardware") is not True,
+        "cutover_hardware_ready": hardware_readiness.get("available") is True
+        and hardware_readiness.get("accepted") is True
+        and hardware_readiness.get("operator_must_review_hardware") is not True,
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
         "localai_evidence_ready": localai_evidence_ready,

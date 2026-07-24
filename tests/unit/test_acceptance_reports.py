@@ -52,6 +52,17 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "unknown_resources_preserved_by_default": True,
         },
         "old_stack_backup_verification_status": "verified",
+        "hardware_readiness": {
+            "available": True,
+            "profile": "rtx3060-32gb-initial",
+            "accepted": True,
+            "largest_gpu_vram_mib": 12288,
+            "minimum_gpu_vram_mib": 12288,
+            "host_total_ram_mib": 32168,
+            "minimum_host_ram_mib": 32000,
+            "operator_must_review_hardware": False,
+            "warnings": [],
+        },
         "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
         "warnings": [],
         "resources": {
@@ -1044,6 +1055,29 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("cutover preservation plan lists no old rollback resources", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_cutover_hardware_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                hardware_readiness={
+                    "available": True,
+                    "profile": "rtx3060-32gb-initial",
+                    "accepted": False,
+                    "largest_gpu_vram_mib": 6144,
+                    "minimum_gpu_vram_mib": 12288,
+                    "host_total_ram_mib": 31833,
+                    "minimum_host_ram_mib": 32000,
+                    "operator_must_review_hardware": True,
+                    "warnings": ["largest detected GPU VRAM is 6144 MiB; required initial profile needs at least 12288 MiB"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["cutover_hardware_ready"])
+        self.assertIn("cutover hardware readiness requires operator review", report["acceptance_blockers"])
+
     def test_latest_cutover_preservation_snapshot_reads_only_direct_supported_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1062,6 +1096,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "docker_volumes_preserved": ["open-webui-data"],
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
+                "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
                 "open_webui_preservation": {"plan_supplied": True},
                 "warnings": ["review DNS"],
             }
@@ -1073,6 +1108,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertTrue(snapshot["available"])
         self.assertEqual(snapshot["source_path"], str(current.resolve()))
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
+        self.assertTrue(snapshot["hardware_readiness"]["accepted"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
         self.assertEqual(snapshot["resource_count"], 3)
 
