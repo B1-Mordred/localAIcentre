@@ -43,6 +43,8 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Manifest URL", self.source)
         self.assertIn("Plan remote manifest install", self.source)
         self.assertIn("Queue remote manifest download", self.source)
+        self.assertIn("accept_license: Boolean(downloadPlan?.requires_license_acceptance)", self.source)
+        self.assertIn("acceptance required", self.source)
 
 
 if __name__ == "__main__":

@@ -1273,13 +1273,16 @@ def download_file_plan(manifest: ModelManifest, file: Any, verification: dict[st
     }
 
 
-def build_download_plan(manifest: ModelManifest, data_root: Path) -> dict[str, Any]:
+def build_download_plan(manifest: ModelManifest, data_root: Path, *, accept_license: bool = False) -> dict[str, Any]:
     files = downloadable_manifest_files(manifest)
     source_allowed = source_url_allowed(manifest)
     verification_by_path = {item["path"]: item for item in verify_manifest_files(manifest, data_root)}
+    requires_license_acceptance = bool(manifest.license.acceptance_required)
     blockers: list[str] = []
     if not source_allowed:
         blockers.append("source URL is not allowed by import policy")
+    if requires_license_acceptance and not accept_license:
+        blockers.append("licence acceptance is required")
     duplicate_hashes = sorted({file.sha256 for file in files if sum(1 for item in files if item.sha256 == file.sha256) > 1})
     if duplicate_hashes:
         blockers.append(f"direct-url downloads do not support duplicate target SHA-256 entries: {', '.join(duplicate_hashes)}")
@@ -1298,13 +1301,16 @@ def build_download_plan(manifest: ModelManifest, data_root: Path) -> dict[str, A
         for item in file_plans
     )
     first_file = file_plans[0] if file_plans else None
+    can_download = bool(source_allowed and not blockers)
     return {
         "model": manifest.to_dict(),
         "model_ref": f"{manifest.id}@{manifest.version}",
-        "status": "available" if already_available else "downloadable" if source_allowed and not blockers else "blocked",
-        "can_download": bool(source_allowed and not blockers),
+        "status": "available" if already_available and can_download else "downloadable" if can_download else "blocked",
+        "can_download": can_download,
         "already_available": already_available,
         "blockers": blockers,
+        "requires_license_acceptance": requires_license_acceptance,
+        "license_accepted": accept_license,
         "source_url": manifest.source.url,
         "target_sha256": first_file["target_sha256"] if first_file else None,
         "target_size_bytes": total_size_bytes,

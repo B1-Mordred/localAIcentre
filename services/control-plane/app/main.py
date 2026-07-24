@@ -3944,9 +3944,9 @@ def install_plan_for_manifest(manifest: Any, payload: ModelInstallPlanRequest) -
     )
 
 
-def download_plan_for_manifest(manifest: Any) -> dict[str, Any]:
+def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False) -> dict[str, Any]:
     try:
-        return model_lifecycle.build_download_plan(manifest, data_root_path())
+        return model_lifecycle.build_download_plan(manifest, data_root_path(), accept_license=accept_license)
     except model_lifecycle.ModelLifecycleError as exc:
         total_size_bytes = sum(file.size_bytes for file in manifest.files)
         return {
@@ -3956,6 +3956,8 @@ def download_plan_for_manifest(manifest: Any) -> dict[str, Any]:
             "can_download": False,
             "already_available": False,
             "blockers": [str(exc)],
+            "requires_license_acceptance": bool(manifest.license.acceptance_required),
+            "license_accepted": accept_license,
             "source_url": manifest.source.url,
             "target_sha256": manifest.files[0].sha256 if manifest.files else None,
             "target_size_bytes": total_size_bytes,
@@ -6610,7 +6612,7 @@ async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorizat
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
     manifest = await manifest_for_install_request(payload)
-    return download_plan_for_manifest(manifest)
+    return download_plan_for_manifest(manifest, accept_license=payload.accept_license)
 
 
 @app.get("/admin/models/downloads")
@@ -6635,7 +6637,7 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
     manifest = await manifest_for_install_request(payload)
-    plan = download_plan_for_manifest(manifest)
+    plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license)
     credential_secret_name = await validate_model_download_secret_name(payload.credential_secret_name)
     if not payload.confirm:
         raise HTTPException(status_code=409, detail={"message": "download requires explicit confirmation", "plan": plan})

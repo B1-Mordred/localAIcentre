@@ -555,6 +555,44 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertIn("category model-download", str(raised.exception.detail))
             self.assertEqual(fake_database.model_downloads, [])
 
+    def test_model_download_create_requires_declared_license_acceptance(self) -> None:
+        digest = hashlib.sha256(b"licensed model").hexdigest()
+        payload = manifest_payload(digest, len(b"licensed model"))
+        payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
+        payload["license"]["acceptance_required"] = True
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(root, fake_database, audit_events)
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_download_create(
+                        main.ModelDownloadCreate(
+                            manifest=payload,
+                            confirm=True,
+                        )
+                    )
+                )
+
+            result = asyncio.run(
+                main.admin_model_download_create(
+                    main.ModelDownloadCreate(
+                        manifest=payload,
+                        confirm=True,
+                        accept_license=True,
+                    )
+                )
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("licence acceptance is required", str(raised.exception.detail))
+        self.assertEqual(result["download"]["status"], "queued")
+        self.assertTrue(result["plan"]["license_accepted"])
+        self.assertEqual(len(fake_database.model_downloads), 1)
+        self.assertEqual(audit_events[0]["event_type"], "model_download.created")
+
     def test_model_download_pause_and_resume_are_audited(self) -> None:
         audit_events: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as tmp:

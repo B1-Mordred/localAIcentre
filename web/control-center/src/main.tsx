@@ -616,6 +616,9 @@ type ModelDownloadPlan = {
   can_download: boolean;
   already_available: boolean;
   blockers: string[];
+  requires_license_acceptance: boolean;
+  license_accepted: boolean;
+  model: { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   source_url: string;
   target_sha256: string;
   target_size_bytes: number;
@@ -1192,6 +1195,7 @@ function Models() {
       body: JSON.stringify({
         ...body,
         confirm: true,
+        accept_license: Boolean(downloadPlan?.requires_license_acceptance),
         credential_secret_name: downloadCredentialSecretName.trim() || null
       })
     })
@@ -1345,6 +1349,7 @@ function Models() {
         <div className="one-time-key">
           <strong>{downloadPlan.model_ref} download {downloadPlan.status}</strong>
           <span>{formatBytes(downloadPlan.existing_partial_bytes)} staged / {formatBytes(downloadPlan.target_size_bytes)} total</span>
+          <small>{downloadPlan.model.license.name} / {downloadPlan.model.license.redistribution}{downloadPlan.requires_license_acceptance ? ` / licence ${downloadPlan.license_accepted ? "accepted" : "acceptance required"}` : ""}</small>
           <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
           {downloadPlan.files.length > 1 && <small>{downloadPlan.files.map((file) => file.path).join(" / ")}</small>}
           {downloadPlan.blockers.length > 0 && <small>{downloadPlan.blockers.join("; ")}</small>}

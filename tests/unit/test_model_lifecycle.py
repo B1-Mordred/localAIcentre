@@ -391,6 +391,27 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertFalse(plan["can_download"])
             self.assertIn("source URL is not allowed by import policy", plan["blockers"])
 
+    def test_download_plan_requires_license_acceptance_when_declared(self) -> None:
+        payload = manifest_payload(
+            "5" * 64,
+            12,
+            source_url="https://downloads.example.org/model.gguf",
+            source_type="direct-url",
+        )
+        payload["license"]["acceptance_required"] = True
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = model_lifecycle.build_download_plan(manifest, Path(tmp))
+            accepted = model_lifecycle.build_download_plan(manifest, Path(tmp), accept_license=True)
+
+            self.assertFalse(blocked["can_download"])
+            self.assertTrue(blocked["requires_license_acceptance"])
+            self.assertFalse(blocked["license_accepted"])
+            self.assertIn("licence acceptance is required", blocked["blockers"])
+            self.assertTrue(accepted["can_download"])
+            self.assertTrue(accepted["license_accepted"])
+            self.assertNotIn("licence acceptance is required", accepted["blockers"])
+
     def test_internal_placeholder_files_do_not_require_blob(self) -> None:
         manifest = parse_manifest_payload(
             {
