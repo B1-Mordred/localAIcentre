@@ -237,6 +237,17 @@
         "title": "BackupCreateRequest",
         "type": "object"
       },
+      "BackupMigrationRollbackEvidenceCreate": {
+        "properties": {
+          "confirm_reviewed": {
+            "default": false,
+            "title": "Confirm Reviewed",
+            "type": "boolean"
+          }
+        },
+        "title": "BackupMigrationRollbackEvidenceCreate",
+        "type": "object"
+      },
       "BackupPostgresImportRequest": {
         "properties": {
           "apply": {
@@ -3822,6 +3833,110 @@
           }
         },
         "summary": "Admin Metrics"
+      }
+    },
+    "/admin/migration/backup-migration-rollback-evidence": {
+      "get": {
+        "operationId": "admin_backup_migration_rollback_evidence_status_admin_migration_backup_migration_rollback_evidence_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Backup Migration Rollback Evidence Status Admin Migration Backup Migration Rollback Evidence Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Backup Migration Rollback Evidence Status"
+      },
+      "post": {
+        "operationId": "admin_backup_migration_rollback_evidence_create_admin_migration_backup_migration_rollback_evidence_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupMigrationRollbackEvidenceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Backup Migration Rollback Evidence Create Admin Migration Backup Migration Rollback Evidence Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Backup Migration Rollback Evidence Create"
       }
     },
     "/admin/migration/rollback-rehearsal": {

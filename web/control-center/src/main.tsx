@@ -438,6 +438,53 @@ type RollbackRehearsalCreateResult = {
   };
 };
 
+const BACKUP_ROLLBACK_INPUT_LABELS = [
+  ["b1_backup", "B1 backup"],
+  ["restore_report", "Restore report"],
+  ["inventory", "Old-stack inventory"],
+  ["old_stack_backup", "Old-stack backup"],
+  ["open_webui_plan", "Open WebUI plan"],
+  ["cutover_plan", "Cutover plan"],
+  ["rollback_report", "Rollback rehearsal"]
+] as const;
+
+type BackupRollbackInputKey = typeof BACKUP_ROLLBACK_INPUT_LABELS[number][0];
+
+type BackupRollbackArtifactStatus = {
+  available: boolean;
+  path?: string;
+  name?: string;
+  reason?: string;
+  status?: string;
+  generated_at?: string;
+  missing_checks?: string[];
+  check_count?: number;
+  required_check_count?: number;
+};
+
+type BackupMigrationRollbackEvidenceStatus = {
+  format: string;
+  backup_root: string;
+  restore_root: string;
+  ready: boolean;
+  blockers: string[];
+  inputs: Record<BackupRollbackInputKey, BackupRollbackArtifactStatus> & {
+    output?: BackupRollbackArtifactStatus;
+  };
+  evidence: BackupRollbackArtifactStatus;
+};
+
+type BackupMigrationRollbackEvidenceCreateResult = {
+  status: string;
+  output: string;
+  evidence: {
+    generated_at?: string;
+    required_checks?: string[];
+    checks?: Record<string, unknown>;
+  };
+  inputs: BackupMigrationRollbackEvidenceStatus["inputs"];
+};
+
 type AcceptanceEvidenceDetail = {
   key: string;
   label: string;
@@ -3544,6 +3591,8 @@ function System() {
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
   const [rollbackRehearsal, setRollbackRehearsal] = useState<RollbackRehearsalStatus | null>(null);
+  const [backupRollbackEvidence, setBackupRollbackEvidence] = useState<BackupMigrationRollbackEvidenceStatus | null>(null);
+  const [backupRollbackReviewed, setBackupRollbackReviewed] = useState(false);
   const [rollbackRehearsedBy, setRollbackRehearsedBy] = useState("");
   const [rollbackNotes, setRollbackNotes] = useState("");
   const [rollbackCommandsTested, setRollbackCommandsTested] = useState(false);
@@ -3664,6 +3713,12 @@ function System() {
       .catch(() => setRollbackRehearsal(null));
   };
 
+  const loadBackupRollbackEvidence = () => {
+    apiJson<BackupMigrationRollbackEvidenceStatus>(`/admin/migration/backup-migration-rollback-evidence`)
+      .then(setBackupRollbackEvidence)
+      .catch(() => setBackupRollbackEvidence(null));
+  };
+
   const inspectAcceptanceReport = (reportId: string) => {
     setBusy(true);
     setMessage(`loading ${reportId}`);
@@ -3726,6 +3781,25 @@ function System() {
         setRollbackCommandsTested(false);
         setRollbackResourcesPreserved(false);
         loadRollbackRehearsal();
+        loadBackupRollbackEvidence();
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const createBackupRollbackEvidence = () => {
+    setBusy(true);
+    setMessage("creating backup/migration/rollback evidence");
+    apiJson<BackupMigrationRollbackEvidenceCreateResult>(`/admin/migration/backup-migration-rollback-evidence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm_reviewed: backupRollbackReviewed })
+    })
+      .then((payload) => {
+        setMessage(`backup/migration/rollback evidence ${payload.status}`);
+        setBackupRollbackReviewed(false);
+        loadBackupRollbackEvidence();
         loadAudit();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -3899,6 +3973,7 @@ function System() {
     runSelfTest();
     loadAcceptanceReports();
     loadRollbackRehearsal();
+    loadBackupRollbackEvidence();
     loadAudit();
     loadResourcePolicy();
     loadAdmissionPolicy();
@@ -3915,6 +3990,12 @@ function System() {
   const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
   const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
   const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
+  const backupRollbackInputReadyCount = BACKUP_ROLLBACK_INPUT_LABELS.filter(([key]) => backupRollbackEvidence?.inputs[key]?.available).length;
+  const backupRollbackRequiredCount = BACKUP_ROLLBACK_INPUT_LABELS.length;
+  const backupRollbackEvidenceReady = Boolean(backupRollbackEvidence?.ready);
+  const backupRollbackEvidenceDetail = backupRollbackEvidence?.evidence.generated_at
+    ? formatDateTime(backupRollbackEvidence.evidence.generated_at)
+    : backupRollbackEvidence?.evidence.reason ?? "not generated";
 
   return (
     <section className="panel wide">
@@ -4152,6 +4233,53 @@ function System() {
         <button title="Refresh rollback rehearsal status" onClick={loadRollbackRehearsal} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <button title="Generate rollback rehearsal report" onClick={createRollbackRehearsal} disabled={busy || !rollbackRehearsal?.cutover_plan.available || !rollbackCommandsTested || !rollbackResourcesPreserved}><RotateCcw size={16} />Generate</button>
         <span className="toolbar-status">{rollbackRehearsal?.report.path ?? rollbackRehearsal?.backup_root ?? "rollback status unavailable"}</span>
+      </div>
+      <div className="subsection-title">
+        <CheckCircle2 size={16} />
+        <h3>Backup/Migration/Rollback Evidence</h3>
+      </div>
+      <div className="metric-grid">
+        <Metric
+          label="Inputs"
+          value={`${backupRollbackInputReadyCount}/${backupRollbackRequiredCount}`}
+          detail={backupRollbackEvidenceReady ? "ready" : `${formatCount(backupRollbackEvidence?.blockers.length ?? 0)} blocker${(backupRollbackEvidence?.blockers.length ?? 0) === 1 ? "" : "s"}`}
+        />
+        <Metric
+          label="Evidence"
+          value={backupRollbackEvidence?.evidence.available ? backupRollbackEvidence.evidence.status ?? "recorded" : "missing"}
+          detail={backupRollbackEvidenceDetail}
+        />
+        <Metric
+          label="Checks"
+          value={formatCount(backupRollbackEvidence?.evidence.check_count ?? 0)}
+          detail={`${formatCount(backupRollbackEvidence?.evidence.required_check_count ?? 9)} required`}
+        />
+      </div>
+      <table>
+        <thead><tr><th>Artifact</th><th>Status</th><th>Selected path</th></tr></thead>
+        <tbody>
+          {BACKUP_ROLLBACK_INPUT_LABELS.map(([key, label]) => {
+            const item = backupRollbackEvidence?.inputs[key];
+            return (
+              <tr key={key}>
+                <td>{label}</td>
+                <td>{item?.available ? "ready" : "missing"}<small>{item?.name ?? item?.reason ?? "not loaded"}</small></td>
+                <td><code>{item?.path ?? item?.reason ?? "not loaded"}</code></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="stack">
+        <label className="evidence-item">
+          <input type="checkbox" checked={backupRollbackReviewed} onChange={(event) => setBackupRollbackReviewed(event.target.checked)} />
+          <span>Backup, restore, migration, cutover, and rollback artifacts reviewed</span>
+        </label>
+      </div>
+      <div className="toolbar">
+        <button title="Refresh backup/migration/rollback evidence status" onClick={loadBackupRollbackEvidence} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Generate backup/migration/rollback evidence" onClick={createBackupRollbackEvidence} disabled={busy || !backupRollbackEvidenceReady || !backupRollbackReviewed}><CheckCircle2 size={16} />Generate</button>
+        <span className="toolbar-status">{backupRollbackEvidence?.evidence.path ?? backupRollbackEvidence?.backup_root ?? "evidence status unavailable"}</span>
       </div>
       <div className="subsection-title">
         <Archive size={16} />

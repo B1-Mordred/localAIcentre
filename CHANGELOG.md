@@ -53,6 +53,7 @@
 - Added machine-readable backup/migration/rollback handoff evidence and a generator that verifies B1 backup/restore reports, old-stack backup, migration plans, cutover plan, and rollback rehearsal before Control Center can mark handoff ready.
 - Added a non-destructive rollback rehearsal report generator and Make target so rollback handoff proof is produced from the reviewed cutover plan instead of hand-authored JSON, with checksum validation to reject stale reports.
 - Added Control Center and admin API rollback rehearsal report generation from reviewed cutover plans without accepting arbitrary host paths or executing rollback commands.
+- Added Control Center and admin API backup/migration/rollback acceptance evidence generation from constrained backup-root artifacts, replacing the final shell-only handoff evidence step for normal operation.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.

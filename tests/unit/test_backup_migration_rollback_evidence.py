@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import tempfile
@@ -14,15 +13,9 @@ sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 sys.path.insert(0, str(SCRIPTS))
 
 from app import backup_restore  # noqa: E402
+from app import backup_migration_rollback as evidence  # noqa: E402
 from app import rollback_rehearsal  # noqa: E402
 import old_stack_backup  # noqa: E402
-
-
-spec = importlib.util.spec_from_file_location("b1_backup_migration_rollback_evidence", SCRIPTS / "backup_migration_rollback_evidence.py")
-evidence = importlib.util.module_from_spec(spec)
-sys.modules["b1_backup_migration_rollback_evidence"] = evidence
-assert spec.loader is not None
-spec.loader.exec_module(evidence)
 
 
 class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
@@ -49,7 +42,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         restore = backup_restore.restore_backup_to_alternate(data_root / "backups", "b1-unit", data_root / "restore-tests")
         return data_root / "backups" / "b1-unit", Path(restore["target"]) / "restore-report.json"
 
-    def create_old_stack_backup(self, root: Path) -> Path:
+    def create_old_stack_backup(self, root: Path, output_root: Path | None = None) -> Path:
         old_compose = root / "old-stack" / "docker-compose.yaml"
         old_compose.parent.mkdir(parents=True)
         old_compose.write_text("services: {}\n", encoding="utf-8")
@@ -63,7 +56,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             "include_containers": [],
         }
         scope_path = self.write_json(root / "old-stack-scope.json", scope)
-        return old_stack_backup.backup_old_stack(scope_path=scope_path, output_root=root / "backups", label="old-stack-unit")
+        return old_stack_backup.backup_old_stack(scope_path=scope_path, output_root=output_root or root / "backups", label="old-stack-unit")
 
     def create_plan_files(self, root: Path, old_stack_backup_dir: Path) -> tuple[Path, Path, Path, Path]:
         inventory_path = self.write_json(
@@ -75,7 +68,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             },
         )
         open_webui_plan = self.write_json(
-            root / "open-webui-plan.json",
+            root / "open-webui-migration-plan.json",
             {
                 "format": "b1-ai-hub-open-webui-migration-plan/v1",
                 "inputs": {
@@ -198,6 +191,39 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     cutover_plan=cutover_plan,
                     rollback_report=rollback_report,
                 )
+
+    def test_build_and_write_evidence_auto_selects_latest_backup_root_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            backup_root = b1_backup.parent
+            restore_root = restore_report.parents[1]
+            old_stack = self.create_old_stack_backup(root, output_root=backup_root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(backup_root, old_stack)
+
+            result = evidence.build_and_write_evidence(backup_root=backup_root, restore_root=restore_root)
+
+            output = backup_root / "acceptance" / "backup-migration-rollback.json"
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(Path(result["output"]), output)
+            self.assertTrue(output.is_file())
+            self.assertEqual(result["inputs"]["b1_backup"]["path"], str(b1_backup.resolve()))
+            self.assertEqual(result["inputs"]["restore_report"]["path"], str(restore_report.resolve()))
+            self.assertEqual(result["inputs"]["inventory"]["path"], str(inventory_path.resolve()))
+            self.assertEqual(result["inputs"]["old_stack_backup"]["path"], str(old_stack.resolve()))
+            self.assertEqual(result["inputs"]["open_webui_plan"]["path"], str(open_webui_plan.resolve()))
+            self.assertEqual(result["inputs"]["cutover_plan"]["path"], str(cutover_plan.resolve()))
+            self.assertEqual(result["inputs"]["rollback_report"]["path"], str(rollback_report.resolve()))
+
+    def test_status_reports_missing_inputs_without_host_path_submission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = evidence.status(root / "backups", root / "restore-tests")
+
+        self.assertEqual(report["format"], "b1-ai-hub-backup-migration-rollback-evidence-status/v1")
+        self.assertFalse(report["ready"])
+        self.assertIn("b1_backup", report["inputs"])
+        self.assertGreaterEqual(len(report["blockers"]), 1)
 
 
 if __name__ == "__main__":

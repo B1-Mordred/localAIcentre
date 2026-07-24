@@ -254,7 +254,15 @@ make rollback-rehearsal-report \
 
 The helper writes `$B1_BACKUP_ROOT/rollback-rehearsal.json` in the `b1-ai-hub-rollback-rehearsal/v1` format. It does not execute rollback commands. It validates that the cutover plan has no unresolved warnings, forbids old-stack deletion, lists preserved rollback resources, and includes a rollback phase before accepting the explicit operator confirmations. The report records the cutover-plan SHA-256, and final handoff evidence rejects the report if the cutover plan changes after the rehearsal.
 
-Then generate the handoff evidence:
+Then generate the handoff evidence from Control Center:
+
+```text
+Control Center -> System -> Backup/Migration/Rollback Evidence -> Generate
+```
+
+The web action calls `GET /admin/migration/backup-migration-rollback-evidence` for readiness and `POST /admin/migration/backup-migration-rollback-evidence` to write the report after the administrator confirms the artifacts were reviewed. It auto-selects the latest valid direct-child B1 backup, old-stack inventory, old-stack backup, Open WebUI migration plan, cutover plan, and rollback rehearsal report under `$B1_BACKUP_ROOT`; pairs the B1 backup with `$B1_RESTORE_TEST_ROOT/<backup-name>/restore-report.json`; and writes the fixed `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` file. It does not accept arbitrary host paths from the browser.
+
+The CLI helper remains available for explicitly selected artifacts:
 
 ```bash
 make backup-migration-rollback-evidence \

@@ -33,6 +33,7 @@ from . import artifact_retention
 from . import audit as audit_policy
 from . import artifacts as artifact_policy
 from . import backup_restore
+from . import backup_migration_rollback
 from . import backup_schedule
 from . import compose_override as compose_override_policy
 from . import rollback_rehearsal
@@ -245,6 +246,10 @@ class RollbackRehearsalCreate(BaseModel):
     rollback_commands_tested: bool = False
     old_resources_preserved: bool = False
     notes: str = Field(default="", max_length=2000)
+
+
+class BackupMigrationRollbackEvidenceCreate(BaseModel):
+    confirm_reviewed: bool = False
 
 
 class RuntimeActionRequest(BaseModel):
@@ -6046,6 +6051,50 @@ async def admin_rollback_rehearsal_create(payload: RollbackRehearsalCreate, auth
             "cutover_plan_sha256": report.get("cutover_plan_sha256"),
             "output": result.get("output"),
             "resource_count": preserved.get("resource_count"),
+        },
+    )
+    return result
+
+
+@app.get("/admin/migration/backup-migration-rollback-evidence")
+async def admin_backup_migration_rollback_evidence_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "backup/migration/rollback evidence status requires administrator role")
+    return await asyncio.to_thread(backup_migration_rollback.status, backup_root_path(), restore_test_root_path())
+
+
+@app.post("/admin/migration/backup-migration-rollback-evidence")
+async def admin_backup_migration_rollback_evidence_create(
+    payload: BackupMigrationRollbackEvidenceCreate,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "backup/migration/rollback evidence generation requires administrator role")
+    if payload.confirm_reviewed is not True:
+        raise HTTPException(status_code=400, detail="confirm_reviewed=true is required after reviewing backup, migration, cutover, and rollback artifacts")
+    try:
+        result = await asyncio.to_thread(
+            backup_migration_rollback.build_and_write_evidence,
+            backup_root=backup_root_path(),
+            restore_root=restore_test_root_path(),
+            backup_encryption_key=settings.master_key,
+        )
+    except backup_migration_rollback.EvidenceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    evidence = result["evidence"]
+    await record_audit_event(
+        auth,
+        "backup_migration_rollback_evidence.created",
+        target_type="backup_migration_rollback_evidence",
+        target_id=Path(str(result.get("output") or "")).name,
+        summary="Created backup/migration/rollback acceptance evidence",
+        metadata={
+            "status": evidence.get("status"),
+            "output": result.get("output"),
+            "required_checks": evidence.get("required_checks"),
+            "inputs": result.get("inputs"),
         },
     )
     return result
