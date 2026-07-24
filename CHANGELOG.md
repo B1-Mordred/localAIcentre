@@ -68,6 +68,7 @@
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.
 - Hardened model-download and remote-manifest execution so worker stream requests revalidate public DNS/import policy immediately before connecting, reject unsafe redirects, and ignore ambient proxy environment variables.
 - Hardened resumed model downloads so partial `206` responses must match the requested `Content-Range` and `Content-Length` before bytes are appended to staged blobs.
+- Hardened `b1-model-client` resumed blob sync with exact `Content-Range` parsing before appending server bytes to a local partial cache file.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
 - Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.

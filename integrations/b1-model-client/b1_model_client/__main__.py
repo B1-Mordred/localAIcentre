@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -16,6 +17,7 @@ from typing import Any
 
 CHUNK_SIZE = 1024 * 1024
 CACHE_STATE_VERSION = "b1-model-client-cache/v1"
+CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
 
 
 def request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -283,6 +285,44 @@ def expected_etag(sha256: str) -> str:
     return f'"sha256:{sha256.lower()}"'
 
 
+def header_value(headers: Any, name: str) -> str:
+    value = headers.get(name) if hasattr(headers, "get") else None
+    if value is None and hasattr(headers, "items"):
+        lowered = name.lower()
+        for key, candidate in headers.items():
+            if str(key).lower() == lowered:
+                value = candidate
+                break
+    return str(value).strip() if value is not None else ""
+
+
+def validate_blob_response_headers(sha256: str, expected_size: int, status: int, headers: Any, resume_from: int) -> None:
+    etag = header_value(headers, "ETag")
+    if etag and etag != expected_etag(sha256):
+        raise RuntimeError(f"{sha256}: unexpected ETag {etag}")
+    checksum = header_value(headers, "X-Checksum-SHA256")
+    if checksum and checksum.lower() != sha256:
+        raise RuntimeError(f"{sha256}: unexpected X-Checksum-SHA256 {checksum}")
+    length = header_value(headers, "Content-Length")
+    if length:
+        try:
+            actual_length = int(length)
+        except ValueError as exc:
+            raise RuntimeError(f"{sha256}: invalid Content-Length {length}") from exc
+        expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
+        if actual_length != expected_remaining:
+            raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {actual_length}")
+    if not (resume_from and status == 206):
+        return
+    content_range = header_value(headers, "Content-Range")
+    match = CONTENT_RANGE_RE.fullmatch(content_range)
+    if not match:
+        raise RuntimeError(f"{sha256}: unexpected Content-Range {content_range or '<missing>'}")
+    start, end, total = (int(part) for part in match.groups())
+    if start != resume_from or end != expected_size - 1 or total != expected_size:
+        raise RuntimeError(f"{sha256}: unexpected Content-Range {content_range}; expected bytes {resume_from}-{expected_size - 1}/{expected_size}")
+
+
 def download_blob(
     base_url: str,
     token: str | None,
@@ -335,21 +375,7 @@ def download_blob(
             if resume_from and status != 206:
                 partial.unlink(missing_ok=True)
                 resume_from = 0
-            etag = response.headers.get("ETag")
-            if etag and etag != expected_etag(sha256):
-                raise RuntimeError(f"{sha256}: unexpected ETag {etag}")
-            checksum = response.headers.get("X-Checksum-SHA256")
-            if checksum and checksum.lower() != sha256:
-                raise RuntimeError(f"{sha256}: unexpected X-Checksum-SHA256 {checksum}")
-            length = response.headers.get("Content-Length")
-            if length and length.isdigit():
-                expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
-                if int(length) != expected_remaining:
-                    raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {length}")
-            if resume_from and status == 206:
-                content_range = response.headers.get("Content-Range", "")
-                if not content_range.startswith(f"bytes {resume_from}-") or not content_range.endswith(f"/{expected_size}"):
-                    raise RuntimeError(f"{sha256}: unexpected Content-Range {content_range}")
+            validate_blob_response_headers(sha256, expected_size, status, getattr(response, "headers", {}), resume_from)
             mode = "ab" if resume_from and status == 206 else "wb"
             with partial.open(mode) as handle:
                 while True:

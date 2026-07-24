@@ -387,6 +387,111 @@ class ModelClientTests(unittest.TestCase):
         finally:
             client.urllib.request.urlopen = original
 
+    def test_download_blob_accepts_exact_resumed_content_range(self) -> None:
+        partial_payload = b"hello-"
+        remaining_payload = b"world"
+        payload = partial_payload + remaining_payload
+        digest = hashlib.sha256(payload).hexdigest()
+        seen_ranges: list[str | None] = []
+
+        class FakeResponse:
+            status = 206
+
+            def __init__(self) -> None:
+                self.headers = {
+                    "ETag": f'"sha256:{digest}"',
+                    "X-Checksum-SHA256": digest,
+                    "Content-Length": str(len(remaining_payload)),
+                    "Content-Range": f"bytes {len(partial_payload)}-{len(payload) - 1}/{len(payload)}",
+                }
+                self.offset = 0
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                if self.offset >= len(remaining_payload):
+                    return b""
+                end = len(remaining_payload) if size < 0 else min(len(remaining_payload), self.offset + size)
+                chunk = remaining_payload[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+            headers = {key.lower(): value for key, value in request.header_items()}
+            seen_ranges.append(headers.get("range"))
+            return FakeResponse()
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "blobs" / digest
+                target.parent.mkdir(parents=True)
+                target.with_suffix(".partial").write_bytes(partial_payload)
+                result = client.download_blob("http://modelhub", None, digest, len(payload), target)
+                self.assertEqual(result["status"], "downloaded")
+                self.assertEqual(target.read_bytes(), payload)
+                self.assertFalse(target.with_suffix(".partial").exists())
+        finally:
+            client.urllib.request.urlopen = original
+
+        self.assertEqual(seen_ranges, [f"bytes={len(partial_payload)}-"])
+
+    def test_download_blob_rejects_mismatched_resumed_content_range_before_append(self) -> None:
+        partial_payload = b"hello-"
+        remaining_payload = b"world"
+        payload = partial_payload + remaining_payload
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class FakeResponse:
+            status = 206
+
+            def __init__(self) -> None:
+                self.headers = {
+                    "ETag": f'"sha256:{digest}"',
+                    "X-Checksum-SHA256": digest,
+                    "Content-Length": str(len(remaining_payload)),
+                    "Content-Range": f"bytes {len(partial_payload)}-99/{len(payload)}",
+                }
+                self.offset = 0
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                raise AssertionError("body should not be read when Content-Range is invalid")
+
+        def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+            return FakeResponse()
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "blobs" / digest
+                target.parent.mkdir(parents=True)
+                partial = target.with_suffix(".partial")
+                partial.write_bytes(partial_payload)
+                with self.assertRaisesRegex(RuntimeError, "unexpected Content-Range"):
+                    client.download_blob("http://modelhub", None, digest, len(payload), target)
+                self.assertEqual(partial.read_bytes(), partial_payload)
+                self.assertFalse(target.exists())
+        finally:
+            client.urllib.request.urlopen = original
+
     def test_download_blob_restarts_when_resume_range_is_unsatisfiable(self) -> None:
         payload = b"restart-range"
         digest = hashlib.sha256(payload).hexdigest()
