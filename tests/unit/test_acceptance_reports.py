@@ -664,6 +664,29 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("deployment image evidence is unavailable", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_without_source_control_evidence(self) -> None:
+        report = sample_report(source_control={"available": False, "source": "unavailable", "reason": "git metadata not present"})
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["source_control_ready"])
+        self.assertIn("source-control evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_invalid_source_commit(self) -> None:
+        report = sample_report(
+            source_control={
+                "available": True,
+                "source": "environment",
+                "source_commit": "not-a-commit",
+                "source_ref": "release/test",
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["source_control_ready"])
+        self.assertIn("source-control evidence lacks a valid 40-character commit", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_without_cutover_preservation(self) -> None:
         report = sample_report(cutover_preservation={"available": False, "reason": "no cutover plan"})
 

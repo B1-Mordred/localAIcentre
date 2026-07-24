@@ -34,6 +34,7 @@
 - Added machine-readable Voicebox remote compatibility evidence ingestion and an opt-in live harness for native HTTP proxying, voice-profile lifecycle, scheduler-routed speech, and WebSocket-or-pinned-limitation proof.
 - Added machine-readable deployed security acceptance evidence ingestion and an opt-in live harness for auth rejection, under-scoped rejection, CORS/CSRF, ComfyUI route-policy, SSRF, traversal, artifact authorization, and log-redaction proof.
 - Added acceptance-report freshness gates so live evidence must be generated within 72 hours of the handoff report and cannot be future-dated beyond clock-skew tolerance.
+- Added acceptance-report source-control gating so operator handoff now requires a valid 40-character source commit in the generated report.
 - Added machine-readable live stack smoke evidence output and acceptance-report gating for health, model listing, async TTS, SSE, and artifact download checks.
 - Hardened native ComfyUI custom-node mutating route passthrough so trusted prefixes must also be declared on an approved custom-node commit pin.
 - Hardened ComfyUI custom-node approval so approved pins that expose mutating route prefixes must include a reviewed dependency-lock SHA-256 digest.

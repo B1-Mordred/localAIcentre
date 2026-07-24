@@ -917,6 +917,12 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         "@sha256:" in str(image) for image in recent_image_refs
     ):
         blockers.append("deployment image evidence lacks image IDs or pinned digests")
+    source_control = report.get("source_control") if isinstance(report.get("source_control"), dict) else {}
+    source_commit = str(source_control.get("source_commit") or source_control.get("commit") or "").lower()
+    if source_control.get("available") is not True:
+        blockers.append("source-control evidence is unavailable")
+    elif not re.fullmatch(r"[a-f0-9]{40}", source_commit):
+        blockers.append("source-control evidence lacks a valid 40-character commit")
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
@@ -1605,6 +1611,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     backup_evidence = (
         live_evidence.get("backup_migration_rollback") if isinstance(live_evidence.get("backup_migration_rollback"), dict) else {}
     )
+    source_control = report.get("source_control") if isinstance(report.get("source_control"), dict) else {}
+    source_commit = str(source_control.get("source_commit") or source_control.get("commit") or "").lower()
+    source_control_ready = source_control.get("available") is True and bool(re.fullmatch(r"[a-f0-9]{40}", source_commit))
     freshness_failures = _live_evidence_freshness_failures(report)
     smoke_evidence_ready = (
         smoke_evidence.get("available") is True
@@ -1681,6 +1690,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "status": report.get("status"),
         "runtime_deployment_mode": report.get("runtime_deployment_mode"),
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
+        "source_control_ready": source_control_ready,
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0
