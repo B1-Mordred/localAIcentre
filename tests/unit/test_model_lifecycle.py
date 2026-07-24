@@ -342,6 +342,25 @@ class ModelLifecycleTests(unittest.TestCase):
                 source_type="huggingface",
             )
 
+    def test_download_request_policy_rechecks_current_dns_resolution(self) -> None:
+        original_resolver = security.resolve_hostname_addresses
+        security.resolve_hostname_addresses = lambda hostname, port: ["127.0.0.1"]
+        try:
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "not allowed by import policy"):
+                model_lifecycle.download_request_url_allowed(
+                    "https://downloads.example.org/model.gguf",
+                    "https://downloads.example.org/model.gguf",
+                    source_type="direct-url",
+                )
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "not allowed by import policy"):
+                model_lifecycle.download_request_url_allowed(
+                    "https://huggingface.co/org/model/resolve/main/model.safetensors",
+                    "https://huggingface.co/org/model/resolve/main/model.safetensors",
+                    source_type="huggingface",
+                )
+        finally:
+            security.resolve_hostname_addresses = original_resolver
+
     def test_download_plan_blocks_multi_file_without_base_url(self) -> None:
         payload = manifest_payload("5" * 64, 12, source_url="https://downloads.example.org/model.gguf", source_type="direct-url")
         payload["files"] = [

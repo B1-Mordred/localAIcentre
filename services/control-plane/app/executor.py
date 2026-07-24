@@ -1640,8 +1640,10 @@ class ModelDownloadRunner:
         source_url = str(file_plan["source_url"])
         request_url = source_url
         redirect_count = 0
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        source_type = str(file_plan.get("source_type") or "direct-url")
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             while True:
+                request_url = model_lifecycle.download_request_url_allowed(source_url, request_url, source_type=source_type)
                 headers: dict[str, str] = {}
                 if model_lifecycle.send_download_authorization(source_url, request_url):
                     headers.update(auth_headers or {})
@@ -1656,7 +1658,7 @@ class ModelDownloadRunner:
                             source_url,
                             request_url,
                             response.headers.get("location", ""),
-                            source_type=str(file_plan.get("source_type") or "direct-url"),
+                            source_type=source_type,
                         )
                         continue
                     if existing and response.status_code == 200:

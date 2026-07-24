@@ -1677,6 +1677,67 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hf_read_token")
             self.assertNotIn("hf_read_token", repr(fake.model_download))
 
+    def test_model_download_runner_revalidates_source_url_before_streaming(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"runtime safe check"
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_rebind",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": 0,
+        }
+
+        class FakeStreamContext:
+            async def __aenter__(self) -> Any:
+                raise AssertionError("stream should not open for an unsafe runtime URL")
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return FakeStreamContext()
+
+        original_client = executor.httpx.AsyncClient
+        original_resolver = security.resolve_hostname_addresses
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        security.resolve_hostname_addresses = lambda hostname, port: ["127.0.0.1"]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(root / "models" / "blobs" / digest),
+                "partial_path": str(root / "models" / "blobs" / ".partial" / f"{digest}.partial"),
+            }
+
+            with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "not allowed by import policy"):
+                asyncio.run(runner.download_file("modeldl_rebind", file_plan, 0, "file_1"))
+
+            self.assertEqual(FakeAsyncClient.calls, [])
+
     def test_model_download_runner_follows_safe_huggingface_redirect_without_forwarding_token(self) -> None:
         if secret_store is None or secret_store.AESGCM is None:
             self.skipTest("cryptography is not installed in this lightweight test environment")

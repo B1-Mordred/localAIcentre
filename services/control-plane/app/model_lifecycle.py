@@ -1223,22 +1223,26 @@ def redirect_url_allowed(source_url: str, current_url: str, location: str, *, so
     if not location:
         raise ModelLifecycleError("download redirect is missing a Location header")
     redirected = urljoin(current_url, location)
-    parsed = urlparse(redirected)
+    return download_request_url_allowed(source_url, redirected, source_type=source_type)
+
+
+def download_request_url_allowed(source_url: str, request_url: str, *, source_type: str) -> str:
+    parsed = urlparse(request_url)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise ModelLifecycleError("download redirect target is not a public HTTPS URL")
+        raise ModelLifecycleError("download request target is not a public HTTPS URL")
     if parsed.username or parsed.password:
-        raise ModelLifecycleError("download redirect target contains credentials")
-    hostname = _download_hostname(redirected)
-    if not is_safe_public_import_url(redirected):
-        raise ModelLifecycleError("download redirect target is not allowed by import policy")
+        raise ModelLifecycleError("download request target contains credentials")
+    hostname = _download_hostname(request_url)
+    if not is_safe_public_import_url(request_url):
+        raise ModelLifecycleError("download request target is not allowed by import policy")
     if source_type == "huggingface":
         if not _is_huggingface_download_host(hostname):
             raise ModelLifecycleError("huggingface download redirected to an unapproved host")
-        return redirected
+        return request_url
     source_hostname = _download_hostname(source_url)
     if hostname != source_hostname:
-        raise ModelLifecycleError("download redirect target host is not the original source host")
-    return redirected
+        raise ModelLifecycleError("download request target host is not the original source host")
+    return request_url
 
 
 def send_download_authorization(source_url: str, request_url: str) -> bool:

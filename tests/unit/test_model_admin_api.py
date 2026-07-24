@@ -812,6 +812,53 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["url"], "https://manifests.example.org/chat-small.manifest.json")
         self.assertIn("application/json", FakeAsyncClient.calls[0]["headers"]["Accept"])
 
+    def test_remote_manifest_fetch_revalidates_url_before_streaming(self) -> None:
+        class FakeStreamContext:
+            async def __aenter__(self) -> Any:
+                raise AssertionError("stream should not open for an unsafe manifest URL")
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            def stream(self, method: str, url: str, headers: dict[str, str]) -> FakeStreamContext:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return FakeStreamContext()
+
+        original_client = main.httpx.AsyncClient
+        original_resolver = security.resolve_hostname_addresses
+        FakeAsyncClient.calls = []
+        resolve_calls = 0
+
+        def rebinding_resolver(hostname: str, port: int | None) -> list[str]:
+            nonlocal resolve_calls
+            resolve_calls += 1
+            return ["93.184.216.34"] if resolve_calls == 1 else ["127.0.0.1"]
+
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        security.resolve_hostname_addresses = rebinding_resolver
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
+        with self.assertRaises(main.HTTPException) as blocked:
+            asyncio.run(main.fetch_remote_manifest_payload("https://manifests.example.org/chat-small.manifest.json"))
+
+        self.assertEqual(blocked.exception.status_code, 422)
+        self.assertIn("not allowed by import policy", str(blocked.exception.detail))
+        self.assertGreaterEqual(resolve_calls, 2)
+        self.assertEqual(FakeAsyncClient.calls, [])
+
     def test_remote_manifest_url_rejects_credentials_and_conflicting_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))

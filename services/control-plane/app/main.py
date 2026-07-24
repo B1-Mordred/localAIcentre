@@ -3916,8 +3916,12 @@ async def fetch_remote_manifest_payload(manifest_url: str | None) -> dict[str, A
     redirect_count = 0
     body = bytearray()
     timeout = httpx.Timeout(30.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         while True:
+            try:
+                request_url = model_lifecycle.download_request_url_allowed(source_url, request_url, source_type="direct-url")
+            except model_lifecycle.ModelLifecycleError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             async with client.stream("GET", request_url, headers={"Accept": "application/json, application/schema+json;q=0.9, text/plain;q=0.5"}) as response:
                 if response.status_code in model_lifecycle.DOWNLOAD_REDIRECT_STATUS_CODES:
                     redirect_count += 1
