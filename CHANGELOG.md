@@ -61,6 +61,7 @@
 - Enforced manifest `permissions.installable_by` on model install planning, upstream blob staging, and final install so non-admin model-management clients cannot prepare or mutate admin-reserved models.
 - Restricted `/admin/models*` to administrator/operator roles in addition to model or storage scopes so public/service model-read clients cannot inspect or mutate Control Center model-management state.
 - Restricted API client and Model Hub client management routes to administrators so operators and service clients cannot list, create, update, or revoke credentials even if presented with broad admin scopes.
+- Required administrator role and active maintenance mode before applying a PostgreSQL logical import from backup while preserving operator-accessible dry-run import planning.
 - Added structured Control Center runtime capability rows for modalities, operations, GPU/CPU residency, OpenAI/native API support, configured state, and local/external-data policy.
 - Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.
 - Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.

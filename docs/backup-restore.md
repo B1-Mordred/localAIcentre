@@ -146,10 +146,17 @@ curl -X POST https://api.ai.b1.germering/admin/backups/20260722-120000/postgres-
   -d '{"apply": false}'
 ```
 
-Applying the logical import upserts the exported rows into the current control-plane database. Run migrations first so the target schema is current, then apply the import. The import is intentionally gated by an explicit backup-name confirmation:
+Applying the logical import upserts the exported rows into the current control-plane database. Run migrations first so the target schema is current, enable maintenance mode, then apply the import with an administrator credential. The import is intentionally gated by an explicit backup-name confirmation:
 
 ```bash
 make db-migrate
+```
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/maintenance \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true, "reason": "PostgreSQL restore import"}'
 ```
 
 ```bash

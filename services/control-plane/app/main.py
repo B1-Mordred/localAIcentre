@@ -1836,13 +1836,21 @@ def queued_runner_pause_active() -> bool:
 
 
 def require_maintenance_enabled_for_update(action: str) -> None:
+    require_maintenance_enabled("update", action)
+
+
+def require_maintenance_enabled_for_restore(action: str) -> None:
+    require_maintenance_enabled("backup", action)
+
+
+def require_maintenance_enabled(category: str, action: str) -> None:
     state = current_maintenance_state()
     if state["enabled"]:
         return
     raise HTTPException(
         status_code=409,
         detail={
-            "message": f"maintenance mode must be enabled before update {action}",
+            "message": f"maintenance mode must be enabled before {category} {action}",
             "action": action,
         },
     )
@@ -6767,8 +6775,11 @@ async def admin_backup_postgres_import(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "storage:write")
-    if payload.apply and payload.confirm_backup_name != backup_name:
-        raise HTTPException(status_code=422, detail="confirm_backup_name must match backup_name when apply=true")
+    if payload.apply:
+        require_administrator(auth, "PostgreSQL backup import apply requires administrator role")
+        require_maintenance_enabled_for_restore("postgres-import apply")
+        if payload.confirm_backup_name != backup_name:
+            raise HTTPException(status_code=422, detail="confirm_backup_name must match backup_name when apply=true")
     try:
         manifest = backup_restore.load_manifest(backup_restore.backup_dir_for_name(backup_root_path(), backup_name))
         dump = manifest.get("postgres_dump")

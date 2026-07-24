@@ -64,6 +64,8 @@ Model removal is staged. Removing a model record moves runtime views to quaranti
 
 Backup restore is limited to alternate restore roots and performs explicit tar member writes instead of `extractall`. It rejects absolute paths, traversal, Windows drive paths, unmanifested files, duplicate file entries, symlinks, hardlinks, device nodes, pre-existing symlinked destinations, and checksum mismatches before reporting a restore test as successful.
 
+PostgreSQL logical import from a tested backup is split into planning and apply. Operators with `storage:write` can produce a dry-run plan after restore-test extraction, but `apply=true` requires administrator role, maintenance mode, and matching `confirm_backup_name` before any rows are upserted.
+
 Workflow-backed media jobs are not trusted just because they came from Media Studio. The control plane reloads the published workflow record, checks role visibility and dependency readiness, enforces the workflow's model/runtime metadata, rejects parameters outside the declared JSON Schema, validates base64 media fields, caps inline media payloads, and enforces resource limits before queueing the durable job.
 
 Custom ComfyUI node code is fail-closed. Workflow manifests may declare `node` dependencies only with lowercase 40-character git commit pins, and dependency readiness checks those pins against the read-only `$B1_COMFYUI_NODE_PIN_REGISTRY`. Registry entries must use HTTPS repository URLs without credentials, must be explicitly `approved`, and may include dependency-lock SHA-256 metadata so dependency changes are visible before operators publish workflows that require custom code.
