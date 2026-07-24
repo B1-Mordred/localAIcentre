@@ -241,6 +241,19 @@ class RuntimeAdapterTests(unittest.TestCase):
                 self.assertEqual(normalized, "")
                 self.assertIsNotNone(error)
 
+    def test_external_runtime_base_url_rejects_encoded_path_controls(self) -> None:
+        for url in (
+            "https://api.example.com/v1/%2e%2e/admin",
+            "https://api.example.com/v1/%2E/admin",
+            "https://api.example.com/v1/safe%2Fadmin",
+            "https://api.example.com/v1/safe%5Cadmin",
+            "https://api.example.com/v1/%00admin",
+        ):
+            with self.subTest(url=url):
+                normalized, error = validate_external_runtime_base_url(url)
+                self.assertEqual(normalized, "")
+                self.assertEqual(error, "external runtime base URL path must not contain relative or encoded path-control segments")
+
     def test_external_runtime_base_url_validation_rejects_private_dns_answers(self) -> None:
         self.patch_resolver(["203.0.113.10", "127.0.0.1"])
 

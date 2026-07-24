@@ -4,7 +4,7 @@ import ipaddress
 import socket
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from .catalog import CatalogAlias, operation_is_supported
 
@@ -49,6 +49,19 @@ def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
     return addresses
 
 
+def external_runtime_path_is_safe(path: str) -> bool:
+    path_parts = [part for part in path.rstrip("/").split("/") if part]
+    for part in path_parts:
+        decoded = unquote(part)
+        if decoded in {".", ".."}:
+            return False
+        if "/" in decoded or "\\" in decoded:
+            return False
+        if any(ord(character) < 32 for character in decoded):
+            return False
+    return True
+
+
 def validate_external_runtime_base_url(value: str, *, resolver: HostnameResolver | None = None) -> tuple[str, str | None]:
     raw = value.strip()
     if not raw:
@@ -68,9 +81,8 @@ def validate_external_runtime_base_url(value: str, *, resolver: HostnameResolver
         return "", "external runtime base URL has an invalid port"
 
     path = parsed.path.rstrip("/")
-    path_parts = [part for part in path.split("/") if part]
-    if any(part in {".", ".."} for part in path_parts):
-        return "", "external runtime base URL path must not contain relative segments"
+    if not external_runtime_path_is_safe(path):
+        return "", "external runtime base URL path must not contain relative or encoded path-control segments"
 
     hostname = parsed.hostname.lower().rstrip(".")
     try:
