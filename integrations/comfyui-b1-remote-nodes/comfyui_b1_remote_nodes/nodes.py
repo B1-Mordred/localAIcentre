@@ -368,7 +368,7 @@ def require_media_reference(value: str, kind: str) -> str | dict[str, Any]:
     if not reference:
         raise B1RemoteNodeError(f"{kind} reference is required")
     if reference.startswith("/artifacts/"):
-        return reference
+        return require_internal_artifact_path(reference)
     if reference.startswith("data:"):
         validate_data_url_reference(reference, kind)
         return reference
@@ -418,6 +418,13 @@ def safe_multipart_header_value(value: str | None, fallback: str, limit: int = 2
     return normalized[:limit]
 
 
+def safe_mime_type(value: str | None, fallback: str = "application/octet-stream") -> str:
+    normalized = (value or fallback).split(";", 1)[0].strip().lower() or fallback
+    if not MIME_TYPE_PATTERN.fullmatch(normalized):
+        raise B1RemoteNodeError("media MIME type is unsafe")
+    return normalized
+
+
 def safe_filename(value: str | None, fallback: str) -> str:
     leaf = (value or "").replace("\\", "/").split("/")[-1]
     cleaned = SAFE_FILENAME_PATTERN.sub("_", leaf).strip("._-")
@@ -445,7 +452,7 @@ def multipart_form_data(
     for field_name, filename, content_type, content in files:
         safe_field = safe_form_name(field_name)
         safe_file = safe_filename(filename, "upload.bin")
-        safe_content_type = safe_multipart_header_value(content_type, "application/octet-stream")
+        safe_content_type = safe_mime_type(content_type)
         parts.append(f"--{marker}\r\n".encode("ascii"))
         parts.append(f'Content-Disposition: form-data; name="{safe_field}"; filename="{safe_file}"\r\n'.encode("ascii"))
         parts.append(f"Content-Type: {safe_content_type}\r\n\r\n".encode("ascii"))
@@ -458,6 +465,22 @@ def multipart_form_data(
 def extension_for_content_type(content_type: str | None, fallback: str = ".bin") -> str:
     normalized = (content_type or "").split(";", 1)[0].strip().lower()
     return mimetypes.guess_extension(normalized) or fallback
+
+
+def require_internal_artifact_path(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or not parsed.path.startswith("/artifacts/"):
+        raise B1RemoteNodeError("artifact_url must be an internal /artifacts path without query or fragment")
+    if "\\" in parsed.path or any(char.isspace() or ord(char) < 32 for char in parsed.path):
+        raise B1RemoteNodeError("artifact_url path is unsafe")
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) < 2 or parts[0] != "artifacts":
+        raise B1RemoteNodeError("artifact_url must name an artifact below /artifacts")
+    for part in parts:
+        decoded = urllib.parse.unquote(part)
+        if not part or decoded in {".", ".."} or "/" in decoded or "\\" in decoded or any(ord(char) < 32 for char in decoded):
+            raise B1RemoteNodeError("artifact_url path is unsafe")
+    return parsed.path
 
 
 def write_download(content: bytes, headers: dict[str, str], preferred_name: str | None = None) -> tuple[str, int, str]:
@@ -877,18 +900,25 @@ class B1UploadMediaBase64:
     CATEGORY = "B1 AI Hub"
 
     def run(self, field_name: str, mime_type: str, filename: str, base64_data: str):
-        content = decode_base64_payload(base64_data, field_name or "media")
+        field = safe_form_name(field_name or "media")
+        content_type = safe_mime_type(mime_type)
+        expected_kind = expected_media_kind(field)
+        if expected_kind and not content_type.startswith(f"{expected_kind}/"):
+            raise B1RemoteNodeError(f"{field} upload must use a {expected_kind}/ media type")
+        default_filename = f"{field}{extension_for_content_type(content_type)}"
+        upload_filename = safe_filename(filename, default_filename)
+        content = decode_base64_payload(base64_data, field)
         upload = request_json(
             "/v1/media/uploads",
             method="POST",
             data=content,
             headers={
-                "Content-Type": mime_type,
-                "X-B1-Field": field_name,
-                "X-B1-Filename": filename,
+                "Content-Type": content_type,
+                "X-B1-Field": field,
+                "X-B1-Filename": upload_filename,
             },
         )
-        reference = staged_reference_from_json(upload, field_name or "media")
+        reference = staged_reference_from_json(upload, field)
         return (json_output(reference), json_output(upload))
 
 
@@ -957,11 +987,9 @@ class B1DownloadArtifact:
     CATEGORY = "B1 AI Hub"
 
     def run(self, artifact_url: str, filename: str = ""):
-        parsed = urllib.parse.urlsplit(artifact_url.strip())
-        if parsed.scheme or parsed.netloc or not parsed.path.startswith("/artifacts/"):
-            raise B1RemoteNodeError("artifact_url must be an internal /artifacts path")
-        content, headers = request_bytes(parsed.path, method="GET", timeout_seconds=1800)
-        preferred = filename.strip() or parsed.path.rsplit("/", 1)[-1]
+        path = require_internal_artifact_path(artifact_url)
+        content, headers = request_bytes(path, method="GET", timeout_seconds=1800)
+        preferred = filename.strip() or path.rsplit("/", 1)[-1]
         return write_download(content, headers, preferred)
 
 

@@ -336,6 +336,16 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.patch_attr("request_bytes", fake_request_bytes)
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.B1DownloadArtifact().run("https://api.test.local/artifacts/runtime/job/0.png", "bad.png")
+        for value in [
+            "/artifacts/runtime/job/0.png?token=secret",
+            "/artifacts/runtime/job/0.png#fragment",
+            "/artifacts/runtime/../secret.png",
+            "/artifacts/runtime/%2e%2e/secret.png",
+            "/artifacts/runtime/%2Fsecret.png",
+        ]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.B1DownloadArtifact().run(value, "bad.png")
 
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
             file_path, byte_count, digest = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
@@ -352,6 +362,8 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             nodes.require_media_reference("https://example.test/image.png", "image")
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.require_media_reference("{\"path\":\"/home/user/private.png\"}", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("/artifacts/images/job/0.png?token=secret", "image")
         self.assertEqual(nodes.require_media_reference("/artifacts/images/job/0.png", "image"), "/artifacts/images/job/0.png")
         self.assertEqual(nodes.require_media_reference("data:image/png;base64,AAAA", "image"), "data:image/png;base64,AAAA")
         reference = staged_reference()
@@ -408,6 +420,34 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(calls[0]["data"], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(calls[0]["headers"]["Content-Type"], "image/png")
         self.assertEqual(calls[0]["headers"]["X-B1-Field"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Filename"], "input.png")
+
+    def test_upload_media_normalizes_headers_and_rejects_unsafe_values(self) -> None:
+        reference = staged_reference()
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"reference": reference}
+
+        self.patch_attr("request_json", fake_request_json)
+        nodes.B1UploadMediaBase64().run(
+            "image",
+            "IMAGE/PNG; charset=utf-8",
+            "../../unsafe name.png",
+            nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+        )
+
+        self.assertEqual(calls[0]["headers"]["Content-Type"], "image/png")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Filename"], "unsafe_name.png")
+
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("bad\r\nfield", "image/png", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "image/png\r\nX-Bad: yes", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "text/plain", "input.png", "AAAA")
 
     def test_image_to_image_submits_staged_reference_object(self) -> None:
         reference = staged_reference()
