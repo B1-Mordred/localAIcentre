@@ -2528,6 +2528,38 @@ def require_comfyui_passthrough_allowed(path: str, method: str) -> None:
     )
 
 
+def require_comfyui_websocket_allowed(path: str) -> str:
+    normalized_path = normalize_comfyui_passthrough_path(path)
+    path_lower = normalized_path.lower()
+    if path_lower == "ws":
+        return normalized_path
+    if any(path_lower.startswith(prefix) for prefix in COMFYUI_DENIED_PREFIXES):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "comfyui_route_denied", "message": "ComfyUI WebSocket route is blocked by policy", "path": normalized_path},
+        )
+    tokens = {part for part in path_lower.replace("-", "/").replace("_", "/").split("/") if part}
+    if tokens & COMFYUI_DENIED_MUTATION_TOKENS:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "comfyui_route_denied", "message": "ComfyUI custom-node management WebSocket route is blocked by policy", "path": normalized_path},
+        )
+    approved_prefixes = approved_comfyui_route_prefixes()
+    for prefix in settings.comfyui_trusted_route_prefixes:
+        if not path_matches_prefix(normalized_path, prefix):
+            continue
+        if any(path_matches_prefix(normalized_path, approved_prefix) for approved_prefix in approved_prefixes):
+            return normalized_path
+    raise HTTPException(
+        status_code=403,
+        detail={"code": "comfyui_route_denied", "message": "ComfyUI WebSocket compatibility route is not approved", "path": normalized_path},
+    )
+
+
+def comfyui_websocket_scope_for_path(path: str) -> str:
+    return "jobs:read" if normalize_comfyui_passthrough_path(path).lower() == "ws" else "jobs:write"
+
+
 async def record_comfyui_native_cancel_request(prompt_ids: set[str] | None, reason: str) -> dict[str, Any]:
     rows = await database.list_jobs(limit=500, runtime="comfyui")
     matched: list[dict[str, Any]] = []
@@ -8085,12 +8117,18 @@ async def compatibility_ws(path: str, websocket: WebSocket) -> None:
         await bridge_voicebox_websocket(websocket, f"/{path}")
         return
     if compatibility.startswith("comfyui"):
-        if not await require_websocket_compatibility_access(websocket, compatibility, "jobs:read"):
+        try:
+            normalized_path = require_comfyui_websocket_allowed(path)
+            required_scope = comfyui_websocket_scope_for_path(normalized_path)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+        if not await require_websocket_compatibility_access(websocket, compatibility, required_scope):
             return
         await bridge_runtime_websocket(
             websocket,
             base_url=settings.comfyui_url,
-            path=f"/{path}",
+            path=f"/{normalized_path}",
             log_name="comfyui",
             text_event_handler=persist_comfyui_ws_event,
         )

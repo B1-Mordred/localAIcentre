@@ -881,6 +881,77 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertFalse(websocket.accepted)
         self.assertEqual(websocket.closed, [1008])
 
+    def test_comfyui_websocket_catchall_blocks_management_routes_before_proxying(self) -> None:
+        def connect(*_: Any, **__: Any) -> FakeConnect:
+            raise AssertionError("blocked ComfyUI WebSocket route must not be proxied")
+
+        main.websocket_connect = connect  # type: ignore[assignment]
+
+        for path in ("manager/ws", "customnode/events", "api/customnode/ws", "b1/runtime/ws"):
+            with self.subTest(path=path):
+                websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
+
+                asyncio.run(main.compatibility_ws(path, websocket))
+
+                self.assertFalse(websocket.accepted)
+                self.assertEqual(websocket.closed, [1008])
+
+    def test_comfyui_custom_websocket_requires_write_scope_trusted_prefix_and_pin(self) -> None:
+        async def read_only_authenticate(_: str | None = None) -> Any:
+            return main.AuthContext("client_1", main.Role.SERVICE, frozenset({"jobs:read"}))
+
+        main.authenticate = read_only_authenticate  # type: ignore[assignment]
+        main.settings = replace(main.settings, comfyui_trusted_route_prefixes=("trusted/custom",))
+        main.approved_node_pins = {}
+        websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
+
+        asyncio.run(main.compatibility_ws("trusted/custom/ws", websocket))
+
+        self.assertFalse(websocket.accepted)
+        self.assertEqual(websocket.closed, [1008])
+
+        main.approved_node_pins = {
+            ("comfyui-custom-ws", "a" * 40): main.ApprovedNodePin(
+                id="comfyui-custom-ws",
+                repository_url="https://github.com/example/comfyui-custom-ws",
+                commit="a" * 40,
+                allowed_route_prefixes=["trusted/custom"],
+            )
+        }
+        websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
+
+        asyncio.run(main.compatibility_ws("trusted/custom/ws", websocket))
+
+        self.assertFalse(websocket.accepted)
+        self.assertEqual(websocket.closed, [1008])
+
+        async def read_write_authenticate(_: str | None = None) -> Any:
+            return main.AuthContext("client_1", main.Role.SERVICE, frozenset({"jobs:read", "jobs:write"}))
+
+        main.authenticate = read_write_authenticate  # type: ignore[assignment]
+        connected: dict[str, Any] = {}
+        upstream = FakeUpstream(['{"type":"custom_status"}'], block_when_empty=False)
+
+        def connect(url: str, **kwargs: Any) -> FakeConnect:
+            connected.update({"url": url, **kwargs})
+            return FakeConnect(upstream)
+
+        main.websocket_connect = connect  # type: ignore[assignment]
+        websocket = FakeWebSocket(
+            query="clientId=client-1",
+            headers={
+                "x-b1-compatibility": "comfyui-native",
+                "authorization": "Bearer test",
+                "user-agent": "custom-node-client",
+            },
+        )
+
+        asyncio.run(main.compatibility_ws("trusted/custom/ws", websocket))
+
+        self.assertTrue(websocket.accepted)
+        self.assertEqual(connected["url"], "ws://comfyui:8000/trusted/custom/ws?clientId=client-1")
+        self.assertEqual(websocket.sent_text, ['{"type":"custom_status"}'])
+
     def test_comfyui_passthrough_blocks_internal_and_custom_node_management_routes(self) -> None:
         async def proxy(*_: Any, **__: Any) -> Response:
             raise AssertionError("blocked ComfyUI route must not be proxied")
