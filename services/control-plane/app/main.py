@@ -75,7 +75,7 @@ from .observability import build_observability_report
 from .runtime_agent_http import runtime_agent_httpx_kwargs
 from .scheduler import JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
 from .settings import Settings, load_settings
-from .workflows import ApprovedNodePin, WorkflowError, load_node_pins, load_workflows, parse_workflow, validate_workflow_job_request, visible_to_role, workflow_record
+from .workflows import ApprovedNodePin, WorkflowError, load_node_pins, load_workflows, parse_node_pin, parse_workflow, validate_workflow_job_request, visible_to_role, workflow_record
 
 
 LOG = logging.getLogger("b1.control-plane")
@@ -387,6 +387,26 @@ class SchedulerLeaseRequest(BaseModel):
 
 class WorkflowPublishRequest(BaseModel):
     workflow: dict[str, Any]
+
+
+class ComfyUiNodePinCreate(BaseModel):
+    id: str = Field(min_length=2, max_length=128)
+    commit: str = Field(min_length=40, max_length=40)
+    repository_url: str = Field(min_length=1, max_length=2048)
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    status: Literal["approved", "disabled", "superseded"] = "approved"
+    dependency_lock_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    allowed_route_prefixes: list[str] = Field(default_factory=list, max_length=64)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class ComfyUiNodePinUpdate(BaseModel):
+    repository_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    status: Literal["approved", "disabled", "superseded"] | None = None
+    dependency_lock_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    allowed_route_prefixes: list[str] | None = Field(default=None, max_length=64)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class BackupCreateRequest(BaseModel):
@@ -985,6 +1005,12 @@ def require_model_admin(auth: AuthContext) -> None:
     if auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR}:
         return
     raise HTTPException(status_code=403, detail="model administration requires admin or operator role")
+
+
+def require_workflow_governance_reader(auth: AuthContext) -> None:
+    if auth.has_scope("*") or auth.role in {Role.ADMIN, Role.OPERATOR, Role.CREATOR}:
+        return
+    raise HTTPException(status_code=403, detail="workflow governance access requires admin, operator, or creator role")
 
 
 def subject_can_read_job(auth: AuthContext, job: dict[str, Any]) -> bool:
@@ -2036,6 +2062,126 @@ def node_pin_registry_snapshot() -> dict[tuple[str, str], ApprovedNodePin]:
     return approved_node_pins
 
 
+def datetime_to_api_string(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def database_node_pin_to_approved(row: dict[str, Any]) -> ApprovedNodePin:
+    record = {
+        "id": row["node_id"],
+        "commit": row["commit"],
+        "repository_url": row["repository_url"],
+        "display_name": row.get("display_name"),
+        "status": row.get("status") or "approved",
+        "approved_by": row.get("approved_by"),
+        "approved_at": datetime_to_api_string(row.get("approved_at")),
+        "dependency_lock_sha256": row.get("dependency_lock_sha256"),
+        "allowed_route_prefixes": row.get("allowed_route_prefixes") or [],
+        "notes": row.get("notes"),
+    }
+    return parse_node_pin(record, f"database node pin {row['node_id']}@{row['commit']}")
+
+
+def node_pin_database_payload(pin: ApprovedNodePin, *, approved_at: datetime | None = None) -> dict[str, Any]:
+    return {
+        "node_id": pin.id,
+        "commit": pin.commit,
+        "repository_url": pin.repository_url,
+        "display_name": pin.display_name,
+        "status": pin.status,
+        "approved_by": pin.approved_by,
+        "approved_at": approved_at,
+        "dependency_lock_sha256": pin.dependency_lock_sha256,
+        "allowed_route_prefixes": list(pin.allowed_route_prefixes),
+        "notes": pin.notes,
+    }
+
+
+def validate_node_pin_record(record: dict[str, Any], context: str) -> ApprovedNodePin:
+    try:
+        return parse_node_pin(record, context)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=422, detail={"code": "comfyui_node_pin_invalid", "message": str(exc)}) from exc
+
+
+def public_comfyui_node_pin(pin: ApprovedNodePin, *, source: str, created_at: Any = None, updated_at: Any = None) -> dict[str, Any]:
+    return jsonable_encoder(
+        {
+            **pin.to_dict(),
+            "source": source,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+    )
+
+
+def node_pin_create_record(payload: ComfyUiNodePinCreate, auth: AuthContext, approved_at: datetime) -> ApprovedNodePin:
+    record = payload.model_dump()
+    record["approved_by"] = auth.subject_id
+    record["approved_at"] = approved_at.isoformat()
+    return validate_node_pin_record(record, "comfyui_node_pin")
+
+
+def node_pin_base_record(pin: ApprovedNodePin) -> dict[str, Any]:
+    return {
+        "id": pin.id,
+        "commit": pin.commit,
+        "repository_url": pin.repository_url,
+        "display_name": pin.display_name,
+        "status": pin.status,
+        "approved_by": pin.approved_by,
+        "approved_at": pin.approved_at,
+        "dependency_lock_sha256": pin.dependency_lock_sha256,
+        "allowed_route_prefixes": list(pin.allowed_route_prefixes),
+        "notes": pin.notes,
+    }
+
+
+async def node_pin_update_record(node_id: str, commit: str, payload: ComfyUiNodePinUpdate, auth: AuthContext, approved_at: datetime) -> ApprovedNodePin:
+    existing_row = await database.get_comfyui_node_pin(node_id, commit)
+    if existing_row is not None:
+        base = node_pin_base_record(database_node_pin_to_approved(existing_row))
+    else:
+        seed_pin = load_node_pins(Path(settings.comfyui_node_pin_registry)).get((node_id, commit))
+        if seed_pin is None:
+            raise HTTPException(status_code=404, detail="ComfyUI node pin not found")
+        base = node_pin_base_record(seed_pin)
+    updates = payload.model_dump(exclude_unset=True)
+    base.update(updates)
+    base["approved_by"] = auth.subject_id
+    base["approved_at"] = approved_at.isoformat()
+    return validate_node_pin_record(base, f"comfyui_node_pin {node_id}@{commit}")
+
+
+async def refresh_node_pin_registry() -> dict[tuple[str, str], ApprovedNodePin]:
+    global approved_node_pins
+    registry = dict(load_node_pins(Path(settings.comfyui_node_pin_registry)))
+    for row in await database.list_comfyui_node_pins():
+        pin = database_node_pin_to_approved(row)
+        registry[(pin.id, pin.commit)] = pin
+    approved_node_pins = registry
+    return registry
+
+
+async def merged_node_pin_registry_for_api() -> tuple[dict[tuple[str, str], ApprovedNodePin], dict[tuple[str, str], str], dict[tuple[str, str], dict[str, Any]]]:
+    seed_pins = load_node_pins(Path(settings.comfyui_node_pin_registry))
+    registry = dict(seed_pins)
+    sources = {key: "seed" for key in seed_pins}
+    timestamps: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in await database.list_comfyui_node_pins():
+        pin = database_node_pin_to_approved(row)
+        key = (pin.id, pin.commit)
+        registry[key] = pin
+        sources[key] = "database"
+        timestamps[key] = {"created_at": row.get("created_at"), "updated_at": row.get("updated_at")}
+    globals()["approved_node_pins"] = registry
+    return registry, sources, timestamps
+
+
 def approved_node_pin(node_id: str, commit: str | None) -> ApprovedNodePin | None:
     if commit is None:
         return None
@@ -2119,6 +2265,7 @@ async def seed_workflows_from_directory(seed_dir: Path) -> dict[str, Any]:
 
 
 async def refresh_workflow_dependency_statuses() -> dict[str, Any]:
+    await refresh_node_pin_registry()
     refreshed: list[str] = []
     for row in await database.list_workflows():
         try:
@@ -3114,6 +3261,7 @@ async def startup() -> None:
         allow_external=settings_for_startup.allow_external_providers,
         **runtime_registry_external_inputs(settings_for_startup),
     )
+    await refresh_node_pin_registry()
     seeded_workflows = await seed_workflows_from_directory(Path(settings_for_startup.workflow_seed_dir))
     redis_client = redis.from_url(settings_for_startup.redis_url, decode_responses=True)
     database.configure_scheduler_redis(redis_client)
@@ -7013,10 +7161,79 @@ async def workflow_published_version_get(workflow_id: str, version: str, authori
     return public
 
 
+@app.get("/admin/comfyui/node-pins")
+async def admin_comfyui_node_pins(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:read")
+    require_workflow_governance_reader(auth)
+    try:
+        registry, sources, timestamps = await merged_node_pin_registry_for_api()
+    except WorkflowError as exc:
+        raise HTTPException(status_code=503, detail={"code": "comfyui_node_pin_registry_invalid", "message": str(exc)}) from exc
+    data = [
+        public_comfyui_node_pin(
+            pin,
+            source=sources.get(key, "database"),
+            created_at=timestamps.get(key, {}).get("created_at"),
+            updated_at=timestamps.get(key, {}).get("updated_at"),
+        )
+        for key, pin in sorted(registry.items())
+    ]
+    return {"object": "list", "data": data}
+
+
+@app.post("/admin/comfyui/node-pins")
+async def admin_comfyui_node_pin_create(payload: ComfyUiNodePinCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:write")
+    require_administrator(auth, "ComfyUI node pin approval requires administrator role")
+    approved_at = datetime.now(tz=UTC)
+    pin = node_pin_create_record(payload, auth, approved_at)
+    row = await database.upsert_comfyui_node_pin(node_pin_database_payload(pin, approved_at=approved_at))
+    await refresh_node_pin_registry()
+    dependency_refresh = await refresh_workflow_dependency_statuses()
+    await record_audit_event(
+        auth,
+        "comfyui_node_pin.approved",
+        target_type="comfyui_node_pin",
+        target_id=f"{pin.id}@{pin.commit}",
+        summary=f"Approved ComfyUI node pin {pin.id}@{pin.commit}",
+        metadata={"status": pin.status, "repository_url": pin.repository_url, "allowed_route_prefixes": pin.allowed_route_prefixes},
+    )
+    return {"pin": public_comfyui_node_pin(database_node_pin_to_approved(row), source="database", created_at=row.get("created_at"), updated_at=row.get("updated_at")), "dependency_refresh": dependency_refresh}
+
+
+@app.patch("/admin/comfyui/node-pins/{node_id}/commits/{commit}")
+async def admin_comfyui_node_pin_update(
+    node_id: str = ApiPath(min_length=2, max_length=128),
+    commit: str = ApiPath(min_length=40, max_length=40),
+    payload: ComfyUiNodePinUpdate = Body(...),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:write")
+    require_administrator(auth, "ComfyUI node pin approval requires administrator role")
+    approved_at = datetime.now(tz=UTC)
+    pin = await node_pin_update_record(node_id, commit, payload, auth, approved_at)
+    row = await database.upsert_comfyui_node_pin(node_pin_database_payload(pin, approved_at=approved_at))
+    await refresh_node_pin_registry()
+    dependency_refresh = await refresh_workflow_dependency_statuses()
+    await record_audit_event(
+        auth,
+        "comfyui_node_pin.updated",
+        target_type="comfyui_node_pin",
+        target_id=f"{pin.id}@{pin.commit}",
+        summary=f"Updated ComfyUI node pin {pin.id}@{pin.commit}",
+        metadata={"status": pin.status, "repository_url": pin.repository_url, "allowed_route_prefixes": pin.allowed_route_prefixes},
+    )
+    return {"pin": public_comfyui_node_pin(database_node_pin_to_approved(row), source="database", created_at=row.get("created_at"), updated_at=row.get("updated_at")), "dependency_refresh": dependency_refresh}
+
+
 @app.post("/workflows/v1/validate")
 async def workflow_validate(payload: WorkflowPublishRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "workflows:write")
+    await refresh_node_pin_registry()
     return jsonable_encoder(workflow_record_from_payload(payload.workflow))
 
 
@@ -7024,6 +7241,7 @@ async def workflow_validate(payload: WorkflowPublishRequest, authorization: str 
 async def workflow_publish(payload: WorkflowPublishRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "workflows:write")
+    await refresh_node_pin_registry()
     record = workflow_record_from_payload(payload.workflow)
     row = await database.upsert_workflow(db_workflow_payload(record))
     log_event("workflow_published", workflow_id=row["id"], version=row["version"], status=row["status"])

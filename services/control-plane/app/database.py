@@ -256,6 +256,24 @@ workflows = Table(
     PrimaryKeyConstraint("id", "version"),
 )
 
+comfyui_node_pins = Table(
+    "b1_comfyui_node_pins",
+    metadata,
+    Column("node_id", String(128), nullable=False),
+    Column("commit", String(40), nullable=False),
+    Column("repository_url", Text, nullable=False),
+    Column("display_name", String(256), nullable=True),
+    Column("status", String(32), nullable=False, default="approved"),
+    Column("approved_by", String(128), nullable=True),
+    Column("approved_at", DateTime(timezone=True), nullable=True),
+    Column("dependency_lock_sha256", String(64), nullable=True),
+    Column("allowed_route_prefixes", JSONB, nullable=False, default=list),
+    Column("notes", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("node_id", "commit"),
+)
+
 encrypted_secrets = Table(
     "b1_encrypted_secrets",
     metadata,
@@ -430,6 +448,7 @@ Index("b1_voice_profiles_status_idx", voice_profiles.c.status)
 Index("b1_voice_profiles_owner_idx", voice_profiles.c.owner_id)
 Index("b1_voice_profiles_runtime_idx", voice_profiles.c.runtime)
 Index("b1_workflows_status_idx", workflows.c.status)
+Index("b1_comfyui_node_pins_status_idx", comfyui_node_pins.c.status)
 Index("b1_encrypted_secrets_category_idx", encrypted_secrets.c.category)
 Index("b1_encrypted_secrets_deleted_at_idx", encrypted_secrets.c.deleted_at)
 Index("b1_runtime_configurations_enabled_idx", runtime_configurations.c.enabled)
@@ -454,6 +473,7 @@ EXPORT_TABLES = [
     modelhub_clients,
     voice_profiles,
     workflows,
+    comfyui_node_pins,
     encrypted_secrets,
     runtime_configurations,
     resource_policies,
@@ -511,6 +531,24 @@ SCHEMA_COMPATIBILITY_SQL = [
     "CREATE INDEX IF NOT EXISTS b1_voice_profiles_owner_idx ON b1_voice_profiles (owner_id)",
     "CREATE INDEX IF NOT EXISTS b1_voice_profiles_runtime_idx ON b1_voice_profiles (runtime)",
     "CREATE INDEX IF NOT EXISTS b1_workflows_status_idx ON b1_workflows (status)",
+    (
+        "CREATE TABLE IF NOT EXISTS b1_comfyui_node_pins ("
+        "node_id varchar(128) NOT NULL, "
+        "commit varchar(40) NOT NULL, "
+        "repository_url text NOT NULL, "
+        "display_name varchar(256), "
+        "status varchar(32) NOT NULL DEFAULT 'approved', "
+        "approved_by varchar(128), "
+        "approved_at timestamp with time zone, "
+        "dependency_lock_sha256 varchar(64), "
+        "allowed_route_prefixes jsonb NOT NULL DEFAULT '[]'::jsonb, "
+        "notes text, "
+        "created_at timestamp with time zone NOT NULL, "
+        "updated_at timestamp with time zone NOT NULL, "
+        "PRIMARY KEY (node_id, commit)"
+        ")"
+    ),
+    "CREATE INDEX IF NOT EXISTS b1_comfyui_node_pins_status_idx ON b1_comfyui_node_pins (status)",
     "CREATE INDEX IF NOT EXISTS b1_encrypted_secrets_category_idx ON b1_encrypted_secrets (category)",
     "CREATE INDEX IF NOT EXISTS b1_encrypted_secrets_deleted_at_idx ON b1_encrypted_secrets (deleted_at)",
     (
@@ -2180,6 +2218,71 @@ async def unpublish_workflow(workflow_id: str, version: str) -> dict[str, Any] |
         result = await conn.execute(select(workflows).where(and_(workflows.c.id == workflow_id, workflows.c.version == version)))
         row = result.mappings().first()
     return dict(row) if row else None
+
+
+async def list_comfyui_node_pins() -> list[dict[str, Any]]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(comfyui_node_pins).order_by(comfyui_node_pins.c.node_id.asc(), comfyui_node_pins.c.commit.asc()))
+        rows = result.mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def get_comfyui_node_pin(node_id: str, commit: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(comfyui_node_pins).where(and_(comfyui_node_pins.c.node_id == node_id, comfyui_node_pins.c.commit == commit)))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def upsert_comfyui_node_pin(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    row = {
+        "created_at": now,
+        "updated_at": now,
+        "display_name": None,
+        "status": "approved",
+        "approved_by": None,
+        "approved_at": None,
+        "dependency_lock_sha256": None,
+        "allowed_route_prefixes": [],
+        "notes": None,
+        **payload,
+    }
+    update_values = {key: value for key, value in row.items() if key not in {"node_id", "commit", "created_at"}}
+    update_values["updated_at"] = now
+    stmt = pg_insert(comfyui_node_pins).values(**row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["node_id", "commit"],
+        set_=update_values,
+    )
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return await get_comfyui_node_pin(row["node_id"], row["commit"]) or row
+
+
+async def update_comfyui_node_pin(node_id: str, commit: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    if not payload:
+        return await get_comfyui_node_pin(node_id, commit)
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(comfyui_node_pins).where(and_(comfyui_node_pins.c.node_id == node_id, comfyui_node_pins.c.commit == commit)).with_for_update())
+        existing = result.mappings().first()
+        if existing is None:
+            return None
+        await conn.execute(
+            update(comfyui_node_pins)
+            .where(and_(comfyui_node_pins.c.node_id == node_id, comfyui_node_pins.c.commit == commit))
+            .values(**payload, updated_at=now)
+        )
+    return await get_comfyui_node_pin(node_id, commit)
 
 
 def normalize_username(username: str) -> str:

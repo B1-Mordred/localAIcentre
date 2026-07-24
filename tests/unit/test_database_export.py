@@ -60,6 +60,22 @@ class DatabaseExportTests(unittest.TestCase):
                     }
                 ],
                 "b1_voice_profiles": [{"id": "vp_1", "display_name": "Narrator", "created_at": created, "updated_at": created}],
+                "b1_comfyui_node_pins": [
+                    {
+                        "node_id": "comfyui-impact-pack",
+                        "commit": "a" * 40,
+                        "repository_url": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
+                        "display_name": "Impact Pack",
+                        "status": "approved",
+                        "approved_by": "admin_1",
+                        "approved_at": created,
+                        "dependency_lock_sha256": "b" * 64,
+                        "allowed_route_prefixes": ["impact/wildcards"],
+                        "notes": "approved for wildcard route",
+                        "created_at": created,
+                        "updated_at": created,
+                    }
+                ],
                 "b1_encrypted_secrets": [
                     {
                         "name": "remote:openai",
@@ -194,6 +210,7 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertNotIn("b1_browser_sessions", payload["row_counts"])
         self.assertEqual(payload["row_counts"]["b1_model_downloads"], 1)
         self.assertEqual(payload["row_counts"]["b1_voice_profiles"], 1)
+        self.assertEqual(payload["row_counts"]["b1_comfyui_node_pins"], 1)
         self.assertEqual(payload["row_counts"]["b1_encrypted_secrets"], 1)
         self.assertEqual(payload["row_counts"]["b1_resource_policies"], 1)
         self.assertEqual(payload["row_counts"]["b1_admission_policies"], 1)
@@ -218,6 +235,9 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertIn("run_time_ms", {column["name"] for column in jobs["schema"]["columns"]})
         audit_events = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_audit_events")
         self.assertEqual(audit_events["rows"][0]["created_at"], created.isoformat())
+        node_pins = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_comfyui_node_pins")
+        self.assertEqual(node_pins["rows"][0]["approved_at"], created.isoformat())
+        self.assertEqual(node_pins["rows"][0]["allowed_route_prefixes"], ["impact/wildcards"])
         voice_profiles = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_voice_profiles")
         self.assertEqual(voice_profiles["rows"][0]["created_at"], created.isoformat())
         encrypted_secrets = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_encrypted_secrets")

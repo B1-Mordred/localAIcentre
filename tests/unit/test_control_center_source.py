@@ -82,6 +82,20 @@ class ControlCenterSourceTests(unittest.TestCase):
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 
+    def test_workflows_tab_manages_comfyui_node_pins(self) -> None:
+        self.assertIn("type ComfyUiNodePin", self.source)
+        self.assertIn("const [nodePins, setNodePins]", self.source)
+        self.assertIn("const [selectedNodePin, setSelectedNodePin]", self.source)
+        self.assertIn("/admin/comfyui/node-pins", self.source)
+        self.assertIn("loadNodePins", self.source)
+        self.assertIn("saveNodePin", self.source)
+        self.assertIn("ComfyUI Node Pins", self.source)
+        self.assertIn("Approve ComfyUI Node Pin", self.source)
+        self.assertIn("Edit ComfyUI Node Pin", self.source)
+        self.assertIn("allowed_route_prefixes", self.source)
+        self.assertIn("dependency_lock_sha256", self.source)
+        self.assertIn("Save Pin", self.source)
+
     def test_runtimes_tab_surfaces_structured_capabilities(self) -> None:
         self.assertIn("const capabilityListLabel", self.source)
         self.assertIn("const runtimeCapabilityFlags", self.source)

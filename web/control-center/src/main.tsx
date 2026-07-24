@@ -963,6 +963,22 @@ type WorkflowDependency = {
   reason?: string;
 };
 
+type ComfyUiNodePin = {
+  id: string;
+  commit: string;
+  repository_url: string;
+  display_name?: string;
+  status: string;
+  approved_by?: string;
+  approved_at?: string;
+  dependency_lock_sha256?: string;
+  allowed_route_prefixes?: string[];
+  notes?: string;
+  source: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type PublishedWorkflow = {
   id: string;
   version: string;
@@ -4594,8 +4610,20 @@ const WORKFLOW_TEMPLATE = JSON.stringify(
 
 function Workflows() {
   const [workflows, setWorkflows] = useState<PublishedWorkflow[]>([]);
+  const [nodePins, setNodePins] = useState<ComfyUiNodePin[]>([]);
   const [selected, setSelected] = useState<PublishedWorkflow | null>(null);
+  const [selectedNodePin, setSelectedNodePin] = useState<ComfyUiNodePin | null>(null);
   const [draft, setDraft] = useState(WORKFLOW_TEMPLATE);
+  const [nodePinForm, setNodePinForm] = useState({
+    id: "",
+    commit: "",
+    repository_url: "",
+    display_name: "",
+    status: "approved",
+    dependency_lock_sha256: "",
+    allowed_route_prefixes: "",
+    notes: ""
+  });
   const [validation, setValidation] = useState<PublishedWorkflow | null>(null);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
@@ -4615,7 +4643,19 @@ function Workflows() {
       .catch((err: Error) => setMessage(err.message));
   };
 
-  useEffect(loadWorkflows, []);
+  const loadNodePins = () => {
+    apiFetch(`/admin/comfyui/node-pins`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => setNodePins(payload.data ?? []))
+      .catch((err: Error) => setMessage(err.message));
+  };
+
+  const refreshWorkflowAdmin = () => {
+    loadWorkflows();
+    loadNodePins();
+  };
+
+  useEffect(refreshWorkflowAdmin, []);
 
   const parseDraft = () => {
     try {
@@ -4735,13 +4775,86 @@ function Workflows() {
       .catch((err: Error) => setMessage(err.message));
   };
 
+  const editNodePin = (pin: ComfyUiNodePin) => {
+    setSelectedNodePin(pin);
+    setNodePinForm({
+      id: pin.id,
+      commit: pin.commit,
+      repository_url: pin.repository_url,
+      display_name: pin.display_name ?? "",
+      status: pin.status,
+      dependency_lock_sha256: pin.dependency_lock_sha256 ?? "",
+      allowed_route_prefixes: (pin.allowed_route_prefixes ?? []).join(", "),
+      notes: pin.notes ?? ""
+    });
+  };
+
+  const resetNodePinForm = () => {
+    setSelectedNodePin(null);
+    setNodePinForm({
+      id: "",
+      commit: "",
+      repository_url: "",
+      display_name: "",
+      status: "approved",
+      dependency_lock_sha256: "",
+      allowed_route_prefixes: "",
+      notes: ""
+    });
+  };
+
+  const nodePinPayload = () => ({
+    id: nodePinForm.id.trim(),
+    commit: nodePinForm.commit.trim(),
+    repository_url: nodePinForm.repository_url.trim(),
+    display_name: nodePinForm.display_name.trim() || null,
+    status: nodePinForm.status,
+    dependency_lock_sha256: nodePinForm.dependency_lock_sha256.trim() || null,
+    allowed_route_prefixes: nodePinForm.allowed_route_prefixes
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    notes: nodePinForm.notes.trim() || null
+  });
+
+  const saveNodePin = () => {
+    setBusy(true);
+    const payload = nodePinPayload();
+    const path = selectedNodePin
+      ? `/admin/comfyui/node-pins/${encodeURIComponent(selectedNodePin.id)}/commits/${encodeURIComponent(selectedNodePin.commit)}`
+      : `/admin/comfyui/node-pins`;
+    const body = selectedNodePin
+      ? {
+          repository_url: payload.repository_url,
+          display_name: payload.display_name,
+          status: payload.status,
+          dependency_lock_sha256: payload.dependency_lock_sha256,
+          allowed_route_prefixes: payload.allowed_route_prefixes,
+          notes: payload.notes
+        }
+      : payload;
+    apiFetch(path, {
+      method: selectedNodePin ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setMessage(`saved node pin ${payload.pin.id}@${payload.pin.commit.slice(0, 12)}`);
+        loadNodePins();
+        loadWorkflows();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const dependencyRows = (validation?.dependency_status?.dependencies ?? selected?.dependency_status?.dependencies ?? []);
 
   return (
     <section className="panel wide">
       <SectionTitle icon={<Workflow size={18} />} title="Workflows" />
       <div className="toolbar">
-        <button title="Refresh workflows" onClick={loadWorkflows} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Refresh workflows and node pins" onClick={refreshWorkflowAdmin} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <button title="Validate draft" onClick={validateDraft} disabled={busy}><ListChecks size={16} />Validate</button>
         <button title="Publish draft" onClick={publishDraft} disabled={busy}><Archive size={16} />Publish</button>
         <label className="file-button">
@@ -4782,6 +4895,28 @@ function Workflows() {
             </tbody>
           </table>
           <div className="subsection-title">
+            <ShieldCheck size={16} />
+            <h3>ComfyUI Node Pins</h3>
+          </div>
+          <table>
+            <thead><tr><th>Node</th><th>Status</th><th>Routes</th><th>Actions</th></tr></thead>
+            <tbody>
+              {nodePins.map((pin) => (
+                <tr key={`${pin.id}@${pin.commit}`}>
+                  <td><code>{pin.display_name || pin.id}</code><small>{pin.id}@{pin.commit.slice(0, 12)} / {pin.source}</small></td>
+                  <td><span className={`status-pill ${pin.status === "approved" ? "ok" : "warning"}`}>{pin.status}</span><small>{pin.approved_by ?? ""}</small></td>
+                  <td>{(pin.allowed_route_prefixes ?? []).join(", ") || "none"}</td>
+                  <td>
+                    <div className="table-actions">
+                      <button title={`Edit node pin ${pin.id}`} onClick={() => editNodePin(pin)} disabled={busy}><Workflow size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!nodePins.length && <tr><td colSpan={4}>No ComfyUI node pins recorded</td></tr>}
+            </tbody>
+          </table>
+          <div className="subsection-title">
             <ListChecks size={16} />
             <h3>Dependencies</h3>
           </div>
@@ -4802,6 +4937,25 @@ function Workflows() {
         </div>
 
         <div className="stack">
+          <h3>{selectedNodePin ? "Edit ComfyUI Node Pin" : "Approve ComfyUI Node Pin"}</h3>
+          <div className="node-pin-form">
+            <input placeholder="node id" value={nodePinForm.id} onChange={(event) => setNodePinForm({ ...nodePinForm, id: event.target.value })} disabled={Boolean(selectedNodePin) || busy} />
+            <input placeholder="40-character commit" value={nodePinForm.commit} onChange={(event) => setNodePinForm({ ...nodePinForm, commit: event.target.value })} disabled={Boolean(selectedNodePin) || busy} />
+            <input placeholder="https:// repository URL" value={nodePinForm.repository_url} onChange={(event) => setNodePinForm({ ...nodePinForm, repository_url: event.target.value })} disabled={busy} />
+            <input placeholder="display name" value={nodePinForm.display_name} onChange={(event) => setNodePinForm({ ...nodePinForm, display_name: event.target.value })} disabled={busy} />
+            <select value={nodePinForm.status} onChange={(event) => setNodePinForm({ ...nodePinForm, status: event.target.value })} disabled={busy}>
+              <option value="approved">approved</option>
+              <option value="disabled">disabled</option>
+              <option value="superseded">superseded</option>
+            </select>
+            <input placeholder="dependency lock SHA-256" value={nodePinForm.dependency_lock_sha256} onChange={(event) => setNodePinForm({ ...nodePinForm, dependency_lock_sha256: event.target.value })} disabled={busy} />
+            <input placeholder="allowed route prefixes" value={nodePinForm.allowed_route_prefixes} onChange={(event) => setNodePinForm({ ...nodePinForm, allowed_route_prefixes: event.target.value })} disabled={busy} />
+            <textarea placeholder="notes" value={nodePinForm.notes} onChange={(event) => setNodePinForm({ ...nodePinForm, notes: event.target.value })} disabled={busy} />
+            <div className="form-actions">
+              <button title="Save ComfyUI node pin" onClick={saveNodePin} disabled={busy}><ShieldCheck size={16} />Save Pin</button>
+              <button title="Reset ComfyUI node pin form" onClick={resetNodePinForm} disabled={busy}><RotateCcw size={16} />Reset</button>
+            </div>
+          </div>
           <h3>Workflow Draft JSON</h3>
           <textarea className="json-editor" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} />
         </div>

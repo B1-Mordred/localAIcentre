@@ -654,6 +654,27 @@ code {
   white-space: pre;
 }
 
+.node-pin-form {
+  display: grid;
+  gap: 8px;
+}
+
+.node-pin-form input,
+.node-pin-form select,
+.node-pin-form textarea {
+  min-width: 0;
+  border: 1px solid #cfd7cf;
+  background: #ffffff;
+  color: #202421;
+  padding: 8px 9px;
+  font: inherit;
+}
+
+.node-pin-form textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
 .inline-form {
   display: grid;
   grid-template-columns: 1fr 1fr minmax(150px, 0.7fr) 1fr 1fr auto;

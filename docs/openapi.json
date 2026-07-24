@@ -446,6 +446,179 @@
         "title": "CidrAllowlistUpdateRequest",
         "type": "object"
       },
+      "ComfyUiNodePinCreate": {
+        "properties": {
+          "allowed_route_prefixes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Allowed Route Prefixes",
+            "type": "array"
+          },
+          "commit": {
+            "maxLength": 40,
+            "minLength": 40,
+            "title": "Commit",
+            "type": "string"
+          },
+          "dependency_lock_sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Lock Sha256"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 2,
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "repository_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Repository Url",
+            "type": "string"
+          },
+          "status": {
+            "default": "approved",
+            "enum": [
+              "approved",
+              "disabled",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "commit",
+          "repository_url"
+        ],
+        "title": "ComfyUiNodePinCreate",
+        "type": "object"
+      },
+      "ComfyUiNodePinUpdate": {
+        "properties": {
+          "allowed_route_prefixes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Route Prefixes"
+          },
+          "dependency_lock_sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Lock Sha256"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "repository_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Url"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "approved",
+                  "disabled",
+                  "superseded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "ComfyUiNodePinUpdate",
+        "type": "object"
+      },
       "EmbeddingRequest": {
         "properties": {
           "input": {
@@ -3233,6 +3406,190 @@
           }
         },
         "summary": "Admin Backup Verify"
+      }
+    },
+    "/admin/comfyui/node-pins": {
+      "get": {
+        "operationId": "admin_comfyui_node_pins_admin_comfyui_node_pins_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Comfyui Node Pins Admin Comfyui Node Pins Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Comfyui Node Pins"
+      },
+      "post": {
+        "operationId": "admin_comfyui_node_pin_create_admin_comfyui_node_pins_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComfyUiNodePinCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Comfyui Node Pin Create Admin Comfyui Node Pins Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Comfyui Node Pin Create"
+      }
+    },
+    "/admin/comfyui/node-pins/{node_id}/commits/{commit}": {
+      "patch": {
+        "operationId": "admin_comfyui_node_pin_update_admin_comfyui_node_pins__node_id__commits__commit__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 2,
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "commit",
+            "required": true,
+            "schema": {
+              "maxLength": 40,
+              "minLength": 40,
+              "title": "Commit",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComfyUiNodePinUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Comfyui Node Pin Update Admin Comfyui Node Pins  Node Id  Commits  Commit  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Comfyui Node Pin Update"
       }
     },
     "/admin/jobs": {

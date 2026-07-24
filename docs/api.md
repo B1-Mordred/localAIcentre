@@ -81,6 +81,9 @@ POST /admin/models/quarantine/cleanup
 DELETE /admin/models/{id}/versions/{version}
 GET  /admin/models/{id}/versions/{version}/blob-quarantine-plan
 POST /admin/models/{id}/versions/{version}/blobs/quarantine
+GET  /admin/comfyui/node-pins
+POST /admin/comfyui/node-pins
+PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}
 GET  /workflows/v1/published
 GET  /workflows/v1/published/{id}
 GET  /workflows/v1/published/{id}/versions/{version}
@@ -516,7 +519,9 @@ After a queued GPU job or synchronous GPU-backed request finishes runtime prepar
 
 Approved seed workflows under `workflows/approved` are imported into PostgreSQL on control-plane startup. The registry stores the immutable workflow JSON, input/output schemas, execution modality/operation/model alias, runtime policy, output MIME types, limits, visibility roles, backend policy, resource class, optional ComfyUI parameter mappings, optional runtime parameter mappings, and dependency readiness report.
 
-Custom ComfyUI node dependencies must use `{"type":"node","id":"...","version":"<40-char commit>"}`. The control plane checks those dependencies against `$B1_COMFYUI_NODE_PIN_REGISTRY`, defaulting to `/opt/b1/workflows/approved-node-pins.json`. A node dependency is publishable only when the exact `(id, commit)` exists with `status: approved`; missing, disabled, superseded, or unpinned nodes produce `needs_dependencies` with the repository URL and approval metadata where available.
+Custom ComfyUI node dependencies must use `{"type":"node","id":"...","version":"<40-char commit>"}`. The control plane checks those dependencies against the merged node-pin registry: `$B1_COMFYUI_NODE_PIN_REGISTRY`, defaulting to `/opt/b1/workflows/approved-node-pins.json`, plus the PostgreSQL `b1_comfyui_node_pins` table. Database rows override matching seed rows so operators can disable or supersede seed approvals without editing repository files. A node dependency is publishable only when the exact `(id, commit)` exists with `status: approved`; missing, disabled, superseded, or unpinned nodes produce `needs_dependencies` with the repository URL and approval metadata where available.
+
+`GET /admin/comfyui/node-pins` requires `workflows:read` and an administrator, operator, or creator role. It returns the merged seed/database registry with a `source` field for each pin. `POST /admin/comfyui/node-pins` requires administrator `workflows:write`, validates the exact node id, lowercase 40-character commit, credential-free HTTPS repository URL, optional SHA-256 dependency lock, and safe relative route prefixes, then writes the approval to PostgreSQL, refreshes workflow dependency status, and audits the mutation. `PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}` has the same administrator requirement and writes a PostgreSQL overlay for an existing seed or database pin. Logical backups include `b1_comfyui_node_pins`; restore-import preserves the approvals along with published workflows.
 
 Read endpoints require `workflows:read` and filter records by `visibility_roles` unless the caller has administrative wildcard scope. `POST /workflows/v1/validate` and `POST /workflows/v1/published` require `workflows:write`. Publication records are allowed to persist with `status: needs_dependencies`; this keeps placeholder workflows visible while making uninstalled models, missing runtimes, or unapproved custom nodes explicit through `dependency_status`. Control Center exposes the same operations as JSON import/edit, validate, publish, dependency inspection, and unpublish actions.
 

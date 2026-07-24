@@ -259,6 +259,10 @@ def parse_node_pin_registry(data: dict[str, Any], context: str = "node_pin_regis
     return registry
 
 
+def parse_node_pin(data: dict[str, Any], context: str = "node_pin") -> ApprovedNodePin:
+    return _node_pin(data, context)
+
+
 def dependency_report(
     workflow: PublishedWorkflow,
     model_lookup: Callable[[str], dict[str, Any] | None],
