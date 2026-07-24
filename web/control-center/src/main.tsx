@@ -462,6 +462,15 @@ const BACKUP_ROLLBACK_INPUT_LABELS = [
 
 type BackupRollbackInputKey = typeof BACKUP_ROLLBACK_INPUT_LABELS[number][0];
 
+const OPEN_WEBUI_PLAN_INPUT_LABELS = [
+  ["inventory", "Old-stack inventory"],
+  ["old_stack_backup", "Old-stack backup"],
+  ["restore_target", "Restore target"],
+  ["current_plan", "Current plan"]
+] as const;
+
+type OpenWebUiPlanInputKey = typeof OPEN_WEBUI_PLAN_INPUT_LABELS[number][0];
+
 type BackupRollbackArtifactStatus = {
   available: boolean;
   path?: string;
@@ -472,6 +481,30 @@ type BackupRollbackArtifactStatus = {
   missing_checks?: string[];
   check_count?: number;
   required_check_count?: number;
+};
+
+type OpenWebUiPlanArtifactStatus = BackupRollbackArtifactStatus & {
+  recommended_strategy?: string;
+  warning_count?: number;
+  warnings?: string[];
+  readable_database_count?: number;
+  backed_up_database_candidate_count?: number;
+  compatibility_status?: string;
+};
+
+type OpenWebUiMigrationPlanStatus = {
+  format: string;
+  backup_root: string;
+  restore_root: string;
+  ready_to_generate: boolean;
+  inputs: Record<OpenWebUiPlanInputKey, OpenWebUiPlanArtifactStatus>;
+};
+
+type OpenWebUiMigrationPlanCreateResult = {
+  status: string;
+  path: string;
+  name: string;
+  summary: OpenWebUiPlanArtifactStatus;
 };
 
 type BackupMigrationRollbackEvidenceStatus = {
@@ -3691,6 +3724,8 @@ function System() {
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
   const [rollbackRehearsal, setRollbackRehearsal] = useState<RollbackRehearsalStatus | null>(null);
+  const [openWebUiPlan, setOpenWebUiPlan] = useState<OpenWebUiMigrationPlanStatus | null>(null);
+  const [openWebUiPlanNotes, setOpenWebUiPlanNotes] = useState("");
   const [backupRollbackEvidence, setBackupRollbackEvidence] = useState<BackupMigrationRollbackEvidenceStatus | null>(null);
   const [backupRollbackReviewed, setBackupRollbackReviewed] = useState(false);
   const [rollbackRehearsedBy, setRollbackRehearsedBy] = useState("");
@@ -3813,6 +3848,12 @@ function System() {
       .catch(() => setRollbackRehearsal(null));
   };
 
+  const loadOpenWebUiPlan = () => {
+    apiJson<OpenWebUiMigrationPlanStatus>(`/admin/migration/open-webui-plan`)
+      .then(setOpenWebUiPlan)
+      .catch(() => setOpenWebUiPlan(null));
+  };
+
   const loadBackupRollbackEvidence = () => {
     apiJson<BackupMigrationRollbackEvidenceStatus>(`/admin/migration/backup-migration-rollback-evidence`)
       .then(setBackupRollbackEvidence)
@@ -3881,6 +3922,25 @@ function System() {
         setRollbackCommandsTested(false);
         setRollbackResourcesPreserved(false);
         loadRollbackRehearsal();
+        loadBackupRollbackEvidence();
+        loadAudit();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const createOpenWebUiPlan = () => {
+    setBusy(true);
+    setMessage("creating Open WebUI migration plan");
+    apiJson<OpenWebUiMigrationPlanCreateResult>(`/admin/migration/open-webui-plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: openWebUiPlanNotes.trim() })
+    })
+      .then((payload) => {
+        setMessage(`Open WebUI plan ${payload.summary.status ?? payload.status}`);
+        setOpenWebUiPlanNotes("");
+        loadOpenWebUiPlan();
         loadBackupRollbackEvidence();
         loadAudit();
       })
@@ -4072,6 +4132,7 @@ function System() {
   useEffect(() => {
     runSelfTest();
     loadAcceptanceReports();
+    loadOpenWebUiPlan();
     loadRollbackRehearsal();
     loadBackupRollbackEvidence();
     loadAudit();
@@ -4090,6 +4151,8 @@ function System() {
   const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
   const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
   const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
+  const openWebUiPlanReadyCount = OPEN_WEBUI_PLAN_INPUT_LABELS.filter(([key]) => openWebUiPlan?.inputs[key]?.available).length;
+  const openWebUiCurrent = openWebUiPlan?.inputs.current_plan;
   const backupRollbackInputReadyCount = BACKUP_ROLLBACK_INPUT_LABELS.filter(([key]) => backupRollbackEvidence?.inputs[key]?.available).length;
   const backupRollbackRequiredCount = BACKUP_ROLLBACK_INPUT_LABELS.length;
   const backupRollbackEvidenceReady = Boolean(backupRollbackEvidence?.ready);
@@ -4286,6 +4349,55 @@ function System() {
           {!result?.checks?.length && <tr><td colSpan={3}>No self-test results</td></tr>}
         </tbody>
       </table>
+      <div className="subsection-title">
+        <Database size={16} />
+        <h3>Open WebUI Migration Plan</h3>
+      </div>
+      <div className="metric-grid">
+        <Metric
+          label="Inputs"
+          value={`${openWebUiPlanReadyCount}/${OPEN_WEBUI_PLAN_INPUT_LABELS.length}`}
+          detail={openWebUiPlan?.ready_to_generate ? "ready to generate" : "missing required artifacts"}
+        />
+        <Metric
+          label="Current plan"
+          value={openWebUiCurrent?.available ? openWebUiCurrent.status ?? "recorded" : "missing"}
+          detail={openWebUiCurrent?.name ?? openWebUiCurrent?.reason ?? "not loaded"}
+        />
+        <Metric
+          label="Strategy"
+          value={openWebUiCurrent?.recommended_strategy ?? "unknown"}
+          detail={openWebUiCurrent?.compatibility_status ?? "compatibility unknown"}
+        />
+        <Metric
+          label="Warnings"
+          value={formatCount(openWebUiCurrent?.warning_count ?? 0)}
+          detail={`${formatCount(openWebUiCurrent?.readable_database_count ?? 0)} readable DB candidate${(openWebUiCurrent?.readable_database_count ?? 0) === 1 ? "" : "s"}`}
+        />
+      </div>
+      <table>
+        <thead><tr><th>Artifact</th><th>Status</th><th>Selected path</th></tr></thead>
+        <tbody>
+          {OPEN_WEBUI_PLAN_INPUT_LABELS.map(([key, label]) => {
+            const item = openWebUiPlan?.inputs[key];
+            return (
+              <tr key={key}>
+                <td>{label}</td>
+                <td>{item?.available ? "ready" : "missing"}<small>{item?.name ?? item?.reason ?? item?.status ?? "not loaded"}</small></td>
+                <td><code>{item?.path ?? item?.reason ?? "not loaded"}</code></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="stack">
+        <label>Notes<textarea rows={2} value={openWebUiPlanNotes} onChange={(event) => setOpenWebUiPlanNotes(event.target.value)} maxLength={2000} /></label>
+      </div>
+      <div className="toolbar">
+        <button title="Refresh Open WebUI migration plan status" onClick={loadOpenWebUiPlan} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Generate Open WebUI migration plan" onClick={createOpenWebUiPlan} disabled={busy || !openWebUiPlan?.ready_to_generate}><Database size={16} />Generate</button>
+        <span className="toolbar-status">{openWebUiCurrent?.path ?? openWebUiPlan?.backup_root ?? "Open WebUI migration plan status unavailable"}</span>
+      </div>
       <div className="subsection-title">
         <RotateCcw size={16} />
         <h3>Rollback Rehearsal</h3>

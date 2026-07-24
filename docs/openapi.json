@@ -1195,6 +1195,18 @@
         "title": "NetworkPolicyUpdateRequest",
         "type": "object"
       },
+      "OpenWebUiMigrationPlanCreate": {
+        "properties": {
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "title": "OpenWebUiMigrationPlanCreate",
+        "type": "object"
+      },
       "PriorityClass": {
         "enum": [
           "chat",
@@ -4294,6 +4306,110 @@
           }
         },
         "summary": "Admin Backup Migration Rollback Evidence Create"
+      }
+    },
+    "/admin/migration/open-webui-plan": {
+      "get": {
+        "operationId": "admin_open_webui_migration_plan_status_admin_migration_open_webui_plan_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Open Webui Migration Plan Status Admin Migration Open Webui Plan Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Open Webui Migration Plan Status"
+      },
+      "post": {
+        "operationId": "admin_open_webui_migration_plan_create_admin_migration_open_webui_plan_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWebUiMigrationPlanCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Open Webui Migration Plan Create Admin Migration Open Webui Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Open Webui Migration Plan Create"
       }
     },
     "/admin/migration/rollback-rehearsal": {

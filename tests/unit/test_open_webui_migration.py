@@ -255,6 +255,39 @@ class OpenWebUiMigrationTests(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["format"], "test")
 
+    def test_status_and_web_build_use_latest_backup_root_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_path = root / "old-open-webui" / "data" / "webui.db"
+            self.create_webui_db(database_path)
+            inventory_payload = self.inventory(root, database_path)
+            backup_dir = self.make_backup(root, database_path.parent)
+            backup_root = backup_dir.parent
+            inventory_path = self.write_json(backup_root / "inventory-20260723.json", inventory_payload)
+            restore_root = root / "restore-tests"
+
+            status_before = open_webui_migration.status(backup_root, restore_root)
+            result = open_webui_migration.build_and_write_plan(
+                backup_root,
+                restore_root,
+                now=datetime(2026, 7, 23, 13, 30, tzinfo=UTC),
+            )
+            status_after = open_webui_migration.status(backup_root, restore_root)
+            generated_mode = Path(result["path"]).stat().st_mode & 0o777
+
+        self.assertTrue(status_before["ready_to_generate"])
+        self.assertEqual(status_before["inputs"]["inventory"]["path"], str(inventory_path.resolve()))
+        self.assertEqual(status_before["inputs"]["old_stack_backup"]["path"], str(backup_dir.resolve()))
+        self.assertEqual(status_before["inputs"]["restore_target"]["path"], str((restore_root / "open-webui-migration").resolve()))
+        self.assertEqual(result["name"], "open-webui-migration-plan-20260723-133000.json")
+        self.assertEqual(result["summary"]["status"], "ready")
+        self.assertEqual(generated_mode, 0o600)
+        self.assertTrue(status_after["inputs"]["current_plan"]["available"])
+        self.assertEqual(
+            status_after["inputs"]["current_plan"]["recommended_strategy"],
+            "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

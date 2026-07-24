@@ -212,7 +212,7 @@ make old-stack-backup-verify BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-12
 
 The old-stack archive is read-only evidence for migration and rollback. Raw container inspect payloads are stored as sensitive rollback evidence, while redacted copies under `docker-inspect-redacted/containers/` are available for operator review without exposing environment variable values or token-like fields. Its manifest sets `old_stack_deletion_allowed=false`; successful backup verification is not permission to remove old volumes, model files, databases, Compose files, or configuration.
 
-After verification, generate the Open WebUI preservation plan:
+After verification, generate the Open WebUI preservation plan from Control Center System -> Open WebUI Migration Plan, or with the CLI:
 
 ```bash
 make open-webui-migration-plan \
@@ -221,6 +221,8 @@ make open-webui-migration-plan \
 ```
 
 The plan verifies the old-stack backup again, matches inventoried Open WebUI database candidates to manifest entries, records Open WebUI container image/tag evidence from the inventory, and warns when a readable database is not actually preserved by the backup. It also warns when source-version evidence is missing or the old Open WebUI image used a floating tag. It does not read row contents, import data automatically, or approve direct database reuse; operators restore to an alternate directory and test a supported Open WebUI migration/export/import path before cutover.
+
+The web action calls `GET /admin/migration/open-webui-plan` to show the latest valid direct-child `inventory*.json`, old-stack backup directory, restore-test target, and current plan under `$B1_BACKUP_ROOT`, then `POST /admin/migration/open-webui-plan` writes a new generated `open-webui-migration-plan-*.json`. It never accepts arbitrary host paths, never reads Open WebUI row contents, and audits the generated strategy and warning count.
 
 Once the backup verifies, generate the reviewed cutover/rollback runbook:
 

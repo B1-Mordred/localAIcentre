@@ -36,6 +36,7 @@ from . import backup_restore
 from . import backup_migration_rollback
 from . import backup_schedule
 from . import compose_override as compose_override_policy
+from . import open_webui_migration
 from . import rollback_rehearsal
 from .job_events import format_sse_event, job_event_id
 from .job_states import TERMINAL_JOB_STATES
@@ -250,6 +251,10 @@ class RollbackRehearsalCreate(BaseModel):
 
 class BackupMigrationRollbackEvidenceCreate(BaseModel):
     confirm_reviewed: bool = False
+
+
+class OpenWebUiMigrationPlanCreate(BaseModel):
+    notes: str = Field(default="", max_length=2000)
 
 
 class RuntimeActionRequest(BaseModel):
@@ -6199,6 +6204,43 @@ async def admin_rollback_rehearsal_create(payload: RollbackRehearsalCreate, auth
             "cutover_plan_sha256": report.get("cutover_plan_sha256"),
             "output": result.get("output"),
             "resource_count": preserved.get("resource_count"),
+        },
+    )
+    return result
+
+
+@app.get("/admin/migration/open-webui-plan")
+async def admin_open_webui_migration_plan_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "Open WebUI migration plan status requires administrator role")
+    return await asyncio.to_thread(open_webui_migration.status, backup_root_path(), restore_test_root_path())
+
+
+@app.post("/admin/migration/open-webui-plan")
+async def admin_open_webui_migration_plan_create(payload: OpenWebUiMigrationPlanCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_administrator(auth, "Open WebUI migration plan generation requires administrator role")
+    try:
+        result = await asyncio.to_thread(
+            open_webui_migration.build_and_write_plan,
+            backup_root_path(),
+            restore_test_root_path(),
+        )
+    except open_webui_migration.OpenWebUiMigrationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await record_audit_event(
+        auth,
+        "open_webui_migration_plan.created",
+        target_type="open_webui_migration_plan",
+        target_id=result.get("name"),
+        summary="Created Open WebUI migration plan",
+        metadata={
+            "path": result.get("path"),
+            "recommended_strategy": result.get("summary", {}).get("recommended_strategy"),
+            "warning_count": result.get("summary", {}).get("warning_count"),
+            "notes": payload.notes,
         },
     )
     return result
