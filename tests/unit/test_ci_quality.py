@@ -58,6 +58,7 @@ class CiQualityGateTests(unittest.TestCase):
             "services/mock-runtime/requirements.txt",
         ):
             self.assertIn(f"-r {path}", commands)
+            self.assertIn(path, self.makefile_text)
 
     def test_default_validation_runs_security_and_compatibility_harnesses(self) -> None:
         validate_line = next(
@@ -68,6 +69,18 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("python-check", validate_line)
         self.assertIn("compatibility", validate_line)
         self.assertIn("security", validate_line)
+
+    def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:
+        target_start = self.makefile_text.index("quality:")
+        target_end = self.makefile_text.index("\ncompose-config:", target_start)
+        target = self.makefile_text[target_start:target_end]
+
+        self.assertIn("B1_QUALITY_PYTHON ?= python3.12", self.makefile_text)
+        self.assertIn("B1_QUALITY_PYTHON must be Python 3.12", target)
+        self.assertIn("$(B1_QUALITY_PYTHON)\" -m venv", target)
+        self.assertIn("pip install PyYAML==6.0.2", target)
+        self.assertIn("$(MAKE) validate openapi-check", target)
+        self.assertIn("$(MAKE) frontend", target)
 
     def test_makefile_caddy_validation_image_is_digest_pinned(self) -> None:
         caddy_line = next(

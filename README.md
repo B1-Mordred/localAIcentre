@@ -100,6 +100,12 @@ Validate the repository, Compose configuration, Python source syntax, offline co
 make validate
 ```
 
+Run the full local quality gate, including backend dependency installation in a temporary Python 3.12 venv, committed OpenAPI drift, and both frontend builds/audits:
+
+```bash
+make quality
+```
+
 Regenerate the committed API schema after endpoint changes:
 
 ```bash
