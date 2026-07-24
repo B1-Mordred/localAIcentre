@@ -19,7 +19,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis.asyncio as redis
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -7765,16 +7765,16 @@ def modelhub_model_record(model_id: str) -> dict[str, Any]:
     return model
 
 
-@app.get("/modelhub/v1/models/{model_id}")
-async def modelhub_model(model_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+@app.get("/modelhub/v1/models/{id}")
+async def modelhub_model(model_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
     await require_modelhub_model_authorized(auth, model_id, for_download=False)
     return modelhub_policy.public_modelhub_metadata(modelhub_model_record(model_id))
 
 
-@app.get("/modelhub/v1/models/{model_id}/versions")
-async def modelhub_versions(model_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+@app.get("/modelhub/v1/models/{id}/versions")
+async def modelhub_versions(model_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
     await require_modelhub_model_authorized(auth, model_id, for_download=False)

@@ -8009,16 +8009,16 @@
         "summary": "Modelhub Client Policy Update"
       }
     },
-    "/modelhub/v1/models/{model_id}": {
+    "/modelhub/v1/models/{id}": {
       "get": {
-        "operationId": "modelhub_model_modelhub_v1_models__model_id__get",
+        "operationId": "modelhub_model_modelhub_v1_models__id__get",
         "parameters": [
           {
             "in": "path",
-            "name": "model_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Model Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -8045,7 +8045,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Modelhub Model Modelhub V1 Models  Model Id  Get",
+                  "title": "Response Modelhub Model Modelhub V1 Models  Id  Get",
                   "type": "object"
                 }
               }
@@ -8066,16 +8066,16 @@
         "summary": "Modelhub Model"
       }
     },
-    "/modelhub/v1/models/{model_id}/versions": {
+    "/modelhub/v1/models/{id}/versions": {
       "get": {
-        "operationId": "modelhub_versions_modelhub_v1_models__model_id__versions_get",
+        "operationId": "modelhub_versions_modelhub_v1_models__id__versions_get",
         "parameters": [
           {
             "in": "path",
-            "name": "model_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Model Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -8102,7 +8102,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Modelhub Versions Modelhub V1 Models  Model Id  Versions Get",
+                  "title": "Response Modelhub Versions Modelhub V1 Models  Id  Versions Get",
                   "type": "object"
                 }
               }
