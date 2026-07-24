@@ -36,6 +36,8 @@ class FakeQueue:
         self.flags: dict[str, object] = {}
         self.running: list[object] = []
         self.queued: list[object] = []
+        self.history: dict[str, object] = {}
+        self.history_status: str | None = None
 
     def get_current_queue(self) -> tuple[list[object], list[object]]:
         return self.running, self.queued
@@ -48,9 +50,14 @@ class FakeQueue:
 
     def put(self, item: object) -> None:
         self.queued.append(item)
+        if self.history_status and isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], str):
+            self.history[item[1]] = {"status": {"status_str": self.history_status}}
 
     def get_history(self, prompt_id: str | None = None) -> dict[str, object]:
-        return {}
+        if prompt_id is not None:
+            item = self.history.get(prompt_id)
+            return {prompt_id: item} if item is not None else {}
+        return dict(self.history)
 
 
 class FakeRuntimeActionRequest:
@@ -172,6 +179,31 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertEqual(result["status"], "unconfirmed")
         self.assertEqual(result["reason"], "smoke_disabled")
         self.assertEqual(queue.queued, [])
+
+    def test_enabled_smoke_runs_noop_prompt_through_queue(self) -> None:
+        hooks, _routes, queue = load_hooks()
+        queue.history_status = "success"
+
+        with patch.dict("os.environ", {"B1_COMFYUI_HOOK_SMOKE_ENABLED": "true"}, clear=False):
+            result = asyncio.run(hooks.handle_smoke({"model": "base"}))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["strategy"], "b1_noop_queue")
+        self.assertEqual(len(queue.queued), 1)
+        queued = queue.queued[0]
+        self.assertIsInstance(queued, tuple)
+        self.assertEqual(queued[2], {"1": {"class_type": "B1RuntimeSmoke", "inputs": {}}})
+
+    def test_enabled_warm_reports_ready_after_noop_prompt(self) -> None:
+        hooks, _routes, queue = load_hooks()
+        queue.history_status = "success"
+
+        with patch.dict("os.environ", {"B1_COMFYUI_HOOK_WARM_ENABLED": "true"}, clear=False):
+            result = asyncio.run(hooks.handle_warm({"model": "base"}))
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["strategy"], "b1_noop_queue")
+        self.assertEqual(len(queue.queued), 1)
 
     def test_unload_sets_native_free_flags_and_reports_idle_success(self) -> None:
         hooks, _routes, queue = load_hooks()
