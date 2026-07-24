@@ -28,6 +28,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "websocket_events",
     "history_available",
     "queue_delete_accessible",
+    "interrupt_accessible",
     "view_artifact_accessible",
 )
 
@@ -454,6 +455,18 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         )
         self.samples.append({"label": "queue-delete", "prompt_id": prompt_id, "byte_count": len(body)})
 
+    def verify_targeted_interrupt(self, prompt_id: str) -> None:
+        body, headers, status = self.request_status("POST", "/interrupt", {"prompt_id": prompt_id}, timeout=60)
+        self.assertEqual(status, 200)
+        self.record_check(
+            "interrupt_accessible",
+            path="/interrupt",
+            prompt_id=prompt_id,
+            byte_count=len(body),
+            content_type=headers.get("content-type", ""),
+        )
+        self.samples.append({"label": "targeted-interrupt", "prompt_id": prompt_id, "byte_count": len(body)})
+
     def test_native_rest_websocket_prompt_history_and_metadata(self) -> None:
         object_info = self.record_metadata_check("object_info_accessible", "/object_info")
         self.assertTrue(object_info, "native /object_info response is empty")
@@ -472,6 +485,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         )
         self.samples.append({"label": "prompt-submission", "prompt_id": prompt_id, "history_available": True})
         self.verify_queue_delete(prompt_id)
+        self.verify_targeted_interrupt(prompt_id)
         self.verify_view_artifact(prompt_id, history)
 
 

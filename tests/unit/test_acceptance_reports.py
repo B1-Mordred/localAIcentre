@@ -173,6 +173,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket_events",
                 "history_available",
                 "queue_delete_accessible",
+                "interrupt_accessible",
                 "view_artifact_accessible",
             ],
             "missing_checks": [],
@@ -187,10 +188,20 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "queue_delete_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
+                "interrupt_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "view_artifact_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
             },
-            "sample_count": 7,
-            "sample_labels": ["object-info", "upload-image", "upload-mask", "prompt-submission", "websocket-completed", "queue-delete", "view-artifact"],
+            "sample_count": 8,
+            "sample_labels": [
+                "object-info",
+                "upload-image",
+                "upload-mask",
+                "prompt-submission",
+                "websocket-completed",
+                "queue-delete",
+                "targeted-interrupt",
+                "view-artifact",
+            ],
         },
         "remote_nodes_non_comfy": {
             "available": True,
@@ -818,10 +829,17 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("upload_image_accessible", snapshot["required_checks"])
         self.assertIn("upload_mask_accessible", snapshot["required_checks"])
         self.assertIn("queue_delete_accessible", snapshot["required_checks"])
+        self.assertIn("interrupt_accessible", snapshot["required_checks"])
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
         self.assertEqual(
             snapshot["missing_checks"],
-            ["upload_image_accessible", "upload_mask_accessible", "queue_delete_accessible", "view_artifact_accessible"],
+            [
+                "upload_image_accessible",
+                "upload_mask_accessible",
+                "queue_delete_accessible",
+                "interrupt_accessible",
+                "view_artifact_accessible",
+            ],
         )
 
     def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
@@ -1190,6 +1208,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "websocket_events": {"status": "ok"},
                             "history_available": {"status": "ok"},
                             "queue_delete_accessible": {"status": "ok"},
+                            "interrupt_accessible": {"status": "ok"},
                             "view_artifact_accessible": {"status": "ok"},
                         },
                         "samples": [
@@ -1199,6 +1218,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "prompt-submission"},
                             {"label": "websocket-completed"},
                             {"label": "queue-delete"},
+                            {"label": "targeted-interrupt"},
                             {"label": "view-artifact"},
                         ],
                     }
@@ -1340,7 +1360,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
-        self.assertEqual(native["sample_count"], 7)
+        self.assertEqual(native["sample_count"], 8)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))
