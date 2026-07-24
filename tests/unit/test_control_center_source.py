@@ -174,6 +174,14 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("largestManifestFiles", self.source)
         self.assertIn("manifestPostgresDumps", self.source)
         self.assertIn("Raw Manifest JSON", self.source)
+        self.assertIn("type BackupPostgresImportPlan", self.source)
+        self.assertIn("const [postgresImportPlan, setPostgresImportPlan]", self.source)
+        self.assertIn("runPostgresImport", self.source)
+        self.assertIn("/admin/backups/${encodeURIComponent(backup.name)}/postgres-import", self.source)
+        self.assertIn("confirm_backup_name: postgresImportConfirm.trim()", self.source)
+        self.assertIn("<h3>PostgreSQL Import</h3>", self.source)
+        self.assertIn("Raw Import JSON", self.source)
+        self.assertIn("postgresImportConfirm !== postgresImportBackup", self.source)
 
     def test_models_tab_supports_remote_manifest_url(self) -> None:
         self.assertIn('const [manifestUrl, setManifestUrl] = useState("");', self.source)

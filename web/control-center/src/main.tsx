@@ -325,6 +325,18 @@ type BackupSchedule = {
   failure_message?: string | null;
 };
 
+type BackupPostgresImportPlan = {
+  format?: string;
+  created_at?: string;
+  source?: string;
+  status: string;
+  apply_supported?: boolean;
+  table_count?: number;
+  row_counts?: Record<string, number>;
+  applied_row_counts?: Record<string, number> | null;
+  operations?: { table: string; mode: string; primary_key?: string[]; row_count: number }[];
+};
+
 type UpdatePlan = {
   id: string;
   target_version: string;
@@ -3163,6 +3175,9 @@ function Storage() {
   const [modelQuarantinePlan, setModelQuarantinePlan] = useState<ModelQuarantineRetentionPlan | null>(null);
   const [admissionReport, setAdmissionReport] = useState<AdmissionReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
+  const [postgresImportPlan, setPostgresImportPlan] = useState<BackupPostgresImportPlan | null>(null);
+  const [postgresImportBackup, setPostgresImportBackup] = useState("");
+  const [postgresImportConfirm, setPostgresImportConfirm] = useState("");
   const [keepLast, setKeepLast] = useState("5");
   const [deleteOlderThanDays, setDeleteOlderThanDays] = useState("");
   const [artifactDeleteOlderThanDays, setArtifactDeleteOlderThanDays] = useState("30");
@@ -3212,7 +3227,7 @@ function Storage() {
     loadAdmission();
   }, []);
 
-  const runAction = (action: "create" | "verify" | "restore-test" | "postgres-import", backup?: BackupSummary) => {
+  const runAction = (action: "create" | "verify" | "restore-test", backup?: BackupSummary) => {
     setBusy(true);
     setMessage(action);
     const url = action === "create"
@@ -3220,9 +3235,7 @@ function Storage() {
       : `${API_BASE}/admin/backups/${encodeURIComponent(backup?.name ?? "")}/${action}`;
     const body = action === "create"
       ? {}
-      : action === "postgres-import"
-        ? { apply: false }
-        : { force: false };
+      : { force: false };
     apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3232,6 +3245,24 @@ function Storage() {
       .then((payload) => {
         setMessage(payload.status ? `${payload.status} ${payload.backup ?? payload.name}` : `created ${payload.name}`);
         loadBackups();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const runPostgresImport = (backup: BackupSummary, apply: boolean) => {
+    setBusy(true);
+    setMessage(apply ? "applying PostgreSQL import" : "planning PostgreSQL import");
+    apiJson<BackupPostgresImportPlan>(`/admin/backups/${encodeURIComponent(backup.name)}/postgres-import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(apply ? { apply: true, confirm_backup_name: postgresImportConfirm.trim() } : { apply: false })
+    })
+      .then((payload) => {
+        setPostgresImportPlan(payload);
+        setPostgresImportBackup(backup.name);
+        if (!apply) setPostgresImportConfirm("");
+        setMessage(`${payload.status} PostgreSQL import for ${backup.name}`);
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -3388,6 +3419,14 @@ function Storage() {
         ? [selectedBackupManifest.postgres_dump]
         : []
     : [];
+  const postgresImportOperations = postgresImportPlan?.operations ?? [];
+  const postgresImportRows = postgresImportPlan?.row_counts
+    ? Object.entries(postgresImportPlan.row_counts).reduce((total, [, count]) => total + count, 0)
+    : postgresImportOperations.reduce((total, operation) => total + operation.row_count, 0);
+  const postgresImportAppliedRows = postgresImportPlan?.applied_row_counts
+    ? Object.entries(postgresImportPlan.applied_row_counts).reduce((total, [, count]) => total + count, 0)
+    : null;
+  const postgresImportBackupSummary = backups.find((backup) => backup.name === postgresImportBackup);
 
   return (
     <section className="panel wide">
@@ -3500,7 +3539,7 @@ function Storage() {
                   <button title={`Inspect manifest for ${backup.name}`} onClick={() => inspectBackupManifest(backup)} disabled={busy || backup.status === "invalid"}><ScrollText size={16} /></button>
                   <button title={`Verify ${backup.name}`} onClick={() => runAction("verify", backup)} disabled={busy || backup.status === "invalid"}><CheckCircle2 size={16} /></button>
                   <button title={`Restore-test ${backup.name}`} onClick={() => runAction("restore-test", backup)} disabled={busy || backup.status === "invalid"}><RotateCcw size={16} /></button>
-                  <button title={`Plan DB import for ${backup.name}`} onClick={() => runAction("postgres-import", backup)} disabled={busy || backup.status === "invalid" || !backup.postgres_dump_included}><Database size={16} /></button>
+                  <button title={`Plan DB import for ${backup.name}`} onClick={() => runPostgresImport(backup, false)} disabled={busy || backup.status === "invalid" || !backup.postgres_dump_included}><Database size={16} /></button>
                 </div>
               </td>
             </tr>
@@ -3508,6 +3547,51 @@ function Storage() {
           {!backups.length && <tr><td colSpan={5}>No backups recorded</td></tr>}
         </tbody>
       </table>
+      {postgresImportPlan && (
+        <div className="backup-manifest-detail">
+          <div className="subsection-title">
+            <Database size={16} />
+            <h3>PostgreSQL Import</h3>
+          </div>
+          <div className="backup-manifest-grid">
+            <div><strong>Backup</strong><small>{postgresImportBackup}</small></div>
+            <div><strong>Status</strong><small>{postgresImportPlan.status}</small></div>
+            <div><strong>Tables</strong><small>{formatCount(postgresImportPlan.table_count ?? postgresImportOperations.length)}</small></div>
+            <div><strong>Rows</strong><small>{formatCount(postgresImportAppliedRows ?? postgresImportRows)}</small></div>
+            <div><strong>Created</strong><small>{formatDateTime(postgresImportPlan.created_at)}</small></div>
+            <div><strong>Apply</strong><small>{postgresImportPlan.apply_supported ? "supported" : "unavailable"}</small></div>
+          </div>
+          <div className="toolbar job-filters">
+            <label>Confirm backup<input aria-label="Confirm PostgreSQL import backup name" value={postgresImportConfirm} onChange={(event) => setPostgresImportConfirm(event.target.value)} /></label>
+            <button
+              title={`Apply PostgreSQL import for ${postgresImportBackup}`}
+              onClick={() => postgresImportBackupSummary && runPostgresImport(postgresImportBackupSummary, true)}
+              disabled={busy || !postgresImportPlan.apply_supported || !postgresImportBackupSummary || postgresImportConfirm !== postgresImportBackup}
+            >
+              <Database size={16} />Apply
+            </button>
+            <span className="toolbar-status">{postgresImportAppliedRows === null ? "dry-run plan" : `${formatCount(postgresImportAppliedRows)} rows applied`}</span>
+          </div>
+          <table>
+            <thead><tr><th>Table</th><th>Mode</th><th>Rows</th><th>Primary Key</th></tr></thead>
+            <tbody>
+              {postgresImportOperations.map((operation) => (
+                <tr key={operation.table}>
+                  <td><code>{operation.table}</code></td>
+                  <td>{operation.mode}</td>
+                  <td>{formatCount(operation.row_count)}</td>
+                  <td>{operation.primary_key?.join(", ") ?? ""}</td>
+                </tr>
+              ))}
+              {!postgresImportOperations.length && <tr><td colSpan={4}>No import operations reported</td></tr>}
+            </tbody>
+          </table>
+          <details className="manifest-raw">
+            <summary>Raw Import JSON</summary>
+            <pre>{JSON.stringify(postgresImportPlan, null, 2)}</pre>
+          </details>
+        </div>
+      )}
       {selectedBackupManifest && (
         <div className="backup-manifest-detail">
           <div className="subsection-title">

@@ -137,7 +137,15 @@ curl -X POST https://api.ai.b1.germering/admin/backups/20260722-120000/verify \
   -H "Authorization: Bearer $B1_ADMIN_KEY"
 ```
 
-After a restore test has extracted the archive, the API can validate the PostgreSQL logical export and return a dry-run import plan:
+After a restore test has extracted the archive, Control Center can validate the PostgreSQL logical export and return a dry-run import plan:
+
+```text
+Control Center -> Storage -> backup row -> Plan DB import
+```
+
+The plan shows the exported tables, upsert mode, primary keys, row counts, and raw import JSON. Applying the logical import upserts the exported rows into the current control-plane database. Run migrations first so the target schema is current, enable maintenance mode from the System tab, enter the exact backup name in the Storage tab import panel, and press Apply. The backend still requires administrator role, maintenance mode, and a matching `confirm_backup_name` before any rows are written.
+
+The same constrained flow is available through the API:
 
 ```bash
 curl -X POST https://api.ai.b1.germering/admin/backups/20260722-120000/postgres-import \
@@ -146,7 +154,7 @@ curl -X POST https://api.ai.b1.germering/admin/backups/20260722-120000/postgres-
   -d '{"apply": false}'
 ```
 
-Applying the logical import upserts the exported rows into the current control-plane database. Run migrations first so the target schema is current, enable maintenance mode, then apply the import with an administrator credential. The import is intentionally gated by an explicit backup-name confirmation:
+For scripted apply, the import is intentionally gated by an explicit backup-name confirmation:
 
 ```bash
 make db-migrate
