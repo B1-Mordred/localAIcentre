@@ -17,6 +17,8 @@ SUMMARY_LIMIT = 200
 MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
 CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 MAX_LIVE_EVIDENCE_BYTES = 4 * 1024 * 1024
+MAX_LIVE_EVIDENCE_AGE_SECONDS = 72 * 60 * 60
+MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS = 10 * 60
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
 LOCALAI_EVIDENCE_FORMAT = "b1-ai-hub-localai-runtime-acceptance/v1"
@@ -95,6 +97,17 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("rollback_rehearsed", "Rollback procedure was tested and old resources remain preserved"),
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )
+LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("gpu_acceptance", "RTX 3060 GPU acceptance"),
+    ("localai_runtime", "LocalAI runtime acceptance"),
+    ("installed_workflows", "installed workflow acceptance"),
+    ("native_comfyui_compatibility", "native ComfyUI compatibility"),
+    ("remote_nodes_non_comfy", "remote-node non-Comfy compatibility"),
+    ("modelhub_client_sync", "Model Hub client sync"),
+    ("voicebox_remote", "Voicebox remote compatibility"),
+    ("security_acceptance", "security acceptance"),
+    ("restart_reconciliation", "restart reconciliation"),
+)
 
 
 class AcceptanceReportError(ValueError):
@@ -162,6 +175,45 @@ def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | Non
         if isinstance(check, dict) and check.get("name") == name:
             return check
     return None
+
+
+def _parse_utc_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _live_evidence_freshness_failures(report: dict[str, Any]) -> dict[str, str]:
+    report_generated_at = _parse_utc_datetime(report.get("generated_at"))
+    if report_generated_at is None:
+        return {"report": "acceptance report generated_at is missing or invalid"}
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    failures: dict[str, str] = {}
+    max_age_hours = MAX_LIVE_EVIDENCE_AGE_SECONDS // 3600
+    for key, label in LIVE_EVIDENCE_LABELS:
+        evidence = live_evidence.get(key) if isinstance(live_evidence.get(key), dict) else {}
+        if evidence.get("available") is not True:
+            continue
+        evidence_generated_at = _parse_utc_datetime(evidence.get("generated_at"))
+        if evidence_generated_at is None:
+            failures[key] = f"{label} evidence generated_at is missing or invalid"
+            continue
+        age_seconds = (report_generated_at - evidence_generated_at).total_seconds()
+        if age_seconds > MAX_LIVE_EVIDENCE_AGE_SECONDS:
+            age_hours = int(age_seconds // 3600)
+            failures[key] = f"{label} evidence is stale ({age_hours}h old; rerun within {max_age_hours}h of handoff report)"
+        elif age_seconds < -MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS:
+            failures[key] = f"{label} evidence generated_at is after the handoff report time"
+    return failures
 
 
 def required_operator_evidence_items() -> list[dict[str, str]]:
@@ -728,6 +780,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
+    blockers.extend(_live_evidence_freshness_failures(report).values())
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     if gpu_evidence.get("available") is not True:
@@ -1211,44 +1264,60 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     restart_reconciliation_evidence = (
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
     )
-    gpu_evidence_ready = gpu_evidence.get("available") is True and gpu_evidence.get("status") == "ok" and not gpu_evidence.get("missing_checks")
+    freshness_failures = _live_evidence_freshness_failures(report)
+    gpu_evidence_ready = (
+        gpu_evidence.get("available") is True
+        and gpu_evidence.get("status") == "ok"
+        and not gpu_evidence.get("missing_checks")
+        and "gpu_acceptance" not in freshness_failures
+    )
     localai_evidence_ready = (
-        localai_evidence.get("available") is True and localai_evidence.get("status") == "ok" and not localai_evidence.get("missing_checks")
+        localai_evidence.get("available") is True
+        and localai_evidence.get("status") == "ok"
+        and not localai_evidence.get("missing_checks")
+        and "localai_runtime" not in freshness_failures
     )
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
         and installed_workflows_evidence.get("status") == "ok"
         and not installed_workflows_evidence.get("missing_checks")
+        and "installed_workflows" not in freshness_failures
     )
     native_comfyui_evidence_ready = (
         native_comfyui_evidence.get("available") is True
         and native_comfyui_evidence.get("status") == "ok"
         and not native_comfyui_evidence.get("missing_checks")
+        and "native_comfyui_compatibility" not in freshness_failures
     )
     remote_nodes_evidence_ready = (
         remote_nodes_evidence.get("available") is True
         and remote_nodes_evidence.get("status") == "ok"
         and not remote_nodes_evidence.get("missing_checks")
+        and "remote_nodes_non_comfy" not in freshness_failures
     )
     modelhub_evidence_ready = (
         modelhub_evidence.get("available") is True
         and modelhub_evidence.get("status") == "ok"
         and not modelhub_evidence.get("missing_checks")
+        and "modelhub_client_sync" not in freshness_failures
     )
     voicebox_evidence_ready = (
         voicebox_evidence.get("available") is True
         and voicebox_evidence.get("status") == "ok"
         and not voicebox_evidence.get("missing_checks")
+        and "voicebox_remote" not in freshness_failures
     )
     security_evidence_ready = (
         security_evidence.get("available") is True
         and security_evidence.get("status") == "ok"
         and not security_evidence.get("missing_checks")
+        and "security_acceptance" not in freshness_failures
     )
     restart_reconciliation_evidence_ready = (
         restart_reconciliation_evidence.get("available") is True
         and restart_reconciliation_evidence.get("status") == "ok"
         and not restart_reconciliation_evidence.get("missing_checks")
+        and "restart_reconciliation" not in freshness_failures
     )
     summary = {
         "id": report.get("id"),
@@ -1270,8 +1339,10 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "voicebox_evidence_ready": voicebox_evidence_ready,
         "security_evidence_ready": security_evidence_ready,
         "restart_reconciliation_evidence_ready": restart_reconciliation_evidence_ready,
+        "live_evidence_freshness_ready": not freshness_failures,
         "live_evidence_ready": (
-            gpu_evidence_ready
+            not freshness_failures
+            and gpu_evidence_ready
             and localai_evidence_ready
             and installed_workflows_evidence_ready
             and native_comfyui_evidence_ready

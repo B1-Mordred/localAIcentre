@@ -325,7 +325,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
         created_by="admin_1",
         label=overrides.pop("label", "cutover dry run"),
         notes=overrides.pop("notes", "operator notes"),
-        generated_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        generated_at=datetime(2026, 7, 24, 13, 0, tzinfo=UTC),
         runtime_deployment_mode=overrides.pop("runtime_deployment_mode", "production"),
         resource_policy=overrides.pop("resource_policy", {"gpu_total_vram_gib": 12.0, "host_total_ram_gib": 32.0}),
         maintenance=overrides.pop("maintenance", {"enabled": True, "reason": "cutover validation"}),
@@ -578,6 +578,44 @@ class AcceptanceReportTests(unittest.TestCase):
             "RTX 3060 GPU acceptance evidence is missing required checks: localai_comfyui_voicebox_switch",
             report["acceptance_blockers"],
         )
+
+    def test_report_blocks_handoff_for_stale_live_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["gpu_acceptance"] = {
+            **live_evidence["gpu_acceptance"],
+            "generated_at": "2026-07-20T00:00:00+00:00",
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertFalse(summary["live_evidence_freshness_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn(
+            "RTX 3060 GPU acceptance evidence is stale (109h old; rerun within 72h of handoff report)",
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_for_invalid_or_future_live_evidence_time(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["localai_runtime"] = {
+            **live_evidence["localai_runtime"],
+            "generated_at": "",
+        }
+        live_evidence["security_acceptance"] = {
+            **live_evidence["security_acceptance"],
+            "generated_at": "2026-07-24T14:00:00+00:00",
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertFalse(summary["security_evidence_ready"])
+        self.assertFalse(summary["live_evidence_freshness_ready"])
+        self.assertIn("LocalAI runtime acceptance evidence generated_at is missing or invalid", report["acceptance_blockers"])
+        self.assertIn("security acceptance evidence generated_at is after the handoff report time", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_localai_evidence(self) -> None:
         live_evidence = sample_live_evidence()
