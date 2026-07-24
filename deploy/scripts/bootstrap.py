@@ -106,6 +106,8 @@ APP_WRITABLE_DIRS = [
     "artifacts/temporary",
     "artifacts/temporary/comfyui-output",
     "artifacts/temporary/comfyui-temp",
+    "cache/localai",
+    "cache/comfyui",
     "cache/voicebox",
     "models/blobs/.partial",
     "models/runtime-views",

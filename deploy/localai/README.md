@@ -53,7 +53,7 @@ $B1_DATA_ROOT/data/localai/data
 $B1_DATA_ROOT/cache/localai
 ```
 
-These paths map to `LOCALAI_CONFIG_DIR`, `LOCALAI_BACKENDS_PATH`, `LOCALAI_DATA_PATH`, and cache storage. Model installation remains controlled by the B1 Model Hub; the LocalAI container should read already validated model views.
+These paths map to `LOCALAI_CONFIG_DIR`, `LOCALAI_BACKENDS_PATH`, `LOCALAI_DATA_PATH`, and cache storage. Bootstrap marks them writable for the B1 application UID/GID, and the wrapper switches to `B1_LOCALAI_UID:B1_LOCALAI_GID` before starting LocalAI and the B1 proxy. Model installation remains controlled by the B1 Model Hub; the LocalAI container should read already validated model views.
 
 ## Runtime Policy
 

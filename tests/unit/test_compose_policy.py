@@ -357,6 +357,7 @@ class ComposePolicyTests(unittest.TestCase):
             "FROM localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
             dockerfile,
         )
+        self.assertIn("USER ${B1_LOCALAI_UID}:${B1_LOCALAI_GID}", dockerfile)
         self.assertIn("B1_LOCALAI_UPSTREAM_COMMIT=b224c96db6f4b87306a33a808650bfce63b12588", dockerfile)
         self.assertIn("python3 /usr/local/bin/b1_localai_proxy.py", entrypoint)
         self.assertIn('export LOCALAI_ADDRESS="${LOCALAI_ADDRESS:-${upstream_address}}"', entrypoint)

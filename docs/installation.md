@@ -101,6 +101,7 @@ The override:
 - keeps LocalAI on the internal `runtime` network with no published backend port
 - mounts `$B1_DATA_ROOT/models/runtime-views/localai` read-only at `/srv/b1-ai-hub/models`
 - creates writable LocalAI state at `$B1_DATA_ROOT/data/localai/{configuration,backends,data}` and `$B1_DATA_ROOT/cache/localai`
+- runs the B1 wrapper, proxy, and upstream LocalAI entrypoint as the bootstrap-managed non-root `B1_LOCALAI_UID:B1_LOCALAI_GID`
 - reserves one GPU by default through `B1_LOCALAI_GPU_DRIVER=nvidia.com/gpu` and `B1_LOCALAI_GPU_COUNT=1`
 - sets LocalAI's own backend guard rails with `LOCALAI_MAX_ACTIVE_BACKENDS=1`, `LOCALAI_WATCHDOG_IDLE=true`, `LOCALAI_WATCHDOG_IDLE_TIMEOUT=5m`, `LOCALAI_WATCHDOG_INTERVAL=1s`, and `LOCALAI_FORCE_EVICTION_WHEN_BUSY=false`
 - disables LocalAI's web UI and CORS by default because B1 gateway/control-plane UIs are the managed surfaces

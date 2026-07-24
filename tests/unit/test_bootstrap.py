@@ -107,8 +107,10 @@ class BootstrapTests(unittest.TestCase):
                 path = root / "data" / "voicebox" / relative
                 self.assertTrue(path.is_dir(), relative)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o775)
-            self.assertTrue((root / "cache" / "voicebox").is_dir())
-            self.assertEqual((root / "cache" / "voicebox").stat().st_mode & 0o777, 0o775)
+            for runtime_cache in ("localai", "comfyui", "voicebox"):
+                path = root / "cache" / runtime_cache
+                self.assertTrue(path.is_dir(), runtime_cache)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o775)
             for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
                 self.assertTrue((root / "models" / "runtime-views" / runtime).is_dir())
                 self.assertEqual((root / "models" / "runtime-views" / runtime).stat().st_mode & 0o777, 0o775)

@@ -33,6 +33,7 @@ RUN mkdir -p /srv/b1-ai-hub/models /srv/b1-ai-hub/localai/backends /srv/b1-ai-hu
     && chown -R "${B1_LOCALAI_UID}:${B1_LOCALAI_GID}" /srv/b1-ai-hub \
     && chmod 0755 /usr/local/bin/b1-localai-entrypoint.sh /usr/local/bin/b1_localai_proxy.py
 
+USER ${B1_LOCALAI_UID}:${B1_LOCALAI_GID}
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=60m \
