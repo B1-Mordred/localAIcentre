@@ -518,6 +518,29 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(runner.idle[0]["details"]["source"], "comfyui_native_compatibility")
         self.assertEqual(runner.idle[0]["details"]["last_state"], "completed")
 
+    def test_tracker_marks_terminal_native_job_idle_before_releasing_lease(self) -> None:
+        fake = FakeDatabase()
+        fake.jobs["job_1"] = {
+            "id": "job_1",
+            "state": "failed",
+            "runtime": "comfyui",
+            "model_alias": "comfyui-native",
+            "resolved_model_version": "comfyui-native-workflow@native",
+            "artifacts": [],
+            "native_prompt_id": "prompt_native_1",
+        }
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+
+        asyncio.run(main.track_comfyui_prompt_completion("job_1", "prompt_native_1", "lease-owner"))
+
+        self.assertEqual(fake.releases, ["lease-owner"])
+        self.assertEqual(runner.calls, ["record_runtime_idle_for_job"])
+        self.assertEqual(runner.idle[0]["job"]["runtime"], "comfyui")
+        self.assertEqual(runner.idle[0]["details"]["source"], "comfyui_native_compatibility")
+        self.assertEqual(runner.idle[0]["details"]["last_state"], "failed")
+
     def test_websocket_bridge_filters_sensitive_headers_and_preserves_query(self) -> None:
         websocket = FakeWebSocket(receive_messages=[{"type": "websocket.disconnect", "code": 1000}])
         upstream = FakeUpstream()

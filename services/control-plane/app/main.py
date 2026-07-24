@@ -2522,6 +2522,8 @@ async def track_comfyui_prompt_completion(job_id: str, prompt_id: str, lease_own
             if current is None:
                 return
             if current["state"] in TERMINAL_JOB_STATES:
+                with suppress(Exception):
+                    await mark_comfyui_native_runtime_idle(current, prompt_id, str(current["state"]))
                 return
             if current["state"] in {JobState.CANCELLING.value, JobState.CANCELLED.value}:
                 await interrupt_comfyui_prompt()
