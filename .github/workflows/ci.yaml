@@ -24,7 +24,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install backend test dependencies
-        run: python -m pip install PyYAML==6.0.2 -r services/control-plane/requirements.txt
+        run: |
+          python -m pip install PyYAML==6.0.2 \
+            -r services/control-plane/requirements.txt \
+            -r services/runtime-agent/requirements.txt \
+            -r services/artifact-server/requirements.txt \
+            -r services/audio-cpu/requirements.txt \
+            -r services/mock-runtime/requirements.txt
       - name: Bootstrap test root
         run: python deploy/scripts/bootstrap.py --root "$RUNNER_TEMP/b1-ai-hub"
       - name: Validate backend and Compose policy

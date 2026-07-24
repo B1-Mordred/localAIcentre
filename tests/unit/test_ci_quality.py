@@ -50,7 +50,14 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("tests.unit.test_migrations", commands)
         self.assertIn("deploy/scripts/bootstrap.py", commands)
         self.assertIn("PyYAML==6.0.2", commands)
-        self.assertIn("services/control-plane/requirements.txt", commands)
+        for path in (
+            "services/control-plane/requirements.txt",
+            "services/runtime-agent/requirements.txt",
+            "services/artifact-server/requirements.txt",
+            "services/audio-cpu/requirements.txt",
+            "services/mock-runtime/requirements.txt",
+        ):
+            self.assertIn(f"-r {path}", commands)
 
     def test_default_validation_runs_security_and_compatibility_harnesses(self) -> None:
         validate_line = next(
