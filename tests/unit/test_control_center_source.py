@@ -111,6 +111,19 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Raw JSON", self.source)
         self.assertIn("<h3>Acceptance Reports</h3>", self.source)
 
+    def test_storage_tab_inspects_backup_manifests(self) -> None:
+        self.assertIn("type BackupManifest", self.source)
+        self.assertIn("type BackupManifestFile", self.source)
+        self.assertIn("const [selectedBackupManifest, setSelectedBackupManifest]", self.source)
+        self.assertIn("inspectBackupManifest", self.source)
+        self.assertIn("/admin/backups/${encodeURIComponent(backup.name)}/manifest", self.source)
+        self.assertIn("Inspect manifest", self.source)
+        self.assertIn("<h3>Backup Manifest Detail</h3>", self.source)
+        self.assertIn("sensitiveManifestFiles", self.source)
+        self.assertIn("largestManifestFiles", self.source)
+        self.assertIn("manifestPostgresDumps", self.source)
+        self.assertIn("Raw Manifest JSON", self.source)
+
     def test_models_tab_supports_remote_manifest_url(self) -> None:
         self.assertIn('const [manifestUrl, setManifestUrl] = useState("");', self.source)
         self.assertIn("return url ? { manifest_url: url } : null;", self.source)

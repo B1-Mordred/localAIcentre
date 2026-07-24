@@ -235,6 +235,37 @@ type BackupSummary = {
   status?: string;
 };
 
+type BackupManifestFile = {
+  path: string;
+  size_bytes: number;
+  sha256?: string;
+  sensitive?: boolean;
+};
+
+type BackupPostgresDump = {
+  kind?: string;
+  format?: string;
+  path?: string;
+  tool?: string;
+  verified?: boolean;
+  sensitive?: boolean;
+};
+
+type BackupManifest = {
+  format: string;
+  name: string;
+  created_at?: string;
+  files: BackupManifestFile[];
+  archive?: { file?: string; size_bytes?: number; sha256?: string };
+  contains_sensitive_data?: boolean;
+  postgres_dump_included?: boolean;
+  postgres_dump?: BackupPostgresDump | null;
+  postgres_dumps?: BackupPostgresDump[];
+  postgres_native_dump?: BackupPostgresDump | null;
+  archive_encryption?: { mode?: string; scheme?: string; file?: string; size_bytes?: number; sha256?: string; key_id?: string } | null;
+  preserve_old_stack?: boolean;
+};
+
 type BackupRetentionPlan = {
   status: string;
   policy: { keep_last: number; delete_older_than_days?: number | null; cutoff?: string | null };
@@ -2958,6 +2989,7 @@ function formatArchiveInspection(inspection: ModelInstallPlan["archive_inspectio
 
 function Storage() {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
+  const [selectedBackupManifest, setSelectedBackupManifest] = useState<BackupManifest | null>(null);
   const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
   const [artifactRetentionPlan, setArtifactRetentionPlan] = useState<ArtifactRetentionPlan | null>(null);
   const [modelQuarantinePlan, setModelQuarantinePlan] = useState<ModelQuarantineRetentionPlan | null>(null);
@@ -3017,7 +3049,7 @@ function Storage() {
     setMessage(action);
     const url = action === "create"
       ? `${API_BASE}/admin/backups`
-      : `${API_BASE}/admin/backups/${backup?.name}/${action}`;
+      : `${API_BASE}/admin/backups/${encodeURIComponent(backup?.name ?? "")}/${action}`;
     const body = action === "create"
       ? {}
       : action === "postgres-import"
@@ -3032,6 +3064,18 @@ function Storage() {
       .then((payload) => {
         setMessage(payload.status ? `${payload.status} ${payload.backup ?? payload.name}` : `created ${payload.name}`);
         loadBackups();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const inspectBackupManifest = (backup: BackupSummary) => {
+    setBusy(true);
+    setMessage(`loading ${backup.name} manifest`);
+    apiJson<BackupManifest>(`/admin/backups/${encodeURIComponent(backup.name)}/manifest`)
+      .then((payload) => {
+        setSelectedBackupManifest(payload);
+        setMessage(`loaded ${backup.name} manifest`);
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -3166,6 +3210,17 @@ function Storage() {
       .finally(() => setBusy(false));
   };
 
+  const manifestFiles = selectedBackupManifest?.files ?? [];
+  const sensitiveManifestFiles = manifestFiles.filter((file) => file.sensitive).slice(0, 10);
+  const largestManifestFiles = [...manifestFiles].sort((left, right) => (right.size_bytes ?? 0) - (left.size_bytes ?? 0)).slice(0, 10);
+  const manifestPostgresDumps = selectedBackupManifest
+    ? selectedBackupManifest.postgres_dumps?.length
+      ? selectedBackupManifest.postgres_dumps
+      : selectedBackupManifest.postgres_dump
+        ? [selectedBackupManifest.postgres_dump]
+        : []
+    : [];
+
   return (
     <section className="panel wide">
       <SectionTitle icon={<HardDrive size={18} />} title="Storage" />
@@ -3274,6 +3329,7 @@ function Storage() {
               </td>
               <td>
                 <div className="table-actions">
+                  <button title={`Inspect manifest for ${backup.name}`} onClick={() => inspectBackupManifest(backup)} disabled={busy || backup.status === "invalid"}><ScrollText size={16} /></button>
                   <button title={`Verify ${backup.name}`} onClick={() => runAction("verify", backup)} disabled={busy || backup.status === "invalid"}><CheckCircle2 size={16} /></button>
                   <button title={`Restore-test ${backup.name}`} onClick={() => runAction("restore-test", backup)} disabled={busy || backup.status === "invalid"}><RotateCcw size={16} /></button>
                   <button title={`Plan DB import for ${backup.name}`} onClick={() => runAction("postgres-import", backup)} disabled={busy || backup.status === "invalid" || !backup.postgres_dump_included}><Database size={16} /></button>
@@ -3284,6 +3340,77 @@ function Storage() {
           {!backups.length && <tr><td colSpan={5}>No backups recorded</td></tr>}
         </tbody>
       </table>
+      {selectedBackupManifest && (
+        <div className="backup-manifest-detail">
+          <div className="subsection-title">
+            <ScrollText size={16} />
+            <h3>Backup Manifest Detail</h3>
+          </div>
+          <div className="backup-manifest-grid">
+            <div><strong>Backup</strong><small>{selectedBackupManifest.name}</small></div>
+            <div><strong>Created</strong><small>{formatDateTime(selectedBackupManifest.created_at)}</small></div>
+            <div><strong>Files</strong><small>{manifestFiles.length}</small></div>
+            <div><strong>Archive</strong><small>{formatBytes(selectedBackupManifest.archive?.size_bytes)} / {selectedBackupManifest.archive?.sha256 ?? "no checksum"}</small></div>
+            <div><strong>Sensitive data</strong><small>{selectedBackupManifest.contains_sensitive_data ? "present" : "not flagged"}</small></div>
+            <div><strong>PostgreSQL dumps</strong><small>{manifestPostgresDumps.length}</small></div>
+            <div><strong>Archive encryption</strong><small>{selectedBackupManifest.archive_encryption?.mode ?? "none"}</small></div>
+            <div><strong>Old stack</strong><small>{selectedBackupManifest.preserve_old_stack === false ? "not included" : "preservation enabled"}</small></div>
+          </div>
+          <div className="manifest-section">
+            <h4>PostgreSQL Dumps</h4>
+            <table>
+              <thead><tr><th>Kind</th><th>Format</th><th>Path</th><th>Status</th></tr></thead>
+              <tbody>
+                {manifestPostgresDumps.map((dump, index) => (
+                  <tr key={`${dump.path ?? "dump"}-${index}`}>
+                    <td>{dump.kind ?? "logical"}</td>
+                    <td>{dump.format ?? "unknown"}</td>
+                    <td>{dump.path ?? "not recorded"}</td>
+                    <td>{dump.verified === false ? "unverified" : "recorded"}{dump.sensitive ? <small>sensitive</small> : null}</td>
+                  </tr>
+                ))}
+                {!manifestPostgresDumps.length && <tr><td colSpan={4}>No PostgreSQL dump metadata recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="manifest-section">
+            <h4>Sensitive Files</h4>
+            <table>
+              <thead><tr><th>Path</th><th>Size</th><th>Checksum</th></tr></thead>
+              <tbody>
+                {sensitiveManifestFiles.map((file) => (
+                  <tr key={file.path}>
+                    <td>{file.path}</td>
+                    <td>{formatBytes(file.size_bytes)}</td>
+                    <td><code>{file.sha256 ?? ""}</code></td>
+                  </tr>
+                ))}
+                {!sensitiveManifestFiles.length && <tr><td colSpan={3}>No sensitive file entries flagged</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="manifest-section">
+            <h4>Largest Files</h4>
+            <table>
+              <thead><tr><th>Path</th><th>Size</th><th>Flags</th></tr></thead>
+              <tbody>
+                {largestManifestFiles.map((file) => (
+                  <tr key={file.path}>
+                    <td>{file.path}</td>
+                    <td>{formatBytes(file.size_bytes)}</td>
+                    <td>{file.sensitive ? "sensitive" : "standard"}</td>
+                  </tr>
+                ))}
+                {!largestManifestFiles.length && <tr><td colSpan={3}>No file entries recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <details className="manifest-raw">
+            <summary>Raw Manifest JSON</summary>
+            <pre>{JSON.stringify(selectedBackupManifest, null, 2)}</pre>
+          </details>
+        </div>
+      )}
     </section>
   );
 }

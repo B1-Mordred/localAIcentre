@@ -492,6 +492,64 @@ td small {
   white-space: pre-wrap;
 }
 
+.backup-manifest-detail {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 20px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0ec;
+}
+
+.backup-manifest-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.backup-manifest-grid div {
+  border-left: 3px solid #1f6f5b;
+  background: #f8faf8;
+  min-height: 64px;
+  padding: 8px 10px;
+}
+
+.backup-manifest-grid strong,
+.backup-manifest-grid small {
+  display: block;
+}
+
+.backup-manifest-grid small {
+  margin-top: 5px;
+  color: #5c675f;
+  overflow-wrap: anywhere;
+}
+
+.manifest-section {
+  display: grid;
+  gap: 8px;
+}
+
+.manifest-raw {
+  display: grid;
+  gap: 8px;
+}
+
+.manifest-raw summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.manifest-raw pre {
+  margin: 0;
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid #cfd7cf;
+  background: #f8faf8;
+  padding: 10px;
+  font: 12px/1.45 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
 th {
   color: #202421;
   font-weight: 700;
@@ -902,6 +960,10 @@ td {
   }
 
   .acceptance-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .backup-manifest-grid {
     grid-template-columns: 1fr;
   }
 
