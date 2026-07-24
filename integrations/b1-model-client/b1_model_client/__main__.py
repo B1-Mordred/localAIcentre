@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -21,6 +22,7 @@ CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
 MODELHUB_URL_ENV = "B1_MODELHUB_URL"
 TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
+CA_FILE_ENV = "B1_MODELHUB_CA_FILE"
 ALLOW_INSECURE_HTTP_ENV = "B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP"
 
 
@@ -83,6 +85,26 @@ def modelhub_request_url(base_url: str, path: str, token: str | None) -> str:
     return url
 
 
+def resolve_ca_file(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "ca_file", None)
+    if value is None:
+        value = os.getenv(CA_FILE_ENV)
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f"CA file is not a regular file: {path}")
+    return str(path)
+
+
+def modelhub_urlopen(request: urllib.request.Request, *, timeout: int, ca_file: str | None = None) -> Any:
+    if not ca_file:
+        return urllib.request.urlopen(request, timeout=timeout)
+    context = ssl.create_default_context(cafile=ca_file)
+    return urllib.request.urlopen(request, timeout=timeout, context=context)
+
+
 def require_private_token_file(path: Path) -> None:
     if os.name == "nt":
         return
@@ -122,7 +144,14 @@ def resolve_token(args: argparse.Namespace) -> str | None:
     return token
 
 
-def request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def request_json(
+    base_url: str,
+    path: str,
+    token: str | None,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    ca_file: str | None = None,
+) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(modelhub_request_url(base_url, path, token), data=data, method=method)
     request.add_header("Accept", "application/json")
@@ -130,7 +159,7 @@ def request_json(base_url: str, path: str, token: str | None, method: str = "GET
         request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with modelhub_urlopen(request, timeout=30, ca_file=ca_file) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -193,8 +222,8 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def catalog_default_models(base_url: str, token: str | None) -> list[str]:
-    aliases = request_json(base_url, "/modelhub/v1/catalog", token).get("aliases", [])
+def catalog_default_models(base_url: str, token: str | None, ca_file: str | None = None) -> list[str]:
+    aliases = request_json(base_url, "/modelhub/v1/catalog", token, ca_file=ca_file).get("aliases", [])
     models: list[str] = []
     for item in aliases:
         if not isinstance(item, dict):
@@ -220,10 +249,10 @@ def blob_target(cache: Path, sha256: str) -> Path:
     return cache / "blobs" / normalize_sha256(sha256, label="blob")
 
 
-def model_record(base_url: str, token: str | None, model_id: str) -> dict[str, Any]:
-    record = request_json(base_url, f"/modelhub/v1/models/{model_id}", token)
+def model_record(base_url: str, token: str | None, model_id: str, ca_file: str | None = None) -> dict[str, Any]:
+    record = request_json(base_url, f"/modelhub/v1/models/{model_id}", token, ca_file=ca_file)
     if record.get("resolved_model"):
-        versions = request_json(base_url, f"/modelhub/v1/models/{model_id}/versions", token).get("versions", [])
+        versions = request_json(base_url, f"/modelhub/v1/models/{model_id}/versions", token, ca_file=ca_file).get("versions", [])
         if not versions:
             raise RuntimeError(f"{model_id}: alias has no manifest versions")
         return versions[0]
@@ -310,10 +339,10 @@ def local_blob_inventory(cache: Path) -> list[dict[str, Any]]:
     return inventory
 
 
-def sync_plan_from_server(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+def sync_plan_from_server(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
     payload = {"models": models, "installed_blobs": local_blob_inventory(cache)}
     try:
-        response = request_json(base_url, "/modelhub/v1/sync/plan", token, method="POST", payload=payload)
+        response = request_json(base_url, "/modelhub/v1/sync/plan", token, method="POST", payload=payload, ca_file=ca_file)
     except (urllib.error.HTTPError, urllib.error.URLError):
         raise
     actions = response.get("actions")
@@ -337,9 +366,9 @@ def sync_plan_from_server(base_url: str, token: str | None, cache: Path, models:
     return normalized
 
 
-def planned_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+def planned_actions(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
     try:
-        return sync_plan_from_server(base_url, token, cache, models)
+        return sync_plan_from_server(base_url, token, cache, models, ca_file=ca_file)
     except urllib.error.HTTPError as exc:
         if exc.code not in {404, 405}:
             raise
@@ -350,7 +379,7 @@ def planned_actions(base_url: str, token: str | None, cache: Path, models: list[
         raise
     actions: list[dict[str, Any]] = []
     for model_id in models:
-        record = model_record(base_url, token, model_id)
+        record = model_record(base_url, token, model_id, ca_file=ca_file)
         metadata = plan_action_metadata(record)
         if not record.get("downloadable"):
             actions.append({"model": model_id, "action": "skip", "reason": "model is not downloadable", **metadata})
@@ -390,8 +419,8 @@ def mark_managed_blob(state: dict[str, Any], sha256: str, expected_size: int, so
     }
 
 
-def selected_models(base_url: str, token: str | None, cache: Path, requested_models: list[str]) -> list[str]:
-    return normalize_model_list(requested_models) or pinned_models(cache) or catalog_default_models(base_url, token)
+def selected_models(base_url: str, token: str | None, cache: Path, requested_models: list[str], ca_file: str | None = None) -> list[str]:
+    return normalize_model_list(requested_models) or pinned_models(cache) or catalog_default_models(base_url, token, ca_file=ca_file)
 
 
 def expected_etag(sha256: str) -> str:
@@ -445,6 +474,7 @@ def download_blob(
     *,
     source: dict[str, Any] | None = None,
     accept_licenses: bool = False,
+    ca_file: str | None = None,
 ) -> dict[str, Any]:
     sha256 = normalize_sha256(sha256, label="blob")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -473,7 +503,7 @@ def download_blob(
             request.add_header("Range", f"bytes={resume_from}-")
 
         try:
-            response_context = urllib.request.urlopen(request, timeout=120)
+            response_context = modelhub_urlopen(request, timeout=120, ca_file=ca_file)
         except urllib.error.HTTPError as exc:
             if resume_from and exc.code == 416:
                 partial.unlink(missing_ok=True)
@@ -510,14 +540,16 @@ def download_blob(
 
 
 def list_catalog(args: argparse.Namespace) -> int:
-    print(json.dumps(request_json(args.base_url, "/modelhub/v1/catalog", args.token), indent=2))
+    ca_file = getattr(args, "ca_file", None)
+    print(json.dumps(request_json(args.base_url, "/modelhub/v1/catalog", args.token, ca_file=ca_file), indent=2))
     return 0
 
 
 def plan(args: argparse.Namespace) -> int:
+    ca_file = getattr(args, "ca_file", None)
     cache = Path(args.cache).resolve()
-    models = selected_models(args.base_url, args.token, cache, args.model)
-    actions = planned_actions(args.base_url, args.token, cache, models)
+    models = selected_models(args.base_url, args.token, cache, args.model, ca_file=ca_file)
+    actions = planned_actions(args.base_url, args.token, cache, models, ca_file=ca_file)
     print(json.dumps({"action": "plan", "dry_run": True, "cache": str(cache), "models": models, "changes": actions}, indent=2))
     return 0
 
@@ -527,6 +559,7 @@ def pinned_models(cache: Path) -> list[str]:
 
 
 def pin(args: argparse.Namespace) -> int:
+    ca_file = getattr(args, "ca_file", None)
     cache = Path(args.cache).resolve()
     models = normalize_model_list(args.model)
     if not models:
@@ -534,7 +567,7 @@ def pin(args: argparse.Namespace) -> int:
     state = load_state(cache)
     pins = state.setdefault("pins", {})
     for model_id in models:
-        record = model_record(args.base_url, args.token, model_id)
+        record = model_record(args.base_url, args.token, model_id, ca_file=ca_file)
         metadata = plan_model_metadata(record)
         pins[model_id] = {
             "model": model_id,
@@ -564,9 +597,10 @@ def unpin(args: argparse.Namespace) -> int:
 
 
 def sync(args: argparse.Namespace) -> int:
+    ca_file = getattr(args, "ca_file", None)
     cache = Path(args.cache).resolve()
-    models = selected_models(args.base_url, args.token, cache, args.model)
-    payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False))
+    models = selected_models(args.base_url, args.token, cache, args.model, ca_file=ca_file)
+    payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False), ca_file=ca_file)
     print(json.dumps(payload, indent=2))
     return 0
 
@@ -620,8 +654,8 @@ def require_license_acceptance(actions: list[dict[str, Any]], *, accepted: bool)
     )
 
 
-def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], *, dry_run: bool = False, accept_licenses: bool = False) -> dict[str, Any]:
-    actions = planned_actions(base_url, token, cache, models)
+def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], *, dry_run: bool = False, accept_licenses: bool = False, ca_file: str | None = None) -> dict[str, Any]:
+    actions = planned_actions(base_url, token, cache, models, ca_file=ca_file)
     if dry_run:
         return {"action": "sync", "dry_run": True, "cache": str(cache), "models": models, "changes": actions}
     require_license_acceptance(actions, accepted=accept_licenses)
@@ -653,6 +687,7 @@ def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], 
             target,
             source=normalized_action,
             accept_licenses=accept_licenses,
+            ca_file=ca_file,
         )
         mark_managed_blob(state, blob, int(action["expected_size"]), normalized_action)
         results.append(result)
@@ -660,18 +695,18 @@ def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], 
     return {"action": "sync", "dry_run": False, "cache": str(cache), "models": models, "changes": results}
 
 
-def required_blobs_for_models(base_url: str, token: str | None, cache: Path, models: list[str]) -> set[str]:
+def required_blobs_for_models(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> set[str]:
     required: set[str] = set()
-    for action in planned_actions(base_url, token, cache, models):
+    for action in planned_actions(base_url, token, cache, models, ca_file=ca_file):
         if action.get("action") in {"keep", "download", "replace"} and action.get("blob"):
             required.add(normalize_sha256(action["blob"], label="required blob"))
     return required
 
 
-def prune_plan(base_url: str, token: str | None, cache: Path, models: list[str]) -> dict[str, Any]:
+def prune_plan(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> dict[str, Any]:
     state = load_state(cache)
     managed = state.get("managed_blobs") or {}
-    required = required_blobs_for_models(base_url, token, cache, models)
+    required = required_blobs_for_models(base_url, token, cache, models, ca_file=ca_file)
     candidates: list[dict[str, Any]] = []
     kept: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
@@ -714,11 +749,12 @@ def apply_prune_plan(cache: Path, plan_payload: dict[str, Any]) -> list[dict[str
 
 
 def prune(args: argparse.Namespace) -> int:
+    ca_file = getattr(args, "ca_file", None)
     cache = Path(args.cache).resolve()
     models = normalize_model_list(args.model) or pinned_models(cache)
     if not models:
         raise RuntimeError("prune requires pinned models or explicit model arguments")
-    plan_payload = prune_plan(args.base_url, args.token, cache, models)
+    plan_payload = prune_plan(args.base_url, args.token, cache, models, ca_file=ca_file)
     if args.dry_run:
         print(json.dumps({**plan_payload, "dry_run": True}, indent=2, sort_keys=True))
         return 0
@@ -728,14 +764,15 @@ def prune(args: argparse.Namespace) -> int:
 
 
 def daemon(args: argparse.Namespace) -> int:
+    ca_file = getattr(args, "ca_file", None)
     cache = Path(args.cache).resolve()
     interval = max(1, int(args.interval_seconds))
     while True:
-        models = selected_models(args.base_url, args.token, cache, args.model)
-        sync_payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False))
+        models = selected_models(args.base_url, args.token, cache, args.model, ca_file=ca_file)
+        sync_payload = sync_once(args.base_url, args.token, cache, models, dry_run=args.dry_run, accept_licenses=getattr(args, "accept_license", False), ca_file=ca_file)
         prune_payload = None
         if args.prune:
-            prune_payload = prune_plan(args.base_url, args.token, cache, models)
+            prune_payload = prune_plan(args.base_url, args.token, cache, models, ca_file=ca_file)
             if not args.dry_run:
                 prune_payload = {
                     **prune_payload,
@@ -769,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=os.getenv(MODELHUB_URL_ENV, "https://models.ai.b1.germering"))
     parser.add_argument("--token", default=None, help=f"Model Hub bearer token. Defaults to {TOKEN_ENV} when omitted.")
     parser.add_argument("--token-file", default=None, help=f"Read the Model Hub bearer token from a private file. Defaults to {TOKEN_FILE_ENV}.")
+    parser.add_argument("--ca-file", default=None, help=f"Trust this PEM CA bundle for Model Hub TLS. Defaults to {CA_FILE_ENV}.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list")
@@ -830,6 +868,7 @@ def main() -> int:
     try:
         args.base_url = validate_base_url(args.base_url)
         args.token = resolve_token(args)
+        args.ca_file = resolve_ca_file(args)
         return int(args.func(args))
     except urllib.error.URLError as exc:
         print(f"b1-model-client: request failed: {exc}", file=sys.stderr)

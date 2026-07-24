@@ -153,11 +153,64 @@ class ModelClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "chmod 0600"):
                     client.resolve_token(args)
 
+    def test_resolve_ca_file_reads_cli_or_environment_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            ca_file.write_text("test-ca", encoding="utf-8")
+            with patch.dict(os.environ, {client.CA_FILE_ENV: str(ca_file)}, clear=False):
+                self.assertEqual(client.resolve_ca_file(argparse.Namespace(ca_file=None)), str(ca_file))
+            self.assertEqual(client.resolve_ca_file(argparse.Namespace(ca_file=str(ca_file))), str(ca_file))
+
+    def test_resolve_ca_file_rejects_missing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing-root.crt"
+            with self.assertRaisesRegex(RuntimeError, "CA file is not a regular file"):
+                client.resolve_ca_file(argparse.Namespace(ca_file=str(missing)))
+
+    def test_request_json_uses_configured_ca_file_for_https(self) -> None:
+        seen: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+        def fake_create_default_context(*, cafile: str | None = None) -> str:
+            seen["cafile"] = cafile
+            return "ssl-context"
+
+        def fake_urlopen(request: object, timeout: int = 30, context: object | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["context"] = context
+            return FakeResponse()
+
+        original_context = client.ssl.create_default_context
+        original_urlopen = client.urllib.request.urlopen
+        try:
+            client.ssl.create_default_context = fake_create_default_context
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                ca_file = str(Path(tmp) / "root.crt")
+                result = client.request_json("https://models.ai.b1.germering", "/modelhub/v1/catalog", "secret-token", ca_file=ca_file)
+        finally:
+            client.ssl.create_default_context = original_context
+            client.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://models.ai.b1.germering/modelhub/v1/catalog")
+        self.assertEqual(seen["cafile"], ca_file)
+        self.assertEqual(seen["context"], "ssl-context")
+
     def test_planned_actions_skip_inference_only_models(self) -> None:
         self.force_local_planner()
         original = client.model_record
         try:
-            client.model_record = lambda base_url, token, model_id: {
+            client.model_record = lambda base_url, token, model_id, ca_file=None: {
                 "id": "tts-fast",
                 "downloadable": False,
                 "files": [],
@@ -179,7 +232,7 @@ class ModelClientTests(unittest.TestCase):
         digest = hashlib.sha256(payload).hexdigest()
         missing_digest = hashlib.sha256(b"missing").hexdigest()
 
-        def fake_model_record(base_url: str, token: str | None, model_id: str) -> dict[str, object]:
+        def fake_model_record(base_url: str, token: str | None, model_id: str, ca_file: str | None = None) -> dict[str, object]:
             return {
                 "id": model_id,
                 "version": "1.0.0",
@@ -220,7 +273,14 @@ class ModelClientTests(unittest.TestCase):
     def test_planned_actions_prefers_server_sync_plan_and_adds_local_paths(self) -> None:
         digest = "a" * 64
 
-        def fake_request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        def fake_request_json(
+            base_url: str,
+            path: str,
+            token: str | None,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            ca_file: str | None = None,
+        ) -> dict[str, Any]:
             self.assertEqual(path, "/modelhub/v1/sync/plan")
             self.assertEqual(method, "POST")
             self.assertEqual(payload, {"models": ["chat-default"], "installed_blobs": []})
@@ -240,7 +300,14 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(actions[0]["resume_from"], 0)
 
     def test_server_sync_plan_rejects_non_sha_blob_before_path_derivation(self) -> None:
-        def fake_request_json(base_url: str, path: str, token: str | None, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        def fake_request_json(
+            base_url: str,
+            path: str,
+            token: str | None,
+            method: str = "GET",
+            payload: dict[str, Any] | None = None,
+            ca_file: str | None = None,
+        ) -> dict[str, Any]:
             return {"actions": [{"model": "chat-default", "blob": "../escape", "action": "download", "expected_size": 12}]}
 
         original = client.request_json
@@ -256,7 +323,7 @@ class ModelClientTests(unittest.TestCase):
         digest = "b" * 64
         seen: dict[str, object] = {}
 
-        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
             return [
                 {
                     "action": "download",
@@ -276,6 +343,7 @@ class ModelClientTests(unittest.TestCase):
             *,
             source: dict[str, Any] | None = None,
             accept_licenses: bool = False,
+            ca_file: str | None = None,
         ) -> dict[str, Any]:
             seen.update({"sha256": sha256, "target": target, "source": source})
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +391,7 @@ class ModelClientTests(unittest.TestCase):
     def test_pin_and_unpin_persist_local_state_without_plaintext_tokens(self) -> None:
         original = client.model_record
         try:
-            client.model_record = lambda base_url, token, model_id: {"display_name": f"Model {model_id}", "downloadable": True}
+            client.model_record = lambda base_url, token, model_id, ca_file=None: {"display_name": f"Model {model_id}", "downloadable": True}
             with tempfile.TemporaryDirectory() as tmp:
                 cache = Path(tmp)
                 pin_args = argparse.Namespace(base_url="http://modelhub", token="secret-token", cache=str(cache), model=["chat-default"])
@@ -343,7 +411,7 @@ class ModelClientTests(unittest.TestCase):
         removed_digest = "2" * 64
         unmanaged_name = "unmanaged-file"
 
-        def fake_plan(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+        def fake_plan(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
             return [{"action": "keep", "blob": kept_digest, "expected_size": 4}]
 
         original = client.sync_plan_from_server
@@ -383,7 +451,7 @@ class ModelClientTests(unittest.TestCase):
         kept_digest = "3" * 64
         removed_digest = "4" * 64
 
-        def fake_plan(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+        def fake_plan(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
             self.assertEqual(models, ["chat-default"])
             return [{"action": "keep", "blob": kept_digest, "expected_size": 4, "path": str(cache / "blobs" / kept_digest)}]
 
@@ -426,7 +494,7 @@ class ModelClientTests(unittest.TestCase):
         digest = "5" * 64
         seen: dict[str, object] = {}
 
-        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
             self.assertEqual(base_url, "http://modelhub")
             self.assertEqual(token, "sync-token")
             return [
@@ -447,6 +515,7 @@ class ModelClientTests(unittest.TestCase):
             *,
             source: dict[str, Any] | None = None,
             accept_licenses: bool = False,
+            ca_file: str | None = None,
         ) -> dict[str, Any]:
             seen.update({"base_url": base_url, "token": token, "sha256": sha256, "expected_size": expected_size, "target": target})
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -475,7 +544,7 @@ class ModelClientTests(unittest.TestCase):
         digest = "6" * 64
         seen: dict[str, object] = {}
 
-        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str]) -> list[dict[str, Any]]:
+        def fake_actions(base_url: str, token: str | None, cache: Path, models: list[str], ca_file: str | None = None) -> list[dict[str, Any]]:
             return [
                 {
                     "action": "download",
@@ -502,6 +571,7 @@ class ModelClientTests(unittest.TestCase):
             *,
             source: dict[str, Any] | None = None,
             accept_licenses: bool = False,
+            ca_file: str | None = None,
         ) -> dict[str, Any]:
             self.assertTrue(accept_licenses)
             seen["downloaded"] = True
