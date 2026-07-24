@@ -773,6 +773,18 @@ td {
   overflow-wrap: anywhere;
 }
 
+.access-limited {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  border: 1px solid #d7bf70;
+  background: #fff8df;
+  color: #6b520b;
+  padding: 9px 11px;
+  font-size: 13px;
+}
+
 .snippet-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

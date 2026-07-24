@@ -66,6 +66,19 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("<B1_API_KEY>", self.source)
         self.assertIn("<B1_MODELHUB_KEY>", self.source)
 
+    def test_external_access_handles_admin_only_credential_routes(self) -> None:
+        self.assertIn("apiClientsAdminOnly", self.source)
+        self.assertIn("modelHubClientsAdminOnly", self.source)
+        self.assertIn("adminOnlyClientPayload", self.source)
+        self.assertIn("if (response.status === 403) return adminOnlyClientPayload;", self.source)
+        self.assertIn("Credential management requires an administrator role.", self.source)
+        self.assertIn("Administrator role required to view API clients", self.source)
+        self.assertIn("Administrator role required to view Model Hub clients", self.source)
+        self.assertIn("Administrator role required to view encrypted values", self.source)
+        self.assertIn('disabled={busy || apiClientsAdminOnly || !apiDisplayName.trim()}', self.source)
+        self.assertIn('disabled={busy || modelHubClientsAdminOnly || !hubDisplayName.trim()}', self.source)
+        self.assertIn('disabled={busy || secretsAdminOnly || !secretName.trim() || !secretDisplayName.trim() || !secretValue}', self.source)
+
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 

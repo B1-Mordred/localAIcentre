@@ -2613,6 +2613,8 @@ function ExternalAccess() {
   const [modelHubClients, setModelHubClients] = useState<ModelHubClient[]>([]);
   const [encryptedSecrets, setEncryptedSecrets] = useState<EncryptedSecret[]>([]);
   const [secretMasterKey, setSecretMasterKey] = useState<SecretMasterKeyStatus | null>(null);
+  const [apiClientsAdminOnly, setApiClientsAdminOnly] = useState(false);
+  const [modelHubClientsAdminOnly, setModelHubClientsAdminOnly] = useState(false);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
   const [apiDisplayName, setApiDisplayName] = useState("");
@@ -2635,11 +2637,22 @@ function ExternalAccess() {
   const [oneTimeKey, setOneTimeKey] = useState<{ label: string; value: string } | null>(null);
   const [copiedSnippet, setCopiedSnippet] = useState("");
 
+  const adminOnlyClientPayload = { data: [], admin_only: true };
+  const secretsAdminOnly = secretMasterKey?.error === "administrator only";
+
   const loadClients = () => {
     setMessage("loading");
     Promise.all([
-      apiFetch(`/admin/api-clients`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`api clients ${response.status}`))),
-      apiFetch(`/modelhub/v1/clients`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`model hub clients ${response.status}`))),
+      apiFetch(`/admin/api-clients`).then((response) => {
+        if (response.ok) return response.json();
+        if (response.status === 403) return adminOnlyClientPayload;
+        return Promise.reject(new Error(`api clients ${response.status}`));
+      }),
+      apiFetch(`/modelhub/v1/clients`).then((response) => {
+        if (response.ok) return response.json();
+        if (response.status === 403) return adminOnlyClientPayload;
+        return Promise.reject(new Error(`model hub clients ${response.status}`));
+      }),
       apiFetch(`/admin/secrets`).then((response) => {
         if (response.ok) return response.json();
         if (response.status === 403) return { data: [], master_key: { configured: false, usable: false, scheme: "", error: "administrator only" } };
@@ -2647,8 +2660,10 @@ function ExternalAccess() {
       })
     ])
       .then(([apiPayload, hubPayload, secretPayload]) => {
-        const apiData = apiPayload ?? [];
+        const apiData = Array.isArray(apiPayload) ? apiPayload : apiPayload.data ?? [];
         const hubData = hubPayload.data ?? [];
+        setApiClientsAdminOnly(!Array.isArray(apiPayload) && Boolean(apiPayload.admin_only));
+        setModelHubClientsAdminOnly(Boolean(hubPayload.admin_only));
         setApiClients(apiData);
         setModelHubClients(hubData);
         setApiClientCidrs(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
@@ -2666,6 +2681,10 @@ function ExternalAccess() {
 
   const createApiClient = (event: React.FormEvent) => {
     event.preventDefault();
+    if (apiClientsAdminOnly) {
+      setMessage("API client management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("creating");
     apiFetch(`/admin/api-clients`, {
@@ -2691,6 +2710,10 @@ function ExternalAccess() {
 
   const createModelHubClient = (event: React.FormEvent) => {
     event.preventDefault();
+    if (modelHubClientsAdminOnly) {
+      setMessage("Model Hub client management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("creating");
     apiFetch(`/modelhub/v1/clients`, {
@@ -2714,6 +2737,10 @@ function ExternalAccess() {
   };
 
   const updateClientCidrs = (kind: "api" | "modelhub", id: string) => {
+    if ((kind === "api" && apiClientsAdminOnly) || (kind === "modelhub" && modelHubClientsAdminOnly)) {
+      setMessage("credential management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("updating CIDR allowlist");
     const value = kind === "api" ? apiClientCidrs[id] ?? "" : modelHubClientCidrs[id] ?? "";
@@ -2732,6 +2759,10 @@ function ExternalAccess() {
   };
 
   const updateModelHubClientPolicy = (id: string) => {
+    if (modelHubClientsAdminOnly) {
+      setMessage("Model Hub client management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("updating Model Hub policy");
     apiJson(`/modelhub/v1/clients/${id}/policy`, {
@@ -2752,6 +2783,10 @@ function ExternalAccess() {
 
   const saveSecret = (event: React.FormEvent) => {
     event.preventDefault();
+    if (secretsAdminOnly) {
+      setMessage("encrypted secret management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("storing encrypted value");
     apiJson<EncryptedSecret>(`/admin/secrets/${encodeURIComponent(secretName.trim())}`, {
@@ -2777,6 +2812,10 @@ function ExternalAccess() {
   };
 
   const verifySecret = (name: string) => {
+    if (secretsAdminOnly) {
+      setMessage("encrypted secret management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("verifying encrypted value");
     apiJson(`/admin/secrets/${encodeURIComponent(name)}/verify`, { method: "POST" })
@@ -2786,6 +2825,10 @@ function ExternalAccess() {
   };
 
   const deleteSecret = (name: string) => {
+    if (secretsAdminOnly) {
+      setMessage("encrypted secret management requires administrator role");
+      return;
+    }
     setBusy(true);
     setMessage("deleting encrypted value");
     apiJson(`/admin/secrets/${encodeURIComponent(name)}`, { method: "DELETE" })
@@ -2798,6 +2841,10 @@ function ExternalAccess() {
   };
 
   const revoke = (kind: "api" | "modelhub", id: string) => {
+    if ((kind === "api" && apiClientsAdminOnly) || (kind === "modelhub" && modelHubClientsAdminOnly)) {
+      setMessage("credential management requires administrator role");
+      return;
+    }
     setBusy(true);
     const url = kind === "api" ? `${API_BASE}/admin/api-clients/${id}` : `${API_BASE}/modelhub/v1/clients/${id}`;
     apiFetch(url, { method: "DELETE" })
@@ -2836,26 +2883,32 @@ function ExternalAccess() {
           <code>{oneTimeKey.value}</code>
         </div>
       )}
+      {(apiClientsAdminOnly || modelHubClientsAdminOnly || secretsAdminOnly) && (
+        <div className="access-limited">
+          <ShieldCheck size={16} />
+          <span>Credential management requires an administrator role.</span>
+        </div>
+      )}
       <div className="split">
         <form className="stack" onSubmit={createApiClient}>
           <h3>API Clients</h3>
-          <label>Display name<input value={apiDisplayName} onChange={(event) => setApiDisplayName(event.target.value)} required maxLength={256} /></label>
+          <label>Display name<input value={apiDisplayName} onChange={(event) => setApiDisplayName(event.target.value)} required maxLength={256} disabled={apiClientsAdminOnly} /></label>
           <label>Role
-            <select value={apiRole} onChange={(event) => setApiRole(event.target.value)}>
+            <select value={apiRole} onChange={(event) => setApiRole(event.target.value)} disabled={apiClientsAdminOnly}>
               {["service", "user", "creator", "operator", "admin"].map((role) => <option key={role} value={role}>{role}</option>)}
             </select>
           </label>
-          <label>Scopes<input value={apiScopes} onChange={(event) => setApiScopes(event.target.value)} /></label>
-          <label>CIDR allowlist<input value={apiCidrs} onChange={(event) => setApiCidrs(event.target.value)} placeholder="192.168.2.0/24" /></label>
-          <button title="Create API client" disabled={busy || !apiDisplayName.trim()}><KeyRound size={16} />Create</button>
+          <label>Scopes<input value={apiScopes} onChange={(event) => setApiScopes(event.target.value)} disabled={apiClientsAdminOnly} /></label>
+          <label>CIDR allowlist<input value={apiCidrs} onChange={(event) => setApiCidrs(event.target.value)} placeholder="192.168.2.0/24" disabled={apiClientsAdminOnly} /></label>
+          <button title="Create API client" disabled={busy || apiClientsAdminOnly || !apiDisplayName.trim()}><KeyRound size={16} />Create</button>
         </form>
         <form className="stack" onSubmit={createModelHubClient}>
           <h3>Model Hub Clients</h3>
-          <label>Display name<input value={hubDisplayName} onChange={(event) => setHubDisplayName(event.target.value)} required maxLength={256} /></label>
-          <label>Allowed models<input value={hubAllowedModels} onChange={(event) => setHubAllowedModels(event.target.value)} /></label>
-          <label>CIDR allowlist<input value={hubCidrs} onChange={(event) => setHubCidrs(event.target.value)} /></label>
-          <label className="inline-check"><input type="checkbox" checked={hubAllowDownloads} onChange={(event) => setHubAllowDownloads(event.target.checked)} />Downloads</label>
-          <button title="Create Model Hub client" disabled={busy || !hubDisplayName.trim()}><Archive size={16} />Create</button>
+          <label>Display name<input value={hubDisplayName} onChange={(event) => setHubDisplayName(event.target.value)} required maxLength={256} disabled={modelHubClientsAdminOnly} /></label>
+          <label>Allowed models<input value={hubAllowedModels} onChange={(event) => setHubAllowedModels(event.target.value)} disabled={modelHubClientsAdminOnly} /></label>
+          <label>CIDR allowlist<input value={hubCidrs} onChange={(event) => setHubCidrs(event.target.value)} disabled={modelHubClientsAdminOnly} /></label>
+          <label className="inline-check"><input type="checkbox" checked={hubAllowDownloads} onChange={(event) => setHubAllowDownloads(event.target.checked)} disabled={modelHubClientsAdminOnly} />Downloads</label>
+          <button title="Create Model Hub client" disabled={busy || modelHubClientsAdminOnly || !hubDisplayName.trim()}><Archive size={16} />Create</button>
         </form>
       </div>
       <div className="subsection-title">
@@ -2885,14 +2938,14 @@ function ExternalAccess() {
         </span>
       </div>
       <form className="inline-form" onSubmit={saveSecret}>
-        <input placeholder="name" value={secretName} onChange={(event) => setSecretName(event.target.value)} required maxLength={128} />
-        <input placeholder="display name" value={secretDisplayName} onChange={(event) => setSecretDisplayName(event.target.value)} required maxLength={256} />
-        <select value={secretCategory} onChange={(event) => setSecretCategory(event.target.value as SecretCategory)}>
+        <input placeholder="name" value={secretName} onChange={(event) => setSecretName(event.target.value)} required maxLength={128} disabled={secretsAdminOnly} />
+        <input placeholder="display name" value={secretDisplayName} onChange={(event) => setSecretDisplayName(event.target.value)} required maxLength={256} disabled={secretsAdminOnly} />
+        <select value={secretCategory} onChange={(event) => setSecretCategory(event.target.value as SecretCategory)} disabled={secretsAdminOnly}>
           {["remote-provider", "model-download", "runtime", "integration", "other"].map((category) => <option key={category} value={category}>{category}</option>)}
         </select>
-        <input placeholder="description" value={secretDescription} onChange={(event) => setSecretDescription(event.target.value)} maxLength={2048} />
-        <input type="password" placeholder="value" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} required maxLength={65536} />
-        <button title="Store encrypted value" disabled={busy || !secretName.trim() || !secretDisplayName.trim() || !secretValue}><ShieldCheck size={16} />Store</button>
+        <input placeholder="description" value={secretDescription} onChange={(event) => setSecretDescription(event.target.value)} maxLength={2048} disabled={secretsAdminOnly} />
+        <input type="password" placeholder="value" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} required maxLength={65536} disabled={secretsAdminOnly} />
+        <button title="Store encrypted value" disabled={busy || secretsAdminOnly || !secretName.trim() || !secretDisplayName.trim() || !secretValue}><ShieldCheck size={16} />Store</button>
       </form>
       <table>
         <thead><tr><th>Name</th><th>Category</th><th>Envelope</th><th>Status</th><th>Actions</th></tr></thead>
@@ -2905,13 +2958,13 @@ function ExternalAccess() {
               <td>{item.deleted_at ? "deleted" : item.encrypted ? "encrypted" : "empty"}<small>{item.updated_at ? new Date(item.updated_at).toLocaleString() : ""}</small></td>
               <td>
                 <div className="table-actions">
-                  <button title={`Verify ${item.display_name}`} onClick={() => verifySecret(item.name)} disabled={busy || Boolean(item.deleted_at)}><CheckCircle2 size={16} /></button>
-                  <button title={`Delete ${item.display_name}`} onClick={() => deleteSecret(item.name)} disabled={busy || Boolean(item.deleted_at)}><Trash2 size={16} /></button>
+                  <button title={`Verify ${item.display_name}`} onClick={() => verifySecret(item.name)} disabled={busy || secretsAdminOnly || Boolean(item.deleted_at)}><CheckCircle2 size={16} /></button>
+                  <button title={`Delete ${item.display_name}`} onClick={() => deleteSecret(item.name)} disabled={busy || secretsAdminOnly || Boolean(item.deleted_at)}><Trash2 size={16} /></button>
                 </div>
               </td>
             </tr>
           ))}
-          {!encryptedSecrets.length && <tr><td colSpan={5}>No encrypted values recorded</td></tr>}
+          {!encryptedSecrets.length && <tr><td colSpan={5}>{secretsAdminOnly ? "Administrator role required to view encrypted values" : "No encrypted values recorded"}</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">
@@ -2931,16 +2984,16 @@ function ExternalAccess() {
                   <input
                     value={apiClientCidrs[client.id] ?? ""}
                     onChange={(event) => setApiClientCidrs((current) => ({ ...current, [client.id]: event.target.value }))}
-                    disabled={busy || Boolean(client.revoked_at)}
+                    disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}
                   />
-                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("api", client.id)} disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
                 </div>
               </td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.last_used_at ? `last ${new Date(client.last_used_at).toLocaleString()}` : ""}</small></td>
-              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
+              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
           ))}
-          {!apiClients.length && <tr><td colSpan={6}>No API clients recorded</td></tr>}
+          {!apiClients.length && <tr><td colSpan={6}>{apiClientsAdminOnly ? "Administrator role required to view API clients" : "No API clients recorded"}</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">
@@ -2958,9 +3011,9 @@ function ExternalAccess() {
                   <input
                     value={modelHubClientAllowedModels[client.id] ?? ""}
                     onChange={(event) => setModelHubClientAllowedModels((current) => ({ ...current, [client.id]: event.target.value }))}
-                    disabled={busy || Boolean(client.revoked_at)}
+                    disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}
                   />
-                  <button title={`Save Model Hub policy for ${client.display_name}`} onClick={() => updateModelHubClientPolicy(client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                  <button title={`Save Model Hub policy for ${client.display_name}`} onClick={() => updateModelHubClientPolicy(client.id)} disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
                 </div>
               </td>
               <td>
@@ -2969,7 +3022,7 @@ function ExternalAccess() {
                     type="checkbox"
                     checked={modelHubClientDownloads[client.id] ?? false}
                     onChange={(event) => setModelHubClientDownloads((current) => ({ ...current, [client.id]: event.target.checked }))}
-                    disabled={busy || Boolean(client.revoked_at)}
+                    disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}
                   />
                   enabled
                 </label>
@@ -2979,16 +3032,16 @@ function ExternalAccess() {
                   <input
                     value={modelHubClientCidrs[client.id] ?? ""}
                     onChange={(event) => setModelHubClientCidrs((current) => ({ ...current, [client.id]: event.target.value }))}
-                    disabled={busy || Boolean(client.revoked_at)}
+                    disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}
                   />
-                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                  <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("modelhub", client.id)} disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
                 </div>
               </td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.allow_downloads ? "downloads" : "catalog only"}</small></td>
-              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("modelhub", client.id)} disabled={busy || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
+              <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("modelhub", client.id)} disabled={busy || modelHubClientsAdminOnly || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
           ))}
-          {!modelHubClients.length && <tr><td colSpan={6}>No Model Hub clients recorded</td></tr>}
+          {!modelHubClients.length && <tr><td colSpan={6}>{modelHubClientsAdminOnly ? "Administrator role required to view Model Hub clients" : "No Model Hub clients recorded"}</td></tr>}
         </tbody>
       </table>
     </section>
