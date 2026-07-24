@@ -48,6 +48,20 @@ class EnvPatch:
                 os.environ[key] = value
 
 
+def staged_reference(kind: str = "image", mime_type: str = "image/png") -> dict[str, Any]:
+    return {
+        "source": "staged_upload",
+        "id": "upload_" + "a" * 32,
+        "field": kind,
+        "kind": kind,
+        "mime_type": mime_type,
+        "filename": f"input.{mime_type.split('/', 1)[1]}",
+        "path": f"inputs/user/upload_{'a' * 32}/{kind}-input.{mime_type.split('/', 1)[1]}",
+        "bytes": 8,
+        "sha256": "b" * 64,
+    }
+
+
 class ComfyUiRemoteNodesTests(unittest.TestCase):
     def patch_attr(self, name: str, value: Any) -> None:
         original = getattr(nodes, name)
@@ -195,8 +209,13 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             nodes.require_media_reference("/home/user/private.png", "image")
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.require_media_reference("https://example.test/image.png", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("{\"path\":\"/home/user/private.png\"}", "image")
         self.assertEqual(nodes.require_media_reference("/artifacts/images/job/0.png", "image"), "/artifacts/images/job/0.png")
         self.assertEqual(nodes.require_media_reference("data:image/png;base64,AAAA", "image"), "data:image/png;base64,AAAA")
+        reference = staged_reference()
+        self.assertEqual(nodes.require_media_reference(json.dumps(reference), "image"), reference)
+        self.assertEqual(nodes.require_media_reference(json.dumps({"reference": reference, "input": reference}), "image"), reference)
 
     def test_media_reference_data_urls_must_be_bounded_base64_media(self) -> None:
         with self.assertRaises(nodes.B1RemoteNodeError):
@@ -206,6 +225,69 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         with EnvPatch(B1_AI_HUB_MAX_DATA_URL_BYTES="2"):
             with self.assertRaises(nodes.B1RemoteNodeError):
                 nodes.require_media_reference("data:image/png;base64,QUFB", "image")
+
+    def test_staged_media_references_validate_shape_and_media_kind(self) -> None:
+        reference = staged_reference()
+        for key, value in [
+            ("source", "other"),
+            ("id", "upload_bad"),
+            ("path", "inputs/user/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/../private.png"),
+            ("mime_type", "text/plain"),
+            ("kind", "audio"),
+            ("bytes", 0),
+            ("sha256", "not-a-sha"),
+        ]:
+            invalid = dict(reference)
+            invalid[key] = value
+            with self.subTest(key=key):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.require_media_reference(json.dumps(invalid), "image")
+
+    def test_upload_media_returns_direct_reference_and_full_response(self) -> None:
+        reference = staged_reference()
+        upload = {"input": reference, "reference": reference}
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return upload
+
+        self.patch_attr("request_json", fake_request_json)
+        reference_json, upload_json = nodes.B1UploadMediaBase64().run(
+            "image",
+            "image/png",
+            "../input.png",
+            nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+        )
+
+        self.assertEqual(json.loads(reference_json), reference)
+        self.assertEqual(json.loads(upload_json), upload)
+        self.assertEqual(calls[0]["path"], "/v1/media/uploads")
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["data"], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(calls[0]["headers"]["Content-Type"], "image/png")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "image")
+
+    def test_image_to_image_submits_staged_reference_object(self) -> None:
+        reference = staged_reference()
+        calls: list[dict[str, Any]] = []
+
+        def fake_submit_media_job(modality: str, operation: str, model: str, input_payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            calls.append({"modality": modality, "operation": operation, "model": model, "input": input_payload, **kwargs})
+            return {"id": "job_1", "state": "queued"}
+
+        self.patch_attr("submit_media_job", fake_submit_media_job)
+        job_id, raw = nodes.B1ImageToImage().run("image-edit", "repair", json.dumps({"reference": reference}))
+
+        self.assertEqual(job_id, "job_1")
+        self.assertEqual(json.loads(raw)["state"], "queued")
+        self.assertEqual(calls[0]["modality"], "image")
+        self.assertEqual(calls[0]["operation"], "edit")
+        self.assertEqual(calls[0]["input"]["image"], reference)
+
+    def test_vision_analysis_rejects_staged_json_reference(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1VisionAnalysis().run("vision-default", "describe", json.dumps(staged_reference()))
 
     def test_required_node_classes_are_registered(self) -> None:
         for name in [

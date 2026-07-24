@@ -22,6 +22,10 @@ DEFAULT_OUTPUT_DIR = "b1-artifacts"
 DEFAULT_MAX_DATA_URL_BYTES = 256 * 1024 * 1024
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
+UPLOAD_ID_PATTERN = re.compile(r"^upload_[a-f0-9]{32}$")
+SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+MEDIA_KINDS = {"image", "audio", "video"}
 
 
 class B1RemoteNodeError(RuntimeError):
@@ -189,7 +193,52 @@ def validate_data_url_reference(reference: str, kind: str) -> None:
         raise B1RemoteNodeError(f"{kind} data URL payload exceeds {limit} bytes")
 
 
-def require_media_reference(value: str, kind: str) -> str:
+def expected_media_kind(kind: str) -> str:
+    normalized = kind.strip().lower()
+    return normalized if normalized in MEDIA_KINDS else ""
+
+
+def validate_staged_media_reference(reference: dict[str, Any], kind: str) -> None:
+    if reference.get("source") != "staged_upload":
+        raise B1RemoteNodeError(f"{kind} staged reference has unsupported source")
+    upload_id = reference.get("id")
+    if not isinstance(upload_id, str) or not UPLOAD_ID_PATTERN.fullmatch(upload_id):
+        raise B1RemoteNodeError(f"{kind} staged reference has an invalid upload id")
+    path = reference.get("path")
+    if not isinstance(path, str) or not path.startswith("inputs/"):
+        raise B1RemoteNodeError(f"{kind} staged reference path is invalid")
+    if "\\" in path or any(part in {"", ".", ".."} for part in path.split("/")):
+        raise B1RemoteNodeError(f"{kind} staged reference path is invalid")
+    mime_type = reference.get("mime_type")
+    if not isinstance(mime_type, str) or not MIME_TYPE_PATTERN.fullmatch(mime_type):
+        raise B1RemoteNodeError(f"{kind} staged reference has an invalid MIME type")
+    expected_kind = expected_media_kind(kind)
+    if expected_kind and not mime_type.startswith(f"{expected_kind}/"):
+        raise B1RemoteNodeError(f"{kind} staged reference must use a {expected_kind}/ media type")
+    reference_kind = reference.get("kind")
+    if not isinstance(reference_kind, str) or reference_kind not in MEDIA_KINDS:
+        raise B1RemoteNodeError(f"{kind} staged reference has an invalid media kind")
+    if expected_kind and reference_kind != expected_kind:
+        raise B1RemoteNodeError(f"{kind} staged reference kind must be {expected_kind}")
+    bytes_value = reference.get("bytes")
+    if not isinstance(bytes_value, int) or bytes_value < 1:
+        raise B1RemoteNodeError(f"{kind} staged reference has an invalid byte count")
+    sha256 = reference.get("sha256")
+    if not isinstance(sha256, str) or not SHA256_PATTERN.fullmatch(sha256):
+        raise B1RemoteNodeError(f"{kind} staged reference has an invalid sha256")
+
+
+def staged_reference_from_json(value: dict[str, Any], kind: str) -> dict[str, Any]:
+    candidate = value
+    if isinstance(value.get("reference"), dict):
+        candidate = value["reference"]
+    elif isinstance(value.get("input"), dict):
+        candidate = value["input"]
+    validate_staged_media_reference(candidate, kind)
+    return candidate
+
+
+def require_media_reference(value: str, kind: str) -> str | dict[str, Any]:
     reference = value.strip()
     if not reference:
         raise B1RemoteNodeError(f"{kind} reference is required")
@@ -199,11 +248,17 @@ def require_media_reference(value: str, kind: str) -> str:
         validate_data_url_reference(reference, kind)
         return reference
     if reference.startswith("{"):
-        parse_json_object(reference, f"{kind} reference")
-        return reference
+        return staged_reference_from_json(parse_json_object(reference, f"{kind} reference"), kind)
     if reference.startswith("http://") or reference.startswith("https://"):
         raise B1RemoteNodeError(f"{kind} must be uploaded to B1 or referenced as an internal artifact; external URLs are not accepted")
     raise B1RemoteNodeError(f"{kind} must be a staged JSON reference, internal /artifacts URL, or data URL")
+
+
+def require_string_media_reference(value: str, kind: str) -> str:
+    reference = require_media_reference(value, kind)
+    if isinstance(reference, dict):
+        raise B1RemoteNodeError(f"{kind} staged upload JSON is supported for media jobs; use an internal artifact path or data URL for this request")
+    return reference
 
 
 def decode_base64_payload(value: str, expected_kind: str) -> bytes:
@@ -435,7 +490,7 @@ class B1VisionAnalysis:
     CATEGORY = "B1 AI Hub"
 
     def run(self, model: str, prompt: str, image_reference: str):
-        image = require_media_reference(image_reference, "image")
+        image = require_string_media_reference(image_reference, "image")
         response = request_json(
             "/v1/responses",
             {
@@ -708,7 +763,8 @@ class B1UploadMediaBase64:
                 "X-B1-Filename": filename,
             },
         )
-        return (json_output(upload), json_output(upload))
+        reference = staged_reference_from_json(upload, field_name or "media")
+        return (json_output(reference), json_output(upload))
 
 
 class B1WaitMediaJob:
