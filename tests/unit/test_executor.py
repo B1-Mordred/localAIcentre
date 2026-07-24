@@ -91,6 +91,9 @@ class FakeDatabase:
     async def requeue_interrupted_waiting_jobs(self, runtime_names: list[str]) -> int:
         return self.waiting_requeues
 
+    async def reconcile_interrupted_model_downloads(self) -> dict[str, int]:
+        return {"marked_recovery_required": 0, "requeued": 3, "paused": 1, "cancelled": 2}
+
     async def claim_next_model_download(self) -> dict[str, Any] | None:
         self.model_download_claims += 1
         if self.model_download is None or self.model_download["status"] not in {"queued", "running", "pausing", "cancelling"}:
@@ -1451,6 +1454,23 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result["runtime_names"], executor.GPU_RUNTIMES)
         self.assertEqual(result["marked_recovery_required"], 2)
         self.assertEqual(result["requeued"], 1)
+        self.assertTrue(result["started_at"])
+        self.assertTrue(result["completed_at"])
+        self.assertEqual(runner.startup_reconciliation, result)
+
+    def test_model_download_runner_records_startup_reconciliation(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.ModelDownloadRunner(Path(tmp))
+            result = asyncio.run(executor.record_runner_startup_reconciliation(runner, executor.MODEL_DOWNLOAD_RUNTIMES))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["runtime_names"], ["model-download"])
+        self.assertEqual(result["marked_recovery_required"], 0)
+        self.assertEqual(result["requeued"], 3)
+        self.assertEqual(result["paused"], 1)
+        self.assertEqual(result["cancelled"], 2)
         self.assertTrue(result["started_at"])
         self.assertTrue(result["completed_at"])
         self.assertEqual(runner.startup_reconciliation, result)

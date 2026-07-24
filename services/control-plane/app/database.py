@@ -1551,6 +1551,43 @@ async def retry_model_download(download_id: str) -> dict[str, Any] | None:
         }
 
 
+async def reconcile_interrupted_model_downloads() -> dict[str, int]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        running_result = await conn.execute(select(model_downloads.c.id).where(model_downloads.c.status == "running").with_for_update())
+        pausing_result = await conn.execute(select(model_downloads.c.id).where(model_downloads.c.status == "pausing").with_for_update())
+        cancelling_result = await conn.execute(select(model_downloads.c.id).where(model_downloads.c.status == "cancelling").with_for_update())
+        running_ids = [row[0] for row in running_result.all()]
+        pausing_ids = [row[0] for row in pausing_result.all()]
+        cancelling_ids = [row[0] for row in cancelling_result.all()]
+        if running_ids:
+            await conn.execute(
+                update(model_downloads)
+                .where(model_downloads.c.id.in_(running_ids))
+                .values(status="queued", stage="queued", updated_at=now)
+            )
+        if pausing_ids:
+            await conn.execute(
+                update(model_downloads)
+                .where(model_downloads.c.id.in_(pausing_ids))
+                .values(status="paused", stage="paused", updated_at=now)
+            )
+        if cancelling_ids:
+            await conn.execute(
+                update(model_downloads)
+                .where(model_downloads.c.id.in_(cancelling_ids))
+                .values(status="cancelled", stage="cancelled", cancelled_at=now, updated_at=now)
+            )
+    return {
+        "marked_recovery_required": 0,
+        "requeued": len(running_ids),
+        "paused": len(pausing_ids),
+        "cancelled": len(cancelling_ids),
+    }
+
+
 async def get_job(job_id: str) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")

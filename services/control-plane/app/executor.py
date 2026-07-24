@@ -25,6 +25,7 @@ import httpx
 
 CPU_RUNTIMES = ["audio-cpu"]
 GPU_RUNTIMES = ["localai", "comfyui", "voicebox"]
+MODEL_DOWNLOAD_RUNTIMES = ["model-download"]
 CPU_TTS_OPERATIONS = {"speech", "text-to-speech", "tts"}
 CPU_STT_OPERATIONS = {"transcription", "speech-to-text", "stt"}
 VOICEBOX_TTS_OPERATIONS = {"speech", "text-to-speech", "tts"}
@@ -108,6 +109,9 @@ async def record_runner_startup_reconciliation(runner: Any, runtime_names: list[
         "marked_recovery_required": int(result.get("marked_recovery_required") or 0),
         "requeued": int(result.get("requeued") or 0),
     }
+    for key in ("paused", "cancelled"):
+        if key in result:
+            runner.startup_reconciliation[key] = int(result.get(key) or 0)
     return runner.startup_reconciliation
 
 
@@ -1516,6 +1520,10 @@ class ModelDownloadRunner:
         self.master_key = master_key.strip()
         self.pause_check = pause_check
         self._stopped = asyncio.Event()
+        self.startup_reconciliation = pending_startup_reconciliation(MODEL_DOWNLOAD_RUNTIMES)
+
+    async def reconcile_startup(self) -> dict[str, int]:
+        return await database.reconcile_interrupted_model_downloads()
 
     async def stop_if_requested(self, download_id: str) -> bool:
         current = await database.get_model_download(download_id)
@@ -1703,6 +1711,7 @@ class ModelDownloadRunner:
         return True
 
     async def run_forever(self) -> None:
+        await record_runner_startup_reconciliation(self, MODEL_DOWNLOAD_RUNTIMES)
         while not self._stopped.is_set():
             processed = await self.run_once()
             if not processed:

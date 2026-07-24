@@ -5493,6 +5493,8 @@ def scheduler_reconciliation_report() -> dict[str, Any]:
         required_runners.append("cpu-job-runner")
     if settings.gpu_job_runner_enabled:
         required_runners.append("gpu-job-runner")
+    if settings.model_download_runner_enabled:
+        required_runners.append("model-download-runner")
 
     records: list[dict[str, Any]] = []
     for runner in job_runners:
