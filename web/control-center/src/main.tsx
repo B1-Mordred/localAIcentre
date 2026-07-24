@@ -708,6 +708,33 @@ type ModelRecord = {
   runtime_views?: { runtime: string; host_path: string; container_path: string }[];
 };
 
+type ModelSmokeTestRun = {
+  id: string;
+  status: string;
+  runtime: string;
+  model_alias?: string;
+  resolved_model_version?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  load_time_ms?: number | null;
+  run_time_ms?: number | null;
+  peak_vram_mib?: number | null;
+  peak_ram_mib?: number | null;
+  error?: string;
+  reason?: string;
+};
+
+type ModelSmokeTestResult = {
+  model: ModelRecord;
+  smoke_test: ModelSmokeTestRun;
+  measurement?: {
+    resource_label?: string;
+    resource_decision?: { label?: string; reason?: string };
+  } | null;
+  persisted: boolean;
+};
+
 type CatalogModel = {
   id: string;
   version: string;
@@ -1439,6 +1466,7 @@ function Models() {
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
+  const [smokeResult, setSmokeResult] = useState<ModelSmokeTestResult | null>(null);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
 
@@ -1727,6 +1755,25 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
+  const smokeTestModel = (record: ModelRecord) => {
+    setBusy(true);
+    setMessage(`smoke testing ${record.id}@${record.version}`);
+    apiFetch(`/admin/models/${modelVersionPath(record)}/smoke-test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ persist: true })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: ModelSmokeTestResult) => {
+        setSmokeResult(payload);
+        setRecords((current) => current.map((item) => item.id === payload.model.id && item.version === payload.model.version ? payload.model : item));
+        setMessage(`${payload.model.id}@${payload.model.version} smoke ${payload.smoke_test.status}`);
+        loadModels();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const planBlobQuarantine = (record: ModelRecord) => {
     setBusy(true);
     setMessage("planning blob quarantine");
@@ -1813,6 +1860,24 @@ function Models() {
           {Boolean(blobPlan.dependent_workflows?.length) && <small>{blobPlan.dependent_workflows?.length} dependent workflow{blobPlan.dependent_workflows?.length === 1 ? "" : "s"}</small>}
           {Boolean(blobPlan.moved?.length) && <small>{blobPlan.moved?.map((blob) => `${blob.sha256.slice(0, 12)} -> ${blob.quarantine_path}`).join(" / ")}</small>}
           {blobPlan.blockers.length > 0 && <small>{blobPlan.blockers.join("; ")}</small>}
+        </div>
+      )}
+      {smokeResult && (
+        <div className="one-time-key">
+          <strong>{smokeResult.model.id}@{smokeResult.model.version} smoke {smokeResult.smoke_test.status}</strong>
+          <span>
+            runtime {smokeResult.smoke_test.runtime}
+            {smokeResult.smoke_test.resolved_model_version ? ` / ${smokeResult.smoke_test.resolved_model_version}` : ""}
+          </span>
+          <small>
+            load {formatMs(smokeResult.smoke_test.load_time_ms)} / run {formatMs(smokeResult.smoke_test.run_time_ms)} / VRAM {smokeResult.smoke_test.peak_vram_mib ?? "pending"} MiB / RAM {smokeResult.smoke_test.peak_ram_mib ?? "pending"} MiB
+          </small>
+          <small>
+            {smokeResult.persisted ? "measurements persisted" : "measurements not persisted"}
+            {smokeResult.measurement?.resource_label ? ` / ${smokeResult.measurement.resource_label}` : ""}
+            {smokeResult.measurement?.resource_decision?.reason ? ` / ${smokeResult.measurement.resource_decision.reason}` : ""}
+          </small>
+          {(smokeResult.smoke_test.error || smokeResult.smoke_test.reason) && <small>{smokeResult.smoke_test.error ?? smokeResult.smoke_test.reason}</small>}
         </div>
       )}
       <table>
@@ -1928,6 +1993,7 @@ function Models() {
               <td>{record.resource_label}</td>
               <td>
                 <div className="table-actions">
+                  <button title={`Run smoke test for ${record.display_name}`} onClick={() => smokeTestModel(record)} disabled={busy || record.status !== "installed"}><PlayCircle size={16} /></button>
                   <button title={`Quarantine model record for ${record.display_name}`} onClick={() => quarantineModel(record)} disabled={busy || record.status !== "installed"}><Trash2 size={16} /></button>
                   <button title={`Plan authoritative blob quarantine for ${record.display_name}`} onClick={() => planBlobQuarantine(record)} disabled={busy || record.status === "installed"}><Database size={16} /></button>
                   <button title={`Quarantine authoritative blobs for ${record.display_name}`} onClick={() => quarantineBlobs(record)} disabled={busy || record.status === "installed"}><HardDrive size={16} /></button>

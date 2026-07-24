@@ -214,6 +214,16 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("accept_license: Boolean(downloadPlan?.requires_license_acceptance)", self.source)
         self.assertIn("acceptance required", self.source)
 
+    def test_models_tab_runs_installed_model_smoke_tests(self) -> None:
+        self.assertIn("type ModelSmokeTestResult", self.source)
+        self.assertIn("const [smokeResult, setSmokeResult]", self.source)
+        self.assertIn("const smokeTestModel = (record: ModelRecord)", self.source)
+        self.assertIn("/admin/models/${modelVersionPath(record)}/smoke-test", self.source)
+        self.assertIn("body: JSON.stringify({ persist: true })", self.source)
+        self.assertIn("setSmokeResult(payload)", self.source)
+        self.assertIn("Run smoke test for ${record.display_name}", self.source)
+        self.assertIn("measurements persisted", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -79,6 +79,7 @@
 - Made `b1-model-client` recover stale partial blob downloads by retrying once from byte zero after an HTTP 416 resume rejection, while still verifying ETag, size, and SHA-256 before publication.
 - Digest-pinned the remaining base Compose images and B1-owned Dockerfile base images, with regression coverage for immutable third-party image references.
 - Added startup reconciliation for the model-download runner so interrupted running downloads are requeued, pausing/cancelling downloads settle to `paused`/`cancelled`, and `/admin/scheduler/reconciliation` reports the runner when enabled.
+- Added Control Center smoke-test controls for installed model records, including persisted measurement feedback for runtime status, load/run timing, and observed RAM/VRAM peaks.
 - Hardened seed model recommendations so `available` manifests must include auditable license/source metadata and complete measured-run evidence tied to the exact immutable model version.
 - Removed broad mutable package-upgrade steps from B1-owned Dockerfiles and added policy coverage so rebuilds stay tied to pinned base images and locked dependencies.
 - Added offline compatibility harness discovery and security policy checks to the default `make validate` path, with CI regression coverage so these non-live acceptance suites and the digest-pinned Caddy validation image cannot drift out of validation.
