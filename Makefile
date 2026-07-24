@@ -15,9 +15,10 @@ B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 B1_QUALITY_PYTHON ?= python3.12
+B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: bootstrap validate quality compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -26,7 +27,15 @@ validate: compose-config legacy-compose-config production-localai-compose-config
 
 quality:
 	set -e; \
-	command -v "$(B1_QUALITY_PYTHON)" >/dev/null || (echo "B1_QUALITY_PYTHON=$(B1_QUALITY_PYTHON) was not found; install Python 3.12 or set B1_QUALITY_PYTHON=/path/to/python3.12" >&2; exit 2); \
+	if command -v "$(B1_QUALITY_PYTHON)" >/dev/null && "$(B1_QUALITY_PYTHON)" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then \
+		$(MAKE) quality-local; \
+	else \
+		echo "B1_QUALITY_PYTHON=$(B1_QUALITY_PYTHON) is not Python 3.12; using $(B1_QUALITY_PYTHON_IMAGE) for backend Python quality checks" >&2; \
+		$(MAKE) quality-container; \
+	fi
+
+quality-local:
+	set -e; \
 	"$(B1_QUALITY_PYTHON)" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else "B1_QUALITY_PYTHON must be Python 3.12")'; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
@@ -34,6 +43,11 @@ quality:
 	"$$tmpdir/venv/bin/python" -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)); \
 	PATH="$$tmpdir/venv/bin:$$PATH" $(MAKE) validate openapi-check; \
 	$(MAKE) frontend
+
+quality-container: compose-config legacy-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config backend-python-quality-container compatibility security frontend
+
+backend-python-quality-container:
+	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check'
 
 compose-config:
 	docker compose config --quiet

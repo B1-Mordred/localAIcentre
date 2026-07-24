@@ -76,8 +76,19 @@ class CiQualityGateTests(unittest.TestCase):
         target = self.makefile_text[target_start:target_end]
 
         self.assertIn("B1_QUALITY_PYTHON ?= python3.12", self.makefile_text)
+        quality_image_line = next(
+            line for line in self.makefile_text.splitlines() if line.startswith("B1_QUALITY_PYTHON_IMAGE ?=")
+        )
+        self.assertIn("@sha256:", quality_image_line)
+        self.assertNotIn(":latest", quality_image_line)
+        self.assertIn("quality-local", target)
+        self.assertIn("quality-container", target)
         self.assertIn("B1_QUALITY_PYTHON must be Python 3.12", target)
         self.assertIn("$(B1_QUALITY_PYTHON)\" -m venv", target)
+        self.assertIn("$(B1_QUALITY_PYTHON_IMAGE)", target)
+        self.assertIn("backend-python-quality-container", target)
+        self.assertIn("python -m unittest discover -s tests/unit -v", target)
+        self.assertIn("generate_openapi.py --output docs/openapi.json --check", target)
         self.assertIn("pip install PyYAML==6.0.2", target)
         self.assertIn("$(MAKE) validate openapi-check", target)
         self.assertIn("$(MAKE) frontend", target)
