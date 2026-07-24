@@ -198,6 +198,14 @@ class ComposePolicyTests(unittest.TestCase):
             self.assertIn("import b1_tls", caddyfile[block_start:block_end], host_var)
         self.assertEqual(self.production_env["B1_CADDY_TLS_ARGS"], "internal")
 
+    def test_gateway_caddy_admin_api_is_loopback_only(self) -> None:
+        gateway = self.compose["services"]["gateway"]
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        self.assertIn("admin 127.0.0.1:2019", caddyfile)
+        self.assertNotIn("admin 0.0.0.0:2019", caddyfile)
+        healthcheck = "\n".join(str(item) for item in gateway["healthcheck"]["test"])
+        self.assertIn("http://127.0.0.1:2019/config/", healthcheck)
+
     def test_gateway_permissions_policy_scopes_browser_capture_to_interactive_hosts(self) -> None:
         caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
         self.assertIn('Permissions-Policy "camera=(), microphone=(), geolocation=()"', caddyfile)
