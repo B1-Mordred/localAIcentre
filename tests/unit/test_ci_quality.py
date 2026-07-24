@@ -34,6 +34,7 @@ class CiQualityGateTests(unittest.TestCase):
         cls.workflow = yaml.safe_load(cls.workflow_text)
         cls.workflow_strings = "\n".join(flatten_strings(cls.workflow))
         cls.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        cls.security_text = (ROOT / "docs" / "security.md").read_text(encoding="utf-8")
 
     def test_expected_jobs_are_present(self) -> None:
         self.assertEqual(
@@ -92,6 +93,12 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("pip install PyYAML==6.0.2", target)
         self.assertIn("$(MAKE) validate openapi-check", target)
         self.assertIn("$(MAKE) frontend", target)
+
+    def test_security_docs_describe_strong_local_quality_gate(self) -> None:
+        self.assertIn("make quality", self.security_text)
+        self.assertIn("B1_QUALITY_PYTHON_IMAGE", self.security_text)
+        self.assertIn("committed OpenAPI drift checks", self.security_text)
+        self.assertIn("production NPM audits", self.security_text)
 
     def test_makefile_caddy_validation_image_is_digest_pinned(self) -> None:
         caddy_line = next(
