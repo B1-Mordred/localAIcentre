@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,21 @@ REQUIRED_COMPOSE_SERVICES = {
     "artifact-server",
     "bootstrap",
 }
+SHA256_REF_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:\s|$)")
+DOCKERFILES_REQUIRING_PINNED_BASES = [
+    ROOT / "deploy" / "comfyui" / "Dockerfile",
+    ROOT / "deploy" / "localai" / "Dockerfile",
+    ROOT / "deploy" / "open-webui" / "Dockerfile",
+    ROOT / "deploy" / "voicebox" / "Dockerfile",
+    ROOT / "integrations" / "b1-model-client" / "Dockerfile",
+    ROOT / "services" / "artifact-server" / "Dockerfile",
+    ROOT / "services" / "audio-cpu" / "Dockerfile",
+    ROOT / "services" / "control-plane" / "Dockerfile",
+    ROOT / "services" / "mock-runtime" / "Dockerfile",
+    ROOT / "services" / "runtime-agent" / "Dockerfile",
+    ROOT / "web" / "control-center" / "Dockerfile",
+    ROOT / "web" / "media-studio" / "Dockerfile",
+]
 
 
 class ComposePolicyLoader(yaml.SafeLoader):
@@ -114,7 +130,7 @@ class ComposePolicyTests(unittest.TestCase):
             image = service.get("image")
             if not image:
                 continue
-            self.assertNotEqual(image.split(":")[-1], "latest", name)
+            self.assertNotIn(":latest", image, name)
         for name, service in self.production_localai_compose["services"].items():
             image = service.get("image")
             if not image:
@@ -130,6 +146,20 @@ class ComposePolicyTests(unittest.TestCase):
             if not image:
                 continue
             self.assertNotIn(":latest", image, name)
+
+    def test_explicit_third_party_compose_images_are_digest_pinned(self) -> None:
+        for name, service in self.compose["services"].items():
+            image = service.get("image")
+            if not image:
+                continue
+            self.assertRegex(image, SHA256_REF_RE, f"{name} image must be pinned by immutable digest")
+
+    def test_dockerfile_base_images_are_digest_pinned(self) -> None:
+        for dockerfile in DOCKERFILES_REQUIRING_PINNED_BASES:
+            for line_number, line in enumerate(dockerfile.read_text(encoding="utf-8").splitlines(), start=1):
+                if not line.startswith("FROM "):
+                    continue
+                self.assertRegex(line, SHA256_REF_RE, f"{dockerfile}:{line_number} base image must be digest-pinned")
 
     def test_only_gateway_publishes_ports(self) -> None:
         for name, service in self.compose["services"].items():

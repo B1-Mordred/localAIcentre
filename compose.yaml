@@ -17,7 +17,7 @@ x-python-health: &python-health
 
 services:
   bootstrap:
-    image: python:3.12.11-slim-bookworm
+    image: python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
     command: ["python", "/opt/b1/deploy/scripts/bootstrap.py", "--root", "${B1_DATA_ROOT:-/srv/b1-ai-hub}"]
     environment:
       B1_DATA_ROOT: ${B1_DATA_ROOT:-/srv/b1-ai-hub}
@@ -63,7 +63,7 @@ services:
       start_period: 5s
 
   gateway:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     <<: *service-defaults
     security_opt: []
     cap_drop: []
@@ -453,7 +453,7 @@ services:
       test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
 
   postgres:
-    image: postgres:17.6-bookworm
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -486,7 +486,7 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7.4.5-bookworm
+    image: redis:7.4.5-bookworm@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
