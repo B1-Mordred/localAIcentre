@@ -558,6 +558,49 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.runtime_states["voicebox"]["stage"], "idle")
             self.assertEqual(fake.job["state"], "completed")
 
+    def test_runtime_control_post_injects_shared_bearer_token(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b'{"status":"ok"}'
+
+            def json(self) -> dict[str, str]:
+                return {"status": "ok"}
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.calls.append({"url": url, "json": dict(json), "headers": dict(headers), "client_kwargs": dict(self.kwargs)})
+                return FakeResponse()
+
+        original_client = executor.httpx.AsyncClient
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(
+                Path(tmp),
+                runtime_urls={"comfyui": "http://comfyui:8188"},
+                runtime_control_token="hook-token",
+            )
+            result = asyncio.run(runner.post_runtime_control("comfyui", "load", {"model": "image-default"}))
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://comfyui:8188/b1/runtime/load")
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Accept"], "application/json")
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")
+        self.assertFalse(FakeAsyncClient.calls[0]["client_kwargs"]["trust_env"])
+
     def test_gpu_runner_fails_before_submission_when_load_hook_reports_failure(self) -> None:
         fake = FakeDatabase(runtime="voicebox")
         fake.job.update(

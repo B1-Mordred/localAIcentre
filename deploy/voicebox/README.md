@@ -49,6 +49,8 @@ The B1 proxy implements these runtime hooks:
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
+Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-only and sets `B1_RUNTIME_CONTROL_REQUIRE_AUTH=true`. The control plane sends this token as `Authorization: Bearer ...` for all `/b1/runtime/*` hook calls. If the token is missing or wrong, the proxy rejects lifecycle actions before touching the managed Voicebox process.
+
 Hook behavior is intentionally bounded:
 
 - `load` checks Voicebox-visible runtime model roots and returns `unconfirmed` because upstream engine/profile selection performs final validation and lazy model loading.

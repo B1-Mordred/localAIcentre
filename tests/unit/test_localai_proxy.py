@@ -78,6 +78,15 @@ class LocalAIProxyTests(unittest.TestCase):
         self.assertEqual(proxy.operation_kind({"operation": "text-to-video"}), "video_generation")
         self.assertEqual(proxy.operation_kind({"operation": "image-to-video"}), "video_image")
 
+    def test_runtime_control_auth_requires_configured_bearer_token(self) -> None:
+        with patch.dict(os.environ, {"B1_RUNTIME_CONTROL_TOKEN": "hook-token", "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true"}, clear=False):
+            missing = proxy.runtime_control_auth_failure({})
+            accepted = proxy.runtime_control_auth_failure({"Authorization": "Bearer hook-token"})
+
+        self.assertEqual(missing[0], 401)
+        self.assertEqual(missing[1]["reason"], "runtime_control_token_required")
+        self.assertIsNone(accepted)
+
 
 if __name__ == "__main__":
     unittest.main()

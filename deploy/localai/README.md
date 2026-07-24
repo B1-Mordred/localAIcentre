@@ -88,6 +88,8 @@ The B1 wrapper handles optional internal runtime hooks before GPU submission:
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
+Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-only and sets `B1_RUNTIME_CONTROL_REQUIRE_AUTH=true`. The control plane sends this token as `Authorization: Bearer ...` for all `/b1/runtime/*` hook calls. If the token is missing or wrong, the wrapper rejects lifecycle actions instead of forwarding them to LocalAI.
+
 Normal LocalAI requests are proxied unchanged to the private upstream listener. Hook behavior is intentionally bounded and does not log request prompts or user media:
 
 - `load` verifies `/v1/models` when available and returns `unconfirmed` because LocalAI loads models lazily on first inference.

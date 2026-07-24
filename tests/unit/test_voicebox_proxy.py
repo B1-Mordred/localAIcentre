@@ -102,6 +102,19 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertEqual(result["active_requests"], 1)
         self.assertEqual(manager.restarts, [])
 
+    def test_runtime_control_auth_requires_configured_bearer_token(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"B1_RUNTIME_CONTROL_TOKEN": "hook-token", "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true"},
+            clear=False,
+        ):
+            missing = self.proxy.runtime_control_auth_failure({})
+            accepted = self.proxy.runtime_control_auth_failure({"authorization": "Bearer hook-token"})
+
+        self.assertEqual(missing[0], 401)
+        self.assertEqual(missing[1]["reason"], "runtime_control_token_required")
+        self.assertIsNone(accepted)
+
 
 if __name__ == "__main__":
     unittest.main()

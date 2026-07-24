@@ -23,6 +23,8 @@ services:
       B1_LOCALAI_HOOK_STRICT_MODEL_LIST: ${B1_LOCALAI_HOOK_STRICT_MODEL_LIST:-false}
       B1_LOCALAI_HOOK_WARM_ENABLED: ${B1_LOCALAI_HOOK_WARM_ENABLED:-false}
       B1_LOCALAI_HOOK_SMOKE_ENABLED: ${B1_LOCALAI_HOOK_SMOKE_ENABLED:-false}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
       B1_LOCALAI_VIDEO_SMOKE_ENABLED: ${B1_LOCALAI_VIDEO_SMOKE_ENABLED:-false}
       B1_LOCALAI_SMOKE_MAX_TOKENS: ${B1_LOCALAI_SMOKE_MAX_TOKENS:-1}
       B1_LOCALAI_SMOKE_IMAGE_SIZE: ${B1_LOCALAI_SMOKE_IMAGE_SIZE:-64x64}
@@ -45,6 +47,7 @@ services:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/configuration:/srv/b1-ai-hub/localai/configuration
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/data:/srv/b1-ai-hub/localai/data
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/localai:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/readyz"]
       interval: 1m

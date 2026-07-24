@@ -153,6 +153,7 @@ services:
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
       B1_MASTER_KEY_FILE: /run/secrets/master_encryption_key
       B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
       REDIS_URL: redis://redis:6379/0
       LOCALAI_URL: http://localai:8000
       COMFYUI_URL: http://comfyui:8000

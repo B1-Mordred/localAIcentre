@@ -39,6 +39,7 @@
 - Hardened ComfyUI and Voicebox WebSocket proxying so gateway compatibility markers are stripped before traffic reaches internal runtimes, including the optional legacy ComfyUI listener.
 - Hardened shared HTTP runtime proxying so browser cookies, CSRF/session headers, forwarded-client-IP headers, and hop-by-hop headers are stripped before requests reach internal runtimes while preserving explicit control-plane service headers.
 - Hardened runtime WebSocket compatibility proxying with the same credential, CSRF, forwarded-client-IP, hop-by-hop, and handshake-header stripping used by the HTTP proxy.
+- Added a generated runtime-control bearer token for production LocalAI, ComfyUI, and Voicebox `/b1/runtime/*` lifecycle hooks so load, warm, smoke, and unload actions fail closed when the internal hook secret is missing or wrong.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
 - Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.

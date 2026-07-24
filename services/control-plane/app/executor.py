@@ -338,6 +338,7 @@ class GpuJobRunner:
         runtime_agent_tls_client_cert_file: str = "",
         runtime_agent_tls_client_key_file: str = "",
         runtime_agent_tls_verify: bool = True,
+        runtime_control_token: str = "",
         reserve_vram_gib: float = 1.5,
         recovery_timeout_seconds: int = 10,
         default_idle_timeout_seconds: int = 300,
@@ -357,6 +358,7 @@ class GpuJobRunner:
         self.runtime_agent_tls_client_cert_file = runtime_agent_tls_client_cert_file
         self.runtime_agent_tls_client_key_file = runtime_agent_tls_client_key_file
         self.runtime_agent_tls_verify = runtime_agent_tls_verify
+        self.runtime_control_token = runtime_control_token.strip()
         self.reserve_vram_mib = int(max(0.0, reserve_vram_gib) * 1024)
         self.recovery_timeout_seconds = max(1, recovery_timeout_seconds)
         self.default_idle_timeout_seconds = max(0, int(default_idle_timeout_seconds))
@@ -744,9 +746,12 @@ class GpuJobRunner:
         if not runtime_url:
             return {"status": "skipped", "reason": "runtime_url_missing", "runtime": runtime, "action": action}
         url = f"{runtime_url}/b1/runtime/{action}"
+        headers = {"Accept": "application/json"}
+        if self.runtime_control_token:
+            headers["Authorization"] = f"Bearer {self.runtime_control_token}"
         try:
             async with httpx.AsyncClient(timeout=1800.0, trust_env=False) as client:
-                response = await client.post(url, json=payload, headers={"Accept": "application/json"})
+                response = await client.post(url, json=payload, headers=headers)
         except httpx.HTTPError:
             return {"status": "unsupported", "reason": "runtime_control_unreachable", "runtime": runtime, "action": action}
         if response.status_code in {404, 405}:

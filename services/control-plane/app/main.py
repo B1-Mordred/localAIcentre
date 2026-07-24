@@ -2314,6 +2314,7 @@ def runtime_control_runner(lease_ttl_seconds: int | None = None) -> GpuJobRunner
         runtime_agent_tls_client_cert_file=settings.runtime_agent_tls_client_cert_file,
         runtime_agent_tls_client_key_file=settings.runtime_agent_tls_client_key_file,
         runtime_agent_tls_verify=settings.runtime_agent_tls_verify,
+        runtime_control_token=settings.runtime_control_token,
         reserve_vram_gib=settings.gpu_reserve_vram_gib,
         default_idle_timeout_seconds=settings.gpu_default_idle_timeout_seconds,
         runtime_urls=scheduler_runtime_urls(),
@@ -3124,6 +3125,7 @@ async def startup() -> None:
             runtime_agent_tls_client_cert_file=settings_for_startup.runtime_agent_tls_client_cert_file,
             runtime_agent_tls_client_key_file=settings_for_startup.runtime_agent_tls_client_key_file,
             runtime_agent_tls_verify=settings_for_startup.runtime_agent_tls_verify,
+            runtime_control_token=settings_for_startup.runtime_control_token,
             reserve_vram_gib=resource_policy().gpu_reserve_vram_gib,
             default_idle_timeout_seconds=settings_for_startup.gpu_default_idle_timeout_seconds,
             runtime_urls={
@@ -4240,6 +4242,14 @@ def runtime_urls_for_smoke() -> dict[str, str]:
     }
 
 
+def runtime_control_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    token = settings.runtime_control_token.strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def compact_smoke_hook_result(result: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {"status": "unconfirmed"}
@@ -4340,7 +4350,7 @@ async def post_cpu_runtime_smoke(runtime: str, job: dict[str, Any]) -> dict[str,
         return {"status": "unsupported", "reason": "runtime_url_missing", "runtime": runtime, "action": "smoke"}
     try:
         async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
-            response = await client.post(f"{runtime_url}/b1/runtime/smoke", json=runtime_control_payload_for_smoke(job), headers={"Accept": "application/json"})
+            response = await client.post(f"{runtime_url}/b1/runtime/smoke", json=runtime_control_payload_for_smoke(job), headers=runtime_control_headers())
     except httpx.HTTPError:
         return {"status": "unsupported", "reason": "runtime_control_unreachable", "runtime": runtime, "action": "smoke"}
     if response.status_code in {404, 405}:

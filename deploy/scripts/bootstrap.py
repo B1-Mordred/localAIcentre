@@ -74,6 +74,7 @@ SECRET_FILES = {
     "admin_bootstrap_key": lambda: f"b1adm_{secrets.token_urlsafe(32)}",
     "master_encryption_key": lambda: secrets.token_urlsafe(48),
     "runtime_agent_token": lambda: f"b1rt_{secrets.token_urlsafe(32)}",
+    "runtime_control_token": lambda: f"b1rctl_{secrets.token_urlsafe(32)}",
     "artifact_server_token": lambda: f"b1art_{secrets.token_urlsafe(32)}",
     "open_webui_api_key": lambda: f"b1k_{secrets.token_urlsafe(8)}.{secrets.token_urlsafe(32)}",
 }

@@ -26,6 +26,8 @@ services:
       B1_COMFYUI_HOOK_MODEL_FOLDERS: ${B1_COMFYUI_HOOK_MODEL_FOLDERS:-checkpoints,diffusion_models,text_encoders,clip_vision,vae,loras,controlnet,upscale_models,embeddings}
       B1_COMFYUI_HOOK_WARM_ENABLED: ${B1_COMFYUI_HOOK_WARM_ENABLED:-false}
       B1_COMFYUI_HOOK_SMOKE_ENABLED: ${B1_COMFYUI_HOOK_SMOKE_ENABLED:-false}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
       B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS: ${B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS:-30}
       B1_COMFYUI_HOOK_UNLOAD_IMMEDIATE_IDLE: ${B1_COMFYUI_HOOK_UNLOAD_IMMEDIATE_IDLE:-true}
       B1_COMFYUI_INPUT_DIR: /srv/b1-ai-hub/comfyui/input
@@ -45,6 +47,7 @@ services:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/temporary/comfyui-output:/srv/b1-ai-hub/comfyui/output
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/temporary/comfyui-temp:/srv/b1-ai-hub/comfyui/temp
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/comfyui:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8188/system_stats"]
       interval: 30s

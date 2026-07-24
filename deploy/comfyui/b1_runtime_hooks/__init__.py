@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import hmac
 import os
 import time
 import uuid
 from pathlib import PurePath
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -44,6 +46,54 @@ def env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def read_secret_file(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def runtime_control_token() -> str:
+    value = os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip()
+    if value:
+        return value
+    token_file = os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip()
+    return read_secret_file(token_file) if token_file else ""
+
+
+def runtime_control_auth_required() -> bool:
+    configured = bool(os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip() or os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip())
+    return env_bool("B1_RUNTIME_CONTROL_REQUIRE_AUTH", configured)
+
+
+def bearer_token_from_header(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return ""
+    return token.strip()
+
+
+def authorization_header(headers: Any) -> str | None:
+    if not hasattr(headers, "get"):
+        return None
+    return headers.get("Authorization") or headers.get("authorization")
+
+
+def runtime_control_auth_failure(headers: Any) -> tuple[int, dict[str, Any]] | None:
+    token = runtime_control_token()
+    required = runtime_control_auth_required()
+    if not token and not required:
+        return None
+    if not token:
+        return 503, json_response("unconfigured", "auth", reason="runtime_control_token_missing")
+    supplied = bearer_token_from_header(authorization_header(headers))
+    if not hmac.compare_digest(supplied, token):
+        return 401, json_response("unauthorized", "auth", reason="runtime_control_token_required")
+    return None
 
 
 def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
@@ -237,6 +287,10 @@ async def run_noop_queue_smoke(action: str) -> dict[str, Any]:
 
 async def runtime_action(request: web.Request) -> web.Response:
     action = request.match_info.get("action", "").strip().lower()
+    auth_failure = runtime_control_auth_failure(request.headers)
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return web.json_response(payload, status=status)
     try:
         payload = await request.json()
     except Exception:

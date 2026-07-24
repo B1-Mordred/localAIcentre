@@ -64,6 +64,8 @@ The GPU runner can call internal B1 hooks on the selected runtime before submiss
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
 
+Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-only and sets `B1_RUNTIME_CONTROL_REQUIRE_AUTH=true`. The control plane sends this token as `Authorization: Bearer ...` for all `/b1/runtime/*` hook calls. If the token is missing or wrong, the hook route rejects lifecycle actions before touching ComfyUI's queue or model-management APIs.
+
 Hook behavior is intentionally bounded:
 
 - `load` checks ComfyUI-visible model folders when possible and returns `unconfirmed` because the native prompt/workflow still performs final dependency validation and lazy model loading.

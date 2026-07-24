@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import http.client
+import hmac
 import json
 import os
 import sys
 import time
 from collections.abc import Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -50,6 +52,54 @@ def env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def read_secret_file(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def runtime_control_token() -> str:
+    value = os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip()
+    if value:
+        return value
+    token_file = os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip()
+    return read_secret_file(token_file) if token_file else ""
+
+
+def runtime_control_auth_required() -> bool:
+    configured = bool(os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip() or os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip())
+    return env_bool("B1_RUNTIME_CONTROL_REQUIRE_AUTH", configured)
+
+
+def bearer_token_from_header(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return ""
+    return token.strip()
+
+
+def authorization_header(headers: Any) -> str | None:
+    if not hasattr(headers, "get"):
+        return None
+    return headers.get("Authorization") or headers.get("authorization")
+
+
+def runtime_control_auth_failure(headers: Any) -> tuple[int, dict[str, Any]] | None:
+    token = runtime_control_token()
+    required = runtime_control_auth_required()
+    if not token and not required:
+        return None
+    if not token:
+        return 503, json_response("unconfigured", "auth", reason="runtime_control_token_missing")
+    supplied = bearer_token_from_header(authorization_header(headers))
+    if not hmac.compare_digest(supplied, token):
+        return 401, json_response("unauthorized", "auth", reason="runtime_control_token_required")
+    return None
 
 
 def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
@@ -368,6 +418,11 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.rstrip("/") == "/b1/runtime/health":
+            auth_failure = runtime_control_auth_failure(self.headers)
+            if auth_failure is not None:
+                status, payload = auth_failure
+                self.write_json(payload, status=status)
+                return
             self.write_json(json_response("healthy", "health", upstream=os.getenv("B1_LOCALAI_UPSTREAM_URL", "http://127.0.0.1:18080")))
             return
         self.proxy_request()
@@ -377,6 +432,11 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
         prefix = "/b1/runtime/"
         if path.startswith(prefix):
             action = path[len(prefix) :]
+            auth_failure = runtime_control_auth_failure(self.headers)
+            if auth_failure is not None:
+                status, payload = auth_failure
+                self.write_json(payload, status=status)
+                return
             payload = self.read_json_body()
             if payload is None:
                 self.write_json(json_response("invalid", action, reason="invalid_json"), status=400)

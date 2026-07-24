@@ -53,6 +53,16 @@ class FakeQueue:
         return {}
 
 
+class FakeRuntimeActionRequest:
+    def __init__(self, *, headers: dict[str, str] | None = None, payload: object | None = None, action: str = "smoke") -> None:
+        self.headers = headers or {}
+        self.match_info = {"action": action}
+        self.payload = {} if payload is None else payload
+
+    async def json(self) -> object:
+        return self.payload
+
+
 def load_hooks(folder_names: dict[str, list[str]] | None = None):
     fake_routes = FakeRoutes()
     fake_queue = FakeQueue()
@@ -123,6 +133,17 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertIn("/b1/runtime/{action}", routes.posts)
         self.assertIn("B1RuntimeSmoke", hooks.NODE_CLASS_MAPPINGS)
         self.assertEqual(hooks.NODE_DISPLAY_NAME_MAPPINGS["B1RuntimeSmoke"], "B1 Runtime Smoke")
+
+    def test_runtime_action_requires_configured_bearer_token(self) -> None:
+        hooks, _routes, _queue = load_hooks()
+
+        with patch.dict("os.environ", {"B1_RUNTIME_CONTROL_TOKEN": "hook-token", "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true"}, clear=False):
+            missing = asyncio.run(hooks.runtime_action(FakeRuntimeActionRequest()))
+            accepted = asyncio.run(hooks.runtime_action(FakeRuntimeActionRequest(headers={"Authorization": "Bearer hook-token"})))
+
+        self.assertEqual(missing.status, 401)
+        self.assertEqual(missing.payload["reason"], "runtime_control_token_required")
+        self.assertNotEqual(accepted.status, 401)
 
     def test_model_matching_accepts_folder_path_basename_and_stem(self) -> None:
         hooks, _routes, _queue = load_hooks()

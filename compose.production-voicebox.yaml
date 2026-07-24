@@ -29,6 +29,8 @@ services:
       B1_VOICEBOX_HOOK_MODEL_ROOTS: ${B1_VOICEBOX_HOOK_MODEL_ROOTS:-/srv/b1-ai-hub/models}
       B1_VOICEBOX_HOOK_WARM_ENABLED: ${B1_VOICEBOX_HOOK_WARM_ENABLED:-false}
       B1_VOICEBOX_HOOK_SMOKE_ENABLED: ${B1_VOICEBOX_HOOK_SMOKE_ENABLED:-false}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
       B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD: ${B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD:-true}
       B1_VOICEBOX_HOOK_UNLOAD_TIMEOUT_SECONDS: ${B1_VOICEBOX_HOOK_UNLOAD_TIMEOUT_SECONDS:-20}
       B1_VOICEBOX_HOOK_SMOKE_TIMEOUT_SECONDS: ${B1_VOICEBOX_HOOK_SMOKE_TIMEOUT_SECONDS:-300}
@@ -44,6 +46,7 @@ services:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17493/health"]
       interval: 30s

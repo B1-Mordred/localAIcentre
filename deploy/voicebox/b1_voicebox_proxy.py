@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import hmac
 import json
 import os
 import signal
@@ -62,6 +63,54 @@ def env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def read_secret_file(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def runtime_control_token() -> str:
+    value = os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip()
+    if value:
+        return value
+    token_file = os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip()
+    return read_secret_file(token_file) if token_file else ""
+
+
+def runtime_control_auth_required() -> bool:
+    configured = bool(os.getenv("B1_RUNTIME_CONTROL_TOKEN", "").strip() or os.getenv("B1_RUNTIME_CONTROL_TOKEN_FILE", "").strip())
+    return env_bool("B1_RUNTIME_CONTROL_REQUIRE_AUTH", configured)
+
+
+def bearer_token_from_header(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return ""
+    return token.strip()
+
+
+def authorization_header(headers: Any) -> str | None:
+    if not hasattr(headers, "get"):
+        return None
+    return headers.get("Authorization") or headers.get("authorization")
+
+
+def runtime_control_auth_failure(headers: Any) -> tuple[int, dict[str, Any]] | None:
+    token = runtime_control_token()
+    required = runtime_control_auth_required()
+    if not token and not required:
+        return None
+    if not token:
+        return 503, json_response("unconfigured", "auth", reason="runtime_control_token_missing")
+    supplied = bearer_token_from_header(authorization_header(headers))
+    if not hmac.compare_digest(supplied, token):
+        return 401, json_response("unauthorized", "auth", reason="runtime_control_token_required")
+    return None
 
 
 def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
@@ -359,11 +408,19 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
         log_json(component="b1-voicebox-proxy", event="upstream_stopped", result=result)
 
     @app.get("/b1/runtime/health")
-    async def b1_runtime_health() -> JSONResponse:
+    async def b1_runtime_health(request: Request) -> JSONResponse:
+        auth_failure = runtime_control_auth_failure(request.headers)
+        if auth_failure is not None:
+            status, payload = auth_failure
+            return JSONResponse(payload, status_code=status)
         return JSONResponse(json_response("healthy", "health", process=runtime_manager.status(), active_requests=request_tracker.active()))
 
     @app.post("/b1/runtime/{action}")
     async def b1_runtime_action(action: str, request: Request) -> JSONResponse:
+        auth_failure = runtime_control_auth_failure(request.headers)
+        if auth_failure is not None:
+            status, payload = auth_failure
+            return JSONResponse(payload, status_code=status)
         try:
             payload = await request.json()
         except Exception:
