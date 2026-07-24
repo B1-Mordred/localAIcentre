@@ -68,7 +68,7 @@ curl -s https://models.ai.b1.germering/modelhub/v1/clients \
 
 The returned key is shown once and is scoped only for catalog reads and blob synchronisation. Server-side sync plans return `keep`, `download`, `replace`, and `skip` actions using the client's local blob inventory, so external tools can preview storage/network impact before downloading. Use explicit `allowed_models` values for workstation keys unless the machine is trusted to cache every downloadable alias.
 
-Administrators can later change a workstation key's allowed model list or switch it to catalog-only mode from the Control Center External Access tab, or through `PUT /modelhub/v1/clients/{client_id}/policy`. CIDR allowlists are edited separately through `PUT /modelhub/v1/clients/{client_id}/cidr-allowlist`, so network changes do not require issuing a new secret.
+Administrators can later change a workstation key's allowed model list or switch it to catalog-only mode from the Control Center External Access tab, or through `PUT /modelhub/v1/clients/{id}/policy`. CIDR allowlists are edited separately through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, so network changes do not require issuing a new secret.
 
 The `integrations/comfyui-b1-remote-nodes` package provides external ComfyUI nodes that call the B1 unified API. Credentials must come from environment or ComfyUI server settings, not workflow JSON:
 

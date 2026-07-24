@@ -101,8 +101,8 @@ GET  /v1/media/jobs/{job_id}/artifacts
 GET  /artifacts/{artifact_path}
 HEAD /artifacts/{artifact_path}
 POST /v1/runtime-reservations
-GET  /v1/runtime-reservations/{reservation_id}
-DELETE /v1/runtime-reservations/{reservation_id}
+GET  /v1/runtime-reservations/{id}
+DELETE /v1/runtime-reservations/{id}
 GET  /modelhub/v1/catalog
 GET  /modelhub/v1/models/{id}
 GET  /modelhub/v1/models/{id}/versions
@@ -111,9 +111,9 @@ HEAD /modelhub/v1/blobs/{sha256}
 POST /modelhub/v1/sync/plan
 GET  /modelhub/v1/clients
 POST /modelhub/v1/clients
-PUT  /modelhub/v1/clients/{client_id}/cidr-allowlist
-PUT  /modelhub/v1/clients/{client_id}/policy
-DELETE /modelhub/v1/clients/{client_id}
+PUT  /modelhub/v1/clients/{id}/cidr-allowlist
+PUT  /modelhub/v1/clients/{id}/policy
+DELETE /modelhub/v1/clients/{id}
 ```
 
 ## Self-Test and Metrics
@@ -565,7 +565,7 @@ curl -s https://models.ai.b1.germering/modelhub/v1/clients \
   -d '{"display_name":"workstation-1","allowed_models":["chat-default"],"cidr_allowlist":["192.168.2.0/24"]}'
 ```
 
-The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{client_id}` is called. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{client_id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
+The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{id}` is called. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
 
 The control plane derives the effective client IP from the direct peer address unless the peer matches the active network policy's trusted proxy CIDRs. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The environment default comes from `B1_TRUSTED_PROXY_CIDRS`, and administrators can persist a live override through `/admin/network-policy` or the System tab.
 

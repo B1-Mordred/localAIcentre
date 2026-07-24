@@ -7818,16 +7818,16 @@
         "summary": "Modelhub Client Create"
       }
     },
-    "/modelhub/v1/clients/{client_id}": {
+    "/modelhub/v1/clients/{id}": {
       "delete": {
-        "operationId": "modelhub_client_delete_modelhub_v1_clients__client_id__delete",
+        "operationId": "modelhub_client_delete_modelhub_v1_clients__id__delete",
         "parameters": [
           {
             "in": "path",
-            "name": "client_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Client Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -7854,7 +7854,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Modelhub Client Delete Modelhub V1 Clients  Client Id  Delete",
+                  "title": "Response Modelhub Client Delete Modelhub V1 Clients  Id  Delete",
                   "type": "object"
                 }
               }
@@ -7875,16 +7875,16 @@
         "summary": "Modelhub Client Delete"
       }
     },
-    "/modelhub/v1/clients/{client_id}/cidr-allowlist": {
+    "/modelhub/v1/clients/{id}/cidr-allowlist": {
       "put": {
-        "operationId": "modelhub_client_cidr_update_modelhub_v1_clients__client_id__cidr_allowlist_put",
+        "operationId": "modelhub_client_cidr_update_modelhub_v1_clients__id__cidr_allowlist_put",
         "parameters": [
           {
             "in": "path",
-            "name": "client_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Client Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -7921,7 +7921,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Modelhub Client Cidr Update Modelhub V1 Clients  Client Id  Cidr Allowlist Put",
+                  "title": "Response Modelhub Client Cidr Update Modelhub V1 Clients  Id  Cidr Allowlist Put",
                   "type": "object"
                 }
               }
@@ -7942,16 +7942,16 @@
         "summary": "Modelhub Client Cidr Update"
       }
     },
-    "/modelhub/v1/clients/{client_id}/policy": {
+    "/modelhub/v1/clients/{id}/policy": {
       "put": {
-        "operationId": "modelhub_client_policy_update_modelhub_v1_clients__client_id__policy_put",
+        "operationId": "modelhub_client_policy_update_modelhub_v1_clients__id__policy_put",
         "parameters": [
           {
             "in": "path",
-            "name": "client_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Client Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -7988,7 +7988,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Modelhub Client Policy Update Modelhub V1 Clients  Client Id  Policy Put",
+                  "title": "Response Modelhub Client Policy Update Modelhub V1 Clients  Id  Policy Put",
                   "type": "object"
                 }
               }
@@ -9150,16 +9150,16 @@
         "summary": "Runtime Reservation Create"
       }
     },
-    "/v1/runtime-reservations/{reservation_id}": {
+    "/v1/runtime-reservations/{id}": {
       "delete": {
-        "operationId": "runtime_reservation_delete_v1_runtime_reservations__reservation_id__delete",
+        "operationId": "runtime_reservation_delete_v1_runtime_reservations__id__delete",
         "parameters": [
           {
             "in": "path",
-            "name": "reservation_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Reservation Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -9186,7 +9186,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Runtime Reservation Delete V1 Runtime Reservations  Reservation Id  Delete",
+                  "title": "Response Runtime Reservation Delete V1 Runtime Reservations  Id  Delete",
                   "type": "object"
                 }
               }
@@ -9207,14 +9207,14 @@
         "summary": "Runtime Reservation Delete"
       },
       "get": {
-        "operationId": "runtime_reservation_get_v1_runtime_reservations__reservation_id__get",
+        "operationId": "runtime_reservation_get_v1_runtime_reservations__id__get",
         "parameters": [
           {
             "in": "path",
-            "name": "reservation_id",
+            "name": "id",
             "required": true,
             "schema": {
-              "title": "Reservation Id",
+              "title": "Id",
               "type": "string"
             }
           },
@@ -9241,7 +9241,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Runtime Reservation Get V1 Runtime Reservations  Reservation Id  Get",
+                  "title": "Response Runtime Reservation Get V1 Runtime Reservations  Id  Get",
                   "type": "object"
                 }
               }

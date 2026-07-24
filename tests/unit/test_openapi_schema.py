@@ -26,16 +26,16 @@ REQUIRED_PUBLIC_ROUTE_METHODS = {
     "/v1/media/jobs/{job_id}/events": {"get"},
     "/v1/media/jobs/{job_id}/artifacts": {"get"},
     "/v1/runtime-reservations": {"post"},
-    "/v1/runtime-reservations/{reservation_id}": {"get", "delete"},
+    "/v1/runtime-reservations/{id}": {"get", "delete"},
     "/modelhub/v1/catalog": {"get"},
     "/modelhub/v1/models/{id}": {"get"},
     "/modelhub/v1/models/{id}/versions": {"get"},
     "/modelhub/v1/blobs/{sha256}": {"get", "head"},
     "/modelhub/v1/sync/plan": {"post"},
     "/modelhub/v1/clients": {"get", "post"},
-    "/modelhub/v1/clients/{client_id}/cidr-allowlist": {"put"},
-    "/modelhub/v1/clients/{client_id}/policy": {"put"},
-    "/modelhub/v1/clients/{client_id}": {"delete"},
+    "/modelhub/v1/clients/{id}/cidr-allowlist": {"put"},
+    "/modelhub/v1/clients/{id}/policy": {"put"},
+    "/modelhub/v1/clients/{id}": {"delete"},
 }
 COMFYUI_PASSTHROUGH_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 

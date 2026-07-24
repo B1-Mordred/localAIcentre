@@ -23,6 +23,7 @@
 - Added native ComfyUI `/view` artifact retrieval to the live compatibility evidence gate so handoff proves generated outputs are downloadable through the gateway.
 - Added OpenAPI/source regression gates for the implementation-plan public API, Model Hub, runtime-reservation, SSE, and native compatibility passthrough route surfaces.
 - Aligned Model Hub model-detail OpenAPI paths with the implementation-plan `/modelhub/v1/models/{id}` and `/modelhub/v1/models/{id}/versions` contract.
+- Aligned runtime-reservation and Model Hub client OpenAPI path parameter names with the implementation-plan `{id}` public contract.
 - Added an opt-in legacy ComfyUI listener compatibility harness for restricted `http://host:8188` clients, verifying unauthenticated metadata and WebSocket access through the scheduler-aware proxy.
 - Added machine-readable remote-node non-Comfy compatibility evidence ingestion so handoff now requires proof that external ComfyUI B1 nodes complete a unified-API operation while server-side ComfyUI is stopped.
 - Added machine-readable Model Hub client sync evidence ingestion so handoff now requires proof of external catalog access, Range/resume blob sync, managed-cache state, safe prune behavior, and inference-only download blocking.

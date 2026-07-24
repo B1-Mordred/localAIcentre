@@ -7716,8 +7716,8 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
     return public_runtime_reservation(row)
 
 
-@app.get("/v1/runtime-reservations/{reservation_id}")
-async def runtime_reservation_get(reservation_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+@app.get("/v1/runtime-reservations/{id}")
+async def runtime_reservation_get(reservation_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "runtimes:read")
     row = await database.get_runtime_reservation(reservation_id)
@@ -7727,8 +7727,8 @@ async def runtime_reservation_get(reservation_id: str, authorization: str | None
     return public_runtime_reservation(row)
 
 
-@app.delete("/v1/runtime-reservations/{reservation_id}")
-async def runtime_reservation_delete(reservation_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+@app.delete("/v1/runtime-reservations/{id}")
+async def runtime_reservation_delete(reservation_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "runtimes:write")
     existing = await database.get_runtime_reservation(reservation_id)
@@ -7882,10 +7882,10 @@ async def modelhub_client_create(payload: ModelHubClientCreate, authorization: s
     }
 
 
-@app.put("/modelhub/v1/clients/{client_id}/cidr-allowlist")
+@app.put("/modelhub/v1/clients/{id}/cidr-allowlist")
 async def modelhub_client_cidr_update(
-    client_id: str,
-    payload: CidrAllowlistUpdateRequest,
+    client_id: str = ApiPath(alias="id"),
+    payload: CidrAllowlistUpdateRequest = Body(...),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -7913,10 +7913,10 @@ async def modelhub_client_cidr_update(
     return public_modelhub_client(row)
 
 
-@app.put("/modelhub/v1/clients/{client_id}/policy")
+@app.put("/modelhub/v1/clients/{id}/policy")
 async def modelhub_client_policy_update(
-    client_id: str,
-    payload: ModelHubClientPolicyUpdate,
+    client_id: str = ApiPath(alias="id"),
+    payload: ModelHubClientPolicyUpdate = Body(...),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -7952,8 +7952,8 @@ async def modelhub_client_policy_update(
     return public_modelhub_client(row)
 
 
-@app.delete("/modelhub/v1/clients/{client_id}")
-async def modelhub_client_delete(client_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+@app.delete("/modelhub/v1/clients/{id}")
+async def modelhub_client_delete(client_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "admin:write")
     row = await database.revoke_modelhub_client(client_id)
