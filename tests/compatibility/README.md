@@ -55,3 +55,28 @@ python3 -m unittest tests.compatibility.test_modelhub_client_sync
 ```
 
 Set `B1_MODELHUB_ACCEPT_LICENSES=1` only after reviewing the sync plan and licence terms for the selected downloadable model. When `B1_MODELHUB_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if catalog access, plan creation, Range/resume download, managed cache state, safe prune behavior, or inference-only download policy checks are absent or incomplete.
+
+## Voicebox Remote/Server Compatibility
+
+The Voicebox compatibility path verifies the public `voice.ai.b1.germering` gateway endpoint and the unified `api.ai.b1.germering` speech/profile APIs. It checks native HTTP proxying, Voicebox profile create/export/delete lifecycle, OpenAI-compatible speech through the scheduler, and native WebSocket connection behaviour where the pinned upstream supports it.
+
+```bash
+export B1_VOICEBOX_LIVE_TEST=1
+export B1_VOICEBOX_BASE=https://voice.ai.b1.germering
+export B1_VOICEBOX_API_BASE=https://api.ai.b1.germering
+export B1_VOICEBOX_API_KEY=...
+export B1_VOICEBOX_SPEECH_MODEL=tts-quality
+export B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json
+python3 -m unittest tests.compatibility.test_voicebox_remote
+```
+
+For temporary IP/host validation, set `B1_VOICEBOX_HOST_HEADER=voice.ai.b1.germering` and `B1_VOICEBOX_API_HOST_HEADER=api.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_VOICEBOX_CA_FILE=/path/to/root.crt`; use `B1_VOICEBOX_TLS_VERIFY=0` only during an explicit LAN validation window.
+
+If the pinned Voicebox upstream version does not support a specific remote surface, record that limitation explicitly instead of treating the check as skipped:
+
+```bash
+export B1_VOICEBOX_SKIP_WEBSOCKET=1
+export B1_VOICEBOX_WEBSOCKET_LIMITATION="Pinned Voicebox v0.5.0 does not expose a stable remote WebSocket route for this mode."
+```
+
+`B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if native HTTP proxying, profile lifecycle validation, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete.

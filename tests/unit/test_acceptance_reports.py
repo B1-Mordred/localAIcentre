@@ -156,6 +156,29 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "sample_count": 1,
             "sample_labels": ["modelhub-client-sync"],
+        },
+        "voicebox_remote": {
+            "available": True,
+            "format": "b1-ai-hub-voicebox-remote-compatibility/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json",
+            "generated_at": "2026-07-24T12:45:00+00:00",
+            "base_url": "https://voice.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "native_http_proxy_accessible",
+                "profile_lifecycle_validated",
+                "speech_or_limitation_recorded",
+                "websocket_or_limitation_recorded",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "native_http_proxy_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:41:00+00:00"},
+                "profile_lifecycle_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:00+00:00"},
+                "speech_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:43:00+00:00"},
+                "websocket_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:44:00+00:00"},
+            },
+            "sample_count": 3,
+            "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voicebox-speech"],
         }
     }
     payload.update(overrides)
@@ -276,6 +299,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("Remote-node non-Comfy compatibility", markdown)
             self.assertIn("modelhub-client-sync.json", markdown)
             self.assertIn("Model Hub client sync", markdown)
+            self.assertIn("voicebox-remote.json", markdown)
+            self.assertIn("Voicebox remote compatibility", markdown)
             self.assertIn("## Old Resources Preserved For Rollback", markdown)
             self.assertIn("old-open-webui", markdown)
             self.assertIn("open-webui-data", markdown)
@@ -474,6 +499,41 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_without_voicebox_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["voicebox_remote"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["voicebox_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("Voicebox remote compatibility evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_voicebox_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["voicebox_remote"] = {
+            **live_evidence["voicebox_remote"],
+            "status": "incomplete",
+            "missing_checks": ["websocket_or_limitation_recorded"],
+            "checks": {
+                "native_http_proxy_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:41:00+00:00"},
+                "profile_lifecycle_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:00+00:00"},
+                "speech_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:43:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["voicebox_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("Voicebox remote compatibility evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "Voicebox remote compatibility evidence is missing required checks: websocket_or_limitation_recorded",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -614,6 +674,29 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            voicebox = evidence_root / "voicebox-remote.json"
+            voicebox.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-voicebox-remote-compatibility/v1",
+                        "generated_at": "2026-07-24T12:45:00+00:00",
+                        "base_url": "https://voice.ai.b1.germering",
+                        "status": "ok",
+                        "checks": {
+                            "native_http_proxy_accessible": {"status": "ok"},
+                            "profile_lifecycle_validated": {"status": "ok"},
+                            "speech_or_limitation_recorded": {"status": "ok"},
+                            "websocket_or_limitation_recorded": {"status": "ok"},
+                        },
+                        "samples": [
+                            {"label": "voicebox-native-http"},
+                            {"label": "voice-profile-lifecycle"},
+                            {"label": "voicebox-speech"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
@@ -641,6 +724,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(modelhub_sync["status"], "ok")
         self.assertEqual(modelhub_sync["missing_checks"], [])
         self.assertEqual(modelhub_sync["sample_count"], 1)
+        voicebox_remote = snapshot["voicebox_remote"]
+        self.assertTrue(voicebox_remote["available"])
+        self.assertEqual(voicebox_remote["source_path"], str(voicebox.resolve()))
+        self.assertEqual(voicebox_remote["status"], "ok")
+        self.assertEqual(voicebox_remote["missing_checks"], [])
+        self.assertEqual(voicebox_remote["sample_count"], 3)
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
