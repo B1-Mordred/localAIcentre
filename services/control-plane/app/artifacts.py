@@ -15,7 +15,7 @@ def _has_control_character(value: str) -> bool:
 
 def _validate_artifact_segment(segment: str) -> str:
     decoded = unquote(segment)
-    if decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded or _has_control_character(decoded):
+    if decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded or _has_control_character(decoded):
         raise ArtifactAccessError("artifact path must not contain traversal segments")
     return segment
 

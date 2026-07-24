@@ -31,6 +31,8 @@ class ArtifactPolicyTests(unittest.TestCase):
             "voicebox/%2e%2e/private.wav",
             "voicebox/safe%2Fprivate.wav",
             "voicebox/safe%5Cprivate.wav",
+            "voicebox/safe%3Ftoken.wav",
+            "voicebox/safe%23fragment.wav",
             "voicebox/%00sample.wav",
         ]:
             with self.subTest(artifact_path=artifact_path):

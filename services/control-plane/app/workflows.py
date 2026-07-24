@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
+from . import artifacts as artifact_policy
+
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 BACKEND_POLICIES = {"comfyui-only", "non-comfy-only", "either"}
@@ -757,8 +759,15 @@ def _validate_staged_media_reference(name: str, value: dict[str, Any], schema: d
     path = value.get("path")
     if not isinstance(path, str) or not path.startswith("inputs/"):
         raise WorkflowError(f"{context} staged reference path is invalid")
-    if any(part in {"", ".", ".."} for part in path.replace("\\", "/").split("/")):
+    try:
+        normalized_path = artifact_policy.artifact_url_for_path(path).removeprefix("/artifacts/")
+    except artifact_policy.ArtifactAccessError as exc:
+        raise WorkflowError(f"{context} staged reference path is invalid") from exc
+    if normalized_path != path:
         raise WorkflowError(f"{context} staged reference path is invalid")
+    path_parts = normalized_path.split("/")
+    if upload_id not in path_parts:
+        raise WorkflowError(f"{context} staged reference path must include its upload id")
     mime_type = value.get("mime_type")
     if not isinstance(mime_type, str) or not MIME_RE.match(mime_type):
         raise WorkflowError(f"{context} staged reference has invalid MIME type")

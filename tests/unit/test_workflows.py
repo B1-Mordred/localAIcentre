@@ -675,6 +675,34 @@ class WorkflowTests(unittest.TestCase):
                 workflow,
                 {**payload, "input": {**payload["input"], "parameters": {"source_image": {**base, "path": "inputs/client/../secret.png"}, "transparent": True}}},
             )
+        for unsafe_path in (
+            "inputs/client/%2e%2e/secret.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%2Fsecret.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%5Csecret.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%3Ftoken.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%23fragment.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%00source.png",
+        ):
+            with self.subTest(unsafe_path=unsafe_path):
+                with self.assertRaisesRegex(WorkflowError, "path is invalid"):
+                    validate_workflow_job_request(
+                        workflow,
+                        {**payload, "input": {**payload["input"], "parameters": {"source_image": {**base, "path": unsafe_path}, "transparent": True}}},
+                    )
+        with self.assertRaisesRegex(WorkflowError, "upload id"):
+            validate_workflow_job_request(
+                workflow,
+                {
+                    **payload,
+                    "input": {
+                        **payload["input"],
+                        "parameters": {
+                            "source_image": {**base, "path": "inputs/client/upload_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/source-source.png"},
+                            "transparent": True,
+                        },
+                    },
+                },
+            )
         with self.assertRaisesRegex(WorkflowError, "staged media limit"):
             validate_workflow_job_request(
                 workflow,
