@@ -69,6 +69,17 @@ class ControlCenterSourceTests(unittest.TestCase):
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 
+    def test_runtimes_tab_surfaces_structured_capabilities(self) -> None:
+        self.assertIn("const capabilityListLabel", self.source)
+        self.assertIn("const runtimeCapabilityFlags", self.source)
+        self.assertIn("reportedCapabilities ? (", self.source)
+        self.assertIn("<tr><td>Modalities</td><td>{capabilityListLabel(reportedCapabilities.modalities)}</td></tr>", self.source)
+        self.assertIn("<tr><td>Operations</td><td>{capabilityListLabel(reportedCapabilities.operations)}</td></tr>", self.source)
+        self.assertIn("<tr><td>Capability flags</td><td>{runtimeCapabilityFlags(reportedCapabilities)}</td></tr>", self.source)
+        self.assertIn('capabilities.openai_compatible ? "OpenAI API" : ""', self.source)
+        self.assertIn('capabilities.native_api ? "native API" : ""', self.source)
+        self.assertIn('capabilities.external ? "external data" : "local LAN"', self.source)
+
     def test_system_tab_surfaces_acceptance_reports(self) -> None:
         self.assertIn("type AcceptanceReportSummary", self.source)
         self.assertIn("operator_evidence_ready?: boolean;", self.source)

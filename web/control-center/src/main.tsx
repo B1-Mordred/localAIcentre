@@ -687,6 +687,21 @@ const runtimeCapabilitySummary = (capabilities?: RuntimeAdapterCapabilities): st
   return `${modalities} / ${operations}`;
 };
 
+const capabilityListLabel = (values?: string[]): string => {
+  return values?.length ? values.join(", ") : "none";
+};
+
+const runtimeCapabilityFlags = (capabilities: RuntimeAdapterCapabilities): string => {
+  const flags = [
+    capabilities.configured === false ? "unconfigured" : "configured",
+    capabilities.requires_gpu ? "GPU lease" : "CPU/no GPU lease",
+    capabilities.openai_compatible ? "OpenAI API" : "",
+    capabilities.native_api ? "native API" : "",
+    capabilities.external ? "external data" : "local LAN"
+  ].filter(Boolean);
+  return flags.join(" / ");
+};
+
 const contractMethodSummary = (methods?: Record<string, string>): string => {
   if (!methods) return "";
   return Object.entries(methods)
@@ -2015,7 +2030,13 @@ function Runtimes() {
                 {details.engine !== undefined && <tr><td>Engine</td><td>{String(details.engine)}</td></tr>}
                 {details.placeholder !== undefined && <tr><td>Placeholder</td><td>{booleanLabel(details.placeholder)}</td></tr>}
                 {details.placeholder_enabled !== undefined && <tr><td>Placeholder enabled</td><td>{booleanLabel(details.placeholder_enabled)}</td></tr>}
-                {capabilities && <tr><td>Capabilities</td><td>{capabilities}</td></tr>}
+                {reportedCapabilities ? (
+                  <>
+                    <tr><td>Modalities</td><td>{capabilityListLabel(reportedCapabilities.modalities)}</td></tr>
+                    <tr><td>Operations</td><td>{capabilityListLabel(reportedCapabilities.operations)}</td></tr>
+                    <tr><td>Capability flags</td><td>{runtimeCapabilityFlags(reportedCapabilities)}</td></tr>
+                  </>
+                ) : capabilities && <tr><td>Capabilities</td><td>{capabilities}</td></tr>}
                 {contract?.methods && <tr><td>Methods</td><td>{contractMethodSummary(contract.methods)}</td></tr>}
                 {runtime.error && <tr><td>Error</td><td>{runtime.error}</td></tr>}
               </tbody>
