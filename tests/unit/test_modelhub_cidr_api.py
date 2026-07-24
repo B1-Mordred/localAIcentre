@@ -280,6 +280,59 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public_versions["versions"][0]["source"]["url"], "https://downloads.example.test/model.gguf")
         self.assertEqual(model_record["source"]["url"], "https://downloads.example.test/model.gguf?token=secret")
 
+    async def test_modelhub_sync_plan_filters_versions_by_role_permissions(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}))
+        admin_sha = "c" * 64
+        service_sha = "d" * 64
+        admin_only = {
+            "id": "downloadable-llm",
+            "version": "2.0.0",
+            "downloadable": True,
+            "files": [{"path": "admin.gguf", "sha256": admin_sha, "size_bytes": 20}],
+            "license": {"name": "Admin", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["admin"]},
+        }
+        service_allowed = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "files": [{"path": "service.gguf", "sha256": service_sha, "size_bytes": 12}],
+            "license": {"name": "Service", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["service"]},
+        }
+
+        class FakeCatalog:
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any] | None:
+                return {"id": "downloadable-llm", "version": "2.0.0"} if model_id == "downloadable-llm" else None
+
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return [admin_only, service_allowed] if model_id == "downloadable-llm" else []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+
+        response = await main.modelhub_sync_plan(main.ModelHubSyncPlanRequest(models=["downloadable-llm"]))
+
+        self.assertEqual(len(response["actions"]), 1)
+        self.assertEqual(response["actions"][0]["version"], "1.0.0")
+        self.assertEqual(response["actions"][0]["blob"], service_sha)
+        self.assertEqual(response["total_download_bytes"], 12)
+
     async def test_modelhub_blob_rate_limit_can_be_disabled(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")
         main.settings = replace(main.settings, modelhub_blob_requests_per_minute=0)

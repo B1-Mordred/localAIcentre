@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -140,6 +141,63 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertEqual(response["actions"][0]["reason"], "model is not downloadable")
         self.assertEqual(response["actions"][0]["license"]["redistribution"], "inference-only")
         self.assertFalse(response["actions"][0]["requires_license_acceptance"])
+
+    def test_sync_plan_filters_versions_before_selecting_downloadable_manifest(self) -> None:
+        admin_sha = "c" * 64
+        service_sha = "d" * 64
+        admin_only = {
+            "id": "downloadable-llm",
+            "version": "2.0.0",
+            "downloadable": True,
+            "files": [{"path": "admin.gguf", "sha256": admin_sha, "size_bytes": 20}],
+            "license": {"name": "Admin", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["admin"]},
+        }
+        service_allowed = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "files": [{"path": "service.gguf", "sha256": service_sha, "size_bytes": 12}],
+            "license": {"name": "Service", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["service"]},
+        }
+        catalog = SimpleNamespace(
+            model_or_alias_record=lambda model_id: {"id": "downloadable-llm", "version": "2.0.0"},
+            versions_for=lambda model_id: [admin_only, service_allowed],
+        )
+
+        response = build_sync_plan(
+            catalog,
+            ["chat-default"],
+            {},
+            record_filter=lambda model_id, record: "service" in (record.get("permissions") or {}).get("downloadable_by", []),
+        )
+
+        self.assertEqual(len(response["actions"]), 1)
+        self.assertEqual(response["actions"][0]["version"], "1.0.0")
+        self.assertEqual(response["actions"][0]["blob"], service_sha)
+        self.assertEqual(response["actions"][0]["download_bytes"], 12)
+        self.assertEqual(response["total_download_bytes"], 12)
+
+    def test_sync_plan_refuses_when_filter_allows_no_versions(self) -> None:
+        record = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "files": [{"path": "model.gguf", "sha256": "e" * 64, "size_bytes": 12}],
+            "license": {"name": "Admin", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["admin"]},
+        }
+        catalog = SimpleNamespace(
+            model_or_alias_record=lambda model_id: record,
+            versions_for=lambda model_id: [record],
+        )
+
+        with self.assertRaisesRegex(ValueError, "not permitted"):
+            build_sync_plan(catalog, ["chat-default"], {}, record_filter=lambda model_id, version: False)
 
     def test_sync_plan_redacts_source_metadata_for_external_clients(self) -> None:
         response = build_sync_plan(self.catalog, ["chat-default"], {})

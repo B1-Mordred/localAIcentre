@@ -245,22 +245,31 @@ def client_ip_allowed_by_cidr(cidr_allowlist: list[str], remote_ip: str | None) 
     return any(client_ip in network for network in networks)
 
 
-def build_sync_plan(catalog: ModelCatalog, models: list[str], installed_blob_sizes: dict[str, int]) -> dict[str, Any]:
+def build_sync_plan(
+    catalog: ModelCatalog,
+    models: list[str],
+    installed_blob_sizes: dict[str, int],
+    *,
+    record_filter: Callable[[str, dict[str, Any]], bool] | None = None,
+) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
     total_download_bytes = 0
     for model_id in models:
         record = catalog.model_or_alias_record(model_id)
         if record is None:
             raise CatalogError(f"model not found: {model_id}")
-        versions = downloadable_versions_for(catalog, model_id)
+        version_records = catalog.versions_for(model_id)
+        allowed_version_records = [item for item in version_records if record_filter is None or record_filter(model_id, item)]
+        if record_filter is not None and not allowed_version_records:
+            raise CatalogError(f"model not permitted by Model Hub policy: {model_id}")
+        versions = [item for item in allowed_version_records if manifest_is_downloadable(item)]
         if not versions:
-            version_records = catalog.versions_for(model_id)
             actions.append(
                 {
                     "model": model_id,
                     "action": "skip",
                     "reason": "model is not downloadable",
-                    **sync_plan_action_metadata(version_records[0] if version_records else record),
+                    **sync_plan_action_metadata(allowed_version_records[0] if allowed_version_records else record),
                 }
             )
             continue

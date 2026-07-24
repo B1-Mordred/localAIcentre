@@ -8512,10 +8512,17 @@ async def modelhub_sync_plan(payload: ModelHubSyncPlanRequest, authorization: st
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:sync")
     installed = {blob.sha256.lower(): blob.size_bytes for blob in payload.installed_blobs}
+    client = await modelhub_client_for_auth(auth)
     for model_id in payload.models:
         await require_modelhub_model_authorized(auth, model_id, for_download=True)
+
+    def record_allowed(model_id: str, record: dict[str, Any]) -> bool:
+        if client is not None and not model_allowed_by_client(client, model_id, record):
+            return False
+        return model_allowed_by_auth_permissions(auth, model_id, record, "download")
+
     try:
-        return modelhub_policy.build_sync_plan(catalog_snapshot(), payload.models, installed)
+        return modelhub_policy.build_sync_plan(catalog_snapshot(), payload.models, installed, record_filter=record_allowed)
     except CatalogError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
