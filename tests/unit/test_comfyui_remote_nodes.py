@@ -476,6 +476,36 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             nodes.B1UploadMediaBase64().run("image", "image/png\r\nX-Bad: yes", "input.png", "AAAA")
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.B1UploadMediaBase64().run("image", "text/plain", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("media", "application/octet-stream", "input.bin", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "image/bmp", "input.bmp", "AAAA")
+
+    def test_upload_media_validates_custom_field_response_kind_from_mime(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"reference": staged_reference(kind="image", mime_type="image/webp")}
+
+        self.patch_attr("request_json", fake_request_json)
+        reference_json, _ = nodes.B1UploadMediaBase64().run(
+            "source_image",
+            "image/webp",
+            "input.webp",
+            nodes.base64.b64encode(b"RIFFxxxxWEBP").decode("ascii"),
+        )
+        self.assertEqual(json.loads(reference_json)["kind"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "source_image")
+
+        self.patch_attr("request_json", lambda *args, **kwargs: {"reference": staged_reference(kind="audio", mime_type="audio/wav")})
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run(
+                "source_image",
+                "image/png",
+                "input.png",
+                nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+            )
 
     def test_image_to_image_submits_staged_reference_object(self) -> None:
         reference = staged_reference()

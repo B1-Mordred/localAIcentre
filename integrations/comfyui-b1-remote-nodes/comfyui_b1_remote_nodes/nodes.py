@@ -30,6 +30,17 @@ MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
 UPLOAD_ID_PATTERN = re.compile(r"^upload_[a-f0-9]{32}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 MEDIA_KINDS = {"image", "audio", "video"}
+ALLOWED_UPLOAD_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "audio/wav",
+    "audio/mpeg",
+    "audio/ogg",
+    "video/mp4",
+    "video/webm",
+}
 
 
 class B1RemoteNodeError(RuntimeError):
@@ -423,6 +434,24 @@ def safe_mime_type(value: str | None, fallback: str = "application/octet-stream"
     normalized = (value or fallback).split(";", 1)[0].strip().lower() or fallback
     if not MIME_TYPE_PATTERN.fullmatch(normalized):
         raise B1RemoteNodeError("media MIME type is unsafe")
+    return normalized
+
+
+def media_kind_for_mime_type(mime_type: str) -> str:
+    normalized = safe_mime_type(mime_type)
+    if normalized.startswith("image/"):
+        return "image"
+    if normalized.startswith("audio/"):
+        return "audio"
+    if normalized.startswith("video/"):
+        return "video"
+    return ""
+
+
+def safe_upload_mime_type(value: str | None) -> str:
+    normalized = safe_mime_type(value)
+    if normalized not in ALLOWED_UPLOAD_MIME_TYPES:
+        raise B1RemoteNodeError("upload MIME type is not supported by B1 media uploads")
     return normalized
 
 
@@ -910,9 +939,10 @@ class B1UploadMediaBase64:
 
     def run(self, field_name: str, mime_type: str, filename: str, base64_data: str):
         field = safe_form_name(field_name or "media")
-        content_type = safe_mime_type(mime_type)
+        content_type = safe_upload_mime_type(mime_type)
+        upload_kind = media_kind_for_mime_type(content_type)
         expected_kind = expected_media_kind(field)
-        if expected_kind and not content_type.startswith(f"{expected_kind}/"):
+        if expected_kind and upload_kind != expected_kind:
             raise B1RemoteNodeError(f"{field} upload must use a {expected_kind}/ media type")
         default_filename = f"{field}{extension_for_content_type(content_type)}"
         upload_filename = safe_filename(filename, default_filename)
@@ -927,7 +957,7 @@ class B1UploadMediaBase64:
                 "X-B1-Filename": upload_filename,
             },
         )
-        reference = staged_reference_from_json(upload, field)
+        reference = staged_reference_from_json(upload, upload_kind or field)
         return (json_output(reference), json_output(upload))
 
 
