@@ -662,7 +662,39 @@ td {
   overflow-wrap: anywhere;
 }
 
-.job-detail pre {
+.job-reproducibility,
+.job-redacted-request {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.job-reproducibility dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.job-reproducibility dl div {
+  border-bottom: 1px solid #edf0ec;
+  display: grid;
+  grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.job-reproducibility dt {
+  color: #5c675f;
+}
+
+.job-reproducibility dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.job-redacted-request pre {
   grid-column: 1 / -1;
   margin: 0;
   max-height: 260px;
@@ -710,6 +742,10 @@ td {
   .policy-grid,
   .evidence-grid,
   .job-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .job-reproducibility dl {
     grid-template-columns: 1fr;
   }
 

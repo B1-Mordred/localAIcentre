@@ -1939,6 +1939,77 @@ function formatMs(value?: number | null) {
   return `${value}ms`;
 }
 
+type JobReproducibilityEntry = {
+  label: string;
+  value: string;
+};
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function labelFromKey(value: string): string {
+  return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function compactText(value: string, limit = 110): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
+}
+
+function compactReproducibilityValue(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "empty";
+  if (typeof value === "string") return compactText(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[array: ${value.length}]`;
+  const record = objectOrNull(value);
+  if (record) {
+    const keys = Object.keys(record);
+    return keys.length ? `[object: ${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", ..." : ""}]` : "[object]";
+  }
+  return compactText(String(value));
+}
+
+function addJobReproducibilityEntry(entries: JobReproducibilityEntry[], label: string, value: unknown): void {
+  if (value === undefined || value === null || value === "") return;
+  entries.push({ label, value: compactReproducibilityValue(value) });
+}
+
+function jobReproducibilityEntries(job: JobRecord): JobReproducibilityEntry[] {
+  const request = job.redacted_request ?? {};
+  const input = objectOrNull(request.input);
+  const parameters = objectOrNull(input?.parameters);
+  const entries: JobReproducibilityEntry[] = [];
+  addJobReproducibilityEntry(entries, "model", request.model ?? job.model_alias);
+  addJobReproducibilityEntry(entries, "resolved model", job.resolved_model_version);
+  addJobReproducibilityEntry(entries, "runtime", job.runtime);
+  addJobReproducibilityEntry(entries, "runtime policy", request.runtime_policy);
+  addJobReproducibilityEntry(entries, "priority", request.priority ?? job.priority);
+  addJobReproducibilityEntry(entries, "workflow", input?.workflow_id);
+  addJobReproducibilityEntry(entries, "workflow version", input?.workflow_version);
+  Object.entries(parameters ?? {}).slice(0, 10).forEach(([name, value]) => {
+    addJobReproducibilityEntry(entries, labelFromKey(name), value);
+  });
+  return entries;
+}
+
+function JobReproducibilitySummary({ job }: { job: JobRecord }) {
+  const entries = jobReproducibilityEntries(job);
+  return (
+    <section className="job-reproducibility">
+      <h3>Reproducibility</h3>
+      <dl>
+        {entries.map((entry) => (
+          <div key={entry.label}>
+            <dt>{entry.label}</dt>
+            <dd>{entry.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 function Jobs() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [reservations, setReservations] = useState<RuntimeReservationRecord[]>([]);
@@ -2196,7 +2267,11 @@ function Jobs() {
             <strong>{(selected.artifacts ?? []).length} artifact{(selected.artifacts ?? []).length === 1 ? "" : "s"}</strong>
             <small>{(selected.artifacts ?? []).map((artifact) => artifact.url).filter(Boolean).join(" / ") || "none"}</small>
           </div>
-          <pre>{JSON.stringify(selected.redacted_request ?? {}, null, 2)}</pre>
+          <JobReproducibilitySummary job={selected} />
+          <section className="job-redacted-request">
+            <h3>Redacted Request</h3>
+            <pre>{JSON.stringify(selected.redacted_request ?? {}, null, 2)}</pre>
+          </section>
         </div>
       )}
     </section>

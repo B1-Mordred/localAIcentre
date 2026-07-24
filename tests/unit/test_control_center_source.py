@@ -28,6 +28,17 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn('setJobs((current) => current.map((row) => (row.id === job.id ? job : row)))', self.source)
         self.assertIn('if (!selected || TERMINAL_JOB_STATES.has(selected.state)) return;', self.source)
 
+    def test_jobs_tab_summarizes_redacted_reproducibility_metadata(self) -> None:
+        self.assertIn("function JobReproducibilitySummary", self.source)
+        self.assertIn("function jobReproducibilityEntries", self.source)
+        self.assertIn("<JobReproducibilitySummary job={selected} />", self.source)
+        self.assertIn("<h3>Redacted Request</h3>", self.source)
+        self.assertIn("selected.redacted_request ?? {}", self.source)
+        self.assertIn("input?.workflow_id", self.source)
+        self.assertIn("input?.workflow_version", self.source)
+        self.assertIn("Object.entries(parameters ?? {}).slice(0, 10)", self.source)
+        self.assertNotIn("request_params", self.source)
+
     def test_external_runtime_config_has_one_configuration_error_field(self) -> None:
         self.assertEqual(self.source.count("configuration_error?: string | null;"), 1)
 
