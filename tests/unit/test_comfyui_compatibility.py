@@ -47,6 +47,21 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         self.assertNotIn(b"Authorization", body)
         self.assertNotIn(b"Bearer", body)
 
+    def test_multipart_form_data_builds_upload_mask_body_with_original_ref_without_credentials(self) -> None:
+        original_ref = '{"filename":"upload.png","subfolder":"","type":"input"}'
+        body, content_type = native_comfyui_live.multipart_form_data(
+            {"type": "input", "overwrite": "true", "original_ref": original_ref},
+            {"image": ("mask.png", "image/png", native_comfyui_live.TINY_PNG_BYTES)},
+        )
+
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary=b1-comfyui-"))
+        self.assertIn(b'name="original_ref"', body)
+        self.assertIn(original_ref.encode("utf-8"), body)
+        self.assertIn(b'name="image"; filename="mask.png"', body)
+        self.assertIn(b"Content-Type: image/png", body)
+        self.assertNotIn(b"Authorization", body)
+        self.assertNotIn(b"Bearer", body)
+
 
 class FakeRequest:
     def __init__(

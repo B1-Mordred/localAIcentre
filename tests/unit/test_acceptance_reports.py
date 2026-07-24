@@ -168,6 +168,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "models_accessible",
                 "queue_accessible",
                 "upload_image_accessible",
+                "upload_mask_accessible",
                 "prompt_submission",
                 "websocket_events",
                 "history_available",
@@ -180,13 +181,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "models_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "queue_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "upload_image_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "upload_mask_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "view_artifact_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
             },
-            "sample_count": 5,
-            "sample_labels": ["object-info", "upload-image", "prompt-submission", "websocket-completed", "view-artifact"],
+            "sample_count": 6,
+            "sample_labels": ["object-info", "upload-image", "upload-mask", "prompt-submission", "websocket-completed", "view-artifact"],
         },
         "remote_nodes_non_comfy": {
             "available": True,
@@ -791,7 +793,7 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
-    def test_native_comfyui_snapshot_requires_upload_and_view_artifact_evidence(self) -> None:
+    def test_native_comfyui_snapshot_requires_upload_mask_and_view_artifact_evidence(self) -> None:
         snapshot = acceptance.native_comfyui_evidence_snapshot(
             {
                 "format": "b1-ai-hub-native-comfyui-compatibility/v1",
@@ -812,8 +814,9 @@ class AcceptanceReportTests(unittest.TestCase):
         )
 
         self.assertIn("upload_image_accessible", snapshot["required_checks"])
+        self.assertIn("upload_mask_accessible", snapshot["required_checks"])
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
-        self.assertEqual(snapshot["missing_checks"], ["upload_image_accessible", "view_artifact_accessible"])
+        self.assertEqual(snapshot["missing_checks"], ["upload_image_accessible", "upload_mask_accessible", "view_artifact_accessible"])
 
     def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -1176,6 +1179,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "models_accessible": {"status": "ok"},
                             "queue_accessible": {"status": "ok"},
                             "upload_image_accessible": {"status": "ok"},
+                            "upload_mask_accessible": {"status": "ok"},
                             "prompt_submission": {"status": "ok"},
                             "websocket_events": {"status": "ok"},
                             "history_available": {"status": "ok"},
@@ -1184,6 +1188,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "samples": [
                             {"label": "object-info"},
                             {"label": "upload-image"},
+                            {"label": "upload-mask"},
                             {"label": "prompt-submission"},
                             {"label": "websocket-completed"},
                             {"label": "view-artifact"},
@@ -1327,7 +1332,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
-        self.assertEqual(native["sample_count"], 5)
+        self.assertEqual(native["sample_count"], 6)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))

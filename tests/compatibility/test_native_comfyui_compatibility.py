@@ -23,6 +23,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "models_accessible",
     "queue_accessible",
     "upload_image_accessible",
+    "upload_mask_accessible",
     "prompt_submission",
     "websocket_events",
     "history_available",
@@ -230,7 +231,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.samples.append({"label": path.strip("/") or "root", **sample})
         return payload
 
-    def verify_image_upload(self) -> None:
+    def verify_image_upload(self) -> dict[str, Any]:
         filename = f"b1-native-comfyui-upload-{uuid.uuid4().hex}.png"
         payload = self.request_multipart_json(
             "POST",
@@ -240,7 +241,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             timeout=60,
         )
         self.assertIsInstance(payload, dict)
-        response_keys = sorted(str(key) for key in payload.keys()) if isinstance(payload, dict) else []
+        response_keys = sorted(str(key) for key in payload.keys())
         self.record_check(
             "upload_image_accessible",
             path="/upload/image",
@@ -248,6 +249,37 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             response_keys=response_keys,
         )
         self.samples.append({"label": "upload-image", "filename": filename, "response_keys": response_keys})
+        return payload
+
+    def verify_mask_upload(self, original_upload: dict[str, Any]) -> None:
+        original_ref = {
+            "filename": str(original_upload.get("name") or ""),
+            "subfolder": str(original_upload.get("subfolder") or ""),
+            "type": str(original_upload.get("type") or "input"),
+        }
+        self.assertTrue(original_ref["filename"], f"/upload/image response did not include a usable name: {original_upload}")
+        filename = f"b1-native-comfyui-mask-{uuid.uuid4().hex}.png"
+        payload = self.request_multipart_json(
+            "POST",
+            "/upload/mask",
+            {
+                "type": "input",
+                "overwrite": "true",
+                "original_ref": json.dumps(original_ref, separators=(",", ":")),
+            },
+            {"image": (filename, "image/png", TINY_PNG_BYTES)},
+            timeout=60,
+        )
+        self.assertIsInstance(payload, dict)
+        response_keys = sorted(str(key) for key in payload.keys())
+        self.record_check(
+            "upload_mask_accessible",
+            path="/upload/mask",
+            filename=filename,
+            original_ref=original_ref,
+            response_keys=response_keys,
+        )
+        self.samples.append({"label": "upload-mask", "filename": filename, "response_keys": response_keys})
 
     async def connect_websocket(self):
         import websockets
@@ -394,7 +426,8 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.record_metadata_check("system_stats_accessible", "/system_stats")
         self.record_metadata_check("models_accessible", "/models")
         self.record_metadata_check("queue_accessible", "/queue")
-        self.verify_image_upload()
+        image_upload = self.verify_image_upload()
+        self.verify_mask_upload(image_upload)
 
         prompt_id = asyncio.run(self.submit_prompt_and_collect_ws())
         history = self.wait_for_history(prompt_id)
