@@ -25,6 +25,7 @@
 - Added machine-readable Voicebox remote compatibility evidence ingestion and an opt-in live harness for native HTTP proxying, voice-profile lifecycle, scheduler-routed speech, and WebSocket-or-pinned-limitation proof.
 - Added machine-readable deployed security acceptance evidence ingestion and an opt-in live harness for auth rejection, under-scoped rejection, CORS/CSRF, ComfyUI route-policy, SSRF, traversal, artifact authorization, and log-redaction proof.
 - Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
+- Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
 - Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
 - Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
 - Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.

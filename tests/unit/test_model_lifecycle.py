@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app import model_lifecycle  # noqa: E402
+from app import model_lifecycle, security  # noqa: E402
 from app.catalog import parse_manifest_payload  # noqa: E402
 from app.scheduler import ResourcePolicy  # noqa: E402
 
@@ -40,6 +40,11 @@ def manifest_payload(sha256: str, size: int, source_url: str = "https://models.a
 
 
 class ModelLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        original_resolver = security.resolve_hostname_addresses
+        security.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
     def test_safe_zip_archive_extracts_into_runtime_view(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

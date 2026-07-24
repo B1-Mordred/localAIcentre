@@ -15,12 +15,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 try:
-    from app import executor, secret_store  # noqa: E402
+    from app import executor, secret_store, security  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
     if exc.name != "sqlalchemy":
         raise
     executor = None
     secret_store = None  # type: ignore[assignment]
+    security = None  # type: ignore[assignment]
 
 
 class FakeDatabase:
@@ -134,6 +135,11 @@ class FakeDatabase:
 
 @unittest.skipIf(executor is None, "SQLAlchemy is not installed in this lightweight test environment")
 class ExecutorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        original_resolver = security.resolve_hostname_addresses
+        security.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
     def patch_database(self, fake: FakeDatabase):
         original = executor.database
         executor.database = fake

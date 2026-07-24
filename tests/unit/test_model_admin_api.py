@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 try:
-    from app import main  # noqa: E402
+    from app import main, security  # noqa: E402
     from app.auth import AuthContext, Role  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
     if exc.name not in {"fastapi", "httpx", "pydantic", "redis", "sqlalchemy"}:
@@ -205,6 +205,11 @@ class FakeDatabase:
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class ModelAdminApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        original_resolver = security.resolve_hostname_addresses
+        security.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
     def patch_attr(self, name: str, value: Any) -> None:
         original = getattr(main, name)
         setattr(main, name, value)

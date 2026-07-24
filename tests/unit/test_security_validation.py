@@ -3,15 +3,33 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
+import app.security as security  # noqa: E402
 from app.security import canonical_artifact_name, has_credential_query_parameter, is_safe_public_import_url, query_key_may_carry_credentials  # noqa: E402
 
 
 class SecurityValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.patch_resolver(["93.184.216.34"])
+
+    def patch_resolver(self, addresses: list[str], *, raises: OSError | None = None) -> None:
+        original = security.resolve_hostname_addresses
+
+        def fake_resolver(hostname: str, port: int | None) -> list[str]:
+            self.resolver_calls.append({"hostname": hostname, "port": port})
+            if raises is not None:
+                raise raises
+            return list(addresses)
+
+        self.resolver_calls: list[dict[str, Any]] = []
+        security.resolve_hostname_addresses = fake_resolver
+        self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original))
+
     def test_import_url_rejects_private_and_loopback_targets(self) -> None:
         self.assertFalse(is_safe_public_import_url("http://example.com/model.gguf"))
         self.assertFalse(is_safe_public_import_url("https://127.0.0.1/model.gguf"))
@@ -20,6 +38,14 @@ class SecurityValidationTests(unittest.TestCase):
         self.assertFalse(is_safe_public_import_url("https://[::1]/model.gguf"))
         self.assertFalse(is_safe_public_import_url("https://localhost/model.gguf"))
         self.assertFalse(is_safe_public_import_url("https://updates.localhost/model.gguf"))
+
+    def test_import_url_rejects_private_dns_answers_and_dns_failures(self) -> None:
+        self.patch_resolver(["93.184.216.34", "10.0.0.8"])
+        self.assertFalse(is_safe_public_import_url("https://models.example.org/model.gguf"))
+        self.assertEqual(self.resolver_calls[-1], {"hostname": "models.example.org", "port": None})
+
+        self.patch_resolver([], raises=OSError("dns unavailable"))
+        self.assertFalse(is_safe_public_import_url("https://models.example.org/model.gguf"))
 
     def test_import_url_rejects_credential_fragments_bad_ports_and_traversal(self) -> None:
         unsafe_urls = [

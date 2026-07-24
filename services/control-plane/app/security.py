@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
+from typing import Callable
 from urllib.parse import parse_qsl, unquote, urlparse
 
 
@@ -17,6 +19,7 @@ PRIVATE_NETS = [
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
 ]
+HostnameResolver = Callable[[str, int | None], list[str]]
 
 CREDENTIAL_QUERY_KEY_EXACT = {
     "key",
@@ -53,7 +56,27 @@ def has_credential_query_parameter(query: str) -> bool:
     return any(query_key_may_carry_credentials(key) for key, _value in parse_qsl(query, keep_blank_values=True))
 
 
-def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None) -> bool:
+def public_import_ip_is_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if not ip.is_global:
+        return False
+    return not any(ip in network for network in PRIVATE_NETS)
+
+
+def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for result in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM):
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        address = str(sockaddr[0])
+        if address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return addresses
+
+
+def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None, *, resolver: HostnameResolver | None = None) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in {"https"}:
         return False
@@ -79,17 +102,22 @@ def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None) 
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
+        resolver = resolver or resolve_hostname_addresses
+        try:
+            resolved_addresses = resolver(hostname, parsed.port)
+        except OSError:
+            return False
+        if not resolved_addresses:
+            return False
+        for address in resolved_addresses:
+            try:
+                resolved_ip = ipaddress.ip_address(address)
+            except ValueError:
+                return False
+            if not public_import_ip_is_safe(resolved_ip):
+                return False
         return True
-    if (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    ):
-        return False
-    return not any(ip in network for network in PRIVATE_NETS)
+    return public_import_ip_is_safe(ip)
 
 
 def canonical_artifact_name(name: str) -> str:
