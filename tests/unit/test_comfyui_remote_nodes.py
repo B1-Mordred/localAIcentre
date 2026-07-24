@@ -31,14 +31,17 @@ class FakeResponse:
 
 
 class EnvPatch:
-    def __init__(self, **values: str) -> None:
+    def __init__(self, **values: str | None) -> None:
         self.values = values
         self.original: dict[str, str | None] = {}
 
     def __enter__(self) -> None:
         for key, value in self.values.items():
             self.original[key] = os.environ.get(key)
-            os.environ[key] = value
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         for key, value in self.original.items():
@@ -63,6 +66,18 @@ def staged_reference(kind: str = "image", mime_type: str = "image/png") -> dict[
 
 
 class ComfyUiRemoteNodesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        original_config_file = os.environ.get(nodes.CONFIG_FILE_ENV)
+        os.environ[nodes.CONFIG_FILE_ENV] = ""
+
+        def restore_config_file() -> None:
+            if original_config_file is None:
+                os.environ.pop(nodes.CONFIG_FILE_ENV, None)
+            else:
+                os.environ[nodes.CONFIG_FILE_ENV] = original_config_file
+
+        self.addCleanup(restore_config_file)
+
     def patch_attr(self, name: str, value: Any) -> None:
         original = getattr(nodes, name)
         setattr(nodes, name, value)
@@ -93,6 +108,74 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(seen["authorization"], "Bearer b1k_public.secret")
         self.assertEqual(json.loads(seen["body"].decode("utf-8")), {"probe": True})
         self.assertEqual(seen["timeout"], 9)
+
+    def test_local_config_file_supplies_api_key_base_download_dir_and_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            download_dir = Path(tmp) / "downloads"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "api_base": "http://api.test.local/base/",
+                        "api_key": "b1k_config.secret",
+                        "download_dir": str(download_dir),
+                        "max_data_url_bytes": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with EnvPatch(
+                B1_AI_HUB_CONFIG_FILE=str(config_path),
+                B1_AI_HUB_API_BASE=None,
+                B1_AI_HUB_API_KEY=None,
+                B1_AI_HUB_DOWNLOAD_DIR=None,
+                B1_AI_HUB_MAX_DATA_URL_BYTES=None,
+            ):
+                request = nodes.build_request("/v1/models")
+                self.assertEqual(request.full_url, "http://api.test.local/base/v1/models")
+                self.assertEqual(request.get_header("Authorization"), "Bearer b1k_config.secret")
+                self.assertEqual(nodes.configured_download_dir(), download_dir)
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.require_media_reference("data:image/png;base64,QUFB", "image")
+
+    def test_environment_values_override_local_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            config_path.write_text(json.dumps({"api_base": "http://config.test", "api_key": "config-key"}), encoding="utf-8")
+            with EnvPatch(
+                B1_AI_HUB_CONFIG_FILE=str(config_path),
+                B1_AI_HUB_API_BASE="https://env.test.local/",
+                B1_AI_HUB_API_KEY="b1k_env.secret",
+            ):
+                request = nodes.build_request("/v1/models")
+
+        self.assertEqual(request.full_url, "https://env.test.local/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer b1k_env.secret")
+
+    def test_config_file_can_be_disabled_and_explicit_missing_file_fails(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_CONFIG_FILE="",
+            B1_AI_HUB_API_BASE=None,
+            B1_AI_HUB_API_KEY=None,
+            B1_AI_HUB_DOWNLOAD_DIR=None,
+        ):
+            self.assertEqual(nodes.api_base(), "https://api.ai.b1.germering")
+            self.assertEqual(nodes.api_key(), "")
+            self.assertEqual(nodes.configured_download_dir(), Path(nodes.DEFAULT_OUTPUT_DIR))
+        with EnvPatch(B1_AI_HUB_CONFIG_FILE="/tmp/b1-ai-hub-missing-config.json", B1_AI_HUB_API_BASE=None):
+            with self.assertRaises(nodes.B1RemoteNodeError):
+                nodes.api_base()
+
+    def test_api_base_rejects_credentials_query_and_non_http_schemes(self) -> None:
+        for value in [
+            "file:///tmp/api",
+            "https://user:pass@api.test.local",
+            "https://api.test.local?token=secret",
+            "https://api.test.local/#fragment",
+        ]:
+            with self.subTest(value=value), EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_BASE=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_base()
 
     def test_request_url_rejects_paths_that_are_not_api_routes(self) -> None:
         with self.assertRaises(nodes.B1RemoteNodeError):

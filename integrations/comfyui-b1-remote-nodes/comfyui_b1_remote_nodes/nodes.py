@@ -20,6 +20,7 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_OUTPUT_DIR = "b1-artifacts"
 DEFAULT_MAX_DATA_URL_BYTES = 256 * 1024 * 1024
+CONFIG_FILE_ENV = "B1_AI_HUB_CONFIG_FILE"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
@@ -32,16 +33,74 @@ class B1RemoteNodeError(RuntimeError):
     pass
 
 
+def default_config_file_path() -> Path:
+    if os.name == "nt":
+        root = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        return root / "B1 AI Hub" / "comfyui-remote-nodes.json"
+    root = Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return root / "b1-ai-hub" / "comfyui-remote-nodes.json"
+
+
+def configured_config_file_path() -> tuple[Path, bool] | None:
+    configured = os.getenv(CONFIG_FILE_ENV)
+    if configured is not None:
+        if not configured.strip():
+            return None
+        return Path(configured).expanduser(), True
+    return default_config_file_path().expanduser(), False
+
+
+def local_config() -> dict[str, Any]:
+    candidate = configured_config_file_path()
+    if candidate is None:
+        return {}
+    path, explicit = candidate
+    if not path.exists():
+        if explicit:
+            raise B1RemoteNodeError(f"B1 config file does not exist: {path}")
+        return {}
+    if not path.is_file():
+        raise B1RemoteNodeError(f"B1 config path is not a file: {path}")
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise B1RemoteNodeError(f"B1 config file is not readable: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise B1RemoteNodeError(f"B1 config file must be JSON: {path}") from exc
+    if not isinstance(parsed, dict):
+        raise B1RemoteNodeError("B1 config file must contain a JSON object")
+    return parsed
+
+
+def config_value(config_key: str, env_key: str, default: str = "") -> str:
+    env_value = os.getenv(env_key)
+    if env_value is not None:
+        return env_value
+    config = local_config()
+    value = config.get(config_key, config.get(env_key))
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise B1RemoteNodeError(f"B1 config value {config_key} must be a string")
+    return value
+
+
 def api_base() -> str:
-    return os.getenv("B1_AI_HUB_API_BASE", "https://api.ai.b1.germering").rstrip("/")
+    value = config_value("api_base", "B1_AI_HUB_API_BASE", "https://api.ai.b1.germering").strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise B1RemoteNodeError("B1 API base must be an HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise B1RemoteNodeError("B1 API base must not include credentials, query, or fragment")
+    return value
 
 
 def api_key() -> str:
-    return os.getenv("B1_AI_HUB_API_KEY", "")
+    return config_value("api_key", "B1_AI_HUB_API_KEY", "")
 
 
 def configured_download_dir() -> Path:
-    return Path(os.getenv("B1_AI_HUB_DOWNLOAD_DIR", DEFAULT_OUTPUT_DIR)).expanduser()
+    return Path(config_value("download_dir", "B1_AI_HUB_DOWNLOAD_DIR", DEFAULT_OUTPUT_DIR)).expanduser()
 
 
 def request_url(path: str) -> str:
@@ -161,6 +220,10 @@ def parse_json_object(value: str, field_name: str) -> dict[str, Any]:
 
 def max_data_url_bytes() -> int:
     raw = os.getenv("B1_AI_HUB_MAX_DATA_URL_BYTES")
+    if raw is None:
+        config = local_config()
+        configured = config.get("max_data_url_bytes", config.get("B1_AI_HUB_MAX_DATA_URL_BYTES"))
+        raw = str(configured) if configured is not None else None
     if raw is None:
         return DEFAULT_MAX_DATA_URL_BYTES
     try:

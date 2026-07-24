@@ -70,13 +70,15 @@ The returned key is shown once and is scoped only for catalog reads and blob syn
 
 Administrators can later change a workstation key's allowed model list or switch it to catalog-only mode from the Control Center External Access tab, or through `PUT /modelhub/v1/clients/{id}/policy`. CIDR allowlists are edited separately through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, so network changes do not require issuing a new secret.
 
-The `integrations/comfyui-b1-remote-nodes` package provides external ComfyUI nodes that call the B1 unified API. Credentials must come from environment or ComfyUI server settings, not workflow JSON:
+The `integrations/comfyui-b1-remote-nodes` package provides external ComfyUI nodes that call the B1 unified API. Credentials must come from the external ComfyUI process environment or a local config file, not workflow JSON:
 
 ```bash
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/path/to/external/comfyui/output/b1-ai-hub
 ```
+
+Environment variables take precedence. As a file-based fallback, copy `integrations/comfyui-b1-remote-nodes/config.example.json` to `~/.config/b1-ai-hub/comfyui-remote-nodes.json` on Linux or macOS, protect it with mode `0600`, and replace the placeholder with a scoped B1 API key. On Windows, use `%APPDATA%\\B1 AI Hub\\comfyui-remote-nodes.json`. `B1_AI_HUB_CONFIG_FILE=/path/to/file.json` selects a different path, and an empty `B1_AI_HUB_CONFIG_FILE=` disables config-file lookup.
 
 The package currently registers nodes for listing/selecting model aliases, chat/text, vision request shaping, embeddings, text-to-image, image-to-image, text-to-video, image-to-video, TTS, STT, generic media-job submit/wait/cancel, media upload by base64, job artifact listing, and artifact download. `B1 Speech To Text` calls the public OpenAI-compatible multipart transcription shape with `model` and `file` fields, so external ComfyUI workflows do not rely on private B1 headers. Artifact downloads are constrained to `B1_AI_HUB_DOWNLOAD_DIR` and filenames are sanitized. Media-reference fields reject local filesystem paths, arbitrary external URLs, and arbitrary JSON objects; upload media through `B1 Upload Media Base64`, connect its `reference_json` output directly to media-job nodes, use authenticated `/artifacts/...` paths, or pass base64 media data URLs capped by `B1_AI_HUB_MAX_DATA_URL_BYTES`. The upload node also returns the full upload response as `upload_json` for workflows that need to inspect metadata, and media-job nodes accept either that wrapper or the direct staged reference. Vision-analysis requests currently require an internal artifact path or data URL because they use the OpenAI-compatible image URL field.
 

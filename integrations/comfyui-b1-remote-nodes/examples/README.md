@@ -5,4 +5,4 @@ These examples are lightweight workflow sketches for an external ComfyUI install
 - `tts-fast.non-comfy.workflow.json` submits `B1 Text To Speech` against the `tts-fast` alias. This is the default smoke path for proving the external ComfyUI nodes call the unified API and do not require the server-side B1 ComfyUI runtime.
 - `text-to-image.async.workflow.json` submits an asynchronous `image-default` job, waits for completion, lists artifacts, and downloads the generated artifact through the authenticated `/artifacts/...` route.
 
-Set `B1_AI_HUB_API_BASE`, `B1_AI_HUB_API_KEY`, and optionally `B1_AI_HUB_DOWNLOAD_DIR` in the external ComfyUI process environment before loading the examples.
+Set `B1_AI_HUB_API_BASE`, `B1_AI_HUB_API_KEY`, and optionally `B1_AI_HUB_DOWNLOAD_DIR` in the external ComfyUI process environment before loading the examples. Alternatively, place a private JSON config at `~/.config/b1-ai-hub/comfyui-remote-nodes.json` or point `B1_AI_HUB_CONFIG_FILE` at another path; do not store API keys in workflow JSON.

@@ -1,0 +1,6 @@
+{
+  "api_base": "https://api.ai.b1.germering",
+  "api_key": "replace-with-a-scoped-b1-api-key",
+  "download_dir": "~/ComfyUI/output/b1-ai-hub",
+  "max_data_url_bytes": 268435456
+}

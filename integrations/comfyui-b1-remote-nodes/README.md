@@ -4,13 +4,15 @@ This package provides ComfyUI custom nodes that call the unified B1 AI Hub API. 
 
 Install by copying or cloning this directory into the external ComfyUI `custom_nodes/` directory, then restart that ComfyUI instance.
 
-Configure credentials through environment variables or ComfyUI server settings. Do not put keys in workflow JSON:
+Configure credentials through environment variables or a local JSON config file. Do not put keys in workflow JSON:
 
 ```bash
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/path/to/comfyui/output/b1-ai-hub
 ```
+
+Environment variables take precedence. As a local ComfyUI-process config fallback, copy `config.example.json` to a private path such as `~/.config/b1-ai-hub/comfyui-remote-nodes.json`, set mode `0600`, and replace the key with a scoped B1 API key. You can also point at another file with `B1_AI_HUB_CONFIG_FILE=/path/to/comfyui-remote-nodes.json`. Set `B1_AI_HUB_CONFIG_FILE=` to disable config-file lookup.
 
 Available nodes:
 
