@@ -1107,6 +1107,41 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
                 self.assertEqual(raised.exception.status_code, 403)
                 self.assertEqual(raised.exception.detail["code"], "comfyui_route_denied")
 
+    def test_comfyui_passthrough_blocks_encoded_path_control_before_proxying(self) -> None:
+        async def proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("blocked ComfyUI route must not be proxied")
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        for path in (
+            "models/%2e%2e/system_stats",
+            "models/%2Fsecret",
+            "models/%5csecret",
+            "models/%00secret",
+            "models/%3fsecret",
+            "models/%23secret",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(main.HTTPException) as raised:
+                    asyncio.run(main.proxy_comfyui_compatibility(path, FakeRequest({}, method="GET")))
+                self.assertEqual(raised.exception.status_code, 403)
+                self.assertEqual(raised.exception.detail["code"], "comfyui_route_denied")
+
+    def test_comfyui_websocket_blocks_encoded_path_control_before_proxying(self) -> None:
+        def connect(*_: Any, **__: Any) -> FakeConnect:
+            raise AssertionError("blocked ComfyUI WebSocket route must not be proxied")
+
+        main.websocket_connect = connect  # type: ignore[assignment]
+
+        for path in ("trusted/%2e%2e/ws", "trusted/%2fws", "trusted/%5cws", "trusted/%00ws"):
+            with self.subTest(path=path):
+                websocket = FakeWebSocket(headers={"x-b1-compatibility": "comfyui-native", "authorization": "Bearer test"})
+
+                asyncio.run(main.compatibility_ws(path, websocket))
+
+                self.assertFalse(websocket.accepted)
+                self.assertEqual(websocket.closed, [1008])
+
     def test_comfyui_passthrough_blocks_unknown_mutation_unless_prefix_is_configured_and_pinned(self) -> None:
         proxied: list[str] = []
 

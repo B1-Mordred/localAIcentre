@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable, Literal
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis.asyncio as redis
@@ -2775,12 +2775,24 @@ def comfyui_native_cancel_target(path: str, method: str, body: bytes) -> tuple[b
 
 
 def normalize_comfyui_passthrough_path(path: str) -> str:
-    if "\\" in path or "\x00" in path:
+    if any(character in path for character in ("\\", "\x00", "?", "#")):
         raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
-    parts = [part for part in path.strip("/").split("/") if part]
-    if any(part in {".", ".."} for part in parts):
-        raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
-    return "/".join(parts)
+    decoded_parts: list[str] = []
+    for part in path.strip("/").split("/"):
+        if not part:
+            continue
+        try:
+            decoded = unquote(part, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"}) from exc
+        if decoded in {".", ".."}:
+            raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
+        if any(character in decoded for character in ("/", "\\", "\x00", "?", "#")):
+            raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
+        if any(ord(character) < 32 for character in decoded):
+            raise HTTPException(status_code=403, detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility path is not allowed"})
+        decoded_parts.append(decoded)
+    return "/".join(decoded_parts)
 
 
 def path_matches_prefix(normalized_path: str, prefix: str) -> bool:
