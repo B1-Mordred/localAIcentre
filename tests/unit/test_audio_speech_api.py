@@ -216,6 +216,80 @@ class AudioSpeechApiTests(unittest.TestCase):
             ],
         )
 
+    def test_audio_speech_does_not_forward_b1_internal_metadata_to_external_runtime(self) -> None:
+        self.patch_auth()
+        calls: list[dict[str, Any]] = []
+        external_adapter = main.RuntimeAdapter(
+            name="openai-compatible",
+            base_url="https://api.example.com/v1",
+            modalities=("tts",),
+            operations=("text-to-speech",),
+            requires_gpu=False,
+            external=True,
+            openai_compatible=True,
+        )
+
+        class FakeRegistry:
+            def adapter(self, runtime: str) -> Any:
+                self.__class__.calls.append(runtime)
+                return external_adapter
+
+        FakeRegistry.calls = []  # type: ignore[attr-defined]
+
+        def resolve_catalog_alias(model: str, modality: str, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            self.assertEqual((model, modality, runtime_policy, operation), ("tts-external", "tts", "any", "text-to-speech"))
+            return main.RuntimeResolution(
+                public_alias="tts-external",
+                model_id="external-voice",
+                model_version="1.0.0",
+                resolved_model_version="external-voice@1.0.0",
+                runtime="openai-compatible",
+                preferred_runtime="openai-compatible",
+                requires_gpu=False,
+                resource_label="external",
+                runtime_policy=runtime_policy,
+            )
+
+        async def proxy_http_bytes(base_url: str, path: str, request: Any, body: bytes | None = None, timeout_seconds: float = 120.0) -> Any:
+            calls.append({"base_url": base_url, "path": path, "payload": json.loads(body or b"{}"), "timeout_seconds": timeout_seconds})
+            return main.Response(content=b"external-wav", media_type="audio/wav")
+
+        self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
+        self.patch_attr("runtime_registry_snapshot", lambda: FakeRegistry())
+        self.patch_attr("proxy_http_bytes", proxy_http_bytes)
+
+        response = asyncio.run(
+            main.audio_speech(
+                FakeRequest(
+                    {
+                        "model": "tts-external",
+                        "input": "hello",
+                        "runtime_policy": "any",
+                        "b1_resolved_model_version": "client-spoof@9.9.9",
+                        "b1_internal_note": "must-not-forward",
+                    }
+                ),
+                authorization="Bearer key",
+            )
+        )
+
+        self.assertEqual(response.body, b"external-wav")
+        self.assertEqual(FakeRegistry.calls, ["openai-compatible"])  # type: ignore[attr-defined]
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "base_url": "https://api.example.com/v1",
+                    "path": "/v1/audio/speech",
+                    "payload": {
+                        "input": "hello",
+                        "model": "external-voice",
+                    },
+                    "timeout_seconds": 1800.0,
+                }
+            ],
+        )
+
     def test_audio_transcription_routes_audio_cpu_and_rewrites_model(self) -> None:
         self.patch_auth()
         self.patch_settings(audio_cpu_url="http://audio-cpu")

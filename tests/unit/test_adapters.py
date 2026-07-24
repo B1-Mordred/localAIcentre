@@ -341,6 +341,8 @@ class RuntimeAdapterTests(unittest.TestCase):
                 "stream": False,
                 "temperature": None,
                 "runtime_policy": "non_comfy_only",
+                "b1_resolved_model_version": "client-spoof@9.9.9",
+                "b1_internal_note": "must-not-forward",
             },
             resolution,
         )
@@ -350,6 +352,7 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertEqual(payload["messages"], [{"role": "user", "content": "hello"}])
         self.assertNotIn("runtime_policy", payload)
         self.assertNotIn("temperature", payload)
+        self.assertNotIn("b1_internal_note", payload)
 
     def test_external_openai_payload_does_not_send_internal_model_version(self) -> None:
         catalog = ModelCatalog(
@@ -362,10 +365,19 @@ class RuntimeAdapterTests(unittest.TestCase):
         adapter = registry.adapter("openai-compatible")
 
         self.assertIsNotNone(adapter)
-        payload = adapter.openai_payload({"model": "remote-chat", "messages": []}, resolution)
+        payload = adapter.openai_payload(
+            {
+                "model": "remote-chat",
+                "messages": [],
+                "b1_resolved_model_version": "client-spoof@9.9.9",
+                "b1_internal_note": "must-not-forward",
+            },
+            resolution,
+        )
 
         self.assertEqual(payload["model"], "remote-chat-model")
         self.assertNotIn("b1_resolved_model_version", payload)
+        self.assertNotIn("b1_internal_note", payload)
 
     def test_non_openai_runtime_rejects_openai_forwarding(self) -> None:
         catalog = ModelCatalog(

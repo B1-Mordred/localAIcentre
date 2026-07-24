@@ -241,7 +241,11 @@ class RuntimeAdapter:
     def openai_payload(self, payload: dict[str, Any], resolution: "RuntimeResolution") -> dict[str, Any]:
         if not self.openai_compatible:
             raise RuntimeResolutionError(f"runtime {self.name} is not configured for OpenAI-compatible HTTP forwarding")
-        forwarded = {key: value for key, value in payload.items() if key != "runtime_policy" and value is not None}
+        forwarded = {
+            key: value
+            for key, value in payload.items()
+            if key != "runtime_policy" and not key.startswith("b1_") and value is not None
+        }
         forwarded["model"] = resolution.model_id
         if not self.external:
             forwarded["b1_resolved_model_version"] = resolution.resolved_model_version

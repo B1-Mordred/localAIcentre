@@ -8041,11 +8041,11 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     model = body.get("model") if isinstance(body.get("model"), str) and body.get("model") else "tts-fast"
     runtime_policy = body.get("runtime_policy") if isinstance(body.get("runtime_policy"), str) else "any"
     resolution = resolve_catalog_alias_for_auth(model, "tts", auth, runtime_policy, operation="text-to-speech")
-    forwarded = {key: value for key, value in body.items() if key != "runtime_policy" and value is not None}
+    forwarded = {key: value for key, value in body.items() if key != "runtime_policy" and not key.startswith("b1_") and value is not None}
     forwarded["model"] = resolution.model_id
-    forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
-    forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if resolution.runtime == "audio-cpu":
+        forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
+        forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return await proxy_http_bytes(settings.audio_cpu_url, "/v1/audio/speech", request, body=forwarded_body)
     adapter = runtime_registry_snapshot().adapter(resolution.runtime)
     if resolution.runtime == "voicebox":
@@ -8054,6 +8054,9 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
         base_url = adapter.base_url
     else:
         raise HTTPException(status_code=422, detail=f"runtime {resolution.runtime} does not support OpenAI-compatible speech forwarding")
+    if adapter is None or not adapter.external:
+        forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
+    forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
     lease_owner = await acquire_inference_lease(resolution, "audio-speech", owner_id=auth.subject_id)
     prepared = False
     try:
