@@ -328,6 +328,34 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(state, "completed")
         self.assertEqual(json.loads(raw)["id"], "job_1")
 
+    def test_job_id_path_segments_are_validated_for_job_routes(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            if kwargs.get("method") == "DELETE":
+                return {"id": "job_1", "state": "cancelled"}
+            if path.endswith("/artifacts"):
+                return {"data": []}
+            return {"id": "job_1", "state": "completed"}
+
+        self.patch_attr("request_json", fake_request_json)
+        self.patch_attr("time", type("FakeTime", (), {"monotonic": staticmethod(lambda: 0), "sleep": staticmethod(lambda seconds: None)})())
+
+        nodes.B1WaitMediaJob().run(" job_1 ", 10, 0.25)
+        nodes.B1CancelMediaJob().run("job_1")
+        nodes.B1ListJobArtifacts().run("job_1")
+
+        self.assertEqual(
+            [call["path"] for call in calls],
+            ["/v1/media/jobs/job_1", "/v1/media/jobs/job_1", "/v1/media/jobs/job_1/artifacts"],
+        )
+
+        for value in ["", "job_1/../../admin", "job_1%2Fsecret", "job_1?x=1", "../job_1", "job_1\nx"]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.B1CancelMediaJob().run(value)
+
     def test_artifact_download_rejects_external_url_and_sanitizes_filename(self) -> None:
         def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
             self.assertEqual(path, "/artifacts/runtime/job/0.png")

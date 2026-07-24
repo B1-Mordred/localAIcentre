@@ -25,6 +25,7 @@ API_KEY_ENV = "B1_AI_HUB_API_KEY"
 API_KEY_FILE_ENV = "B1_AI_HUB_API_KEY_FILE"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
 UPLOAD_ID_PATTERN = re.compile(r"^upload_[a-f0-9]{32}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -433,6 +434,13 @@ def safe_filename(value: str | None, fallback: str) -> str:
     return cleaned[:160]
 
 
+def safe_path_segment(value: str, label: str) -> str:
+    segment = value.strip()
+    if not SAFE_ID_PATTERN.fullmatch(segment):
+        raise B1RemoteNodeError(f"{label} must be a B1 identifier, not a path or URL")
+    return urllib.parse.quote(segment, safe="")
+
+
 def multipart_form_data(
     fields: dict[str, str],
     files: list[tuple[str, str, str, bytes]],
@@ -543,11 +551,12 @@ def submit_media_job(modality: str, operation: str, model: str, input_payload: d
 
 
 def wait_for_job(job_id: str, timeout_seconds: int, poll_interval_seconds: float) -> dict[str, Any]:
+    job_segment = safe_path_segment(job_id, "job_id")
     deadline = time.monotonic() + max(1, timeout_seconds)
     interval = max(0.25, poll_interval_seconds)
     last: dict[str, Any] | None = None
     while time.monotonic() <= deadline:
-        last = request_json(f"/v1/media/jobs/{urllib.parse.quote(job_id)}")
+        last = request_json(f"/v1/media/jobs/{job_segment}")
         if str(last.get("state")) in TERMINAL_JOB_STATES:
             return last
         time.sleep(interval)
@@ -954,7 +963,8 @@ class B1CancelMediaJob:
     CATEGORY = "B1 AI Hub"
 
     def run(self, job_id: str):
-        return (json_output(request_json(f"/v1/media/jobs/{urllib.parse.quote(job_id.strip())}", method="DELETE")),)
+        job_segment = safe_path_segment(job_id, "job_id")
+        return (json_output(request_json(f"/v1/media/jobs/{job_segment}", method="DELETE")),)
 
 
 class B1ListJobArtifacts:
@@ -968,7 +978,8 @@ class B1ListJobArtifacts:
     CATEGORY = "B1 AI Hub"
 
     def run(self, job_id: str):
-        return (json_output(request_json(f"/v1/media/jobs/{urllib.parse.quote(job_id.strip())}/artifacts")),)
+        job_segment = safe_path_segment(job_id, "job_id")
+        return (json_output(request_json(f"/v1/media/jobs/{job_segment}/artifacts")),)
 
 
 class B1DownloadArtifact:

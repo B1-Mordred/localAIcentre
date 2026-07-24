@@ -51,6 +51,7 @@
 - Added local JSON configuration-file support for external ComfyUI B1 remote nodes so API base URLs, API keys, download directories, and media size caps can be configured outside workflow JSON, with environment variables still taking precedence.
 - Hardened external ComfyUI B1 remote-node credential files with `api_key_file` support, environment override support, ambiguous-source rejection, and POSIX private-file checks for token-bearing config files.
 - Hardened external ComfyUI B1 remote-node upload and artifact-download handling with MIME/filename/header normalization and query, fragment, traversal, and encoded-traversal rejection.
+- Hardened external ComfyUI B1 remote-node job routes so job IDs are validated as opaque identifiers before wait, cancel, or artifact-list requests are built.
 - Added a generated runtime-control bearer token for production LocalAI, ComfyUI, and Voicebox `/b1/runtime/*` lifecycle hooks so load, warm, smoke, and unload actions fail closed when the internal hook secret is missing or wrong.
 - Extended runtime-control bearer enforcement to the default `audio-cpu` `/b1/runtime/smoke` hook and mounted the generated token read-only into that service.
 - Aligned the external ComfyUI `B1 Speech To Text` node with the public OpenAI-compatible multipart transcription contract, including safe filename/header handling and no private model header.
