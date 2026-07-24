@@ -83,6 +83,7 @@
 - Added a repository-wide Python source compilation gate to `make validate`, using a temporary bytecode cache so validation does not depend on writable ignored `__pycache__` directories.
 - Added a Voicebox constraints `pip-audit` inventory target and CI artifact upload so upstream-heavy Python vulnerability findings are visible during update review without breaking strict B1-owned service audits.
 - Expanded the backend CI validation environment to install every B1-owned service requirements file before `make validate`, reducing dependency-related skips in API and service unit tests.
+- Aligned the published-workflow and approved-node-pin JSON Schemas with the parser-backed workflow contract, including modality, operation, alias, runtime policy, output MIME types, and approved custom-node route prefixes.
 - Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
 - Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
 - Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.

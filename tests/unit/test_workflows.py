@@ -11,7 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 from app.workflows import (  # noqa: E402
+    BACKEND_POLICIES,
+    LIMIT_KEYS,
+    MODALITIES,
     NodePinError,
+    RESOURCE_CLASSES,
+    ROLES,
+    RUNTIME_POLICIES,
     WorkflowError,
     dependency_report,
     load_workflows,
@@ -21,6 +27,43 @@ from app.workflows import (  # noqa: E402
     visible_to_role,
     workflow_record,
 )
+
+
+PARSER_WORKFLOW_REQUIRED_KEYS = {
+    "id",
+    "version",
+    "display_name",
+    "modality",
+    "operation",
+    "model_alias",
+    "backend_policy",
+    "output_mime_types",
+    "input_schema",
+    "output_schema",
+    "resource_class",
+    "dependencies",
+    "limits",
+}
+PARSER_WORKFLOW_OPTIONAL_KEYS = {
+    "description",
+    "workflow_json",
+    "visibility_roles",
+    "runtime_policy",
+    "comfyui_parameter_mappings",
+    "runtime_parameter_mappings",
+}
+PARSER_NODE_PIN_KEYS = {
+    "id",
+    "commit",
+    "repository_url",
+    "display_name",
+    "status",
+    "approved_by",
+    "approved_at",
+    "dependency_lock_sha256",
+    "allowed_route_prefixes",
+    "notes",
+}
 
 
 BASE_WORKFLOW = {
@@ -78,6 +121,32 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(workflows[0].resource_class, "rtx3060-32gb")
         self.assertTrue(all(workflow.model_alias for workflow in workflows))
         self.assertTrue(all(workflow.output_mime_types for workflow in workflows))
+
+    def test_published_workflow_schema_matches_parser_and_seed_files(self) -> None:
+        schema = json.loads((ROOT / "workflows" / "schemas" / "published-workflow.schema.json").read_text(encoding="utf-8"))
+        properties = schema["properties"]
+
+        self.assertTrue(PARSER_WORKFLOW_REQUIRED_KEYS.issubset(set(schema["required"])))
+        self.assertEqual(set(properties), PARSER_WORKFLOW_REQUIRED_KEYS | PARSER_WORKFLOW_OPTIONAL_KEYS)
+        self.assertEqual(set(properties["modality"]["enum"]), MODALITIES)
+        self.assertEqual(set(properties["backend_policy"]["enum"]), BACKEND_POLICIES)
+        self.assertEqual(set(properties["runtime_policy"]["enum"]), RUNTIME_POLICIES)
+        self.assertEqual(set(properties["resource_class"]["enum"]), RESOURCE_CLASSES)
+        self.assertEqual(set(properties["limits"]["properties"]), LIMIT_KEYS)
+        self.assertEqual(set(properties["visibility_roles"]["items"]["enum"]), ROLES)
+
+        for path in sorted((ROOT / "workflows" / "approved").glob("*.json")):
+            with self.subTest(path=path.name):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                self.assertFalse(set(payload) - set(properties), f"{path} contains keys not declared by the schema")
+                self.assertTrue(PARSER_WORKFLOW_REQUIRED_KEYS.issubset(set(payload)))
+
+    def test_approved_node_pin_schema_matches_parser_keys(self) -> None:
+        schema = json.loads((ROOT / "workflows" / "schemas" / "approved-node-pins.schema.json").read_text(encoding="utf-8"))
+        properties = schema["properties"]["nodes"]["items"]["properties"]
+
+        self.assertEqual(set(properties), PARSER_NODE_PIN_KEYS)
+        self.assertIn("allowed_route_prefixes", properties)
 
     def test_dependency_report_marks_uninstalled_models_not_ready(self) -> None:
         workflow = parse_workflow(BASE_WORKFLOW)

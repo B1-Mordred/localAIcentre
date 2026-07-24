@@ -24,6 +24,14 @@
           "approved_by": { "type": "string", "minLength": 1 },
           "approved_at": { "type": "string", "minLength": 1 },
           "dependency_lock_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "allowed_route_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^/?[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*$"
+            },
+            "uniqueItems": true
+          },
           "notes": { "type": "string" }
         },
         "additionalProperties": false
