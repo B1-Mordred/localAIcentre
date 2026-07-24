@@ -507,6 +507,8 @@ def _node_pin(value: Any, context: str) -> ApprovedNodePin:
         if not isinstance(dependency_lock_sha256, str) or not SHA256_RE.match(dependency_lock_sha256):
             raise NodePinError(f"{context}.dependency_lock_sha256 must be a lowercase SHA-256 digest")
     allowed_route_prefixes = _route_prefixes(value.get("allowed_route_prefixes", []), f"{context}.allowed_route_prefixes")
+    if status == "approved" and allowed_route_prefixes and dependency_lock_sha256 is None:
+        raise NodePinError(f"{context}.dependency_lock_sha256 is required when an approved node pin exposes allowed_route_prefixes")
     return ApprovedNodePin(
         id=node_id,
         commit=commit,

@@ -96,6 +96,7 @@ class ComfyUiNodePinsApiTests(unittest.TestCase):
                             "commit": commit,
                             "repository_url": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
                             "status": "approved",
+                            "dependency_lock_sha256": "b" * 64,
                             "allowed_route_prefixes": ["impact/wildcards"],
                         }
                     ],
@@ -207,6 +208,32 @@ class ComfyUiNodePinsApiTests(unittest.TestCase):
         self.assertEqual(invalid.exception.status_code, 422)
         self.assertIn("HTTPS URL", invalid.exception.detail["message"])
         self.assertEqual(fake_database.rows, {})
+
+    def test_create_rejects_approved_route_prefix_without_dependency_lock(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "pins.json"
+            registry_path.write_text('{"schema_version":1,"nodes":[]}', encoding="utf-8")
+            fake_database = FakeNodePinDatabase()
+            admin = AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"workflows:write"}))
+            self.patch_common(registry_path, fake_database, admin, audit_events)
+
+            with self.assertRaises(HTTPException) as invalid:
+                asyncio.run(
+                    main.admin_comfyui_node_pin_create(
+                        main.ComfyUiNodePinCreate(
+                            id="comfyui-custom-api",
+                            commit="b" * 40,
+                            repository_url="https://github.com/example/comfyui-custom-api",
+                            allowed_route_prefixes=["custom/api"],
+                        )
+                    )
+                )
+
+        self.assertEqual(invalid.exception.status_code, 422)
+        self.assertIn("dependency_lock_sha256 is required", invalid.exception.detail["message"])
+        self.assertEqual(fake_database.rows, {})
+        self.assertEqual(audit_events, [])
 
 
 if __name__ == "__main__":

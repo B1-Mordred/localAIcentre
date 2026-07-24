@@ -36,6 +36,7 @@
 - Added acceptance-report freshness gates so live evidence must be generated within 72 hours of the handoff report and cannot be future-dated beyond clock-skew tolerance.
 - Added machine-readable live stack smoke evidence output and acceptance-report gating for health, model listing, async TTS, SSE, and artifact download checks.
 - Hardened native ComfyUI custom-node mutating route passthrough so trusted prefixes must also be declared on an approved custom-node commit pin.
+- Hardened ComfyUI custom-node approval so approved pins that expose mutating route prefixes must include a reviewed dependency-lock SHA-256 digest.
 - Redacted native ComfyUI prompt job metadata to store only the client ID, request hash, and structural graph counts/digests instead of top-level request keys or node inputs.
 - Hardened native ComfyUI compatibility WebSocket passthrough so non-core custom routes require write scope, trusted prefixes, and approved node pins while manager/internal paths are blocked.
 - Hardened ComfyUI and Voicebox WebSocket proxying so gateway compatibility markers are stripped before traffic reaches internal runtimes, including the optional legacy ComfyUI listener.

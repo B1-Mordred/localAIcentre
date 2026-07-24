@@ -309,6 +309,7 @@ class WorkflowTests(unittest.TestCase):
                         "id": "comfyui-custom-api",
                         "repository_url": "https://github.com/example/comfyui-custom-api",
                         "commit": commit,
+                        "dependency_lock_sha256": "b" * 64,
                         "allowed_route_prefixes": ["/Custom/API", "custom/api"],
                     }
                 ],
@@ -330,11 +331,46 @@ class WorkflowTests(unittest.TestCase):
                                     "id": "comfyui-custom-api",
                                     "repository_url": "https://github.com/example/comfyui-custom-api",
                                     "commit": commit,
+                                    "dependency_lock_sha256": "b" * 64,
                                     "allowed_route_prefixes": [prefix],
                                 }
                             ],
                         }
                     )
+
+    def test_parse_node_pin_registry_requires_dependency_lock_for_approved_routes(self) -> None:
+        commit = "a" * 40
+        with self.assertRaisesRegex(NodePinError, "dependency_lock_sha256 is required"):
+            parse_node_pin_registry(
+                {
+                    "schema_version": 1,
+                    "nodes": [
+                        {
+                            "id": "comfyui-custom-api",
+                            "repository_url": "https://github.com/example/comfyui-custom-api",
+                            "commit": commit,
+                            "allowed_route_prefixes": ["custom/api"],
+                        }
+                    ],
+                }
+            )
+
+        registry = parse_node_pin_registry(
+            {
+                "schema_version": 1,
+                "nodes": [
+                    {
+                        "id": "comfyui-custom-api",
+                        "repository_url": "https://github.com/example/comfyui-custom-api",
+                        "commit": commit,
+                        "status": "disabled",
+                        "allowed_route_prefixes": ["custom/api"],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(registry[("comfyui-custom-api", commit)].status, "disabled")
 
     def test_workflow_record_is_publishable_when_dependencies_ready(self) -> None:
         payload = {
