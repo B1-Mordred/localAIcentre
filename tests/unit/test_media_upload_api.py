@@ -52,7 +52,7 @@ class MediaUploadApiTests(unittest.TestCase):
         png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
         with tempfile.TemporaryDirectory() as tmp:
-            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024)
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
             request = FakeRequest(
                 body=png_bytes,
                 headers={"content-type": "application/octet-stream", "X-B1-Filename": "../input.png"},
@@ -68,7 +68,7 @@ class MediaUploadApiTests(unittest.TestCase):
     def test_raw_upload_rejects_configured_size_limit(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
         with tempfile.TemporaryDirectory() as tmp:
-            self.patch_settings(artifact_root=tmp, upload_max_bytes=4)
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=4, artifact_storage_reserve_bytes=0)
             request = FakeRequest(body=b"\x89PNG\r\n\x1a\n", headers={"content-type": "image/png"})
 
             with self.assertRaises(HTTPException) as caught:

@@ -94,14 +94,12 @@ class UpdateManagementApiTests(unittest.TestCase):
         original_resolver = update_policy.resolve_hostname_addresses
         update_policy.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
         self.addCleanup(lambda: setattr(update_policy, "resolve_hostname_addresses", original_resolver))
+        self.patch_attr("maintenance_state_cache", None)
 
     def patch_attr(self, name: str, value: Any) -> None:
         original = getattr(main, name)
         setattr(main, name, value)
         self.addCleanup(lambda: setattr(main, name, original))
-
-    def setUp(self) -> None:
-        self.patch_attr("maintenance_state_cache", None)
 
     def patch_auth(self, role: Any = None, scopes: set[str] | None = None) -> None:
         async def authenticate(_: str | None = None) -> Any:

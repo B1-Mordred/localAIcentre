@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -28,6 +29,34 @@ from app import backup_restore as control_plane_backup_restore  # noqa: E402
 
 
 class BackupRestoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.patch_env(
+            {
+                "B1_BACKUP_ENCRYPTION_MODE": "none",
+                "B1_BACKUP_ENCRYPTION_KEY": None,
+                "B1_BACKUP_ENCRYPTION_KEY_FILE": None,
+                "B1_MASTER_KEY": None,
+                "B1_MASTER_KEY_FILE": None,
+            }
+        )
+
+    def patch_env(self, values: dict[str, str | None]) -> None:
+        original = {key: os.environ.get(key) for key in values}
+        for key, value in values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+        def restore() -> None:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+
     def make_root(self, root: Path) -> None:
         (root / "data" / "open-webui").mkdir(parents=True)
         (root / "data" / "open-webui" / "db.sqlite").write_text("webui", encoding="utf-8")

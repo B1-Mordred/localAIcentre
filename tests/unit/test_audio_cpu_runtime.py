@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -51,6 +52,26 @@ class FakeRequest:
 
 @unittest.skipIf(audio_cpu_main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class AudioCpuRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.patch_env(
+            {
+                "B1_CPU_AUDIO_ENGINE": None,
+                "B1_CPU_EMBEDDING_ENGINE": None,
+                "B1_CPU_STT_ENGINE": None,
+                "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": None,
+                "B1_CPU_AUDIO_MODEL_ROOT": None,
+                "B1_ONNX_EMBEDDING_MODEL_ROOT": None,
+                "B1_VOSK_STT_MODEL_ROOT": None,
+                "B1_VOSK_STT_MODEL_PATH": None,
+                "B1_PIPER_BINARY": None,
+                "B1_PIPER_MODEL_PATH": None,
+                "B1_PIPER_CONFIG_PATH": None,
+                "B1_RUNTIME_CONTROL_TOKEN": None,
+                "B1_RUNTIME_CONTROL_TOKEN_FILE": None,
+                "B1_RUNTIME_CONTROL_REQUIRE_AUTH": None,
+            }
+        )
+
     def patch_env(self, values: dict[str, str | None]) -> None:
         original = {key: os.environ.get(key) for key in values}
         for key, value in values.items():
@@ -92,7 +113,14 @@ with wave.open(str(output), "wb") as wav:
             encoding="utf-8",
         )
         binary.chmod(0o700)
+        self.patch_attr("resolve_executable", lambda value: str(Path(value).resolve()) if value else None)
+        self.patch_attr("subprocess", SimpleNamespace(run=self.fake_piper_run, TimeoutExpired=audio_cpu_main.subprocess.TimeoutExpired))
         return binary
+
+    def fake_piper_run(self, command: list[str], **_: Any) -> Any:
+        output = Path(command[command.index("--output_file") + 1])
+        output.write_bytes(audio_cpu_main.silence_wav(0.25))
+        return SimpleNamespace(returncode=0)
 
     def test_health_exposes_placeholder_engine_policy(self) -> None:
         self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
