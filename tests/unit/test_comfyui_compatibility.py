@@ -391,7 +391,17 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
 
         main.proxy_http_bytes = proxy  # type: ignore[assignment]
         main.schedule_comfyui_prompt_tracker = schedule  # type: ignore[assignment]
-        request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "CheckpointLoaderSimple"}}})
+        request = FakeRequest(
+            {
+                "client_id": "client-1",
+                "prompt": {
+                    "1": {
+                        "class_type": "CheckpointLoaderSimple",
+                        "inputs": {"text": "private native prompt text", "ckpt_name": "private-model.safetensors"},
+                    }
+                },
+            }
+        )
 
         response = asyncio.run(main.comfy_prompt(request))
 
@@ -404,6 +414,14 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(job["owner_id"], "client_1")
         self.assertEqual(job["runtime"], "comfyui")
         self.assertEqual(job["native_prompt_id"], "prompt_native_1")
+        request_input = job["request_params"]["input"]
+        self.assertEqual(request_input["client_id"], "client-1")
+        self.assertEqual(request_input["native_prompt_hash"], hashlib.sha256(awaitable_body(request)).hexdigest())
+        self.assertEqual(request_input["prompt_summary"]["node_count"], 1)
+        self.assertEqual(request_input["prompt_summary"]["class_type_count"], 1)
+        self.assertEqual(request_input["prompt_summary"]["malformed_node_count"], 0)
+        self.assertNotIn("private native prompt text", json.dumps(job["request_params"]))
+        self.assertNotIn("private-model.safetensors", json.dumps(job["request_params"]))
         self.assertEqual(
             runner.calls,
             ["unload_other_gpu_runtimes", "verify_vram_or_recover", "load_runtime_model", "warm_runtime_model"],

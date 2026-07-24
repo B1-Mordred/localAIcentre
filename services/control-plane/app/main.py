@@ -114,6 +114,7 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
+COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
 COMFYUI_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 COMFYUI_MUTATING_CORE_ROUTES: dict[str, set[str]] = {
     "interrupt": {"POST"},
@@ -2428,6 +2429,47 @@ def comfyui_prompt_id_from_response(response: Response) -> str | None:
     if isinstance(payload, dict) and isinstance(payload.get("prompt_id"), str):
         return payload["prompt_id"]
     return None
+
+
+def comfyui_native_prompt_audit_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"payload_type": type(payload).__name__, "has_prompt": False, "node_count": 0}
+    prompt = payload.get("prompt")
+    top_level_keys = {str(key) for key in payload}
+    summary: dict[str, Any] = {
+        "known_top_level_keys": sorted(top_level_keys & COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS),
+        "unknown_top_level_key_count": len(top_level_keys - COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS),
+        "has_client_id": isinstance(payload.get("client_id"), str),
+        "has_prompt": isinstance(prompt, dict),
+    }
+    if not isinstance(prompt, dict):
+        summary.update({"prompt_shape": "missing" if "prompt" not in payload else type(prompt).__name__, "node_count": 0})
+        return summary
+
+    node_ids = sorted(str(key) for key in prompt)
+    class_types: set[str] = set()
+    malformed_nodes = 0
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            malformed_nodes += 1
+            continue
+        class_type = node.get("class_type")
+        if isinstance(class_type, str) and class_type.strip():
+            class_types.add(class_type.strip())
+        else:
+            malformed_nodes += 1
+    class_type_material = "\n".join(sorted(class_types)).encode("utf-8")
+    node_id_material = "\n".join(node_ids).encode("utf-8")
+    summary.update(
+        {
+            "node_count": len(prompt),
+            "class_type_count": len(class_types),
+            "class_type_digest": hashlib.sha256(class_type_material).hexdigest() if class_types else None,
+            "node_id_digest": hashlib.sha256(node_id_material).hexdigest() if node_ids else None,
+            "malformed_node_count": malformed_nodes,
+        }
+    )
+    return summary
 
 
 async def fetch_comfyui_history(prompt_id: str) -> dict[str, Any] | None:
@@ -8103,8 +8145,9 @@ async def comfy_prompt(request: Request) -> Response:
         body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="ComfyUI prompt body must be valid JSON") from exc
-    prompt_keys = sorted(str(key) for key in body) if isinstance(body, dict) else []
     client_id = body.get("client_id") if isinstance(body, dict) and isinstance(body.get("client_id"), str) else None
+    prompt_summary = comfyui_native_prompt_audit_summary(body)
+    native_prompt_hash = hashlib.sha256(body_bytes).hexdigest()
     owner = auth.subject_id if auth is not None else (f"comfy-client:{client_id[:80]}" if client_id else "comfy-client")
     job = await create_job_record(
         owner,
@@ -8112,7 +8155,7 @@ async def comfy_prompt(request: Request) -> Response:
             modality="workflow",
             operation="comfyui-prompt",
             model="comfyui-native",
-            input={"prompt_keys": prompt_keys, "client_id": client_id},
+            input={"client_id": client_id, "native_prompt_hash": native_prompt_hash, "prompt_summary": prompt_summary},
             priority="single_image",
             runtime_policy="comfyui_native",
         ),
