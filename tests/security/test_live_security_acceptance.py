@@ -24,6 +24,7 @@ SECURITY_REQUIRED_CHECKS = (
     "comfyui_management_routes_blocked",
     "import_ssrf_blocked",
     "artifact_traversal_blocked",
+    "runtime_agent_mutation_guard",
     "logs_redacted",
 )
 
@@ -250,6 +251,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.verify_comfyui_management_route_blocked()
         self.verify_import_ssrf_blocked()
         self.verify_artifact_traversal_blocked()
+        self.verify_runtime_agent_mutation_guard()
         self.verify_logs_redacted()
 
     def verify_unauthenticated_rejected(self) -> None:
@@ -361,6 +363,40 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.assertLess(len(body), 4096)
         self.record_check("artifact_traversal_blocked", path=path, http_status=status, response_bytes=len(body))
         self.sample("artifact-traversal-denied", path=path, http_status=status)
+
+    def verify_runtime_agent_mutation_guard(self) -> None:
+        status, _headers, payload = self.request_json(self.api_base, "GET", "/admin/self-test", token=self.api_key, allow_http_error=True)
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        checks = payload.get("checks")
+        self.assertIsInstance(checks, list)
+        guard = next((check for check in checks if isinstance(check, dict) and check.get("name") == "runtime-agent:mutation-guard"), None)
+        self.assertIsInstance(guard, dict)
+        self.assertEqual(guard.get("status"), "ok", guard)
+        data = guard.get("data")
+        self.assertIsInstance(data, dict)
+        self.assertIs(data.get("auth_configured"), True)
+        self.assertIs(data.get("allow_missing_auth"), False)
+        self.assertIs(data.get("mtls_enabled"), True)
+        self.assertIs(data.get("client_cert_required"), True)
+        rate_limit = data.get("mutation_rate_limit_per_minute")
+        self.assertIsInstance(rate_limit, int)
+        self.assertGreater(rate_limit, 0)
+        allowed_services = data.get("allowed_services")
+        runtime_action_services = data.get("runtime_action_services")
+        self.assertIsInstance(allowed_services, list)
+        self.assertIsInstance(runtime_action_services, list)
+        self.assertTrue(allowed_services)
+        self.assertTrue(runtime_action_services)
+        self.record_check(
+            "runtime_agent_mutation_guard",
+            path="/admin/self-test",
+            http_status=status,
+            mutation_rate_limit_per_minute=rate_limit,
+            allowed_service_count=len(allowed_services),
+            runtime_action_service_count=len(runtime_action_services),
+        )
+        self.sample("runtime-agent-mutation-guard", path="/admin/self-test", http_status=status)
 
     def verify_logs_redacted(self) -> None:
         service = os.getenv("B1_SECURITY_LOG_SERVICE", "control-plane")

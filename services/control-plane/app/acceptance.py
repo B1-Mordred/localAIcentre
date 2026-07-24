@@ -65,6 +65,7 @@ SECURITY_REQUIRED_CHECKS = (
     "comfyui_management_routes_blocked",
     "import_ssrf_blocked",
     "artifact_traversal_blocked",
+    "runtime_agent_mutation_guard",
     "logs_redacted",
 )
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
