@@ -303,6 +303,9 @@ class WorkflowTests(unittest.TestCase):
             "https://github.com/example/safe%2FComfyUI-Node",
             "https://github.com/example/safe%5CComfyUI-Node",
             "https://github.com/example/%00ComfyUI-Node",
+            "https://github.com/example/%ComfyUI-Node",
+            "https://github.com/example/%2/ComfyUI-Node",
+            "https://github.com/example/%zzComfyUI-Node",
         ):
             with self.subTest(repository_url=repository_url):
                 with self.assertRaisesRegex(NodePinError, "path-control"):
@@ -340,7 +343,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(pin.allowed_route_prefixes, ["custom/api"])
         self.assertEqual(pin.to_dict()["allowed_route_prefixes"], ["custom/api"])
 
-        for prefix in ("", "../escape", "custom/%2e%2e/admin", "custom/safe%2Fadmin", "custom/safe%5Cadmin", "custom/%00admin", "https://example.com/api", "custom api", "custom?install=1"):
+        for prefix in (
+            "",
+            "../escape",
+            "custom/%2e%2e/admin",
+            "custom/safe%2Fadmin",
+            "custom/safe%5Cadmin",
+            "custom/%00admin",
+            "custom/%",
+            "custom/%2",
+            "custom/%zz",
+            "https://example.com/api",
+            "custom api",
+            "custom?install=1",
+        ):
             with self.subTest(prefix=prefix):
                 with self.assertRaises(NodePinError):
                     parse_node_pin_registry(

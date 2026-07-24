@@ -26,6 +26,7 @@ PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 UPLOAD_ID_RE = re.compile(r"^upload_[a-f0-9]{32}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 GIT_COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 DEFAULT_MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_STAGED_MEDIA_BYTES = 256 * 1024 * 1024
 LIMIT_TO_PARAMETER_NAMES = {
@@ -539,7 +540,12 @@ def _route_prefixes(value: Any, context: str) -> list[str]:
 
 
 def _decoded_path_part_is_safe(part: str) -> bool:
-    decoded = unquote(part)
+    if BAD_PERCENT_ESCAPE_RE.search(part):
+        return False
+    try:
+        decoded = unquote(part, errors="strict")
+    except UnicodeDecodeError:
+        return False
     if decoded in {".", ".."}:
         return False
     if "/" in decoded or "\\" in decoded:
