@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -114,6 +115,65 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertEqual(missing[0], 401)
         self.assertEqual(missing[1]["reason"], "runtime_control_token_required")
         self.assertIsNone(accepted)
+
+    def test_speech_profile_envelope_maps_to_upstream_fields_and_local_sample_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "voicebox" / "references" / "narrator.wav"
+            sample.parent.mkdir(parents=True)
+            sample.write_bytes(b"wav")
+            payload = {
+                "model": "voicebox-quality",
+                "input": "hello",
+                "voice": "vp_narrator",
+                "b1_resolved_model_version": "voicebox-quality@1.0.0",
+                "b1_voice_profile": {
+                    "id": "vp_narrator",
+                    "runtime": "voicebox",
+                    "engine": "chatterbox",
+                    "profile_type": "clone",
+                    "model_alias": "tts-quality",
+                    "upstream": {"upstream_voice": "native-narrator", "language": "en"},
+                    "sample_artifacts": [
+                        {"url": "/artifacts/voicebox/references/narrator.wav", "sha256": "a" * 64, "mime_type": "audio/wav", "bytes": 3}
+                    ],
+                },
+            }
+            with patch.dict("os.environ", {"B1_VOICEBOX_ARTIFACT_ROOT": str(root)}, clear=False):
+                transformed = self.proxy.transform_voicebox_speech_body(
+                    json.dumps(payload).encode("utf-8"),
+                    "application/json",
+                )
+
+        body = json.loads(transformed)
+        self.assertEqual(body["model"], "voicebox-quality")
+        self.assertEqual(body["input"], "hello")
+        self.assertEqual(body["voice"], "native-narrator")
+        self.assertEqual(body["language"], "en")
+        self.assertEqual(body["engine"], "chatterbox")
+        self.assertTrue(body["reference_audio_path"].endswith("/voicebox/references/narrator.wav"))
+        self.assertNotIn("b1_voice_profile", body)
+        self.assertNotIn("b1_resolved_model_version", body)
+
+    def test_speech_profile_sample_path_must_remain_under_voicebox_artifacts(self) -> None:
+        payload = {
+            "model": "voicebox-quality",
+            "input": "hello",
+            "b1_voice_profile": {
+                "id": "vp_narrator",
+                "runtime": "voicebox",
+                "engine": "chatterbox",
+                "profile_type": "clone",
+                "model_alias": "tts-quality",
+                "upstream": {},
+                "sample_artifacts": [
+                    {"url": "/artifacts/voicebox/%2e%2e/private.wav", "sha256": "a" * 64, "mime_type": "audio/wav", "bytes": 3}
+                ],
+            },
+        }
+
+        with self.assertRaises(ValueError):
+            self.proxy.transform_voicebox_speech_body(json.dumps(payload).encode("utf-8"), "application/json")
 
 
 if __name__ == "__main__":

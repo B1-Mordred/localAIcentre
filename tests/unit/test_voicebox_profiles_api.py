@@ -144,7 +144,7 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         audit_events = self.patch_common(fake_database)
         payload = main.VoiceProfileCreate(
             display_name="Narrator",
-            metadata={"language": "en", "style": "neutral"},
+            metadata={"language": "en", "style": "neutral", "upstream_voice": "native-narrator"},
             sample_artifacts=[
                 main.VoiceProfileSampleArtifact(
                     url="/artifacts/voicebox/references/narrator.wav",
@@ -195,6 +195,17 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         fake_database = FakeVoiceProfileDatabase()
         self.patch_common(fake_database)
         payload = main.VoiceProfileCreate(display_name="Unsafe", metadata={"sample": "data:audio/wav;base64,AAAA"})
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.admin_voice_profile_create(payload))
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(fake_database.rows, {})
+
+    def test_create_rejects_unsafe_upstream_voice_selector(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        self.patch_common(fake_database)
+        payload = main.VoiceProfileCreate(display_name="Unsafe", metadata={"upstream_voice": "data:audio/wav;base64,AAAA"})
 
         with self.assertRaises(HTTPException) as caught:
             asyncio.run(main.admin_voice_profile_create(payload))

@@ -41,6 +41,7 @@ class BootstrapTests(unittest.TestCase):
         "artifacts/images",
         "artifacts/audio",
         "artifacts/video",
+        "artifacts/voicebox",
         "artifacts/temporary",
         "cache",
         "secrets",

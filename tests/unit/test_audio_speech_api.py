@@ -216,6 +216,84 @@ class AudioSpeechApiTests(unittest.TestCase):
             ],
         )
 
+    def test_audio_speech_resolves_b1_voice_profile_for_voicebox_payload(self) -> None:
+        self.patch_auth()
+        self.patch_settings(voicebox_url="http://voicebox")
+        calls: list[dict[str, Any]] = []
+
+        class FakeDatabase:
+            async def get_voice_profile(self, profile_id: str) -> dict[str, Any] | None:
+                self.__class__.lookups.append(profile_id)
+                return {
+                    "id": "vp_narrator",
+                    "owner_id": "client_1",
+                    "runtime": "voicebox",
+                    "engine": "chatterbox",
+                    "model_alias": "tts-quality",
+                    "profile_type": "clone",
+                    "status": "active",
+                    "visibility_roles": ["user"],
+                    "metadata": {"upstream_voice": "native-narrator", "notes": "not forwarded"},
+                    "sample_artifacts": [
+                        {"url": "/artifacts/voicebox/references/narrator.wav", "sha256": "a" * 64, "mime_type": "audio/wav", "bytes": 123}
+                    ],
+                }
+
+        FakeDatabase.lookups = []  # type: ignore[attr-defined]
+
+        def resolve_catalog_alias(model: str, modality: str, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            self.assertEqual((model, modality, runtime_policy, operation), ("tts-quality", "tts", "any", "text-to-speech"))
+            return self.resolution("voicebox", "voicebox-quality", requires_gpu=True)
+
+        async def proxy_http_bytes(base_url: str, path: str, request: Any, body: bytes | None = None, timeout_seconds: float = 120.0) -> Any:
+            calls.append({"base_url": base_url, "path": path, "payload": json.loads(body or b"{}"), "timeout_seconds": timeout_seconds})
+            return main.Response(content=b"voicebox-wav", media_type="audio/wav")
+
+        async def acquire_inference_lease(resolution: Any, operation: str, owner_id: str | None = None) -> str | None:
+            calls.append({"lease": "acquire", "runtime": resolution.runtime, "operation": operation, "owner_id": owner_id})
+            return "lease_voicebox"
+
+        async def release_inference_lease(owner: str | None) -> None:
+            calls.append({"lease": "release", "owner": owner})
+
+        async def prepare_sync_gpu_runtime(resolution: Any, operation: str) -> None:
+            calls.append({"prepare": "runtime", "runtime": resolution.runtime, "operation": operation})
+
+        self.patch_attr("database", FakeDatabase())
+        self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
+        self.patch_attr("proxy_http_bytes", proxy_http_bytes)
+        self.patch_attr("acquire_inference_lease", acquire_inference_lease)
+        self.patch_attr("release_inference_lease", release_inference_lease)
+        self.patch_attr("prepare_sync_gpu_runtime", prepare_sync_gpu_runtime)
+
+        response = asyncio.run(
+            main.audio_speech(
+                FakeRequest(
+                    {
+                        "voice": "vp_narrator",
+                        "input": "hello",
+                        "b1_voice_profile": {"id": "client-spoof"},
+                        "b1_resolved_model_version": "client-spoof@9.9.9",
+                    }
+                ),
+                authorization="Bearer key",
+            )
+        )
+
+        self.assertEqual(response.body, b"voicebox-wav")
+        self.assertEqual(FakeDatabase.lookups, ["vp_narrator"])  # type: ignore[attr-defined]
+        forwarded = calls[2]["payload"]
+        self.assertEqual(forwarded["model"], "voicebox-quality")
+        self.assertEqual(forwarded["voice"], "native-narrator")
+        self.assertEqual(forwarded["b1_resolved_model_version"], "voicebox-quality@1.0.0")
+        self.assertEqual(forwarded["b1_voice_profile"]["id"], "vp_narrator")
+        self.assertEqual(forwarded["b1_voice_profile"]["engine"], "chatterbox")
+        self.assertEqual(forwarded["b1_voice_profile"]["profile_type"], "clone")
+        self.assertEqual(forwarded["b1_voice_profile"]["upstream"], {"upstream_voice": "native-narrator"})
+        self.assertEqual(forwarded["b1_voice_profile"]["sample_artifacts"][0]["url"], "/artifacts/voicebox/references/narrator.wav")
+        self.assertNotIn("notes", json.dumps(forwarded, sort_keys=True))
+        self.assertNotIn("client-spoof", json.dumps(forwarded, sort_keys=True))
+
     def test_audio_speech_does_not_forward_b1_internal_metadata_to_external_runtime(self) -> None:
         self.patch_auth()
         calls: list[dict[str, Any]] = []

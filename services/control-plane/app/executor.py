@@ -18,6 +18,7 @@ from . import comfyui_native
 from . import media_artifacts
 from . import model_lifecycle
 from . import secret_store
+from . import voice_profiles as voice_profile_policy
 from .runtime_agent_http import runtime_agent_httpx_kwargs
 from .scheduler import JobState
 
@@ -1369,7 +1370,35 @@ class GpuJobRunner:
         for key in {"workflow_id", "workflow_version", "runtime_policy"}:
             payload.pop(key, None)
         payload["model"] = self.resolved_model_id(job)
+        profile = await self.voice_profile_for_job(job, payload)
+        if profile is not None:
+            payload = voice_profile_policy.apply_voice_profile_to_payload(payload, profile)
+        else:
+            payload = {key: value for key, value in payload.items() if key not in voice_profile_policy.VOICE_PROFILE_REQUEST_FIELDS}
         return payload
+
+    async def voice_profile_for_job(self, job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            profile_id = voice_profile_policy.requested_voice_profile_id(payload)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        if not profile_id:
+            return None
+        get_profile = getattr(database, "get_voice_profile", None)
+        if get_profile is None:
+            raise ValueError("voice profile lookup is unavailable")
+        profile = await get_profile(profile_id)
+        if profile is None:
+            raise ValueError("voice profile not found")
+        if profile.get("status") != "active":
+            raise ValueError("voice profile is not active")
+        runtime = str(job.get("runtime") or "")
+        if profile.get("runtime") != runtime:
+            raise ValueError(f"voice profile runtime {profile.get('runtime')} does not match job runtime {runtime}")
+        model_alias = str(job.get("model_alias") or "")
+        if profile.get("model_alias") != model_alias:
+            raise ValueError(f"voice profile model alias {profile.get('model_alias')} does not match job model {model_alias}")
+        return profile
 
     async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
         voicebox_url = self.runtime_urls.get("voicebox")
@@ -1411,11 +1440,23 @@ class GpuJobRunner:
             content=content,
             mime_type=mime_type,
             source="voicebox_runtime",
-            metadata={"runtime": "voicebox", "model": self.resolved_model_id(job), "operation": operation},
+            metadata={
+                "runtime": "voicebox",
+                "model": self.resolved_model_id(job),
+                "operation": operation,
+                **self.voicebox_artifact_profile_metadata(job),
+            },
         )
         await database.update_job(job["id"], state=JobState.SAVING.value, stage="saving", progress=90, artifacts=[artifact])
         await database.update_job(job["id"], state=JobState.COMPLETED.value, stage="completed", progress=100, artifacts=[artifact])
         return True
+
+    def voicebox_artifact_profile_metadata(self, job: dict[str, Any]) -> dict[str, Any]:
+        try:
+            profile_id = voice_profile_policy.requested_voice_profile_id(self.request_input(job))
+        except ValueError:
+            return {}
+        return {"voice_profile_id": profile_id} if profile_id else {}
 
     async def run_once(self) -> bool:
         if await runner_paused(self.pause_check):

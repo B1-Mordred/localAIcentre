@@ -24,6 +24,7 @@ services:
       B1_VOICEBOX_UPSTREAM_PORT: ${B1_VOICEBOX_UPSTREAM_PORT:-17494}
       B1_VOICEBOX_DATA_DIR: /srv/b1-ai-hub/voicebox
       B1_VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
+      B1_VOICEBOX_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
       VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
       B1_VOICEBOX_HOOK_STRICT_MODEL_LIST: ${B1_VOICEBOX_HOOK_STRICT_MODEL_LIST:-false}
       B1_VOICEBOX_HOOK_MODEL_ROOTS: ${B1_VOICEBOX_HOOK_MODEL_ROOTS:-/srv/b1-ai-hub/models}
@@ -45,6 +46,7 @@ services:
     volumes: !override
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/voicebox:/srv/b1-ai-hub/artifacts/voicebox:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
     healthcheck:

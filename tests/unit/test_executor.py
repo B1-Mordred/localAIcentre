@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ class FakeDatabase:
         self.runtime_states: dict[str, dict[str, Any]] = {}
         self.runtime_state_updates: list[dict[str, Any]] = []
         self.alias_policies: dict[str, dict[str, Any]] = {}
+        self.voice_profiles: dict[str, dict[str, Any]] = {}
         self.waiting_requeues = 1
         self.job = {
             "id": "job_gpu",
@@ -133,6 +135,10 @@ class FakeDatabase:
 
     async def get_model_alias_policy(self, alias: str) -> dict[str, Any] | None:
         row = self.alias_policies.get(alias)
+        return dict(row) if row is not None else None
+
+    async def get_voice_profile(self, profile_id: str) -> dict[str, Any] | None:
+        row = self.voice_profiles.get(profile_id)
         return dict(row) if row is not None else None
 
 
@@ -1445,6 +1451,67 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(artifact["kind"], "audio")
             self.assertEqual(artifact["mime_type"], "audio/wav")
             self.assertEqual(artifact["sha256"], hashlib.sha256(b"voicebox-wav").hexdigest())
+            self.assertEqual((root / "voicebox" / "job_gpu" / "0.wav").read_bytes(), b"voicebox-wav")
+
+    def test_gpu_runner_resolves_voicebox_profile_before_speech_submission(self) -> None:
+        fake = FakeDatabase(runtime="voicebox")
+        fake.job.update(
+            {
+                "model_alias": "tts-quality",
+                "resolved_model_version": "voicebox-quality@1.0.0",
+                "modality": "tts",
+                "operation": "speech",
+                "request_params": {
+                    "input": {
+                        "text": "hello",
+                        "voice_profile_id": "vp_narrator",
+                        "runtime_policy": "any",
+                        "parameters": {"speed": 0.9},
+                    }
+                },
+            }
+        )
+        fake.voice_profiles["vp_narrator"] = {
+            "id": "vp_narrator",
+            "owner_id": "client_1",
+            "runtime": "voicebox",
+            "engine": "chatterbox",
+            "model_alias": "tts-quality",
+            "profile_type": "clone",
+            "status": "active",
+            "visibility_roles": ["user"],
+            "metadata": {"upstream_voice": "native-narrator", "notes": "not forwarded"},
+            "sample_artifacts": [
+                {"url": "/artifacts/voicebox/references/narrator.wav", "sha256": "b" * 64, "mime_type": "audio/wav", "bytes": 456}
+            ],
+        }
+        self.patch_database(fake)
+
+        class VoiceboxRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"voicebox": "http://voicebox"})
+                self.payloads: list[dict[str, Any]] = []
+
+            async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+                self.payloads.append(payload)
+                return b"voicebox-wav", "audio/wav"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = VoiceboxRunner(root)
+            processed = asyncio.run(runner.run_once())
+
+            self.assertTrue(processed)
+            payload = runner.payloads[0]
+            self.assertEqual(payload["model"], "voicebox-quality")
+            self.assertEqual(payload["voice"], "native-narrator")
+            self.assertEqual(payload["speed"], 0.9)
+            self.assertEqual(payload["b1_voice_profile"]["id"], "vp_narrator")
+            self.assertEqual(payload["b1_voice_profile"]["engine"], "chatterbox")
+            self.assertEqual(payload["b1_voice_profile"]["sample_artifacts"][0]["url"], "/artifacts/voicebox/references/narrator.wav")
+            self.assertNotIn("notes", json.dumps(payload, sort_keys=True))
+            artifact = fake.job["artifacts"][0]
+            self.assertEqual(artifact["voice_profile_id"], "vp_narrator")
             self.assertEqual((root / "voicebox" / "job_gpu" / "0.wav").read_bytes(), b"voicebox-wav")
 
     def test_gpu_runner_marks_voicebox_speech_recovery_required_when_empty(self) -> None:

@@ -47,6 +47,7 @@ from . import modelhub as modelhub_policy
 from . import secret_store
 from . import selftest as selftest_policy
 from . import update_policy
+from . import voice_profiles as voice_profile_policy
 from .adapters import RuntimeAdapter, RuntimeRegistry, RuntimeResolution, RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url
 from .auth import (
     AuthContext,
@@ -4180,7 +4181,10 @@ def validate_voice_profile_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             for key, child in value.items():
                 key_text = str(key)
                 normalized_key = key_text.lower().replace("-", "_")
-                if any(part in normalized_key for part in VOICE_PROFILE_FORBIDDEN_METADATA_KEYS):
+                if normalized_key in voice_profile_policy.VOICE_PROFILE_SAFE_METADATA_KEYS:
+                    if not voice_profile_policy.safe_runtime_metadata_value(child):
+                        raise HTTPException(status_code=422, detail=f"metadata field {path}.{key_text} is not a safe upstream Voicebox selector")
+                elif any(part in normalized_key for part in VOICE_PROFILE_FORBIDDEN_METADATA_KEYS):
                     raise HTTPException(status_code=422, detail=f"metadata field {path}.{key_text} may not contain sensitive voice/audio payload data")
                 scan(child, f"{path}.{key_text}")
         elif isinstance(value, list):
@@ -4297,6 +4301,60 @@ def voice_profile_export_payload(row: dict[str, Any]) -> dict[str, Any]:
         "profile": public_voice_profile(row),
         "note": "sample_artifacts are internal references; raw voice sample bytes are exported only by the backup/artifact workflow.",
     }
+
+
+def voice_profile_id_from_payload(payload: dict[str, Any]) -> str | None:
+    try:
+        return voice_profile_policy.requested_voice_profile_id(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def voice_profile_for_inference(payload: dict[str, Any], auth: AuthContext) -> dict[str, Any] | None:
+    profile_id = voice_profile_id_from_payload(payload)
+    if not profile_id:
+        return None
+    row = await database.get_voice_profile(profile_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="voice profile not found")
+    if row.get("status") != "active":
+        raise HTTPException(status_code=409, detail="voice profile is not active")
+    if not voice_profile_policy.subject_can_use_profile(row, subject_id=auth.subject_id, role=auth.role.value, scopes=auth.scopes):
+        raise HTTPException(status_code=403, detail="voice profile is not visible to this subject")
+    return row
+
+
+def enforce_voice_profile_matches_resolution(profile: dict[str, Any] | None, resolution: RuntimeResolution) -> None:
+    if profile is None:
+        return
+    if profile.get("runtime") != resolution.runtime:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "voice profile runtime does not match the resolved runtime",
+                "profile_id": profile.get("id"),
+                "profile_runtime": profile.get("runtime"),
+                "resolved_runtime": resolution.runtime,
+            },
+        )
+    if profile.get("model_alias") != resolution.public_alias:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "voice profile model alias does not match the requested model",
+                "profile_id": profile.get("id"),
+                "profile_model_alias": profile.get("model_alias"),
+                "requested_model": resolution.public_alias,
+            },
+        )
+    if resolution.runtime not in {"voicebox", "audio-cpu"}:
+        raise HTTPException(status_code=422, detail=f"runtime {resolution.runtime} does not support B1 voice profile routing")
+
+
+def apply_voice_profile_to_runtime_payload(payload: dict[str, Any], profile: dict[str, Any] | None) -> dict[str, Any]:
+    if profile is None:
+        return {key: value for key, value in payload.items() if key not in voice_profile_policy.VOICE_PROFILE_REQUEST_FIELDS}
+    return voice_profile_policy.apply_voice_profile_to_payload(payload, profile)
 
 
 def public_model_record(row: dict[str, Any]) -> dict[str, Any]:
@@ -8133,11 +8191,15 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
         raise HTTPException(status_code=400, detail="audio speech request body must be a JSON object") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="audio speech request body must be a JSON object")
-    model = body.get("model") if isinstance(body.get("model"), str) and body.get("model") else "tts-fast"
+    voice_profile = await voice_profile_for_inference(body, auth)
+    explicit_model = body.get("model") if isinstance(body.get("model"), str) and body.get("model") else ""
+    model = explicit_model or (str(voice_profile.get("model_alias") or "") if voice_profile else "") or "tts-fast"
     runtime_policy = body.get("runtime_policy") if isinstance(body.get("runtime_policy"), str) else "any"
     resolution = resolve_catalog_alias_for_auth(model, "tts", auth, runtime_policy, operation="text-to-speech")
+    enforce_voice_profile_matches_resolution(voice_profile, resolution)
     forwarded = {key: value for key, value in body.items() if key != "runtime_policy" and not key.startswith("b1_") and value is not None}
     forwarded["model"] = resolution.model_id
+    forwarded = apply_voice_profile_to_runtime_payload(forwarded, voice_profile)
     if resolution.runtime == "audio-cpu":
         forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
         forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -8302,6 +8364,8 @@ async def media_job_create(
     workflow = await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
     enforce_workflow_backend_policy(workflow, resolution)
+    if payload.modality == "tts" and payload.operation in {"speech", "text-to-speech", "tts"}:
+        enforce_voice_profile_matches_resolution(await voice_profile_for_inference(payload.input, auth), resolution)
     job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
     return public_job(job)
 

@@ -6,6 +6,7 @@ from contextlib import suppress
 import hmac
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import threading
 import time
 from pathlib import Path, PurePath
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 
 HOP_BY_HOP_HEADERS = {
@@ -36,6 +38,18 @@ WEBSOCKET_HANDSHAKE_HEADERS = {
     "sec-websocket-version",
     "upgrade",
 }
+VOICE_PROFILE_UPSTREAM_FIELD_MAP = {
+    "upstream_voice": "voice",
+    "upstream_voice_id": "voice",
+    "upstream_profile": "profile",
+    "upstream_profile_id": "profile_id",
+    "upstream_speaker": "speaker",
+    "upstream_speaker_id": "speaker_id",
+    "language": "language",
+    "style": "style",
+    "speed": "speed",
+}
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -293,6 +307,119 @@ def upstream_ws_base_url() -> str:
     return http_url
 
 
+def voicebox_artifact_root() -> Path:
+    return Path(os.getenv("B1_VOICEBOX_ARTIFACT_ROOT", "/srv/b1-ai-hub/artifacts")).resolve(strict=False)
+
+
+def safe_runtime_scalar(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if not stripped or len(stripped) > 256:
+        return False
+    lowered = stripped.lower()
+    if lowered.startswith(("data:", "file:", "http://", "https://")):
+        return False
+    return not any(ord(character) < 32 for character in stripped)
+
+
+def safe_artifact_path_segments(relative_path: str) -> list[str]:
+    segments: list[str] = []
+    for raw_part in relative_path.split("/"):
+        if not raw_part:
+            continue
+        if BAD_PERCENT_ESCAPE_RE.search(raw_part):
+            raise ValueError("voice profile artifact path contains malformed percent escaping")
+        try:
+            part = unquote(raw_part, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("voice profile artifact path contains invalid UTF-8 escaping") from exc
+        if part in {".", ".."} or "/" in part or "\\" in part:
+            raise ValueError("voice profile artifact path contains traversal or encoded separators")
+        if any(ord(character) < 32 for character in part):
+            raise ValueError("voice profile artifact path contains control bytes")
+        segments.append(part)
+    if not segments:
+        raise ValueError("voice profile artifact path is empty")
+    return segments
+
+
+def local_voicebox_artifact_path(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("voice profile sample artifact must be an internal /artifacts URL")
+    if not parsed.path.startswith("/artifacts/voicebox/"):
+        raise ValueError("voice profile sample artifact must be under /artifacts/voicebox")
+    relative = parsed.path.removeprefix("/artifacts/")
+    root = voicebox_artifact_root()
+    target = (root.joinpath(*safe_artifact_path_segments(relative))).resolve(strict=False)
+    if target != root and root not in target.parents:
+        raise ValueError("voice profile artifact path escapes the mounted artifact root")
+    if env_bool("B1_VOICEBOX_REQUIRE_SAMPLE_PATH_EXISTS", True) and not target.is_file():
+        raise ValueError("voice profile sample artifact is not mounted in the Voicebox container")
+    return target.as_posix()
+
+
+def profile_sample_paths(profile: dict[str, Any]) -> list[str]:
+    if not env_bool("B1_VOICEBOX_FORWARD_SAMPLE_PATHS", True):
+        return []
+    samples = profile.get("sample_artifacts")
+    if not isinstance(samples, list):
+        return []
+    paths: list[str] = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        url = sample.get("url")
+        if isinstance(url, str) and url.strip():
+            paths.append(local_voicebox_artifact_path(url.strip()))
+    return paths
+
+
+def apply_b1_voice_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = payload.pop("b1_voice_profile", None)
+    cleaned = {key: value for key, value in payload.items() if not key.startswith("b1_")}
+    if not isinstance(profile, dict):
+        return cleaned
+    profile_id = str(profile.get("id") or "").strip()
+    upstream = profile.get("upstream") if isinstance(profile.get("upstream"), dict) else {}
+    for metadata_key, runtime_key in VOICE_PROFILE_UPSTREAM_FIELD_MAP.items():
+        value = upstream.get(metadata_key) if isinstance(upstream, dict) else None
+        if safe_runtime_scalar(value):
+            cleaned[runtime_key] = value
+    if profile_id and "voice" not in cleaned:
+        cleaned["voice"] = profile_id
+    if env_bool("B1_VOICEBOX_FORWARD_PROFILE_ENGINE", True):
+        engine = profile.get("engine")
+        if safe_runtime_scalar(engine):
+            cleaned.setdefault("engine", engine)
+    paths = profile_sample_paths(profile)
+    if paths:
+        sample_field = os.getenv("B1_VOICEBOX_SAMPLE_FIELD", "reference_audio_path").strip() or "reference_audio_path"
+        samples_field = os.getenv("B1_VOICEBOX_SAMPLE_LIST_FIELD", "reference_audio_paths").strip() or "reference_audio_paths"
+        cleaned.setdefault(sample_field, paths[0])
+        if len(paths) > 1:
+            cleaned.setdefault(samples_field, paths)
+    return cleaned
+
+
+def transform_voicebox_speech_body(body: bytes, content_type: str) -> bytes:
+    if "json" not in content_type.lower():
+        return body
+    try:
+        payload = json.loads(body or b"{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("Voicebox speech request body must be JSON when using B1 voice profiles") from exc
+    if not isinstance(payload, dict):
+        return body
+    transformed = apply_b1_voice_profile(payload)
+    return json.dumps(transformed, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
 def handle_load(payload: dict[str, Any]) -> dict[str, Any]:
     list_result = check_model_list(payload, "load")
     if list_result is not None:
@@ -509,9 +636,19 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
             for key, value in request.headers.items()
             if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"host", "content-length", "authorization"}
         }
+        forward_body = body
+        if request.method.upper() == "POST" and path.strip("/") == "v1/audio/speech":
+            content_type = request.headers.get("content-type", "")
+            try:
+                forward_body = transform_voicebox_speech_body(body, content_type)
+                if "json" in content_type.lower():
+                    headers["content-type"] = "application/json"
+            except ValueError as exc:
+                request_tracker.end()
+                return JSONResponse(json_response("invalid", "speech", reason=str(exc)), status_code=422)
         try:
             async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-                upstream = await client.request(request.method, upstream_path, content=body, headers=headers)
+                upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
         except httpx.HTTPError as exc:
             return JSONResponse(
                 json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__),

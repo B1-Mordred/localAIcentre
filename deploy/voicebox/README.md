@@ -31,10 +31,11 @@ The production override resets the development placeholder environment and volum
 
 - `/srv/b1-ai-hub/voicebox`, backed by `$B1_DATA_ROOT/data/voicebox`, writable
 - `/srv/b1-ai-hub/models`, backed by `$B1_DATA_ROOT/models/runtime-views/voicebox`, read-only
+- `/srv/b1-ai-hub/artifacts/voicebox`, backed by `$B1_DATA_ROOT/artifacts/voicebox`, read-only
 - `/srv/b1-ai-hub/cache`, backed by `$B1_DATA_ROOT/cache/voicebox`, writable
 - `/tmp`, a Compose tmpfs inherited from the service defaults
 
-Voice profiles, reference samples, captures, generated audio, and Voicebox's SQLite database are sensitive user data and belong under `$B1_DATA_ROOT/data/voicebox`, not in Git. Model weights remain controlled by B1 Model Hub; Voicebox receives only the runtime-specific read-only model view.
+Voice profiles, captures, generated audio, and Voicebox's SQLite database are sensitive user data and belong under `$B1_DATA_ROOT/data/voicebox`, not in Git. Voice reference samples are stored as B1 artifacts and mounted into the Voicebox container as read-only paths only under `/srv/b1-ai-hub/artifacts/voicebox`. Model weights remain controlled by B1 Model Hub; Voicebox receives only the runtime-specific read-only model view.
 
 The image defaults to `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, so it does not silently download weights at runtime. Model Hub must prepare a Voicebox-compatible runtime view before a profile or engine is enabled.
 
@@ -60,3 +61,19 @@ Hook behavior is intentionally bounded:
 - `unload` refuses to restart while native proxy requests are active; when idle and `B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD=true`, it restarts the loopback upstream process to release model memory.
 
 Use `B1_VOICEBOX_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or directories visible under `B1_VOICEBOX_HOOK_MODEL_ROOTS`. Production acceptance still requires measured smoke tests for the selected engine/profile on `ai.b1.germering`, including profile backup/export/delete and verification that a GPU Voicebox request cannot overlap with LocalAI or ComfyUI.
+
+## B1 Voice Profiles
+
+The control plane accepts B1-managed voice profiles in synchronous `/v1/audio/speech` and queued `tts/speech` media jobs. Callers can pass a profile ID as `voice`, `voice_profile`, or `voice_profile_id`. If `model` is omitted from synchronous speech, the profile's `model_alias` selects the runtime/model. The profile must be active, visible to the caller, and bound to the resolved runtime and alias before work is submitted.
+
+For Voicebox profiles, the control plane forwards a bounded `b1_voice_profile` envelope to this proxy. The envelope contains the profile ID, engine, profile type, model alias, safe upstream selector metadata, and sample artifact references/checksums. It never contains inline sample bytes or arbitrary metadata. The proxy consumes that envelope before calling upstream Voicebox: safe metadata such as `upstream_voice`, `upstream_speaker_id`, `language`, `style`, or `speed` is mapped to native fields, B1-only fields are stripped, and read-only `/artifacts/voicebox/...` sample references are translated to in-container paths.
+
+The sample path mapping is controlled by:
+
+- `B1_VOICEBOX_ARTIFACT_ROOT`, defaulting to `/srv/b1-ai-hub/artifacts`
+- `B1_VOICEBOX_FORWARD_SAMPLE_PATHS`, defaulting to `true`
+- `B1_VOICEBOX_REQUIRE_SAMPLE_PATH_EXISTS`, defaulting to `true`
+- `B1_VOICEBOX_SAMPLE_FIELD`, defaulting to `reference_audio_path`
+- `B1_VOICEBOX_SAMPLE_LIST_FIELD`, defaulting to `reference_audio_paths`
+
+Adjust the sample field names only if the pinned upstream Voicebox route for the selected engine expects different JSON keys. Unsafe artifact URLs, traversal, malformed percent escapes, and missing mounted samples are rejected with HTTP 422 before upstream Voicebox sees the request.
