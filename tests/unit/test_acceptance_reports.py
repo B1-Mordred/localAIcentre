@@ -418,6 +418,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "required_checks": [
                 "native_http_proxy_accessible",
                 "profile_lifecycle_validated",
+                "sample_artifact_protected",
+                "profile_export_validated",
+                "profile_delete_audited",
                 "speech_or_limitation_recorded",
                 "websocket_or_limitation_recorded",
             ],
@@ -425,11 +428,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "checks": {
                 "native_http_proxy_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:41:00+00:00"},
                 "profile_lifecycle_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:00+00:00"},
+                "sample_artifact_protected": {"status": "ok", "recorded_at": "2026-07-24T12:42:15+00:00"},
+                "profile_export_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:30+00:00"},
+                "profile_delete_audited": {"status": "ok", "recorded_at": "2026-07-24T12:42:45+00:00"},
                 "speech_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:43:00+00:00"},
                 "websocket_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:44:00+00:00"},
             },
-            "sample_count": 3,
-            "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voicebox-speech"],
+            "sample_count": 4,
+            "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voice-sample-artifact", "voicebox-speech"],
         },
         "security_acceptance": {
             "available": True,
@@ -796,6 +802,28 @@ class AcceptanceReportTests(unittest.TestCase):
             limitations,
         )
         self.assertIn("Pinned upstream exposes no stable WebSocket route", acceptance.markdown_report(report))
+
+    def test_voicebox_snapshot_requires_sample_export_delete_evidence(self) -> None:
+        snapshot = acceptance.voicebox_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-voicebox-remote-compatibility/v1",
+                "generated_at": "2026-07-24T12:45:00+00:00",
+                "base_url": "https://voice.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "native_http_proxy_accessible": {"status": "ok"},
+                    "profile_lifecycle_validated": {"status": "ok"},
+                    "speech_or_limitation_recorded": {"status": "ok"},
+                    "websocket_or_limitation_recorded": {"status": "ok"},
+                },
+                "samples": [{"label": "voice-profile-lifecycle"}],
+            }
+        )
+
+        self.assertEqual(
+            snapshot["missing_checks"],
+            ["sample_artifact_protected", "profile_export_validated", "profile_delete_audited"],
+        )
 
     def test_report_blocks_handoff_for_degraded_development_snapshot(self) -> None:
         report = sample_report(
@@ -1401,6 +1429,9 @@ class AcceptanceReportTests(unittest.TestCase):
             "checks": {
                 "native_http_proxy_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:41:00+00:00"},
                 "profile_lifecycle_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:00+00:00"},
+                "sample_artifact_protected": {"status": "ok", "recorded_at": "2026-07-24T12:42:15+00:00"},
+                "profile_export_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:30+00:00"},
+                "profile_delete_audited": {"status": "ok", "recorded_at": "2026-07-24T12:42:45+00:00"},
                 "speech_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:43:00+00:00"},
             },
         }
@@ -1935,12 +1966,16 @@ class AcceptanceReportTests(unittest.TestCase):
                         "checks": {
                             "native_http_proxy_accessible": {"status": "ok"},
                             "profile_lifecycle_validated": {"status": "ok"},
+                            "sample_artifact_protected": {"status": "ok"},
+                            "profile_export_validated": {"status": "ok"},
+                            "profile_delete_audited": {"status": "ok"},
                             "speech_or_limitation_recorded": {"status": "ok"},
                             "websocket_or_limitation_recorded": {"status": "ok"},
                         },
                         "samples": [
                             {"label": "voicebox-native-http"},
                             {"label": "voice-profile-lifecycle"},
+                            {"label": "voice-sample-artifact"},
                             {"label": "voicebox-speech"},
                         ],
                     }
@@ -2101,7 +2136,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(voicebox_remote["source_path"], str(voicebox.resolve()))
         self.assertEqual(voicebox_remote["status"], "ok")
         self.assertEqual(voicebox_remote["missing_checks"], [])
-        self.assertEqual(voicebox_remote["sample_count"], 3)
+        self.assertEqual(voicebox_remote["sample_count"], 4)
         security_acceptance = snapshot["security_acceptance"]
         self.assertTrue(security_acceptance["available"])
         self.assertEqual(security_acceptance["source_path"], str(security.resolve()))

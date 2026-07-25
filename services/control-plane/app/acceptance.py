@@ -124,6 +124,9 @@ VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"
 VOICEBOX_REQUIRED_CHECKS = (
     "native_http_proxy_accessible",
     "profile_lifecycle_validated",
+    "sample_artifact_protected",
+    "profile_export_validated",
+    "profile_delete_audited",
     "speech_or_limitation_recorded",
     "websocket_or_limitation_recorded",
 )

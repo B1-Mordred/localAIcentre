@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import inspect
 import json
@@ -20,6 +21,9 @@ VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"
 VOICEBOX_REQUIRED_CHECKS = (
     "native_http_proxy_accessible",
     "profile_lifecycle_validated",
+    "sample_artifact_protected",
+    "profile_export_validated",
+    "profile_delete_audited",
     "speech_or_limitation_recorded",
     "websocket_or_limitation_recorded",
 )
@@ -36,6 +40,31 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def bounded_text(value: str, limit: int = 1000) -> str:
     return value.strip()[:limit]
+
+
+def acceptance_wav_bytes() -> bytes:
+    inline = os.getenv("B1_VOICEBOX_SAMPLE_WAV_BASE64", "").strip()
+    if inline:
+        return base64.b64decode(inline, validate=True)
+    # 100 ms of mono 16-bit PCM silence at 16 kHz.
+    sample_rate = 16000
+    sample_count = sample_rate // 10
+    data_size = sample_count * 2
+    header = (
+        b"RIFF"
+        + (36 + data_size).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (1).to_bytes(2, "little")
+        + sample_rate.to_bytes(4, "little")
+        + (sample_rate * 2).to_bytes(4, "little")
+        + (2).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + data_size.to_bytes(4, "little")
+    )
+    return header + (b"\x00" * data_size)
 
 
 @unittest.skipUnless(os.getenv("B1_VOICEBOX_LIVE_TEST") == "1", "set B1_VOICEBOX_LIVE_TEST=1 to run live Voicebox compatibility tests")
@@ -161,6 +190,37 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             raise AssertionError(f"{method} {path} failed with HTTP {exc.code}: {body[:200]!r}") from exc
 
     @classmethod
+    def request_bytes(
+        cls,
+        method: str,
+        path: str,
+        body: bytes,
+        *,
+        content_type: str,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        headers = cls.headers(accept="application/json")
+        headers["Content-Type"] = content_type
+        if filename:
+            headers["X-B1-Filename"] = filename
+        url = cls.build_url(cls.api_base, path)
+        cls.enforce_token_transport_security(url, token=cls.api_key)
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context()) as response:
+                status = int(getattr(response, "status", response.getcode()))
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            raw = exc.read()
+            raise AssertionError(f"{method} {path} failed with HTTP {exc.code}: {raw[:200]!r}") from exc
+        if status < 200 or status >= 300:
+            raise AssertionError(f"{method} {path} returned HTTP {status}")
+        decoded = json.loads(raw.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise AssertionError(f"{method} {path} did not return a JSON object")
+        return decoded
+
+    @classmethod
     def request_json(cls, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         status, _headers, body = cls.request_raw(cls.api_base, method, path, payload)
         if status < 200 or status >= 300:
@@ -201,19 +261,34 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
     def verify_profile_lifecycle(self) -> None:
         display_name = f"B1 acceptance {uuid.uuid4().hex[:8]}"
         model_alias = os.getenv("B1_VOICEBOX_PROFILE_MODEL", "tts-quality")
+        sample_bytes = acceptance_wav_bytes()
+        sample_response = self.request_bytes(
+            "POST",
+            "/admin/voicebox/sample-artifacts",
+            sample_bytes,
+            content_type="audio/wav",
+            filename="b1-voicebox-acceptance.wav",
+        )
+        self.assertEqual(sample_response.get("object"), "voicebox.sample_artifact")
+        sample_artifact = sample_response.get("artifact")
+        self.assertIsInstance(sample_artifact, dict)
+        sample_url = str(sample_artifact.get("url") or "")
+        self.assertTrue(sample_url.startswith("/artifacts/voicebox/references/"), sample_artifact)
+        self.assertEqual(sample_artifact.get("mime_type"), "audio/wav")
+        self.assertEqual(sample_artifact.get("sha256"), hashlib.sha256(sample_bytes).hexdigest())
         create_payload = {
             "display_name": display_name,
             "runtime": "voicebox",
             "engine": os.getenv("B1_VOICEBOX_PROFILE_ENGINE", "voicebox"),
             "model_alias": model_alias,
-            "profile_type": os.getenv("B1_VOICEBOX_PROFILE_TYPE", "preset"),
+            "profile_type": os.getenv("B1_VOICEBOX_PROFILE_TYPE", "reference"),
             "status": "disabled",
             "visibility_roles": ["admin", "operator"],
             "metadata": {
                 "acceptance": "voicebox-remote",
                 "upstream_version": self.upstream_version,
             },
-            "sample_artifacts": [],
+            "sample_artifacts": [sample_artifact],
         }
         created = self.request_json("POST", "/admin/voicebox/profiles", create_payload)
         profile_id = str(created.get("id") or "")
@@ -224,17 +299,71 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         finally:
             deleted = self.request_json("DELETE", f"/admin/voicebox/profiles/{urllib.parse.quote(profile_id)}")
         self.assertEqual(fetched.get("id"), profile_id)
+        fetched_samples = fetched.get("sample_artifacts")
+        self.assertIsInstance(fetched_samples, list)
+        self.assertEqual(len(fetched_samples), 1)
+        self.assertEqual(fetched_samples[0].get("url"), sample_url)
+        self.assertNotIn("sample_artifacts", fetched.get("metadata") or {})
         self.assertEqual(exported.get("format"), "b1-ai-hub-voice-profile/v1")
+        self.assertIs(exported.get("contains_sensitive_data"), True)
+        self.assertIn("raw voice sample bytes are exported only by the backup/artifact workflow", str(exported.get("note") or ""))
+        exported_profile = exported.get("profile")
+        self.assertIsInstance(exported_profile, dict)
+        self.assertEqual((exported_profile.get("sample_artifacts") or [{}])[0].get("url"), sample_url)
         self.assertEqual(deleted.get("status"), "deleted")
         self.record_check(
             "profile_lifecycle_validated",
             profile_id=profile_id,
             model_alias=model_alias,
             profile_type=create_payload["profile_type"],
+            sample_artifact_count=len(fetched_samples),
+        )
+        self.record_check(
+            "sample_artifact_protected",
+            sample_url_prefix="/artifacts/voicebox/references/",
+            sample_artifact_url=sample_url,
+            sample_artifact_bytes=sample_artifact.get("bytes"),
+            profile_metadata_has_sample_payload=False,
+            export_contains_raw_sample_bytes=False,
+        )
+        self.record_check(
+            "profile_export_validated",
+            profile_id=profile_id,
             export_format=exported.get("format"),
+            contains_sensitive_data=exported.get("contains_sensitive_data"),
+            sample_artifact_count=len((exported_profile or {}).get("sample_artifacts") or []),
+        )
+        self.verify_voicebox_audit_events(profile_id, str(sample_artifact.get("sample_id") or ""), sample_bytes=sample_bytes)
+        self.record_check(
+            "profile_delete_audited",
+            profile_id=profile_id,
             deleted_status=deleted.get("status"),
         )
         self.samples.append({"label": "voice-profile-lifecycle", "profile_id": profile_id, "model_alias": model_alias})
+        self.samples.append({"label": "voice-sample-artifact", "profile_id": profile_id, "byte_count": sample_artifact.get("bytes")})
+
+    def verify_voicebox_audit_events(self, profile_id: str, sample_id: str, *, sample_bytes: bytes) -> None:
+        event_types = {"voice_profile.sample_uploaded", "voice_profile.exported", "voice_profile.deleted"}
+        seen: dict[str, dict[str, Any]] = {}
+        for event_type in sorted(event_types):
+            response = self.request_json("GET", f"/admin/audit-log?event_type={urllib.parse.quote(event_type)}&limit=50")
+            rows = response.get("data")
+            self.assertIsInstance(rows, list)
+            for row in rows:
+                if not isinstance(row, dict) or row.get("event_type") != event_type:
+                    continue
+                if event_type == "voice_profile.sample_uploaded" and row.get("target_id") == sample_id:
+                    seen[event_type] = row
+                    break
+                if event_type in {"voice_profile.exported", "voice_profile.deleted"} and row.get("target_id") == profile_id:
+                    seen[event_type] = row
+                    break
+        missing = sorted(event_types.difference(seen))
+        self.assertFalse(missing, f"missing Voicebox audit events: {missing}")
+        upload_metadata = seen["voice_profile.sample_uploaded"].get("metadata") or {}
+        self.assertNotIn("sample_artifacts", seen["voice_profile.exported"].get("metadata") or {})
+        self.assertNotIn("sample_artifacts", seen["voice_profile.deleted"].get("metadata") or {})
+        self.assertEqual(upload_metadata.get("bytes"), len(sample_bytes))
 
     def verify_speech_or_limitation(self) -> None:
         if env_flag("B1_VOICEBOX_SKIP_SPEECH", False):

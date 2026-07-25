@@ -72,7 +72,7 @@ Set `B1_MODELHUB_CA_FILE` when the test host does not already trust the Caddy in
 
 ## Voicebox Remote/Server Compatibility
 
-The Voicebox compatibility path verifies the public `voice.ai.b1.germering` gateway endpoint and the unified `api.ai.b1.germering` speech/profile APIs. It checks native HTTP proxying, Voicebox profile create/export/delete lifecycle, OpenAI-compatible speech through the scheduler, and native WebSocket connection behaviour where the pinned upstream supports it.
+The Voicebox compatibility path verifies the public `voice.ai.b1.germering` gateway endpoint and the unified `api.ai.b1.germering` speech/profile APIs. It checks native HTTP proxying, Voicebox reference-sample upload protection, profile create/export/delete lifecycle, audit records for sample upload/export/delete, OpenAI-compatible speech through the scheduler, and native WebSocket connection behaviour where the pinned upstream supports it.
 
 ```bash
 export B1_VOICEBOX_LIVE_TEST=1
@@ -93,4 +93,4 @@ export B1_VOICEBOX_SKIP_WEBSOCKET=1
 export B1_VOICEBOX_WEBSOCKET_LIMITATION="Pinned Voicebox v0.5.0 does not expose a stable remote WebSocket route for this mode."
 ```
 
-`B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if native HTTP proxying, profile lifecycle validation, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete.
+`B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if native HTTP proxying, profile lifecycle validation, reference-sample artifact protection, profile export validation, delete audit proof, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete.
