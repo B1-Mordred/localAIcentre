@@ -212,7 +212,7 @@ curl -X PUT https://models.ai.b1.germering/modelhub/v1/clients/mhc_123/policy \
   -d '{"allowed_models":["image-default","image-upscale"],"allow_downloads":true}'
 ```
 
-`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, sync-plan, and blob access. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
+`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Explicit entries must use the same safe B1 identifier rule as sync-plan requests and are rejected before catalog lookup when they contain path separators, encoded separators, whitespace, or other unsafe characters. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, sync-plan, and blob access. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
 
 ## Maintenance Mode
 
@@ -609,7 +609,7 @@ curl -s https://models.ai.b1.germering/modelhub/v1/clients \
   -d '{"display_name":"workstation-1","allowed_models":["chat-default"],"cidr_allowlist":["192.168.2.0/24"]}'
 ```
 
-The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{id}` is called. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
+The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{id}` is called. Explicit allowlist entries must be safe B1 identifiers and known catalog aliases or model IDs; unsafe values are rejected before catalog lookup. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
 
 The control plane derives the effective client IP from the direct peer address unless the peer matches the active network policy's trusted proxy CIDRs. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The environment default comes from `B1_TRUSTED_PROXY_CIDRS`, and administrators can persist a live override through `/admin/network-policy` or the System tab.
 

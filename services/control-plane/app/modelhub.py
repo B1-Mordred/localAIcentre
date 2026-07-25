@@ -210,6 +210,7 @@ def validate_allowed_models(
     for model_id in allowed_models:
         if model_id == "*":
             continue
+        validate_model_identifier(model_id)
         if record_provider(model_id) is None:
             raise CatalogError(f"model not found: {model_id}")
     return sorted(set(allowed_models))
@@ -269,6 +270,7 @@ def build_sync_plan(
     actions: list[dict[str, Any]] = []
     total_download_bytes = 0
     for model_id in models:
+        validate_model_identifier(model_id)
         record = catalog.model_or_alias_record(model_id)
         if record is None:
             raise CatalogError(f"model not found: {model_id}")

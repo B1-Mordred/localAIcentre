@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +24,7 @@ from app.modelhub import (  # noqa: E402
     role_allowed_by_manifest_permissions,
     validate_allowed_models,
     validate_cidr_allowlist,
+    validate_model_identifier,
 )
 from app.scheduler import ResourcePolicy  # noqa: E402
 
@@ -267,6 +269,30 @@ class ModelHubPlanTests(unittest.TestCase):
             validate_allowed_models(["*", "chat-default"], self.catalog.model_or_alias_record)
         with self.assertRaisesRegex(ValueError, "model not found"):
             validate_allowed_models(["missing"], self.catalog.model_or_alias_record)
+
+    def test_model_identifier_validation_rejects_unsafe_values_before_lookup(self) -> None:
+        self.assertEqual(validate_model_identifier("chat-default"), "chat-default")
+
+        calls: list[str] = []
+
+        def record_provider(model_id: str) -> dict[str, Any] | None:
+            calls.append(model_id)
+            raise AssertionError("unsafe model identifiers must not reach catalog lookup")
+
+        with self.assertRaisesRegex(ValueError, "invalid model id or alias"):
+            validate_allowed_models(["../secret"], record_provider)
+        self.assertEqual(calls, [])
+
+    def test_sync_plan_rejects_unsafe_model_identifier_before_catalog_lookup(self) -> None:
+        catalog = SimpleNamespace(
+            model_or_alias_record=lambda model_id: (_ for _ in ()).throw(
+                AssertionError("unsafe model identifiers must not reach catalog lookup")
+            ),
+            versions_for=lambda model_id: [],
+        )
+
+        with self.assertRaisesRegex(ValueError, "invalid model id or alias"):
+            build_sync_plan(catalog, ["bad%2Fmodel"], {})
 
     def test_cidr_allowlist_validation_canonicalizes_and_rejects_invalid_entries(self) -> None:
         self.assertEqual(
