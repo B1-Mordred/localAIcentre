@@ -2155,6 +2155,64 @@
         "summary": "Admin Acceptance Report Create"
       }
     },
+    "/admin/acceptance-reports/preview": {
+      "post": {
+        "operationId": "admin_acceptance_report_preview_admin_acceptance_reports_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptanceReportCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Acceptance Report Preview Admin Acceptance Reports Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Acceptance Report Preview"
+      }
+    },
     "/admin/acceptance-reports/{report_id}": {
       "get": {
         "operationId": "admin_acceptance_report_get_admin_acceptance_reports__report_id__get",

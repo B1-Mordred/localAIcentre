@@ -9,6 +9,7 @@ import {
   Clipboard,
   Database,
   Download,
+  Eye,
   Gauge,
   HardDrive,
   KeyRound,
@@ -4083,6 +4084,7 @@ function System() {
   const [result, setResult] = useState<SelfTestResult | null>(null);
   const [acceptanceReports, setAcceptanceReports] = useState<AcceptanceReportSummary[]>([]);
   const [selectedAcceptanceReport, setSelectedAcceptanceReport] = useState<AcceptanceReportDetail | null>(null);
+  const [selectedAcceptanceReportIsPreview, setSelectedAcceptanceReportIsPreview] = useState(false);
   const [acceptanceLabel, setAcceptanceLabel] = useState("");
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
@@ -4229,6 +4231,7 @@ function System() {
     apiJson<AcceptanceReportDetail>(`/admin/acceptance-reports/${encodeURIComponent(reportId)}`)
       .then((payload) => {
         setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
+        setSelectedAcceptanceReportIsPreview(false);
         setMessage(`loaded ${reportId}`);
       })
       .catch((err: Error) => setMessage(err.message))
@@ -4240,6 +4243,27 @@ function System() {
     setMessage(`downloading ${filename}`);
     downloadAcceptanceReportFile(reportId, filename)
       .then((downloadName) => setMessage(`downloaded ${downloadName}`))
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const previewAcceptanceReport = () => {
+    setBusy(true);
+    setMessage("previewing acceptance report");
+    apiJson<{ summary: AcceptanceReportSummary; report: unknown }>(`/admin/acceptance-reports/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: acceptanceLabel.trim(),
+        notes: acceptanceNotes.trim(),
+        operator_evidence: acceptanceEvidence
+      })
+    })
+      .then((payload) => {
+        setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
+        setSelectedAcceptanceReportIsPreview(true);
+        setMessage(payload.summary.operator_handoff_ready ? "preview handoff ready" : "preview blocked");
+      })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
   };
@@ -4260,6 +4284,7 @@ function System() {
         setMessage(`acceptance ${payload.summary.status}`);
         setAcceptanceReports((current) => [payload.summary, ...current.filter((item) => item.id !== payload.summary.id)].slice(0, 10));
         setSelectedAcceptanceReport({ summary: payload.summary, report: detailRecord(payload.report) });
+        setSelectedAcceptanceReportIsPreview(false);
         loadAudit();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -4880,6 +4905,7 @@ function System() {
         </div>
       </div>
       <div className="toolbar">
+        <button title="Preview acceptance readiness without writing report files" onClick={previewAcceptanceReport} disabled={busy}><Eye size={16} />Preview</button>
         <button title="Create acceptance report" onClick={createAcceptanceReport} disabled={busy}><Archive size={16} />Create</button>
         <button title="Refresh acceptance reports" onClick={loadAcceptanceReports} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <span className="toolbar-status">{acceptanceReports.length ? `${acceptanceReports.length} reports` : "no reports"}</span>
@@ -4916,7 +4942,7 @@ function System() {
         <div className="acceptance-detail">
           <div className="subsection-title">
             <ScrollText size={16} />
-            <h3>Acceptance Report Detail</h3>
+            <h3>{selectedAcceptanceReportIsPreview ? "Acceptance Preview Detail" : "Acceptance Report Detail"}</h3>
           </div>
           <div className="acceptance-detail-grid">
             <div><strong>Report</strong><small>{selectedSummary.id}</small></div>
@@ -4927,13 +4953,13 @@ function System() {
             <div><strong>Cutover DNS</strong><small>{selectedSummary.cutover_dns_ready ? "ready" : "review required"}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
-            <div><strong>Report files</strong><small>{selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
+            <div><strong>Report files</strong><small>{selectedAcceptanceReportIsPreview ? "preview only" : selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
           </div>
           <div className="toolbar">
             <button title={`Download Markdown for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "report.md")} disabled={busy || !selectedFiles.markdown}><Download size={16} />Markdown</button>
             <button title={`Download JSON for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "report.json")} disabled={busy || !selectedFiles.json}><Download size={16} />JSON</button>
             <button title={`Download checksums for ${selectedSummary.id}`} onClick={() => downloadAcceptanceReport(selectedSummary.id, "SHA256SUMS")} disabled={busy || !selectedFiles.sha256sums}><KeyRound size={16} />Checksums</button>
-            <span className="toolbar-status">Downloads use the authenticated admin report file endpoint</span>
+            <span className="toolbar-status">{selectedAcceptanceReportIsPreview ? "Preview did not write report files or audit records" : "Downloads use the authenticated admin report file endpoint"}</span>
           </div>
           <div className="acceptance-detail-section">
             <h4>Acceptance Blockers</h4>

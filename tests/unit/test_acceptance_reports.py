@@ -2301,6 +2301,37 @@ class AcceptanceReportApiTests(unittest.TestCase):
         self.assertEqual(audit_events[0]["event_type"], "acceptance_report.created")
         self.assertEqual(audit_events[0]["target_type"], "acceptance_report")
 
+    def test_acceptance_report_preview_does_not_write_or_audit(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+
+        async def build_snapshot(auth: Any, payload: Any) -> dict[str, Any]:
+            return sample_report(label=payload.label, notes=payload.notes)
+
+        async def record_audit_event(auth: Any, event_type: str, **kwargs: Any) -> None:
+            audit_events.append({"event_type": event_type, **kwargs})
+
+        self.patch_auth(scopes=frozenset({"admin:read"}))
+        self.patch_attr("build_acceptance_report_snapshot", build_snapshot)
+        self.patch_attr("record_audit_event", record_audit_event)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.patch_attr("acceptance_report_root_path", lambda: root)
+
+            preview = asyncio.run(
+                main.admin_acceptance_report_preview(
+                    main.AcceptanceReportCreate(label="cutover preview", notes="checking evidence before handoff"),
+                    authorization="Bearer key",
+                )
+            )
+            listed = asyncio.run(main.admin_acceptance_reports(authorization="Bearer key", limit=10))
+
+        self.assertEqual(preview["summary"]["label"], "cutover preview")
+        self.assertNotIn("files", preview["summary"])
+        self.assertEqual(preview["report"]["label"], "cutover preview")
+        self.assertEqual(listed["data"], [])
+        self.assertEqual(audit_events, [])
+
     def test_acceptance_report_create_requires_admin_write_scope(self) -> None:
         self.patch_auth(scopes=frozenset({"admin:read"}))
 

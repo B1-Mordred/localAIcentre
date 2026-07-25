@@ -6641,6 +6641,18 @@ async def admin_acceptance_reports(
     return {"object": "list", "data": acceptance.list_reports(acceptance_report_root_path(), limit=limit)}
 
 
+@app.post("/admin/acceptance-reports/preview")
+async def admin_acceptance_report_preview(
+    payload: AcceptanceReportCreate,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    require_administrator(auth, "acceptance report preview requires administrator role")
+    report = await build_acceptance_report_snapshot(auth, payload)
+    return {"summary": acceptance.public_report_summary(report), "report": report}
+
+
 @app.get("/admin/acceptance-reports/{report_id}")
 async def admin_acceptance_report_get(report_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
