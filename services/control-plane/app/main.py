@@ -1300,6 +1300,42 @@ def enforce_artifact_storage_headroom(incoming_bytes: int = 0) -> None:
         raise admission_error_response(exc) from exc
 
 
+async def hardware_resource_policy_snapshot() -> dict[str, Any]:
+    agent_metrics, metrics_error = await runtime_agent_get("/v1/metrics")
+    result = selftest_policy.hardware_resource_policy_check(
+        agent_metrics,
+        resource_policy_dict(resource_policy()),
+        settings.runtime_deployment_mode,
+    )
+    if metrics_error:
+        result = {
+            **result,
+            "data": {
+                **(result.get("data") if isinstance(result.get("data"), dict) else {}),
+                "runtime_agent_error": metrics_error,
+            },
+        }
+    return result
+
+
+async def enforce_gpu_hardware_admission(resolution: RuntimeResolution | None) -> None:
+    if resolution is None or not resolution.requires_gpu:
+        return
+    if settings.runtime_deployment_mode != "production":
+        return
+    check = await hardware_resource_policy_snapshot()
+    if check.get("status") == "ok":
+        return
+    raise admission_error_response(
+        admission.AdmissionDeniedError(
+            "hardware_resource_policy",
+            "GPU admission blocked by hardware resource policy",
+            status_code=503,
+            details={"hardware_resource_policy": check},
+        )
+    )
+
+
 async def queue_admission_snapshot(owner_id: str) -> admission.QueueAdmissionSnapshot:
     since = datetime.now(tz=UTC) - timedelta(hours=1)
     owner_queued, owner_active, owner_recent, global_queued = await asyncio.gather(
@@ -1323,6 +1359,7 @@ async def admission_report(owner_id: str | None = None) -> dict[str, Any]:
     report = admission.public_report(policy, queue=queue, storage=artifact_storage_snapshot(policy))
     report["policy_source"] = "database" if admission_policy_override is not None else "environment"
     report["bounds"] = admission_policy_hard_bounds()
+    report["hardware_resource_policy"] = await hardware_resource_policy_snapshot()
     return report
 
 
@@ -3413,6 +3450,7 @@ async def create_job_record(
             ensure_idempotent_job_matches(existing, request_payload, resolution)
             return existing
     require_not_in_maintenance(f"{request_payload.modality}/{request_payload.operation}")
+    await enforce_gpu_hardware_admission(resolution)
     await enforce_queue_admission(owner)
     enforce_artifact_storage_headroom(0)
     job_id = f"job_{uuid.uuid4().hex}"

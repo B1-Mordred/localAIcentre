@@ -44,6 +44,20 @@ def resolution() -> Any:
     )
 
 
+def cpu_resolution() -> Any:
+    return main.RuntimeResolution(
+        public_alias="tts-fast",
+        model_id="b1-cpu-tts",
+        model_version="1.0.0",
+        resolved_model_version="b1-cpu-tts@1.0.0",
+        runtime="audio-cpu",
+        preferred_runtime="audio-cpu",
+        requires_gpu=False,
+        resource_label="recommended",
+        runtime_policy="any",
+    )
+
+
 def job_row(**overrides: Any) -> dict[str, Any]:
     now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
     row = {
@@ -203,6 +217,67 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 429)
         self.assertEqual(caught.exception.detail["code"], "owner_queue_limit")
         self.assertEqual(fake_database.inserted, [])
+
+    def test_create_job_record_rejects_gpu_job_when_production_hardware_policy_fails(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(
+            runtime_deployment_mode="production",
+            artifact_storage_reserve_bytes=0,
+            gpu_total_vram_gib=12.0,
+            gpu_reserve_vram_gib=1.5,
+            host_total_ram_gib=32.0,
+            host_reserve_ram_gib=6.0,
+        )
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return {
+                "gpu": {
+                    "available": True,
+                    "devices": [{"name": "RTX 3060 Laptop GPU", "memory_total_mib": 6144, "memory_free_mib": 4096}],
+                },
+                "memory": {"total_bytes": 31 * 1024**3, "available_bytes": 8 * 1024**3},
+            }, None
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.create_job_record(
+                    "client_1",
+                    main.MediaJobCreate(modality="image", operation="generation", model="image-default"),
+                    resolution=resolution(),
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["code"], "hardware_resource_policy")
+        hardware = caught.exception.detail["hardware_resource_policy"]
+        self.assertEqual(hardware["status"], "failed")
+        self.assertIn("largest GPU VRAM is 6144 MiB", hardware["detail"])
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_create_job_record_allows_cpu_job_without_gpu_hardware_admission(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(runtime_deployment_mode="production", artifact_storage_reserve_bytes=0)
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            raise AssertionError("CPU-only jobs must not require runtime-agent GPU metrics")
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+
+        result = asyncio.run(
+            main.create_job_record(
+                "client_1",
+                main.MediaJobCreate(modality="audio", operation="speech", model="tts-fast"),
+                resolution=cpu_resolution(),
+            )
+        )
+
+        self.assertTrue(result["id"].startswith("job_"))
+        self.assertEqual(fake_database.inserted[0]["runtime"], "audio-cpu")
 
     def test_idempotent_create_returns_existing_job_before_admission_limits(self) -> None:
         existing = job_row(idempotency_key="idem_1", request_params=media_job_request_params())
@@ -459,6 +534,18 @@ class AdmissionApiTests(unittest.TestCase):
         fake_database = FakeAdmissionDatabase(owner_queued=1, owner_active=2, owner_recent=3, global_queued=4)
         self.patch_attr("database", fake_database)
         self.patch_auth(AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"admin:read"})))
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return {
+                "gpu": {
+                    "available": True,
+                    "devices": [{"name": "RTX 3060", "memory_total_mib": 12288, "memory_free_mib": 11264}],
+                },
+                "memory": {"total_bytes": 32 * 1024**3, "available_bytes": 24 * 1024**3},
+            }, None
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_settings(artifact_root=tmp, artifact_storage_max_bytes=0, artifact_storage_reserve_bytes=0)
 
@@ -470,6 +557,7 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(result["queue"]["owner_jobs_last_hour"], 3)
         self.assertEqual(result["queue"]["global_queued_jobs"], 4)
         self.assertEqual(result["storage"]["artifact_storage_reserve_bytes"], 0)
+        self.assertEqual(result["hardware_resource_policy"]["status"], "ok")
 
 
 if __name__ == "__main__":
