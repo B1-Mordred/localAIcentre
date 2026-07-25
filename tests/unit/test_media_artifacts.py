@@ -66,6 +66,20 @@ class MediaArtifactTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(media_artifacts.sniff_media_mime_type(content), expected)
 
+    def test_audio_upload_gate_accepts_only_sniffed_audio(self) -> None:
+        for content, expected in (
+            (WAV_BYTES, "audio/wav"),
+            (MP3_BYTES, "audio/mpeg"),
+            (OGG_BYTES, "audio/ogg"),
+        ):
+            with self.subTest(expected=expected):
+                self.assertEqual(media_artifacts.require_allowed_audio_input_mime_type(content, "application/octet-stream"), expected)
+
+        for content in (PNG_BYTES, MP4_BYTES, b"not really audio"):
+            with self.subTest(content=content[:8]):
+                with self.assertRaisesRegex(ValueError, "unsupported audio input type"):
+                    media_artifacts.require_allowed_audio_input_mime_type(content, "audio/wav")
+
     def test_staged_input_round_trip_sniffs_and_hashes_media(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

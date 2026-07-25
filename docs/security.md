@@ -55,6 +55,8 @@ Artifact downloads are authorized by the control plane. An artifact path must no
 
 Artifact URLs and Voicebox reference-sample links are decoded before path checks. Literal or percent-encoded traversal segments, path separators, malformed percent escapes, invalid percent-encoded UTF-8, and control characters are rejected before an artifact can be authorized, retained, exported, or linked as sensitive voice material.
 
+Raw and multipart transcription uploads are bounded by the global upload limit and structurally sniffed as audio before the control plane forwards base64 audio to the CPU STT runtime. Spoofed `audio/*` headers with non-audio bytes are rejected with HTTP 415.
+
 Media job visibility is owner-scoped on ordinary `/v1/media/jobs` routes. A service, creator, or user API key with `jobs:read` can list/read/cancel/event-stream only its own jobs unless it has wildcard administrative scope. Whole-system queue inspection and mutation use `/admin/jobs`, require `admin` or `operator` role, and audit priority, cancel, and retry mutations without storing prompts or media in audit metadata. Free-form admin job mutation reasons are stored only as `reason_provided` audit metadata, not as raw text.
 
 Voicebox profile management is limited to `admin` and `operator` roles with runtime scopes. Profile metadata is JSON-size bounded and rejects inline audio/base64 payloads, local paths, secrets, prompts, and voice sample fields. Reference samples and cloned-voice material must be stored as artifacts and linked by normalized `/artifacts/...` references. Create, update, export, and soft-delete operations write audit events that include only public profile identifiers and counts, not raw audio or sample hashes.

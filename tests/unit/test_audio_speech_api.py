@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import unittest
@@ -33,13 +34,34 @@ class FakeUrl:
 class FakeRequest:
     method = "POST"
     url = FakeUrl()
-    headers = {"content-type": "application/json"}
 
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: dict[str, Any] | None = None, *, body: bytes | None = None, headers: dict[str, str] | None = None) -> None:
+        self._body = body if body is not None else json.dumps(payload or {}).encode("utf-8")
+        self.headers = headers or {"content-type": "application/json"}
 
     async def body(self) -> bytes:
         return self._body
+
+    async def stream(self):
+        yield self._body
+
+
+WAV_BYTES = (
+    b"RIFF"
+    + (38).to_bytes(4, "little")
+    + b"WAVE"
+    + b"fmt "
+    + (16).to_bytes(4, "little")
+    + (1).to_bytes(2, "little")
+    + (1).to_bytes(2, "little")
+    + (16000).to_bytes(4, "little")
+    + (32000).to_bytes(4, "little")
+    + (2).to_bytes(2, "little")
+    + (16).to_bytes(2, "little")
+    + b"data"
+    + (2).to_bytes(4, "little")
+    + b"\x00\x00"
+)
 
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
@@ -448,6 +470,28 @@ class AudioSpeechApiTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_raw_audio_transcription_sniffs_upload_mime_type(self) -> None:
+        request = FakeRequest(
+            body=WAV_BYTES,
+            headers={"content-type": "application/octet-stream", "X-B1-Filename": "../sample.wav"},
+        )
+
+        payload = asyncio.run(main.transcription_input_from_request(request))
+
+        self.assertEqual(payload["audio_mime_type"], "audio/wav")
+        self.assertEqual(base64.b64decode(payload["audio"].encode("ascii")), WAV_BYTES)
+        self.assertEqual(payload["filename"], "../sample.wav")
+
+    def test_raw_audio_transcription_rejects_spoofed_audio_content_type(self) -> None:
+        for body in (b"not really audio", b"\x89PNG\r\n\x1a\n"):
+            request = FakeRequest(body=body, headers={"content-type": "audio/wav"})
+
+            with self.subTest(body=body):
+                with self.assertRaises(main.HTTPException) as raised:
+                    asyncio.run(main.transcription_input_from_request(request))
+
+            self.assertEqual(raised.exception.status_code, 415)
 
 
 if __name__ == "__main__":

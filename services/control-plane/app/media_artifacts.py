@@ -35,6 +35,8 @@ ALLOWED_INPUT_MIME_TYPES = {
     "video/webm",
 }
 
+ALLOWED_AUDIO_INPUT_MIME_TYPES = {mime_type for mime_type in ALLOWED_INPUT_MIME_TYPES if mime_type.startswith("audio/")}
+
 
 def safe_artifact_segment(value: str, fallback: str) -> str:
     cleaned = "".join(ch if ch.isascii() and (ch.isalnum() or ch in {".", "_", "-"}) else "_" for ch in value)
@@ -277,6 +279,13 @@ def require_allowed_input_mime_type(content: bytes, declared_mime_type: str | No
     mime_type = sniff_media_mime_type(content, declared_mime_type)
     if mime_type not in ALLOWED_INPUT_MIME_TYPES:
         raise ValueError(f"unsupported media input type: {mime_type}")
+    return mime_type
+
+
+def require_allowed_audio_input_mime_type(content: bytes, declared_mime_type: str | None = None) -> str:
+    mime_type = sniff_media_mime_type(content, declared_mime_type)
+    if mime_type not in ALLOWED_AUDIO_INPUT_MIME_TYPES:
+        raise ValueError(f"unsupported audio input type: {mime_type}")
     return mime_type
 
 

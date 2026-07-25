@@ -1201,9 +1201,18 @@ def staged_input_error(exc: ValueError) -> HTTPException:
     message = str(exc)
     if "exceeds" in message:
         return HTTPException(status_code=413, detail=message)
-    if "unsupported media input type" in message:
+    if "unsupported media input type" in message or "unsupported audio input type" in message:
         return HTTPException(status_code=415, detail=message)
     return HTTPException(status_code=422, detail=message)
+
+
+def sniff_transcription_audio(content: bytes, declared_mime_type: str | None = None) -> str:
+    if not content:
+        raise HTTPException(status_code=422, detail="audio transcription upload is empty")
+    try:
+        return media_artifacts.require_allowed_audio_input_mime_type(content, declared_mime_type)
+    except ValueError as exc:
+        raise staged_input_error(exc) from exc
 
 
 def admission_error_response(exc: admission.AdmissionDeniedError) -> HTTPException:
@@ -1477,11 +1486,10 @@ async def transcription_input_from_request(request: Request) -> dict[str, Any]:
                 if uploaded:
                     raise HTTPException(status_code=422, detail="audio transcription accepts one upload file")
                 declared_mime_type = value.content_type or "application/octet-stream"
-                if declared_mime_type not in {"application/octet-stream", "audio/wav", "audio/x-wav", "audio/wave"} and not declared_mime_type.startswith("audio/"):
-                    raise HTTPException(status_code=415, detail="audio transcription upload must be audio")
                 content = await read_bounded_upload_file(value, settings.upload_max_bytes)
+                mime_type = sniff_transcription_audio(content, declared_mime_type)
                 payload["audio"] = base64.b64encode(content).decode("ascii")
-                payload["audio_mime_type"] = declared_mime_type
+                payload["audio_mime_type"] = mime_type
                 if value.filename:
                     payload["filename"] = value.filename
                 uploaded = True
@@ -1491,9 +1499,10 @@ async def transcription_input_from_request(request: Request) -> dict[str, Any]:
     body = await read_bounded_request_body(request, settings.upload_max_bytes)
     if not body:
         return {}
+    mime_type = sniff_transcription_audio(body, request.headers.get("content-type"))
     return {
         "audio": base64.b64encode(body).decode("ascii"),
-        "audio_mime_type": request.headers.get("content-type") or "application/octet-stream",
+        "audio_mime_type": mime_type,
         "filename": request.headers.get("X-B1-Filename"),
     }
 
