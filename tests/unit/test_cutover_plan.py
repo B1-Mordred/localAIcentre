@@ -129,6 +129,28 @@ class CutoverPlanTests(unittest.TestCase):
                     "stderr": "",
                     "returncode": 0,
                 }
+            if command[:2] == ["systemctl", "show"] and command[2] == "ollama.service":
+                return {
+                    "command": command,
+                    "stdout": "\n".join(
+                        [
+                            "Id=ollama.service",
+                            "Names=ollama.service",
+                            "Description=Ollama Service",
+                            "LoadState=loaded",
+                            "ActiveState=active",
+                            "SubState=running",
+                            "FragmentPath=/etc/systemd/system/ollama.service",
+                            "DropInPaths=",
+                            "ExecStart={ argv[]=/usr/local/bin/ollama serve ; }",
+                            "User=ollama",
+                            "Group=ollama",
+                            "",
+                        ]
+                    ),
+                    "stderr": "",
+                    "returncode": 0,
+                }
             raise AssertionError(f"unexpected command: {command}")
 
         return runner

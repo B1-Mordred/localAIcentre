@@ -20,6 +20,7 @@ SCOPE_FORMAT = "b1-ai-hub-old-stack-backup-scope/v1"
 INVENTORY_FORMAT = "b1-ai-hub-host-inventory/v1"
 BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 DOCKER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$")
+SYSTEMD_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,255}\.service$")
 SENSITIVE_HINTS = (
     ".env",
     "apikey",
@@ -89,6 +90,13 @@ class DockerInspectPayload:
     redacted: bytes
 
 
+@dataclass(frozen=True)
+class SystemdServicePayload:
+    raw: bytes
+    redacted: bytes
+    unit_paths: list[Path]
+
+
 def utc_stamp() -> str:
     return datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
 
@@ -112,6 +120,12 @@ def validate_label(label: str) -> str:
 def validate_docker_name(name: str) -> str:
     if not DOCKER_NAME_RE.fullmatch(name):
         raise OldStackBackupError(f"unsafe Docker resource name: {name}")
+    return name
+
+
+def validate_systemd_service_name(name: str) -> str:
+    if not SYSTEMD_SERVICE_NAME_RE.fullmatch(name):
+        raise OldStackBackupError(f"unsafe systemd service name: {name}")
     return name
 
 
@@ -203,7 +217,14 @@ def add_bytes_member(
     )
 
 
-def add_file_member(archive: tarfile.TarFile, source: Path, archive_path: str, source_type: str) -> ArchiveFile:
+def add_file_member(
+    archive: tarfile.TarFile,
+    source: Path,
+    archive_path: str,
+    source_type: str,
+    *,
+    sensitive: bool | None = None,
+) -> ArchiveFile:
     if source.is_symlink() or not source.is_file():
         raise OldStackBackupError(f"refusing to archive non-regular file: {source}")
     archive_path = safe_archive_path(archive_path)
@@ -216,7 +237,7 @@ def add_file_member(archive: tarfile.TarFile, source: Path, archive_path: str, s
         source_type=source_type,
         size_bytes=size,
         sha256=digest,
-        sensitive=is_sensitive_path(str(source)) or is_sensitive_path(archive_path),
+        sensitive=(is_sensitive_path(str(source)) or is_sensitive_path(archive_path)) if sensitive is None else sensitive,
     )
 
 
@@ -480,6 +501,42 @@ def docker_volume_mountpoint(name: str, runner: CommandRunner = run_command) -> 
     return assert_safe_source_path(Path(mountpoint))
 
 
+def systemctl_show_service(name: str, runner: CommandRunner = run_command) -> SystemdServicePayload:
+    name = validate_systemd_service_name(name)
+    result = runner(
+        [
+            "systemctl",
+            "show",
+            name,
+            "--property=Id,Names,Description,LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,User,Group",
+            "--no-pager",
+        ]
+    )
+    if result.get("returncode") != 0:
+        raise OldStackBackupError(f"systemctl show failed for service {name}: {result.get('stderr', '').strip()}")
+    stdout = str(result.get("stdout") or "")
+    raw = (stdout.rstrip("\n") + "\n").encode("utf-8")
+    redacted = (redact_secret_text(stdout.rstrip("\n")) + "\n").encode("utf-8")
+    return SystemdServicePayload(raw=raw, redacted=redacted, unit_paths=systemd_unit_paths_from_show(stdout))
+
+
+def systemd_unit_paths_from_show(output: str) -> list[Path]:
+    paths: list[Path] = []
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key not in {"FragmentPath", "DropInPaths"}:
+            continue
+        for raw_path in value.split():
+            if not raw_path or raw_path == "/dev/null":
+                continue
+            path = Path(raw_path)
+            if path.is_absolute() and path not in paths:
+                paths.append(path)
+    return paths
+
+
 def path_member_prefix(source: Path) -> str:
     return f"host-paths/{source_id(source)}"
 
@@ -495,6 +552,10 @@ def archive_path_for_source(source: Path, file_path: Path) -> str:
 def archive_path_for_volume(volume_name: str, mountpoint: Path, file_path: Path) -> str:
     relative = file_path.relative_to(mountpoint).as_posix()
     return f"docker-volumes/{volume_name}/{relative}"
+
+
+def archive_path_for_systemd_unit(service_name: str, source: Path) -> str:
+    return f"systemd/units/{service_name}/{source_id(source)}-{source.name}"
 
 
 def backup_old_stack(
@@ -583,6 +644,41 @@ def backup_old_stack(
                     "archive_path": archive_name,
                     "redacted_review_archive_path": review_archive_name,
                     "raw_metadata_may_include_environment_secrets": True,
+                    "reason": item.get("reason"),
+                }
+            )
+
+        for item in scope["include_systemd_services"]:
+            name_value = item.get("name")
+            if not isinstance(name_value, str) or not name_value:
+                raise OldStackBackupError("include_systemd_services entries require name")
+            service_name = validate_systemd_service_name(name_value)
+            service_payload = systemctl_show_service(service_name, command_runner)
+            archive_name = f"systemd/services/{service_name}.show"
+            review_archive_name = f"systemd/services-redacted/{service_name}.show"
+            records.append(add_bytes_member(archive, archive_name, service_payload.raw, mode=0o600, sensitive=True))
+            records.append(add_bytes_member(archive, review_archive_name, service_payload.redacted, mode=0o600))
+            unit_archive_paths: list[str] = []
+            missing_unit_paths: list[str] = []
+            for raw_unit_path in service_payload.unit_paths:
+                unit_path = assert_safe_source_path(raw_unit_path)
+                if not unit_path.exists():
+                    missing_unit_paths.append(str(unit_path))
+                    continue
+                for file_path in iter_regular_files(unit_path):
+                    unit_archive_path = archive_path_for_systemd_unit(service_name, file_path)
+                    records.append(add_file_member(archive, file_path, unit_archive_path, "systemd_unit_file", sensitive=True))
+                    unit_archive_paths.append(unit_archive_path)
+            source_index.append(
+                {
+                    "type": "systemd_service_metadata",
+                    "name": service_name,
+                    "archive_path": archive_name,
+                    "redacted_review_archive_path": review_archive_name,
+                    "unit_file_archive_paths": unit_archive_paths,
+                    "missing_unit_paths": missing_unit_paths,
+                    "raw_metadata_may_include_environment_secrets": True,
+                    "unit_files_may_include_environment_secrets": True,
                     "reason": item.get("reason"),
                 }
             )

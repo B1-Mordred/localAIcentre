@@ -100,10 +100,13 @@ class OldStackBackupTests(unittest.TestCase):
             ],
             "include_docker_volumes": [{"name": "open-webui_data", "reason": "old Open WebUI data volume"}],
             "include_containers": [{"name": "old-open-webui", "reason": "container metadata for rollback"}],
+            "include_systemd_services": [{"name": "ollama.service", "reason": "host Ollama service for rollback"}],
             "test_volume_mountpoint": str(volume_data),
         }
 
     def fake_runner(self, volume_data: Path):
+        systemd_root = volume_data.parent / "systemd"
+
         def runner(command: list[str]) -> dict[str, Any]:
             if command[:3] == ["docker", "volume", "inspect"]:
                 return {
@@ -131,6 +134,26 @@ class OldStackBackupTests(unittest.TestCase):
                     "stderr": "",
                     "returncode": 0,
                 }
+            if command[:2] == ["systemctl", "show"]:
+                service_name = command[2]
+                return {
+                    "command": command,
+                    "stdout": (
+                        f"Id={service_name}\n"
+                        f"Names={service_name}\n"
+                        "Description=Ollama Service\n"
+                        "LoadState=loaded\n"
+                        "ActiveState=active\n"
+                        "SubState=running\n"
+                        f"FragmentPath={systemd_root / 'ollama.service'}\n"
+                        f"DropInPaths={systemd_root / 'ollama.service.d' / 'override.conf'}\n"
+                        "ExecStart={ argv[]=/usr/local/bin/ollama serve --token=unit-token ; }\n"
+                        "User=ollama\n"
+                        "Group=ollama\n"
+                    ),
+                    "stderr": "",
+                    "returncode": 0,
+                }
             raise AssertionError(f"unexpected command: {command}")
 
         return runner
@@ -144,6 +167,16 @@ class OldStackBackupTests(unittest.TestCase):
         volume_data = root / "docker-volume-open-webui"
         volume_data.mkdir()
         (volume_data / "webui.db").write_bytes(b"sqlite")
+        systemd = root / "systemd"
+        (systemd / "ollama.service.d").mkdir(parents=True)
+        (systemd / "ollama.service").write_text(
+            "[Service]\nExecStart=/usr/local/bin/ollama serve --token=unit-file-token\n",
+            encoding="utf-8",
+        )
+        (systemd / "ollama.service.d" / "override.conf").write_text(
+            "[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0:11434\n",
+            encoding="utf-8",
+        )
         return volume_data
 
     def test_scope_template_lists_candidates_but_selects_nothing(self) -> None:
@@ -193,6 +226,23 @@ class OldStackBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(old_stack_backup.OldStackBackupError, "operator_reviewed"):
                 old_stack_backup.backup_old_stack(scope_path=scope_path, output_root=root / "backups", label="unit")
 
+    def test_backup_rejects_unsafe_systemd_service_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scope = {
+                "format": "b1-ai-hub-old-stack-backup-scope/v1",
+                "operator_reviewed": True,
+                "reviewed_by": "unit-test",
+                "include_paths": [],
+                "include_docker_volumes": [],
+                "include_containers": [],
+                "include_systemd_services": [{"name": "ollama.service;rm", "reason": "bad"}],
+            }
+            scope_path = self.write_scope(root / "scope.json", scope)
+
+            with self.assertRaisesRegex(old_stack_backup.OldStackBackupError, "unsafe systemd service name"):
+                old_stack_backup.backup_old_stack(scope_path=scope_path, output_root=root / "backups", label="unit")
+
     def test_backup_copies_explicit_paths_volumes_and_container_metadata_then_verifies(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -216,16 +266,31 @@ class OldStackBackupTests(unittest.TestCase):
             self.assertIn("docker-volumes/open-webui_data/webui.db", archive_names)
             self.assertIn("docker-inspect/containers/old-open-webui.json", archive_names)
             self.assertIn("docker-inspect-redacted/containers/old-open-webui.json", archive_names)
+            self.assertIn("systemd/services/ollama.service.show", archive_names)
+            self.assertIn("systemd/services-redacted/ollama.service.show", archive_names)
+            self.assertTrue(any(name.startswith("systemd/units/ollama.service/") and name.endswith("-ollama.service") for name in archive_names))
+            self.assertTrue(any(name.startswith("systemd/units/ollama.service/") and name.endswith("-override.conf") for name in archive_names))
             self.assertTrue(any(name.endswith("/compose.yaml") for name in archive_names))
             self.assertTrue(any(name.endswith("/custom.gguf") for name in archive_names))
             file_records = {item["archive_path"]: item for item in manifest["files"]}
             self.assertTrue(file_records["docker-inspect/containers/old-open-webui.json"]["sensitive"])
             self.assertFalse(file_records["docker-inspect-redacted/containers/old-open-webui.json"]["sensitive"])
+            self.assertTrue(file_records["systemd/services/ollama.service.show"]["sensitive"])
+            self.assertFalse(file_records["systemd/services-redacted/ollama.service.show"]["sensitive"])
+            self.assertTrue(
+                all(
+                    file_records[name]["sensitive"]
+                    for name in archive_names
+                    if name.startswith("systemd/units/ollama.service/")
+                )
+            )
             sources = {item["type"]: item for item in manifest["sources"]}
             self.assertEqual(
                 sources["docker_container_metadata"]["redacted_review_archive_path"],
                 "docker-inspect-redacted/containers/old-open-webui.json",
             )
+            self.assertEqual(sources["systemd_service_metadata"]["redacted_review_archive_path"], "systemd/services-redacted/ollama.service.show")
+            self.assertEqual(len(sources["systemd_service_metadata"]["unit_file_archive_paths"]), 2)
             with tarfile.open(backup_dir / "payload.tar.gz", "r:gz") as archive:
                 self.assertIn("docker-volumes/open-webui_data/webui.db", archive.getnames())
                 redacted_member = archive.extractfile("docker-inspect-redacted/containers/old-open-webui.json")
@@ -236,6 +301,10 @@ class OldStackBackupTests(unittest.TestCase):
                 self.assertEqual(redacted_payload[0]["Config"]["Labels"]["api_key"], "<redacted>")
                 self.assertEqual(redacted_payload[0]["Config"]["Labels"]["public"], "kept")
                 self.assertEqual(redacted_payload[0]["Config"]["Cmd"], ["serve", "--token=<redacted>"])
+                service_show = archive.extractfile("systemd/services-redacted/ollama.service.show")
+                self.assertIsNotNone(service_show)
+                assert service_show is not None
+                self.assertNotIn("unit-token", service_show.read().decode("utf-8"))
 
     def test_backup_rejects_symlinked_old_stack_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

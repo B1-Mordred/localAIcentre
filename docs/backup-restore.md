@@ -210,7 +210,7 @@ make old-stack-backup SCOPE=/srv/b1-ai-hub/backups/old-stack-scope.json
 make old-stack-backup-verify BACKUP=/srv/b1-ai-hub/backups/old-stack-20260722-120000
 ```
 
-The old-stack archive is read-only evidence for migration and rollback. Raw container inspect payloads are stored as sensitive rollback evidence, while redacted copies under `docker-inspect-redacted/containers/` are available for operator review without exposing environment variable values or token-like fields. Its manifest sets `old_stack_deletion_allowed=false`; successful backup verification is not permission to remove old volumes, model files, databases, Compose files, or configuration.
+The old-stack archive is read-only evidence for migration and rollback. Raw container inspect payloads and raw systemd service metadata are stored as sensitive rollback evidence, while redacted copies under `docker-inspect-redacted/containers/` and `systemd/services-redacted/` are available for operator review without exposing environment variable values or token-like fields. Explicitly scoped systemd services also preserve the unit and drop-in files reported by `systemctl show`, marked sensitive because unit files may contain environment credentials. Its manifest sets `old_stack_deletion_allowed=false`; successful backup verification is not permission to remove old volumes, model files, databases, Compose files, systemd units, or configuration.
 
 After verification, generate the Open WebUI preservation plan from Control Center System -> Open WebUI Migration Plan, or with the CLI:
 
