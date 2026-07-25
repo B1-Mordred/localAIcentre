@@ -26,6 +26,8 @@ TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
 CA_FILE_ENV = "B1_MODELHUB_CA_FILE"
 ALLOW_INSECURE_HTTP_ENV = "B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP"
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 
 def has_unsafe_path_segment(path: str) -> bool:
@@ -195,6 +197,38 @@ def state_path(cache: Path) -> Path:
     return cache / "b1-model-client-state.json"
 
 
+def ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        path.chmod(PRIVATE_DIR_MODE)
+
+
+def chmod_private_file(path: Path) -> None:
+    if os.name != "nt":
+        path.chmod(PRIVATE_FILE_MODE)
+
+
+def private_open_binary(path: Path, *, append: bool = False) -> Any:
+    ensure_private_directory(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT
+    flags |= os.O_APPEND if append else os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, PRIVATE_FILE_MODE)
+        return os.fdopen(fd, "ab" if append else "wb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def write_private_text_file(path: Path, text: str) -> None:
+    with private_open_binary(path, append=False) as handle:
+        handle.write(text.encode("utf-8"))
+
+
 def empty_state() -> dict[str, Any]:
     return {"format": CACHE_STATE_VERSION, "pins": {}, "managed_blobs": {}, "updated_at": utc_now()}
 
@@ -219,12 +253,13 @@ def load_state(cache: Path) -> dict[str, Any]:
 
 
 def save_state(cache: Path, state: dict[str, Any]) -> None:
-    cache.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(cache)
     state["format"] = CACHE_STATE_VERSION
     state["updated_at"] = utc_now()
     tmp = state_path(cache).with_suffix(".json.partial")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    write_private_text_file(tmp, json.dumps(state, indent=2, sort_keys=True))
     tmp.replace(state_path(cache))
+    chmod_private_file(state_path(cache))
 
 
 def normalize_model_list(models: list[str]) -> list[str]:
@@ -494,15 +529,17 @@ def download_blob(
     ca_file: str | None = None,
 ) -> dict[str, Any]:
     sha256 = normalize_sha256(sha256, label="blob")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(target.parent)
     partial = target.with_suffix(".partial")
     if target.exists() and sha256_file(target) == sha256:
+        chmod_private_file(target)
         return {"blob": sha256, "status": "kept", "path": str(target), "size_bytes": target.stat().st_size}
 
     resume_from = partial.stat().st_size if partial.exists() else 0
     if resume_from >= expected_size:
         if sha256_file(partial) == sha256:
             partial.replace(target)
+            chmod_private_file(target)
             return {"blob": sha256, "status": "published", "path": str(target)}
         partial.unlink()
         resume_from = 0
@@ -537,8 +574,8 @@ def download_blob(
                 partial.unlink(missing_ok=True)
                 resume_from = 0
             validate_blob_response_headers(sha256, expected_size, status, getattr(response, "headers", {}), resume_from)
-            mode = "ab" if resume_from and status == 206 else "wb"
-            with partial.open(mode) as handle:
+            append = bool(resume_from and status == 206)
+            with private_open_binary(partial, append=append) as handle:
                 while True:
                     chunk = response.read(CHUNK_SIZE)
                     if not chunk:
@@ -553,6 +590,7 @@ def download_blob(
     if actual_sha != sha256:
         raise RuntimeError(f"{sha256}: checksum mismatch, got {actual_sha}")
     partial.replace(target)
+    chmod_private_file(target)
     return {"blob": sha256, "status": "downloaded", "path": str(target), "size_bytes": expected_size, "source": source or {}}
 
 
@@ -676,7 +714,7 @@ def sync_once(base_url: str, token: str | None, cache: Path, models: list[str], 
     if dry_run:
         return {"action": "sync", "dry_run": True, "cache": str(cache), "models": models, "changes": actions}
     require_license_acceptance(actions, accepted=accept_licenses)
-    cache.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(cache)
     state = load_state(cache)
     results = []
     for action in actions:

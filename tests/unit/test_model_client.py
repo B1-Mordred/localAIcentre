@@ -567,12 +567,18 @@ class ModelClientTests(unittest.TestCase):
                 pin_args = argparse.Namespace(base_url="http://modelhub", token="secret-token", cache=str(cache), model=["chat-default"])
                 self.assertEqual(client.pin(pin_args), 0)
                 state = client.load_state(cache)
+                state_file = cache / "b1-model-client-state.json"
                 self.assertIn("chat-default", state["pins"])
-                self.assertNotIn("secret-token", (cache / "b1-model-client-state.json").read_text(encoding="utf-8"))
+                self.assertNotIn("secret-token", state_file.read_text(encoding="utf-8"))
+                if os.name != "nt":
+                    self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(state_file.stat().st_mode & 0o777, 0o600)
 
                 unpin_args = argparse.Namespace(cache=str(cache), model=["chat-default"])
                 self.assertEqual(client.unpin(unpin_args), 0)
                 self.assertEqual(client.load_state(cache)["pins"], {})
+                if os.name != "nt":
+                    self.assertEqual(state_file.stat().st_mode & 0o777, 0o600)
         finally:
             client.model_record = original
 
@@ -814,8 +820,28 @@ class ModelClientTests(unittest.TestCase):
                 result = client.download_blob("http://modelhub", None, digest, len(payload), target)
                 self.assertEqual(result["status"], "downloaded")
                 self.assertEqual(target.read_bytes(), payload)
+                if os.name != "nt":
+                    self.assertEqual(target.parent.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         finally:
             client.urllib.request.urlopen = original
+
+    def test_download_blob_tightens_existing_verified_blob_permissions(self) -> None:
+        payload = b"already-present"
+        digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "blobs" / digest
+            target.parent.mkdir(parents=True)
+            target.write_bytes(payload)
+            if os.name != "nt":
+                target.chmod(0o644)
+
+            result = client.download_blob("http://modelhub", None, digest, len(payload), target)
+
+            self.assertEqual(result["status"], "kept")
+            self.assertEqual(target.read_bytes(), payload)
+            if os.name != "nt":
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
 
     def test_download_blob_accepts_exact_resumed_content_range(self) -> None:
         partial_payload = b"hello-"
@@ -869,6 +895,8 @@ class ModelClientTests(unittest.TestCase):
                 self.assertEqual(result["status"], "downloaded")
                 self.assertEqual(target.read_bytes(), payload)
                 self.assertFalse(target.with_suffix(".partial").exists())
+                if os.name != "nt":
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         finally:
             client.urllib.request.urlopen = original
 
