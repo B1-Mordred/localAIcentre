@@ -738,6 +738,129 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertTrue(result["policy"]["enabled"])
         self.assertTrue(fake_database.alias_policies["chat-default"]["enabled"])
 
+    def test_alias_policy_preferred_runtime_change_blocks_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "reason": "operator note",
+            "idempotency_key": "reservation-key",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            self.patch_common(Path(tmp), fake_database)
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_alias_policy_update(
+                        "chat-default",
+                        main.ModelAliasPolicyRequest(enabled=True, preferred_runtime="comfyui"),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "alias has active runtime reservations and resolution policy cannot be changed")
+        self.assertEqual(raised.exception.detail["resolution_changes"]["preferred_runtime"]["current"], "localai")
+        self.assertEqual(raised.exception.detail["resolution_changes"]["preferred_runtime"]["proposed"], "comfyui")
+        self.assertNotIn("operator note", str(raised.exception.detail))
+        self.assertNotIn("reservation-key", str(raised.exception.detail))
+        self.assertEqual(fake_database.alias_policies, {})
+
+    def test_alias_policy_visibility_change_blocks_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            self.patch_common(Path(tmp), fake_database)
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_alias_policy_update(
+                        "chat-default",
+                        main.ModelAliasPolicyRequest(enabled=True, visibility_roles=[Role.ADMIN]),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["resolution_changes"]["visibility_roles"]["current"], [])
+        self.assertEqual(raised.exception.detail["resolution_changes"]["visibility_roles"]["proposed"], ["admin"])
+        self.assertEqual(fake_database.alias_policies, {})
+
+    def test_alias_policy_idle_timeout_and_notes_update_allow_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            self.patch_common(Path(tmp), fake_database)
+
+            result = asyncio.run(
+                main.admin_model_alias_policy_update(
+                    "chat-default",
+                    main.ModelAliasPolicyRequest(
+                        enabled=True,
+                        idle_timeout_seconds=900,
+                        notes="keep warm during maintenance",
+                    ),
+                )
+            )
+
+        self.assertTrue(result["policy"]["enabled"])
+        self.assertEqual(result["policy"]["idle_timeout_seconds"], 900)
+        self.assertEqual(result["policy"]["notes"], "keep warm during maintenance")
+
+    def test_alias_policy_delete_blocks_resolution_change_with_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "comfyui",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "reason": "operator note",
+            "idempotency_key": "reservation-key",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            now = datetime.now(tz=UTC)
+            fake_database.alias_policies["chat-default"] = {
+                "alias": "chat-default",
+                "enabled": True,
+                "preferred_runtime": "comfyui",
+                "idle_timeout_seconds": 600,
+                "visibility_roles": [],
+                "notes": "reset me later",
+                "updated_by": "test-admin",
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.patch_common(Path(tmp), fake_database)
+            asyncio.run(main.refresh_catalog_cache())
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_model_alias_policy_delete("chat-default"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["resolution_changes"]["preferred_runtime"]["current"], "comfyui")
+        self.assertEqual(raised.exception.detail["resolution_changes"]["preferred_runtime"]["proposed"], "localai")
+        self.assertNotIn("operator note", str(raised.exception.detail))
+        self.assertNotIn("reservation-key", str(raised.exception.detail))
+        self.assertIn("chat-default", fake_database.alias_policies)
+
     def test_alias_policy_delete_resets_seed_policy(self) -> None:
         audit_events: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as tmp:

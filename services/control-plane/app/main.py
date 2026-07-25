@@ -5217,6 +5217,57 @@ async def active_runtime_reservations_for_alias(alias: str) -> list[dict[str, An
     return reservations
 
 
+def normalized_visibility_roles(roles: list[str] | tuple[str, ...]) -> list[str]:
+    return sorted(set(roles))
+
+
+def alias_resolution_policy_snapshot(alias: CatalogAlias) -> dict[str, Any]:
+    return {
+        "preferred_runtime": alias.preferred_runtime,
+        "visibility_roles": normalized_visibility_roles(alias.alias.visibility_roles),
+    }
+
+
+def alias_resolution_snapshot_from_policy(alias: CatalogAlias, policy: dict[str, Any]) -> dict[str, Any]:
+    preferred_runtime = policy.get("preferred_runtime")
+    if preferred_runtime is None:
+        preferred_runtime = alias.manifest.preferred_runtime if alias.manifest else alias.alias.preferred_runtime
+    return {
+        "preferred_runtime": preferred_runtime,
+        "visibility_roles": normalized_visibility_roles(policy.get("visibility_roles") or []),
+    }
+
+
+def alias_resolution_reset_snapshot(alias: CatalogAlias) -> dict[str, Any]:
+    preferred_runtime = alias.manifest.preferred_runtime if alias.manifest else alias.alias.preferred_runtime
+    return {"preferred_runtime": preferred_runtime, "visibility_roles": []}
+
+
+def alias_resolution_policy_changes(current: dict[str, Any], proposed: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    changes: dict[str, dict[str, Any]] = {}
+    for key in ("preferred_runtime", "visibility_roles"):
+        if current.get(key) == proposed.get(key):
+            continue
+        changes[key] = {"current": current.get(key), "proposed": proposed.get(key)}
+    return changes
+
+
+def raise_alias_active_reservation_policy_change(
+    alias: str,
+    active_runtime_reservations: list[dict[str, Any]],
+    changes: dict[str, dict[str, Any]],
+) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": "alias has active runtime reservations and resolution policy cannot be changed",
+            "alias": alias,
+            "resolution_changes": changes,
+            "active_runtime_reservations": active_runtime_reservations,
+        },
+    )
+
+
 def active_voice_profile_dependencies(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [profile for profile in profiles if profile.get("status") == "active"]
 
@@ -8094,6 +8145,7 @@ async def admin_model_alias_policy_update(
     require_scope(auth, "models:write")
     require_model_admin(auth)
     policy = validate_model_alias_policy_payload(alias_id, payload)
+    current_alias = catalog_snapshot().require_alias(alias_id)
     if not policy["enabled"]:
         active_jobs = await database.count_active_jobs_for_model(f"alias-policy:{alias_id}", [alias_id])
         active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
@@ -8115,6 +8167,15 @@ async def admin_model_alias_policy_update(
                     "active_runtime_reservations": active_runtime_reservations,
                 },
             )
+    else:
+        active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
+        if active_runtime_reservations:
+            resolution_changes = alias_resolution_policy_changes(
+                alias_resolution_policy_snapshot(current_alias),
+                alias_resolution_snapshot_from_policy(current_alias, policy),
+            )
+            if resolution_changes:
+                raise_alias_active_reservation_policy_change(alias_id, active_runtime_reservations, resolution_changes)
     row = await database.upsert_model_alias_policy({**policy, "updated_by": auth.subject_id})
     await refresh_catalog_cache()
     await refresh_workflow_dependency_statuses()
@@ -8141,9 +8202,17 @@ async def admin_model_alias_policy_delete(alias_id: str, authorization: str | No
     require_scope(auth, "models:write")
     require_model_admin(auth)
     try:
-        catalog_snapshot().require_alias(alias_id)
+        current_alias = catalog_snapshot().require_alias(alias_id)
     except CatalogError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
+    if active_runtime_reservations:
+        resolution_changes = alias_resolution_policy_changes(
+            alias_resolution_policy_snapshot(current_alias),
+            alias_resolution_reset_snapshot(current_alias),
+        )
+        if resolution_changes:
+            raise_alias_active_reservation_policy_change(alias_id, active_runtime_reservations, resolution_changes)
     row = await database.delete_model_alias_policy(alias_id)
     await refresh_catalog_cache()
     await refresh_workflow_dependency_statuses()
