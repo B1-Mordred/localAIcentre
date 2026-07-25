@@ -273,6 +273,32 @@ def verify_cutover_hardware_readiness(payload: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def verify_cutover_runtime_agent_socket_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    socket = payload.get("runtime_agent_socket_readiness") if isinstance(payload.get("runtime_agent_socket_readiness"), dict) else {}
+    if not socket:
+        raise EvidenceError("cutover runtime-agent Docker socket readiness is missing")
+    warnings = _string_list(socket.get("warnings"))
+    if socket.get("available") is not True:
+        raise EvidenceError("cutover runtime-agent Docker socket readiness is unavailable")
+    if (
+        socket.get("runtime_agent_group_access_ready") is not True
+        or socket.get("operator_must_review_runtime_agent_socket") is True
+        or warnings
+    ):
+        raise EvidenceError("cutover runtime-agent Docker socket readiness requires operator review")
+    return {
+        "available": True,
+        "runtime_agent_group_access_ready": True,
+        "operator_must_review_runtime_agent_socket": False,
+        "path": socket.get("path") or "",
+        "gid": socket.get("gid"),
+        "configured_gid": socket.get("configured_gid"),
+        "configured_gid_matches": socket.get("configured_gid_matches"),
+        "mode_octal": socket.get("mode_octal"),
+        "warnings": [],
+    }
+
+
 def verify_cutover_open_webui_preservation(payload: dict[str, Any]) -> dict[str, Any]:
     preservation = payload.get("open_webui_preservation") if isinstance(payload.get("open_webui_preservation"), dict) else {}
     if not preservation:
@@ -308,6 +334,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         raise EvidenceError("cutover plan still has warnings")
     dns_readiness = verify_cutover_dns_readiness(payload)
     hardware_readiness = verify_cutover_hardware_readiness(payload)
+    runtime_agent_socket_readiness = verify_cutover_runtime_agent_socket_readiness(payload)
     open_webui_preservation = verify_cutover_open_webui_preservation(payload)
     safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
     if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
@@ -327,6 +354,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "resource_count": resource_count,
         "dns_readiness": dns_readiness,
         "hardware_readiness": hardware_readiness,
+        "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "open_webui_preservation": open_webui_preservation,
         "reviewed_by": old_scope.get("reviewed_by"),
     }

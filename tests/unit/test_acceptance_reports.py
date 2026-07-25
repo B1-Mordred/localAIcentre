@@ -74,6 +74,23 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "operator_must_review_hardware": False,
             "warnings": [],
         },
+        "runtime_agent_socket_readiness": {
+            "available": True,
+            "path": "/var/run/docker.sock",
+            "exists": True,
+            "is_socket": True,
+            "uid": 0,
+            "gid": 998,
+            "mode_octal": "0660",
+            "group_readable": True,
+            "group_writable": True,
+            "configured_gid": "998",
+            "configured_gid_valid": True,
+            "configured_gid_matches": True,
+            "runtime_agent_group_access_ready": True,
+            "operator_must_review_runtime_agent_socket": False,
+            "warnings": [],
+        },
         "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
         "warnings": [],
         "resources": {
@@ -1220,6 +1237,28 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_hardware_ready"])
         self.assertIn("cutover hardware readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_runtime_agent_socket_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                runtime_agent_socket_readiness={
+                    "available": True,
+                    "path": "/var/run/docker.sock",
+                    "gid": 998,
+                    "configured_gid": "0",
+                    "configured_gid_matches": False,
+                    "runtime_agent_group_access_ready": False,
+                    "operator_must_review_runtime_agent_socket": True,
+                    "warnings": ["B1_DOCKER_GID=0 does not match Docker socket GID 998"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["runtime_agent_socket_ready"])
+        self.assertIn("cutover runtime-agent Docker socket readiness requires operator review", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_when_cutover_dns_requires_review(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -1294,6 +1333,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 },
                 "dns_readiness": sample_cutover_preservation()["dns_readiness"],
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
+                "runtime_agent_socket_readiness": sample_cutover_preservation()["runtime_agent_socket_readiness"],
                 "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
                 "warnings": ["review DNS"],
             }
@@ -1307,6 +1347,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertEqual(snapshot["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
+        self.assertTrue(snapshot["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(snapshot["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
         self.assertEqual(snapshot["resource_count"], 3)

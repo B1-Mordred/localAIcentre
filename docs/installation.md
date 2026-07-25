@@ -18,6 +18,7 @@ stat -c '%g' /var/run/docker.sock
 ```
 
 Set `B1_DOCKER_GID` in `.env` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
+The migration inventory records the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence.
 
 ## First Boot
 

@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -107,6 +108,7 @@ REVIEW_PORTS = {
 INITIAL_PROFILE_NAME = "rtx3060-32gb-initial"
 MIN_INITIAL_GPU_VRAM_MIB = 12 * 1024
 MIN_INITIAL_HOST_RAM_MIB = 32000
+DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -818,6 +820,77 @@ def summarize_hardware_profile(gpu_devices: list[dict[str, Any]], memory: dict[s
     }
 
 
+def parse_gid(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def inspect_docker_socket(path: Path = DOCKER_SOCKET_PATH, configured_gid: str | None = None) -> dict[str, Any]:
+    configured = configured_gid if configured_gid is not None else os.getenv("B1_DOCKER_GID")
+    configured_gid_int = parse_gid(configured)
+    warnings: list[str] = []
+    result: dict[str, Any] = {
+        "path": str(path),
+        "exists": False,
+        "is_socket": False,
+        "uid": None,
+        "gid": None,
+        "mode_octal": None,
+        "group_readable": False,
+        "group_writable": False,
+        "configured_gid": configured,
+        "configured_gid_valid": configured_gid_int is not None,
+        "configured_gid_matches": False,
+        "runtime_agent_group_access_ready": False,
+        "warnings": warnings,
+    }
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        warnings.append(f"Docker socket {path} is missing; runtime-agent Docker status, logs, and recovery actions will be unavailable")
+        return result
+    except OSError as exc:
+        warnings.append(f"Docker socket {path} could not be inspected: {exc.__class__.__name__}: {exc}")
+        return result
+
+    mode = stat.S_IMODE(st.st_mode)
+    is_socket = stat.S_ISSOCK(st.st_mode)
+    group_readable = bool(mode & stat.S_IRGRP)
+    group_writable = bool(mode & stat.S_IWGRP)
+    configured_matches = configured_gid_int == st.st_gid
+    result.update(
+        {
+            "exists": True,
+            "is_socket": is_socket,
+            "uid": st.st_uid,
+            "gid": st.st_gid,
+            "mode_octal": f"{mode:04o}",
+            "group_readable": group_readable,
+            "group_writable": group_writable,
+            "configured_gid_matches": configured_matches,
+            "runtime_agent_group_access_ready": is_socket and group_readable and group_writable and configured_matches,
+        }
+    )
+    if not is_socket:
+        warnings.append(f"{path} exists but is not a Unix socket")
+    if not group_readable or not group_writable:
+        warnings.append(f"Docker socket {path} does not grant group read/write access; runtime-agent should not rely on group_add alone")
+    if configured is None or not configured.strip():
+        warnings.append(f"B1_DOCKER_GID is not set; set it to the Docker socket GID {st.st_gid} before target-host acceptance")
+    elif configured_gid_int is None:
+        warnings.append("B1_DOCKER_GID is not a non-negative numeric GID")
+    elif not configured_matches:
+        warnings.append(f"B1_DOCKER_GID={configured_gid_int} does not match Docker socket GID {st.st_gid}")
+    return result
+
+
 def default_model_path_candidates(b1_root: Path) -> list[Path]:
     candidates = [
         b1_root / "models",
@@ -992,6 +1065,8 @@ def build_inventory(
     *,
     b1_root: Path = Path("/srv/b1-ai-hub"),
     scan_roots: list[Path] | None = None,
+    docker_socket_path: Path = DOCKER_SOCKET_PATH,
+    configured_docker_gid: str | None = None,
     command_runner: Callable[[list[str]], dict[str, Any]] = run,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1018,6 +1093,7 @@ def build_inventory(
 
     gpu_devices = parse_nvidia_smi(captured["nvidia_smi"]["stdout"])
     host_memory = parse_free_mib(captured["free"]["stdout"])
+    docker_socket = inspect_docker_socket(docker_socket_path, configured_docker_gid)
 
     return {
         "created_at": created_at.astimezone(UTC).isoformat(),
@@ -1039,6 +1115,7 @@ def build_inventory(
             "volume_inspects": volume_inspects,
             "info": parse_docker_info(captured["docker_info"]["stdout"]),
             "version": parse_json_object(captured["docker_version"]["stdout"]),
+            "socket": docker_socket,
         },
         "host": {
             "listening_tcp": listening_tcp,
@@ -1073,6 +1150,7 @@ def build_inventory(
         "migration_readiness": {
             "port_review": analyze_listening_tcp(listening_tcp),
             "hardware_profile": summarize_hardware_profile(gpu_devices, host_memory),
+            "runtime_agent_docker_socket": docker_socket,
             "model_storage": summarize_model_storage(model_directories),
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
             "open_webui_data_roots": summarize_open_webui_data_roots(open_webui_data_roots),

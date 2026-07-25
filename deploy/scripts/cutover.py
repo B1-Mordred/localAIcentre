@@ -390,6 +390,30 @@ def analyze_hardware_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any
     return {**hardware, "available": True, "operator_must_review_hardware": bool(cutover_warnings)}, cutover_warnings
 
 
+def analyze_runtime_agent_socket_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    socket = readiness.get("runtime_agent_docker_socket") if isinstance(readiness.get("runtime_agent_docker_socket"), dict) else {}
+    if not socket:
+        docker = inventory.get("docker") if isinstance(inventory.get("docker"), dict) else {}
+        socket = docker.get("socket") if isinstance(docker.get("socket"), dict) else {}
+    if not socket:
+        return (
+            {
+                "available": False,
+                "runtime_agent_group_access_ready": False,
+                "warnings": ["runtime-agent Docker socket readiness was not present in inventory"],
+                "operator_must_review_runtime_agent_socket": True,
+            },
+            ["Runtime-agent Docker socket readiness was not present in inventory; rerun inventory before cutover"],
+        )
+    warnings = [str(item) for item in socket.get("warnings", []) if isinstance(item, str)]
+    ready = socket.get("runtime_agent_group_access_ready") is True
+    if not ready and not warnings:
+        warnings.append("runtime-agent Docker socket group access is not ready")
+    cutover_warnings = [f"Runtime-agent Docker socket requires operator review before cutover: {warning}" for warning in warnings]
+    return {**socket, "available": True, "operator_must_review_runtime_agent_socket": bool(cutover_warnings), "warnings": warnings}, cutover_warnings
+
+
 def shell_join(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
@@ -449,6 +473,8 @@ def build_plan(
     warnings.extend(dns_warnings)
     hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
     warnings.extend(hardware_warnings)
+    runtime_agent_socket_readiness, runtime_agent_socket_warnings = analyze_runtime_agent_socket_readiness(inventory)
+    warnings.extend(runtime_agent_socket_warnings)
     open_webui_preservation, open_webui_warnings = analyze_open_webui_preservation(
         open_webui_plan_path=open_webui_plan_path,
         inventory_path=inventory_path,
@@ -510,6 +536,7 @@ def build_plan(
         },
         "port_readiness": port_readiness,
         "hardware_readiness": hardware_readiness,
+        "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "dns_readiness": dns_readiness,
         "open_webui_preservation": open_webui_preservation,
         "warnings": warnings,
@@ -521,6 +548,7 @@ def build_plan(
                     "Confirm no unrelated Hermes, Yggdrasil, Discord, DNS, database, or automation services are scoped.",
                     "Confirm temporary B1 staging ports are free and production port listeners are expected old-stack routes or reverse proxies.",
                     "Confirm hardware_readiness satisfies the initial 12 GB VRAM / 32 GB RAM profile or document a reduced-resource plan before cutover.",
+                    "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",
                     "Confirm the verified old-stack backup is stored outside the old stack and is restorable.",

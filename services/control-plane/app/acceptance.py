@@ -348,6 +348,9 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
         "dns_readiness": plan.get("dns_readiness") if isinstance(plan.get("dns_readiness"), dict) else {"available": False},
         "hardware_readiness": plan.get("hardware_readiness") if isinstance(plan.get("hardware_readiness"), dict) else {"available": False},
+        "runtime_agent_socket_readiness": plan.get("runtime_agent_socket_readiness")
+        if isinstance(plan.get("runtime_agent_socket_readiness"), dict)
+        else {"available": False},
         "open_webui_preservation": plan.get("open_webui_preservation") if isinstance(plan.get("open_webui_preservation"), dict) else {},
         "warnings": _as_string_list(plan.get("warnings")),
         "resources": resources,
@@ -1080,6 +1083,19 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("cutover hardware readiness is unavailable")
         elif hardware.get("accepted") is not True or hardware.get("operator_must_review_hardware") is True:
             blockers.append("cutover hardware readiness requires operator review")
+        runtime_agent_socket = (
+            preservation.get("runtime_agent_socket_readiness")
+            if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
+            else {}
+        )
+        if runtime_agent_socket.get("available") is not True:
+            blockers.append("cutover runtime-agent Docker socket readiness is unavailable")
+        elif (
+            runtime_agent_socket.get("runtime_agent_group_access_ready") is not True
+            or runtime_agent_socket.get("operator_must_review_runtime_agent_socket") is True
+            or _as_string_list(runtime_agent_socket.get("warnings"))
+        ):
+            blockers.append("cutover runtime-agent Docker socket readiness requires operator review")
         open_webui = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
         if open_webui.get("plan_supplied") is not True:
             blockers.append("Open WebUI preservation plan is missing from cutover plan")
@@ -1343,6 +1359,11 @@ def markdown_report(report: dict[str, Any]) -> str:
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    runtime_agent_socket_readiness = (
+        preservation.get("runtime_agent_socket_readiness")
+        if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
+        else {}
+    )
     open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
     preserved_rows = [["Class", "Value"]]
     resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
@@ -1389,6 +1410,17 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         if key in hardware_readiness:
             preservation_summary_rows.append([f"hardware.{key}", _format_value(hardware_readiness.get(key))])
+    for key in (
+        "path",
+        "gid",
+        "configured_gid",
+        "configured_gid_matches",
+        "mode_octal",
+        "runtime_agent_group_access_ready",
+        "operator_must_review_runtime_agent_socket",
+    ):
+        if key in runtime_agent_socket_readiness:
+            preservation_summary_rows.append([f"runtime_agent_socket.{key}", _format_value(runtime_agent_socket_readiness.get(key))])
     for key in (
         "plan_supplied",
         "operator_must_review_open_webui",
@@ -1618,6 +1650,11 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    runtime_agent_socket_readiness = (
+        preservation.get("runtime_agent_socket_readiness")
+        if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
+        else {}
+    )
     open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
     cutover_warnings = _as_string_list(preservation.get("warnings"))
     dns_ready = (
@@ -1630,6 +1667,12 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     )
     open_webui_preservation_ready = (
         open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True
+    )
+    runtime_agent_socket_ready = (
+        runtime_agent_socket_readiness.get("available") is True
+        and runtime_agent_socket_readiness.get("runtime_agent_group_access_ready") is True
+        and runtime_agent_socket_readiness.get("operator_must_review_runtime_agent_socket") is not True
+        and not _as_string_list(runtime_agent_socket_readiness.get("warnings"))
     )
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
@@ -1736,6 +1779,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True
+        and runtime_agent_socket_ready
         and open_webui_preservation_ready
         and not cutover_warnings,
         "cutover_warnings_ready": not cutover_warnings,
@@ -1743,6 +1787,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,
+        "runtime_agent_socket_ready": runtime_agent_socket_ready,
         "open_webui_preservation_ready": open_webui_preservation_ready,
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,

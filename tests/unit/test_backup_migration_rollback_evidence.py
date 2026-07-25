@@ -125,6 +125,23 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "operator_must_review_hardware": False,
                     "warnings": [],
                 },
+                "runtime_agent_socket_readiness": {
+                    "available": True,
+                    "path": "/var/run/docker.sock",
+                    "exists": True,
+                    "is_socket": True,
+                    "uid": 0,
+                    "gid": 998,
+                    "mode_octal": "0660",
+                    "group_readable": True,
+                    "group_writable": True,
+                    "configured_gid": "998",
+                    "configured_gid_valid": True,
+                    "configured_gid_matches": True,
+                    "runtime_agent_group_access_ready": True,
+                    "operator_must_review_runtime_agent_socket": False,
+                    "warnings": [],
+                },
                 "open_webui_preservation": {
                     "plan_supplied": True,
                     "operator_must_review_open_webui": False,
@@ -183,6 +200,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             ["monitoring.ai.b1.germering"],
         )
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
+        self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(payload["checks"]["cutover_plan_reviewed"]["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual([sample["label"] for sample in payload["samples"]], ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"])
 
@@ -267,6 +285,29 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(cutover_plan, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "cutover Open WebUI preservation requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_runtime_agent_socket_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"] = False
+            payload["runtime_agent_socket_readiness"]["operator_must_review_runtime_agent_socket"] = True
+            payload["runtime_agent_socket_readiness"]["warnings"] = ["B1_DOCKER_GID=0 does not match Docker socket GID 998"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover runtime-agent Docker socket readiness requires operator review"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

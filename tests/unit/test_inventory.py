@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -26,6 +27,13 @@ class InventoryTests(unittest.TestCase):
         original = getattr(inventory, name)
         setattr(inventory, name, value)
         self.addCleanup(lambda: setattr(inventory, name, original))
+
+    def temporary_unix_socket(self, root: Path) -> tuple[socket.socket, Path]:
+        sock_path = root / "docker.sock"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(sock_path))
+        os.chmod(sock_path, 0o660)
+        return sock, sock_path
 
     def test_parsers_redact_and_normalize_host_outputs(self) -> None:
         self.assertEqual(inventory.redact_text("Authorization: Bearer b1rt_secret"), "Authorization: Bearer <redacted>")
@@ -80,9 +88,35 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(hardware["largest_gpu_vram_mib"], 6144)
         self.assertTrue(any("12288 MiB" in warning for warning in hardware["warnings"]))
 
+    def test_docker_socket_readiness_records_group_gid_and_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sock, sock_path = self.temporary_unix_socket(root)
+            self.addCleanup(sock.close)
+            gid = sock_path.stat().st_gid
+
+            ready = inventory.inspect_docker_socket(sock_path, configured_gid=str(gid))
+            mismatch = inventory.inspect_docker_socket(sock_path, configured_gid=str(gid + 1))
+            missing = inventory.inspect_docker_socket(root / "missing.sock", configured_gid=None)
+
+        self.assertTrue(ready["exists"])
+        self.assertTrue(ready["is_socket"])
+        self.assertEqual(ready["mode_octal"], "0660")
+        self.assertEqual(ready["gid"], gid)
+        self.assertTrue(ready["configured_gid_matches"])
+        self.assertTrue(ready["runtime_agent_group_access_ready"])
+        self.assertEqual(ready["warnings"], [])
+        self.assertFalse(mismatch["runtime_agent_group_access_ready"])
+        self.assertTrue(any("does not match Docker socket GID" in warning for warning in mismatch["warnings"]))
+        self.assertFalse(missing["exists"])
+        self.assertTrue(any("is missing" in warning for warning in missing["warnings"]))
+
     def test_build_inventory_classifies_old_ai_candidates_and_preserves_unrelated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            sock, sock_path = self.temporary_unix_socket(root)
+            self.addCleanup(sock.close)
+            docker_gid = sock_path.stat().st_gid
             b1_root = root / "b1"
             model_dir = b1_root / "models"
             (model_dir / "llm").mkdir(parents=True)
@@ -209,6 +243,8 @@ class InventoryTests(unittest.TestCase):
             report = inventory.build_inventory(
                 b1_root=b1_root,
                 scan_roots=[root],
+                docker_socket_path=sock_path,
+                configured_docker_gid=str(docker_gid),
                 command_runner=runner,
                 now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
             )
@@ -220,6 +256,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(classifications["hermes-bot"], "preserve-unrelated")
         self.assertEqual(classifications["b1-ai-hub-control-plane-1"], "b1-ai-hub-current-preserve")
         self.assertEqual(report["docker"]["info"]["nvidia_runtime_available"], True)
+        self.assertTrue(report["docker"]["socket"]["runtime_agent_group_access_ready"])
+        self.assertEqual(report["migration_readiness"]["runtime_agent_docker_socket"]["gid"], docker_gid)
         report_json = json.dumps(report, sort_keys=True)
         self.assertNotIn("should-not-be-in-report", report_json)
         self.assertEqual(report["docker"]["container_inspects"][0]["mounts"][0]["source"], str(volume_webui))

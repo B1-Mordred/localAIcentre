@@ -54,7 +54,22 @@ class CutoverPlanTests(unittest.TestCase):
                     "largest_gpu_vram_mib": 12288,
                     "host_total_ram_mib": 32168,
                     "warnings": [],
-                }
+                },
+                "runtime_agent_docker_socket": {
+                    "path": "/var/run/docker.sock",
+                    "exists": True,
+                    "is_socket": True,
+                    "uid": 0,
+                    "gid": 998,
+                    "mode_octal": "0660",
+                    "group_readable": True,
+                    "group_writable": True,
+                    "configured_gid": "998",
+                    "configured_gid_valid": True,
+                    "configured_gid_matches": True,
+                    "runtime_agent_group_access_ready": True,
+                    "warnings": [],
+                },
             },
             "classification": {
                 "containers": [
@@ -209,6 +224,8 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertTrue(plan["hardware_readiness"]["accepted"])
         self.assertFalse(plan["hardware_readiness"]["operator_must_review_hardware"])
+        self.assertTrue(plan["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
+        self.assertFalse(plan["runtime_agent_socket_readiness"]["operator_must_review_runtime_agent_socket"])
         self.assertEqual(plan["warnings"], [])
 
     def test_build_plan_warns_when_hardware_profile_is_below_initial_baseline(self) -> None:
@@ -270,6 +287,39 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["open_webui_preservation"]["plan_supplied"])
         self.assertTrue(plan["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertTrue(any("Open WebUI preservation plan was not supplied" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_warns_when_runtime_agent_socket_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inventory_payload = self.inventory()
+            inventory_payload["migration_readiness"]["runtime_agent_docker_socket"]["configured_gid"] = "0"
+            inventory_payload["migration_readiness"]["runtime_agent_docker_socket"]["configured_gid_matches"] = False
+            inventory_payload["migration_readiness"]["runtime_agent_docker_socket"]["runtime_agent_group_access_ready"] = False
+            inventory_payload["migration_readiness"]["runtime_agent_docker_socket"]["warnings"] = [
+                "B1_DOCKER_GID=0 does not match Docker socket GID 998"
+            ]
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+            open_webui_plan_path = self.write_open_webui_plan(root / "open-webui-plan.json", inventory_path, backup_dir)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                open_webui_plan_path=open_webui_plan_path,
+            )
+
+        self.assertFalse(plan["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
+        self.assertTrue(plan["runtime_agent_socket_readiness"]["operator_must_review_runtime_agent_socket"])
+        self.assertTrue(any("Runtime-agent Docker socket requires operator review" in warning for warning in plan["warnings"]))
 
     def test_build_plan_refuses_mismatched_open_webui_plan_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
