@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 import re
+import stat
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import unquote
 
 
@@ -61,9 +65,47 @@ def resolve_inside(root: Path, relative: str) -> Path:
     return candidate
 
 
+def stat_regular_file(path: Path) -> os.stat_result:
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise BlobStoreError("file not found") from exc
+    except OSError as exc:
+        raise BlobStoreError("file cannot be inspected safely") from exc
+    if stat.S_ISLNK(file_stat.st_mode):
+        raise BlobStoreError("file path is a symlink")
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise BlobStoreError("file is not a regular file")
+    return file_stat
+
+
+def _open_regular_file(path: Path) -> BinaryIO:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise BlobStoreError("file not found") from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise BlobStoreError("file path is a symlink") from exc
+        raise BlobStoreError("file cannot be opened safely") from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise BlobStoreError("file is not a regular file")
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with _open_regular_file(path) as handle:
         for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -123,7 +165,7 @@ def parse_byte_range(header_value: str | None, size: int) -> tuple[int, int] | N
 
 def iter_file_range(path: Path, start: int, end: int, chunk_size: int = CHUNK_SIZE) -> Iterator[bytes]:
     remaining = end - start + 1
-    with path.open("rb") as handle:
+    with _open_regular_file(path) as handle:
         handle.seek(start)
         while remaining > 0:
             chunk = handle.read(min(chunk_size, remaining))

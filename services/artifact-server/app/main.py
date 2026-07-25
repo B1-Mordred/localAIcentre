@@ -18,6 +18,7 @@ from .blobstore import (
     parse_byte_range,
     resolve_inside as safe_resolve_inside,
     sha256_file,
+    stat_regular_file,
     validate_sha256,
 )
 
@@ -50,6 +51,11 @@ def require_service_authorization(request: Request) -> None:
         raise HTTPException(status_code=401, detail="artifact-server service token required", headers={"WWW-Authenticate": "Bearer"})
 
 
+def blobstore_http_exception(exc: BlobStoreError) -> HTTPException:
+    status_code = 404 if str(exc) == "file not found" else 400
+    return HTTPException(status_code=status_code, detail=str(exc))
+
+
 def resolve_inside(root: Path, relative: str) -> Path:
     try:
         candidate = safe_resolve_inside(root, relative)
@@ -57,8 +63,10 @@ def resolve_inside(root: Path, relative: str) -> Path:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if root not in candidate.parents and candidate != root:
         raise HTTPException(status_code=400, detail="path escapes configured root")
-    if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="file not found")
+    try:
+        stat_regular_file(candidate)
+    except BlobStoreError as exc:
+        raise blobstore_http_exception(exc) from exc
     return candidate
 
 
@@ -73,19 +81,17 @@ async def healthz() -> dict[str, Any]:
     }
 
 
-def artifact_etag(path: Path) -> str:
-    stat = path.stat()
-    return f'"artifact:{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+def artifact_etag(file_stat: os.stat_result) -> str:
+    return f'"artifact:{file_stat.st_mtime_ns:x}-{file_stat.st_size:x}"'
 
 
-def artifact_headers(path: Path) -> dict[str, str]:
-    stat = path.stat()
+def artifact_headers(file_stat: os.stat_result) -> dict[str, str]:
     return {
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=0, must-revalidate",
-        "Content-Length": str(stat.st_size),
-        "ETag": artifact_etag(path),
-        "Last-Modified": str(int(stat.st_mtime)),
+        "Content-Length": str(file_stat.st_size),
+        "ETag": artifact_etag(file_stat),
+        "Last-Modified": str(int(file_stat.st_mtime)),
     }
 
 
@@ -94,8 +100,12 @@ def media_type_for(path: Path) -> str:
 
 
 def artifact_response(path: Path, request: Request, head_only: bool = False) -> Response:
-    size = path.stat().st_size
-    headers = artifact_headers(path)
+    try:
+        file_stat = stat_regular_file(path)
+    except BlobStoreError as exc:
+        raise blobstore_http_exception(exc) from exc
+    size = file_stat.st_size
+    headers = artifact_headers(file_stat)
     if if_none_match_matches(request.headers.get("if-none-match"), headers["ETag"]):
         return Response(status_code=304, headers={key: value for key, value in headers.items() if key != "Content-Length"})
     try:
@@ -155,10 +165,16 @@ def blob_response(request: Request, sha256: str, head_only: bool = False) -> Res
     except BlobStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     path = resolve_inside(BLOB_ROOT, digest)
-    actual_digest = sha256_file(path)
+    try:
+        actual_digest = sha256_file(path)
+    except BlobStoreError as exc:
+        raise blobstore_http_exception(exc) from exc
     if actual_digest != digest:
         raise HTTPException(status_code=409, detail="blob checksum mismatch")
-    size = path.stat().st_size
+    try:
+        size = stat_regular_file(path).st_size
+    except BlobStoreError as exc:
+        raise blobstore_http_exception(exc) from exc
     headers = blob_headers(digest, size)
 
     if if_none_match_matches(request.headers.get("if-none-match"), headers["ETag"]):

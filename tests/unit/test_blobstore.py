@@ -24,6 +24,7 @@ iter_file_range = blobstore.iter_file_range
 parse_byte_range = blobstore.parse_byte_range
 resolve_inside = blobstore.resolve_inside
 sha256_file = blobstore.sha256_file
+stat_regular_file = blobstore.stat_regular_file
 validate_sha256 = blobstore.validate_sha256
 
 
@@ -64,6 +65,7 @@ class BlobStoreTests(unittest.TestCase):
             blob = root / "blob"
             blob.write_bytes(payload)
             self.assertEqual(resolve_inside(root, "blob"), blob.resolve())
+            self.assertEqual(stat_regular_file(blob).st_size, len(payload))
             self.assertEqual(sha256_file(blob), hashlib.sha256(payload).hexdigest())
             self.assertEqual(b"".join(iter_file_range(blob, 2, 5, chunk_size=2)), b"2345")
             for relative in (
@@ -106,6 +108,35 @@ class BlobStoreTests(unittest.TestCase):
                 with self.subTest(relative=relative):
                     with self.assertRaisesRegex(BlobStoreError, "symlink"):
                         resolve_inside(root, relative)
+
+    def test_final_file_operations_reject_symlinks_and_non_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.bin"
+            target.write_bytes(b"payload")
+            link = root / "link.bin"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            for operation in (
+                lambda: stat_regular_file(link),
+                lambda: sha256_file(link),
+                lambda: b"".join(iter_file_range(link, 0, 2, chunk_size=2)),
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaisesRegex(BlobStoreError, "symlink"):
+                        operation()
+
+            for operation in (
+                lambda: stat_regular_file(root),
+                lambda: sha256_file(root),
+                lambda: b"".join(iter_file_range(root, 0, 2, chunk_size=2)),
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaisesRegex(BlobStoreError, "regular file"):
+                        operation()
 
 
 if __name__ == "__main__":
