@@ -115,14 +115,22 @@ class ControlCenterSourceTests(unittest.TestCase):
 
     def test_workflows_tab_tests_versions_and_restores_workflows(self) -> None:
         self.assertIn("type WorkflowTestResult", self.source)
+        self.assertIn("type WorkflowExecutionSummary", self.source)
         self.assertIn("const [workflowVersions, setWorkflowVersions]", self.source)
         self.assertIn("const [testParameters, setTestParameters]", self.source)
         self.assertIn("const [workflowTest, setWorkflowTest]", self.source)
         self.assertIn("function defaultWorkflowTestParameters", self.source)
+        self.assertIn("function workflowExecutionLine", self.source)
+        self.assertIn("function workflowExecutionStats", self.source)
+        self.assertIn("function workflowDependencyDetail", self.source)
         self.assertIn("const parseTestParameters = ()", self.source)
         self.assertIn("const testWorkflow = (workflow?: PublishedWorkflow)", self.source)
         self.assertIn("/workflows/v1/test", self.source)
         self.assertIn("parameter_names", self.source)
+        self.assertIn("<th>Execution</th>", self.source)
+        self.assertIn("workflowExecutionLine(workflow)", self.source)
+        self.assertIn("workflowExecutionStats(workflow)", self.source)
+        self.assertIn("workflowDependencyDetail(dependency)", self.source)
         self.assertIn("const loadWorkflowVersions = (workflow: PublishedWorkflow, options: { silent?: boolean } = {})", self.source)
         self.assertIn("/workflows/v1/published/${encodeURIComponent(workflow.id)}/versions", self.source)
         self.assertIn("const restoreWorkflowVersion = (workflow: PublishedWorkflow)", self.source)
@@ -332,6 +340,14 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("setSmokeResult(payload)", self.source)
         self.assertIn("Run smoke test for ${record.display_name}", self.source)
         self.assertIn("measurements persisted", self.source)
+        self.assertIn("type RuntimeSmokeSummary", self.source)
+        self.assertIn("function runtimeSmokeSummaryFromCarrier", self.source)
+        self.assertIn("function runtimeSmokeLine", self.source)
+        self.assertIn("no runtime smoke probe", self.source)
+        self.assertIn("<th>Smoke</th>", self.source)
+        self.assertIn("Configured smoke: {runtimeSmokeLine(smokeResult.model)}", self.source)
+        self.assertIn("runtimeSmokeLine(record)", self.source)
+        self.assertIn("runtimeSmokeLine(model)", self.source)
 
 
 if __name__ == "__main__":

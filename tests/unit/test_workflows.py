@@ -97,7 +97,28 @@ def model_lookup(model_id: str) -> dict[str, object] | None:
 
 def installed_model_lookup(model_id: str) -> dict[str, object] | None:
     if model_id == "image-default":
-        return {"id": "image-default", "status": "installed", "resolved_model": {"id": "sdxl"}}
+        return {
+            "id": "image-default",
+            "status": "installed",
+            "enabled": True,
+            "preferred_runtime": "comfyui",
+            "runtimes": ["comfyui", "localai"],
+            "resource_label": "expected",
+            "resolved_model": {"id": "sdxl", "version": "1.0.0", "display_name": "SDXL"},
+        }
+    return model_lookup(model_id)
+
+
+def disabled_model_lookup(model_id: str) -> dict[str, object] | None:
+    if model_id == "image-default":
+        return {
+            "id": "image-default",
+            "status": "installed",
+            "enabled": False,
+            "preferred_runtime": "comfyui",
+            "runtimes": ["comfyui"],
+            "resolved_model": {"id": "sdxl", "version": "1.0.0"},
+        }
     return model_lookup(model_id)
 
 
@@ -158,6 +179,23 @@ class WorkflowTests(unittest.TestCase):
         by_id = {item["id"]: item for item in report["dependencies"]}
         self.assertTrue(by_id["comfyui"]["ready"])
         self.assertFalse(by_id["image-default"]["ready"])
+
+    def test_dependency_report_exposes_safe_model_runtime_details_and_disabled_policy(self) -> None:
+        workflow = parse_workflow(BASE_WORKFLOW)
+        ready_report = dependency_report(workflow, installed_model_lookup, {"comfyui", "localai"})
+        model = next(item for item in ready_report["dependencies"] if item["type"] == "model")
+
+        self.assertTrue(model["ready"])
+        self.assertEqual(model["preferred_runtime"], "comfyui")
+        self.assertEqual(model["runtimes"], ["comfyui", "localai"])
+        self.assertEqual(model["resource_label"], "expected")
+        self.assertEqual(model["resolved_model"], {"id": "sdxl", "version": "1.0.0", "display_name": "SDXL"})
+
+        disabled_report = dependency_report(workflow, disabled_model_lookup, {"comfyui"})
+        disabled = next(item for item in disabled_report["dependencies"] if item["type"] == "model")
+        self.assertFalse(disabled_report["ready"])
+        self.assertEqual(disabled["status"], "disabled")
+        self.assertIn("disabled by policy", disabled["reason"])
 
     def test_dependency_report_marks_approved_custom_node_ready(self) -> None:
         commit = "a" * 40
@@ -427,6 +465,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(record["publishable"])
         self.assertEqual(record["status"], "published")
         self.assertEqual(record["model_alias"], "tts-fast")
+        self.assertEqual(record["execution_summary"]["selected_runtime"], "audio-cpu")
+        self.assertFalse(record["execution_summary"]["requires_gpu_lease"])
+        self.assertEqual(record["execution_summary"]["queue_class"], "interactive_audio")
+
+    def test_workflow_record_summarizes_comfyui_execution_without_prompt_values(self) -> None:
+        workflow = parse_workflow(
+            {
+                **BASE_WORKFLOW,
+                "workflow_json": {
+                    "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "private.safetensors"}},
+                    "2": {"class_type": "KSampler", "inputs": {"steps": 20}},
+                },
+                "input_schema": {
+                    "type": "object",
+                    "required": ["prompt"],
+                    "properties": {"prompt": {"type": "string"}, "steps": {"type": "integer"}},
+                },
+                "comfyui_parameter_mappings": [{"parameter": "prompt", "path": ["2", "inputs", "positive"]}],
+            }
+        )
+
+        record = workflow_record(workflow, installed_model_lookup, {"comfyui", "localai"})
+        summary = record["execution_summary"]
+
+        self.assertTrue(summary["ready"])
+        self.assertEqual(summary["selected_runtime"], "comfyui")
+        self.assertEqual(summary["runtime_candidates"], ["comfyui"])
+        self.assertTrue(summary["server_side_comfyui_required"])
+        self.assertTrue(summary["requires_gpu_lease"])
+        self.assertEqual(summary["workflow_json_node_count"], 2)
+        self.assertEqual(summary["input_parameter_count"], 2)
+        self.assertEqual(summary["required_parameter_count"], 1)
+        self.assertEqual(summary["comfyui_parameter_mapping_count"], 1)
+        self.assertNotIn("private.safetensors", json.dumps(summary))
 
     def test_parse_workflow_accepts_comfyui_parameter_mappings(self) -> None:
         workflow = parse_workflow(

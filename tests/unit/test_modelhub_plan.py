@@ -279,6 +279,33 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertTrue(public["model_metadata"]["source"]["url_redacted"])
         self.assertEqual(payload["source"]["url"], "https://user:secret@downloads.example.test:8443/models/model.gguf?token=secret#fragment")
 
+    def test_public_modelhub_metadata_replaces_runtime_smoke_with_redacted_summary(self) -> None:
+        payload = {
+            "id": "image-model",
+            "preferred_runtime": "comfyui",
+            "runtime_smoke": {
+                "schema": "b1-ai-hub-runtime-smoke/v1",
+                "comfyui": {
+                    "prompt": {
+                        "1": {
+                            "class_type": "CheckpointLoaderSimple",
+                            "inputs": {"ckpt_name": "private-checkpoint.safetensors"},
+                        }
+                    },
+                    "timeout_seconds": 120,
+                },
+            },
+        }
+
+        public = public_modelhub_metadata(payload)
+
+        self.assertNotIn("runtime_smoke", public)
+        self.assertTrue(public["runtime_smoke_summary"]["configured"])
+        self.assertEqual(public["runtime_smoke_summary"]["configured_runtimes"], ["comfyui"])
+        self.assertEqual(public["runtime_smoke_summary"]["runtimes"]["comfyui"]["prompt_node_count"], 1)
+        self.assertNotIn("private-checkpoint", json.dumps(public))
+        self.assertIn("runtime_smoke", payload)
+
     def test_blob_policy_only_lists_downloadable_catalog_records(self) -> None:
         self.assertEqual(downloadable_records_for_blob(self.catalog, DOWNLOADABLE_SHA)[0]["id"], "downloadable-llm")
         self.assertEqual(downloadable_records_for_blob(self.catalog, INFERENCE_ONLY_SHA), [])

@@ -65,7 +65,7 @@ from .auth import (
     verify_api_key,
     verify_password,
 )
-from .catalog import RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, load_catalog
+from .catalog import RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, load_catalog, runtime_smoke_summary_for_manifest
 from .executor import (
     GPU_RUNTIMES,
     GPU_STATE_STEPS,
@@ -78,7 +78,7 @@ from .observability import build_observability_report, observability_report_to_p
 from .runtime_agent_http import runtime_agent_httpx_kwargs
 from .scheduler import CPU_RESIDENT_DEFAULT_ALIASES, JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
 from .settings import Settings, load_settings
-from .workflows import ApprovedNodePin, WorkflowError, load_node_pins, load_workflows, parse_node_pin, parse_workflow, validate_workflow_job_request, visible_to_role, workflow_record
+from .workflows import ApprovedNodePin, WorkflowError, load_node_pins, load_workflows, parse_node_pin, parse_workflow, validate_workflow_job_request, visible_to_role, workflow_execution_summary, workflow_record
 
 
 LOG = logging.getLogger("b1.control-plane")
@@ -2370,7 +2370,7 @@ def db_workflow_payload(record: dict[str, Any]) -> dict[str, Any]:
         "resource_class": record["resource_class"],
         "status": record["status"],
         "visibility_roles": record.get("visibility_roles", ["admin"]),
-        "manifest": {key: value for key, value in record.items() if key not in {"status", "dependency_status", "publishable"}},
+        "manifest": {key: value for key, value in record.items() if key not in {"status", "dependency_status", "execution_summary", "publishable"}},
         "dependency_status": record["dependency_status"],
     }
 
@@ -2415,17 +2415,20 @@ def workflow_test_result(workflow: dict[str, Any], payload: WorkflowTestRequest)
             },
         },
         "dependency_status": workflow.get("dependency_status") or {},
+        "execution_summary": workflow.get("execution_summary") or workflow_execution_summary(workflow, workflow.get("dependency_status") or {}),
     }
 
 
 def public_workflow(row: dict[str, Any]) -> dict[str, Any]:
     manifest = dict(row["manifest"])
+    dependency_status = row["dependency_status"]
     return jsonable_encoder(
         {
             **manifest,
             "status": row["status"],
-            "dependency_status": row["dependency_status"],
-            "publishable": bool(row["dependency_status"].get("ready")),
+            "dependency_status": dependency_status,
+            "execution_summary": workflow_execution_summary(manifest, dependency_status),
+            "publishable": bool(dependency_status.get("ready")),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "unpublished_at": row.get("unpublished_at"),
@@ -4685,6 +4688,7 @@ def public_model_record(row: dict[str, Any]) -> dict[str, Any]:
     try:
         manifest = model_lifecycle.parse_uploaded_manifest(public["manifest"])
         public["runtime_views"] = model_lifecycle.runtime_view_plan(manifest, data_root_path())
+        public["runtime_smoke_summary"] = runtime_smoke_summary_for_manifest(manifest)
     except (CatalogError, ValueError, model_lifecycle.ModelLifecycleError) as exc:
         public["runtime_views_error"] = str(exc)
     return jsonable_encoder(public)

@@ -150,6 +150,41 @@ class WorkflowLifecycleApiTests(unittest.TestCase):
         self.patch_attr("workflow_record_from_payload", fake_workflow_record_from_payload)
         self.patch_attr("database", fake_database)
 
+    def test_workflow_execution_summary_is_api_derived_not_manifest_persisted(self) -> None:
+        manifest = parse_workflow(BASE_WORKFLOW).to_dict()
+        dependency_status = {
+            "ready": True,
+            "dependencies": [
+                {"type": "runtime", "id": "comfyui", "status": "available", "ready": True},
+                {
+                    "type": "model",
+                    "id": "image-default",
+                    "status": "installed",
+                    "ready": True,
+                    "preferred_runtime": "comfyui",
+                    "runtimes": ["comfyui"],
+                    "resolved_model": {"id": "sdxl", "version": "1.0.0"},
+                },
+            ],
+        }
+        record = {
+            **manifest,
+            "status": "published",
+            "dependency_status": dependency_status,
+            "execution_summary": {"selected_runtime": "comfyui"},
+            "publishable": True,
+        }
+
+        payload = main.db_workflow_payload(record)
+        self.assertNotIn("execution_summary", payload["manifest"])
+
+        row = workflow_row()
+        row["dependency_status"] = dependency_status
+        public = main.public_workflow(row)
+        self.assertEqual(public["execution_summary"]["selected_runtime"], "comfyui")
+        self.assertTrue(public["execution_summary"]["server_side_comfyui_required"])
+        self.assertTrue(public["execution_summary"]["requires_gpu_lease"])
+
     def test_workflow_test_validates_draft_without_echoing_parameter_values(self) -> None:
         audit_events: list[dict[str, Any]] = []
         self.patch_common(FakeWorkflowLifecycleDatabase([]), audit_events)

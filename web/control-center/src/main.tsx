@@ -758,6 +758,33 @@ type ModelAliasPolicyForm = {
   notes: string;
 };
 
+type RuntimeSmokeRuntimeSummary = {
+  configured?: boolean;
+  has_prompt?: boolean;
+  prompt_node_count?: number | null;
+  has_request?: boolean;
+  request_key_count?: number | null;
+  has_payload?: boolean;
+  payload_key_count?: number | null;
+  timeout_seconds?: number | null;
+};
+
+type RuntimeSmokeSummary = {
+  configured?: boolean;
+  schema?: string;
+  description?: string;
+  configured_runtimes?: string[];
+  preferred_runtime?: string;
+  preferred_runtime_configured?: boolean;
+  runtimes?: Record<string, RuntimeSmokeRuntimeSummary>;
+};
+
+type RuntimeSmokeCarrier = {
+  preferred_runtime?: string;
+  runtime_smoke?: unknown;
+  runtime_smoke_summary?: RuntimeSmokeSummary | null;
+};
+
 type ModelRecord = {
   id: string;
   version: string;
@@ -768,6 +795,8 @@ type ModelRecord = {
   resource_label: string;
   updated_at?: string;
   runtime_views?: { runtime: string; host_path: string; container_path: string }[];
+  runtime_smoke_summary?: RuntimeSmokeSummary | null;
+  manifest?: RuntimeSmokeCarrier;
 };
 
 type ModelSmokeTestRun = {
@@ -785,6 +814,11 @@ type ModelSmokeTestRun = {
   peak_ram_mib?: number | null;
   error?: string;
   reason?: string;
+  hook?: {
+    status?: string | null;
+    strategy?: string | null;
+    reason?: string | null;
+  } | null;
 };
 
 type ModelSmokeTestResult = {
@@ -810,6 +844,8 @@ type CatalogModel = {
   downloadable?: boolean;
   execution_modes?: string[];
   license?: { name: string; redistribution: string };
+  runtime_smoke_summary?: RuntimeSmokeSummary | null;
+  runtime_smoke?: unknown;
 };
 
 type RuntimeAdapterStatus = {
@@ -1018,7 +1054,7 @@ type ModelInstallPlan = {
   requires_license_acceptance: boolean;
   total_size_bytes: number;
   resource_decision: { label: string; reason: string };
-  model: { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
+  model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   files: { path: string; status: string; size_bytes: number }[];
   archive_inspections: {
     path: string;
@@ -1039,7 +1075,7 @@ type ModelDownloadPlan = {
   blockers: string[];
   requires_license_acceptance: boolean;
   license_accepted: boolean;
-  model: { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
+  model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   source_url: string;
   target_sha256: string;
   target_size_bytes: number;
@@ -1140,6 +1176,11 @@ type WorkflowDependency = {
   ready?: boolean;
   status?: string;
   reason?: string;
+  preferred_runtime?: string;
+  runtimes?: string[];
+  resource_label?: string;
+  enabled?: boolean;
+  resolved_model?: { id?: string; version?: string; display_name?: string };
 };
 
 type ComfyUiNodePin = {
@@ -1165,6 +1206,31 @@ type WorkflowPreset = {
   values: Record<string, unknown>;
 };
 
+type WorkflowExecutionSummary = {
+  ready?: boolean;
+  backend_policy?: string;
+  runtime_policy?: string;
+  runtime_candidates?: string[];
+  selected_runtime?: string | null;
+  locality?: string;
+  server_side_comfyui_required?: boolean;
+  server_side_comfyui_allowed?: boolean;
+  non_comfy_allowed?: boolean;
+  external_runtime_possible?: boolean;
+  requires_gpu_lease?: boolean;
+  queue_class?: string;
+  workflow_json_node_count?: number;
+  input_parameter_count?: number;
+  required_parameter_count?: number;
+  comfyui_parameter_mapping_count?: number;
+  runtime_parameter_mapping_count?: number;
+  model_dependency_count?: number;
+  runtime_dependency_count?: number;
+  node_dependency_count?: number;
+  blocker_count?: number;
+  blockers?: WorkflowDependency[];
+};
+
 type PublishedWorkflow = {
   id: string;
   version: string;
@@ -1186,6 +1252,7 @@ type PublishedWorkflow = {
     ready?: boolean;
     dependencies?: WorkflowDependency[];
   };
+  execution_summary?: WorkflowExecutionSummary;
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   workflow_json: Record<string, unknown>;
@@ -1218,6 +1285,7 @@ type WorkflowTestResult = {
     ready?: boolean;
     dependencies?: WorkflowDependency[];
   };
+  execution_summary?: WorkflowExecutionSummary;
 };
 
 const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
@@ -1538,6 +1606,68 @@ const SERVICE_LOG_OPTIONS = ["control-plane", "localai", "comfyui", "voicebox", 
 const RUNTIME_OPTIONS = ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"];
 const ROLE_OPTIONS = ["admin", "operator", "creator", "user", "service"];
 const DEFAULT_CPU_RESIDENT_ALIASES = ["embedding-default", "tts-fast", "stt-default"];
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function runtimeSmokeConfigSummary(config: unknown): RuntimeSmokeRuntimeSummary {
+  if (!isObjectRecord(config)) return { configured: false };
+  const prompt = isObjectRecord(config.prompt) ? config.prompt : null;
+  const request = isObjectRecord(config.request) ? config.request : null;
+  const payload = isObjectRecord(config.payload) ? config.payload : null;
+  const timeout = typeof config.timeout_seconds === "number" && config.timeout_seconds > 0 ? config.timeout_seconds : null;
+  return {
+    configured: true,
+    has_prompt: Boolean(prompt),
+    prompt_node_count: prompt ? Object.keys(prompt).length : null,
+    has_request: Boolean(request),
+    request_key_count: request ? Object.keys(request).length : null,
+    has_payload: Boolean(payload),
+    payload_key_count: payload ? Object.keys(payload).length : null,
+    timeout_seconds: timeout
+  };
+}
+
+function runtimeSmokeSummaryFromCarrier(carrier?: RuntimeSmokeCarrier | null): RuntimeSmokeSummary | null {
+  if (!carrier) return null;
+  if (carrier.runtime_smoke_summary) return carrier.runtime_smoke_summary;
+  const raw = carrier.runtime_smoke;
+  if (!isObjectRecord(raw)) return null;
+  const configuredRuntimes = RUNTIME_OPTIONS.filter((runtime) => isObjectRecord(raw[runtime]));
+  const runtimeSummaries = Object.fromEntries(
+    configuredRuntimes.map((runtime) => [runtime, runtimeSmokeConfigSummary(raw[runtime])])
+  );
+  return {
+    configured: configuredRuntimes.length > 0,
+    schema: typeof raw.schema === "string" ? raw.schema : undefined,
+    description: typeof raw.description === "string" ? raw.description : undefined,
+    configured_runtimes: configuredRuntimes,
+    preferred_runtime: carrier.preferred_runtime,
+    preferred_runtime_configured: Boolean(carrier.preferred_runtime && configuredRuntimes.includes(carrier.preferred_runtime)),
+    runtimes: runtimeSummaries
+  };
+}
+
+function runtimeSmokeLine(carrier?: RuntimeSmokeCarrier | null): string {
+  const summary = runtimeSmokeSummaryFromCarrier(carrier);
+  if (!summary?.configured) return "no runtime smoke probe";
+  const runtimes = summary.configured_runtimes ?? [];
+  const preferred = summary.preferred_runtime;
+  const selected = preferred && summary.preferred_runtime_configured ? preferred : runtimes[0];
+  const detail = selected ? summary.runtimes?.[selected] : undefined;
+  const shape = detail?.has_prompt
+    ? `${detail.prompt_node_count ?? 0} native prompt node${detail.prompt_node_count === 1 ? "" : "s"}`
+    : detail?.has_request
+      ? `${detail.request_key_count ?? 0} request key${detail.request_key_count === 1 ? "" : "s"}`
+      : detail?.has_payload
+        ? `${detail.payload_key_count ?? 0} payload key${detail.payload_key_count === 1 ? "" : "s"}`
+        : "probe payload";
+  const runtimeText = summary.preferred_runtime_configured
+    ? `${selected} smoke probe`
+    : `smoke probe for ${runtimes.join(", ") || "runtime"}`;
+  return `${runtimeText} / ${shape}${detail?.timeout_seconds ? ` / ${detail.timeout_seconds}s timeout` : ""}`;
+}
 
 function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: AdminMetrics | null }) {
   const policy: Partial<ResourcePolicyValues> = status?.resource_policy ?? {};
@@ -1988,6 +2118,7 @@ function Models() {
           <span>{plan.model.display_name} / {plan.model.license.name} / {formatBytes(plan.total_size_bytes)}</span>
           <small>{plan.resource_decision.label}: {plan.resource_decision.reason}</small>
           <small>{plan.runtime_views.map((view) => `${view.runtime}: ${view.container_path}`).join(" / ")}</small>
+          {runtimeSmokeSummaryFromCarrier(plan.model)?.configured && <small>Smoke: {runtimeSmokeLine(plan.model)}</small>}
           {Boolean(plan.archive_inspections?.length) && <small>{plan.archive_inspections.map(formatArchiveInspection).join(" / ")}</small>}
           {plan.blockers.length > 0 && <small>{plan.blockers.join("; ")}</small>}
         </div>
@@ -1998,6 +2129,7 @@ function Models() {
           <span>{formatBytes(downloadPlan.existing_partial_bytes)} staged / {formatBytes(downloadPlan.target_size_bytes)} total</span>
           <small>{downloadPlan.model.license.name} / {downloadPlan.model.license.redistribution}{downloadPlan.requires_license_acceptance ? ` / licence ${downloadPlan.license_accepted ? "accepted" : "acceptance required"}` : ""}</small>
           <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
+          {runtimeSmokeSummaryFromCarrier(downloadPlan.model)?.configured && <small>Smoke: {runtimeSmokeLine(downloadPlan.model)}</small>}
           {downloadPlan.files.length > 1 && <small>{downloadPlan.files.map((file) => file.path).join(" / ")}</small>}
           {downloadPlan.blockers.length > 0 && <small>{downloadPlan.blockers.join("; ")}</small>}
         </div>
@@ -2028,6 +2160,7 @@ function Models() {
             {smokeResult.measurement?.resource_label ? ` / ${smokeResult.measurement.resource_label}` : ""}
             {smokeResult.measurement?.resource_decision?.reason ? ` / ${smokeResult.measurement.resource_decision.reason}` : ""}
           </small>
+          <small>Configured smoke: {runtimeSmokeLine(smokeResult.model)}{smokeResult.smoke_test.hook?.strategy ? ` / hook ${smokeResult.smoke_test.hook.strategy}` : ""}</small>
           {(smokeResult.smoke_test.error || smokeResult.smoke_test.reason) && <small>{smokeResult.smoke_test.error ?? smokeResult.smoke_test.reason}</small>}
         </div>
       )}
@@ -2109,7 +2242,7 @@ function Models() {
         <h3>Catalog Recommendations</h3>
       </div>
       <table>
-        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Policy</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Smoke</th><th>Policy</th><th>Actions</th></tr></thead>
         <tbody>
           {catalog.map((model) => (
             <tr key={`${model.id}@${model.version}`}>
@@ -2119,6 +2252,7 @@ function Models() {
               </td>
               <td>{model.status}<small>{model.modality}{model.operations?.length ? ` / ${model.operations.join(", ")}` : ""}</small></td>
               <td>{model.preferred_runtime}</td>
+              <td>{runtimeSmokeLine(model)}</td>
               <td>{model.resource_label}<small>{model.license?.name ?? "licence unknown"} / {model.license?.redistribution ?? "redistribution unknown"}</small></td>
               <td>
                 <div className="table-actions">
@@ -2130,7 +2264,7 @@ function Models() {
               </td>
             </tr>
           ))}
-          {!catalog.length && <tr><td colSpan={5}>No catalog recommendations loaded</td></tr>}
+          {!catalog.length && <tr><td colSpan={6}>No catalog recommendations loaded</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">
@@ -2138,7 +2272,7 @@ function Models() {
         <h3>Installed Records</h3>
       </div>
       <table>
-        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Views</th><th>Policy</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Model</th><th>Status</th><th>Runtime</th><th>Views</th><th>Smoke</th><th>Policy</th><th>Actions</th></tr></thead>
         <tbody>
           {records.map((record) => (
             <tr key={`${record.id}@${record.version}`}>
@@ -2146,6 +2280,7 @@ function Models() {
               <td>{record.status}<small>{record.modality}</small></td>
               <td>{record.preferred_runtime}</td>
               <td>{(record.runtime_views ?? []).map((view) => view.runtime).join(", ") || "none"}</td>
+              <td>{runtimeSmokeLine(record)}{runtimeSmokeSummaryFromCarrier(record)?.description && <small>{runtimeSmokeSummaryFromCarrier(record)?.description}</small>}</td>
               <td>{record.resource_label}</td>
               <td>
                 <div className="table-actions">
@@ -2157,7 +2292,7 @@ function Models() {
               </td>
             </tr>
           ))}
-          {!records.length && <tr><td colSpan={6}>No installed model records</td></tr>}
+          {!records.length && <tr><td colSpan={7}>No installed model records</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">
@@ -5381,6 +5516,44 @@ function workflowDraftPayload(workflow: PublishedWorkflow): Record<string, unkno
   };
 }
 
+function workflowExecutionLine(workflow?: PublishedWorkflow | null): string {
+  const summary = workflow?.execution_summary;
+  if (!summary) return workflow ? `${workflow.backend_policy} / ${workflow.runtime_policy}` : "execution unresolved";
+  const runtime = summary.selected_runtime ?? summary.runtime_candidates?.join(", ") ?? "runtime unresolved";
+  const backing = summary.server_side_comfyui_required
+    ? "ComfyUI required"
+    : summary.server_side_comfyui_allowed && summary.non_comfy_allowed
+      ? "ComfyUI or non-Comfy"
+      : "non-Comfy required";
+  const lease = summary.requires_gpu_lease ? "GPU lease" : "no GPU lease";
+  return `${summary.locality ?? "local"} / ${runtime} / ${backing} / ${lease}`;
+}
+
+function workflowExecutionStats(workflow?: PublishedWorkflow | null): string {
+  const summary = workflow?.execution_summary;
+  if (!summary) return "no execution summary";
+  const nodes = summary.workflow_json_node_count ?? 0;
+  const parameters = summary.input_parameter_count ?? 0;
+  const required = summary.required_parameter_count ?? 0;
+  const mappings = (summary.comfyui_parameter_mapping_count ?? 0) + (summary.runtime_parameter_mapping_count ?? 0);
+  const blockers = summary.blocker_count ?? 0;
+  return `${summary.queue_class ?? "queue"} / ${nodes} graph node${nodes === 1 ? "" : "s"} / ${parameters} input${parameters === 1 ? "" : "s"} (${required} required) / ${mappings} mapping${mappings === 1 ? "" : "s"} / ${blockers} blocker${blockers === 1 ? "" : "s"}`;
+}
+
+function workflowDependencyDetail(dependency: WorkflowDependency): string {
+  if (dependency.type === "model") {
+    const resolved = dependency.resolved_model?.version
+      ? `${dependency.resolved_model.id ?? dependency.id}@${dependency.resolved_model.version}`
+      : dependency.resolved_model?.id;
+    const runtime = dependency.preferred_runtime ?? dependency.runtimes?.join(", ");
+    return [resolved, runtime, dependency.resource_label].filter(Boolean).join(" / ");
+  }
+  if (dependency.type === "node") {
+    return dependency.version ? dependency.version.slice(0, 12) : "";
+  }
+  return dependency.reason ?? "";
+}
+
 function Workflows() {
   const [workflows, setWorkflows] = useState<PublishedWorkflow[]>([]);
   const [workflowVersions, setWorkflowVersions] = useState<PublishedWorkflow[]>([]);
@@ -5716,6 +5889,8 @@ function Workflows() {
           <strong>{validation.id}@{validation.version} {validation.status}</strong>
           <span>{validation.display_name} / {validation.modality} / {validation.model_alias}</span>
           <small>{validation.backend_policy} / {validation.runtime_policy} / {validation.output_mime_types.join(", ")}</small>
+          <small>{workflowExecutionLine(validation)}</small>
+          <small>{workflowExecutionStats(validation)}</small>
         </div>
       )}
 
@@ -5724,6 +5899,8 @@ function Workflows() {
           <strong>{workflowTest.workflow.id}@{workflowTest.workflow.version} test {workflowTest.status}</strong>
           <span>{workflowTest.can_submit ? "ready to submit" : "blocked by dependencies"} / {workflowTest.request.model} / {workflowTest.request.runtime_policy}</span>
           <small>{workflowTest.request.input.parameter_count} parameter{workflowTest.request.input.parameter_count === 1 ? "" : "s"} checked: {workflowTest.request.input.parameter_names.join(", ") || "none"}</small>
+          <small>{workflowExecutionLine(workflowTest.workflow)}</small>
+          <small>{workflowExecutionStats(workflowTest.workflow)}</small>
         </div>
       )}
 
@@ -5731,13 +5908,14 @@ function Workflows() {
         <div className="stack">
           <h3>Published Workflows</h3>
           <table>
-            <thead><tr><th>Workflow</th><th>Status</th><th>Backend</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Workflow</th><th>Status</th><th>Backend</th><th>Execution</th><th>Actions</th></tr></thead>
             <tbody>
               {workflows.map((workflow) => (
                 <tr key={`${workflow.id}@${workflow.version}`}>
                   <td><code>{workflow.display_name}</code><small>{workflow.id}@{workflow.version}</small></td>
                   <td><span className={`status-pill ${workflow.status}`}>{workflow.status}</span><small>{workflow.publishable ? "ready" : "needs dependencies"}</small></td>
                   <td>{workflow.backend_policy}<small>{workflow.modality} / {workflow.model_alias}</small></td>
+                  <td>{workflowExecutionLine(workflow)}<small>{workflowExecutionStats(workflow)}</small></td>
                   <td>
                     <div className="table-actions">
                       <button title={`Test ${workflow.id}`} onClick={() => testWorkflow(workflow)} disabled={busy}><PlayCircle size={16} /></button>
@@ -5748,7 +5926,7 @@ function Workflows() {
                   </td>
                 </tr>
               ))}
-              {!workflows.length && <tr><td colSpan={4}>No published workflows recorded</td></tr>}
+              {!workflows.length && <tr><td colSpan={5}>No published workflows recorded</td></tr>}
             </tbody>
           </table>
           {Boolean(workflowVersions.length) && (
@@ -5758,12 +5936,13 @@ function Workflows() {
                 <h3>Workflow Versions</h3>
               </div>
               <table>
-                <thead><tr><th>Version</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Version</th><th>Status</th><th>Execution</th><th>Updated</th><th>Actions</th></tr></thead>
                 <tbody>
                   {workflowVersions.map((workflow) => (
                     <tr key={`version-${workflow.id}@${workflow.version}`}>
                       <td><code>{workflow.id}@{workflow.version}</code><small>{workflow.display_name}</small></td>
                       <td><span className={`status-pill ${workflow.unpublished_at ? "warning" : "ok"}`}>{workflow.status}</span><small>{workflow.publishable ? "ready" : "needs dependencies"}</small></td>
+                      <td>{workflowExecutionLine(workflow)}<small>{workflowExecutionStats(workflow)}</small></td>
                       <td>{workflow.updated_at ? formatDateTime(workflow.updated_at) : "unknown"}</td>
                       <td>
                         <div className="table-actions">
@@ -5804,17 +5983,18 @@ function Workflows() {
             <h3>Dependencies</h3>
           </div>
           <table>
-            <thead><tr><th>Type</th><th>ID</th><th>Status</th><th>Reason</th></tr></thead>
+            <thead><tr><th>Type</th><th>ID</th><th>Status</th><th>Detail</th><th>Reason</th></tr></thead>
             <tbody>
               {dependencyRows.map((dependency) => (
                 <tr key={`${dependency.type}-${dependency.id}`}>
                   <td>{dependency.type}</td>
                   <td><code>{dependency.id}</code><small>{dependency.version ?? ""}</small></td>
                   <td><span className={`status-pill ${dependency.ready ? "ok" : "warning"}`}>{dependency.status ?? (dependency.ready ? "ready" : "blocked")}</span></td>
+                  <td>{workflowDependencyDetail(dependency)}</td>
                   <td>{dependency.reason ?? ""}</td>
                 </tr>
               ))}
-              {!dependencyRows.length && <tr><td colSpan={4}>No dependency report selected</td></tr>}
+              {!dependencyRows.length && <tr><td colSpan={5}>No dependency report selected</td></tr>}
             </tbody>
           </table>
         </div>

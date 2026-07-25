@@ -245,6 +245,52 @@ class ModelManifest:
         )
 
 
+def runtime_smoke_config_public_summary(config: Any) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {"configured": False}
+    prompt = config.get("prompt") if isinstance(config.get("prompt"), dict) else None
+    request = config.get("request") if isinstance(config.get("request"), dict) else None
+    payload = config.get("payload") if isinstance(config.get("payload"), dict) else None
+    timeout_seconds = config.get("timeout_seconds")
+    return _without_none(
+        {
+            "configured": True,
+            "has_prompt": prompt is not None,
+            "prompt_node_count": len(prompt) if prompt is not None else None,
+            "has_request": request is not None,
+            "request_key_count": len(request) if request is not None else None,
+            "has_payload": payload is not None,
+            "payload_key_count": len(payload) if payload is not None else None,
+            "timeout_seconds": timeout_seconds if isinstance(timeout_seconds, (int, float)) and timeout_seconds > 0 else None,
+        }
+    )
+
+
+def runtime_smoke_public_summary(runtime_smoke: Any, preferred_runtime: str = "") -> dict[str, Any]:
+    if not isinstance(runtime_smoke, dict) or not runtime_smoke:
+        return {"configured": False, "configured_runtimes": [], "preferred_runtime_configured": False}
+    configured_runtimes = sorted(runtime for runtime in RUNTIME_NAMES if isinstance(runtime_smoke.get(runtime), dict))
+    runtime_summaries = {
+        runtime: runtime_smoke_config_public_summary(runtime_smoke.get(runtime))
+        for runtime in configured_runtimes
+    }
+    return _without_none(
+        {
+            "configured": bool(configured_runtimes),
+            "schema": runtime_smoke.get("schema") if isinstance(runtime_smoke.get("schema"), str) else None,
+            "description": runtime_smoke.get("description") if isinstance(runtime_smoke.get("description"), str) else None,
+            "configured_runtimes": configured_runtimes,
+            "preferred_runtime": preferred_runtime or None,
+            "preferred_runtime_configured": preferred_runtime in configured_runtimes if preferred_runtime else False,
+            "runtimes": runtime_summaries,
+        }
+    )
+
+
+def runtime_smoke_summary_for_manifest(manifest: ModelManifest) -> dict[str, Any]:
+    return runtime_smoke_public_summary(manifest.runtime_smoke, manifest.preferred_runtime)
+
+
 @dataclass(frozen=True)
 class AliasDefinition:
     alias: str
@@ -407,6 +453,7 @@ class ModelCatalog:
             "status": manifest.installation_status,
             "resource_label": decision.label,
             "resource_decision": asdict(decision),
+            "runtime_smoke_summary": runtime_smoke_summary_for_manifest(manifest),
             "downloadable": (
                 manifest.installation_status == "installed"
                 and manifest.license.redistribution == "downloadable"

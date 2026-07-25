@@ -32,6 +32,8 @@ DEFAULT_MAX_STAGED_MEDIA_BYTES = 256 * 1024 * 1024
 MAX_WORKFLOW_PRESETS = 16
 MAX_WORKFLOW_PRESET_NAME_LENGTH = 120
 MAX_WORKFLOW_PRESET_DESCRIPTION_LENGTH = 240
+CPU_ONLY_RUNTIMES = {"audio-cpu"}
+EXTERNAL_RUNTIMES = {"openai-compatible", "generic-http"}
 UNSAFE_JSON_KEYS = {"__proto__", "prototype", "constructor"}
 LIMIT_TO_PARAMETER_NAMES = {
     "max_width": ("width",),
@@ -301,10 +303,17 @@ def dependency_report(
             model = model_lookup(dependency.id)
             if model is None:
                 item.update({"status": "missing", "ready": False, "reason": "model or alias is unknown"})
-            elif model.get("resolved_model") is None and model.get("status") in {"uninstalled", "cpu-placeholder"}:
-                item.update({"status": model.get("status"), "ready": False, "reason": "model alias is not backed by installable production weights"})
             else:
-                item.update({"status": model.get("status", "installed"), "ready": True})
+                item.update(model_dependency_public_fields(model))
+                status = str(model.get("status") or "installed")
+                has_resolved_alias = isinstance(model.get("resolved_model"), dict)
+                is_installed_manifest = status == "installed" and model.get("object") != "model"
+                if model.get("enabled") is False:
+                    item.update({"status": "disabled", "ready": False, "reason": "model alias is disabled by policy"})
+                elif not has_resolved_alias and not is_installed_manifest:
+                    item.update({"status": status, "ready": False, "reason": "model alias is not backed by installable production weights"})
+                else:
+                    item.update({"status": status, "ready": True})
         elif dependency.type == "runtime":
             if dependency.id in available_runtimes:
                 item.update({"status": "available", "ready": True})
@@ -316,6 +325,33 @@ def dependency_report(
         ready = ready and bool(item["ready"])
         dependencies.append(item)
     return {"ready": ready, "dependencies": dependencies}
+
+
+def model_dependency_public_fields(model: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if isinstance(model.get("enabled"), bool):
+        fields["enabled"] = model["enabled"]
+    if isinstance(model.get("preferred_runtime"), str):
+        fields["preferred_runtime"] = model["preferred_runtime"]
+    runtimes = model.get("runtimes")
+    if isinstance(runtimes, list):
+        safe_runtimes = [runtime for runtime in runtimes if isinstance(runtime, str) and RUNTIME_NAME_RE.match(runtime)]
+        if safe_runtimes:
+            fields["runtimes"] = safe_runtimes
+    if isinstance(model.get("resource_label"), str):
+        fields["resource_label"] = model["resource_label"]
+    resolved = model.get("resolved_model")
+    if isinstance(resolved, dict):
+        public_resolved = {
+            key: value
+            for key, value in resolved.items()
+            if key in {"id", "version", "display_name"} and isinstance(value, str) and value
+        }
+        if public_resolved:
+            fields["resolved_model"] = public_resolved
+    elif isinstance(model.get("id"), str) and isinstance(model.get("version"), str):
+        fields["resolved_model"] = {"id": model["id"], "version": model["version"]}
+    return fields
 
 
 def node_dependency_status(
@@ -346,6 +382,132 @@ def node_dependency_status(
     return {key: value for key, value in result.items() if value is not None}
 
 
+def workflow_execution_summary(workflow: dict[str, Any], dependency_status: dict[str, Any]) -> dict[str, Any]:
+    dependencies = dependency_status.get("dependencies") if isinstance(dependency_status, dict) else []
+    dependencies = dependencies if isinstance(dependencies, list) else []
+    model_dependencies = [dependency for dependency in dependencies if isinstance(dependency, dict) and dependency.get("type") == "model"]
+    runtime_dependencies = [dependency for dependency in dependencies if isinstance(dependency, dict) and dependency.get("type") == "runtime"]
+    node_dependencies = [dependency for dependency in dependencies if isinstance(dependency, dict) and dependency.get("type") == "node"]
+    blockers = [
+        {
+            key: dependency[key]
+            for key in ("type", "id", "version", "status", "reason")
+            if key in dependency and isinstance(dependency[key], (str, bool))
+        }
+        for dependency in dependencies
+        if isinstance(dependency, dict) and not dependency.get("ready")
+    ]
+
+    runtime_candidates = workflow_runtime_candidates(workflow, model_dependencies, runtime_dependencies)
+    selected_runtime = selected_workflow_runtime(workflow, model_dependencies, runtime_candidates)
+    locality = workflow_locality(runtime_candidates)
+    requires_gpu_lease = workflow_requires_gpu_lease(workflow, runtime_candidates, selected_runtime)
+    input_properties = workflow.get("input_schema", {}).get("properties", {}) if isinstance(workflow.get("input_schema"), dict) else {}
+    required_parameters = workflow.get("input_schema", {}).get("required", []) if isinstance(workflow.get("input_schema"), dict) else []
+    workflow_json = workflow.get("workflow_json")
+
+    return {
+        "ready": bool(dependency_status.get("ready")) if isinstance(dependency_status, dict) else False,
+        "backend_policy": workflow.get("backend_policy"),
+        "runtime_policy": workflow.get("runtime_policy", "any"),
+        "runtime_candidates": runtime_candidates,
+        "selected_runtime": selected_runtime,
+        "locality": locality,
+        "server_side_comfyui_required": workflow.get("backend_policy") == "comfyui-only",
+        "server_side_comfyui_allowed": workflow.get("backend_policy") != "non-comfy-only" and workflow.get("runtime_policy", "any") != "non_comfy_only",
+        "non_comfy_allowed": workflow.get("backend_policy") != "comfyui-only",
+        "external_runtime_possible": any(runtime in EXTERNAL_RUNTIMES for runtime in runtime_candidates),
+        "requires_gpu_lease": requires_gpu_lease,
+        "queue_class": workflow_queue_class(str(workflow.get("modality") or "")),
+        "workflow_json_node_count": len(workflow_json) if isinstance(workflow_json, dict) else 0,
+        "input_parameter_count": len(input_properties) if isinstance(input_properties, dict) else 0,
+        "required_parameter_count": len(required_parameters) if isinstance(required_parameters, list) else 0,
+        "comfyui_parameter_mapping_count": len(workflow.get("comfyui_parameter_mappings") or []),
+        "runtime_parameter_mapping_count": len(workflow.get("runtime_parameter_mappings") or []),
+        "model_dependency_count": len(model_dependencies),
+        "runtime_dependency_count": len(runtime_dependencies),
+        "node_dependency_count": len(node_dependencies),
+        "blocker_count": len(blockers),
+        "blockers": blockers,
+    }
+
+
+def workflow_runtime_candidates(
+    workflow: dict[str, Any],
+    model_dependencies: list[dict[str, Any]],
+    runtime_dependencies: list[dict[str, Any]],
+) -> list[str]:
+    candidates: list[str] = []
+    ready_runtime_dependencies = [
+        str(dependency.get("id"))
+        for dependency in runtime_dependencies
+        if dependency.get("ready") and isinstance(dependency.get("id"), str)
+    ]
+    if ready_runtime_dependencies:
+        candidates.extend(ready_runtime_dependencies)
+    for dependency in model_dependencies:
+        runtimes = dependency.get("runtimes")
+        if isinstance(runtimes, list):
+            candidates.extend(str(runtime) for runtime in runtimes if isinstance(runtime, str))
+        preferred = dependency.get("preferred_runtime")
+        if isinstance(preferred, str):
+            candidates.append(preferred)
+
+    backend_policy = workflow.get("backend_policy")
+    runtime_policy = workflow.get("runtime_policy", "any")
+    unique = sorted({runtime for runtime in candidates if RUNTIME_NAME_RE.match(runtime)})
+    if backend_policy == "comfyui-only":
+        return ["comfyui"] if "comfyui" in unique else []
+    if backend_policy == "non-comfy-only" or runtime_policy == "non_comfy_only":
+        unique = [runtime for runtime in unique if runtime != "comfyui"]
+    return unique
+
+
+def selected_workflow_runtime(workflow: dict[str, Any], model_dependencies: list[dict[str, Any]], runtime_candidates: list[str]) -> str | None:
+    if not runtime_candidates:
+        return None
+    if workflow.get("backend_policy") == "comfyui-only":
+        return "comfyui" if "comfyui" in runtime_candidates else None
+    if workflow.get("runtime_policy") == "non_comfy_only":
+        non_comfy = [runtime for runtime in runtime_candidates if runtime != "comfyui"]
+        return non_comfy[0] if non_comfy else None
+    for dependency in model_dependencies:
+        preferred = dependency.get("preferred_runtime")
+        if isinstance(preferred, str) and preferred in runtime_candidates:
+            return preferred
+    return runtime_candidates[0]
+
+
+def workflow_locality(runtime_candidates: list[str]) -> str:
+    if not runtime_candidates:
+        return "unresolved"
+    external_count = sum(1 for runtime in runtime_candidates if runtime in EXTERNAL_RUNTIMES)
+    if external_count == len(runtime_candidates):
+        return "external"
+    if external_count:
+        return "local-or-external"
+    return "local"
+
+
+def workflow_requires_gpu_lease(workflow: dict[str, Any], runtime_candidates: list[str], selected_runtime: str | None) -> bool:
+    if selected_runtime in CPU_ONLY_RUNTIMES or selected_runtime in EXTERNAL_RUNTIMES:
+        return False
+    if selected_runtime:
+        return True
+    local_runtime_candidates = [runtime for runtime in runtime_candidates if runtime not in CPU_ONLY_RUNTIMES and runtime not in EXTERNAL_RUNTIMES]
+    if local_runtime_candidates:
+        return True
+    return workflow.get("modality") in {"image", "video"} and workflow.get("backend_policy") != "non-comfy-only"
+
+
+def workflow_queue_class(modality: str) -> str:
+    if modality == "video":
+        return "video"
+    if modality in {"tts", "stt"}:
+        return "interactive_audio"
+    return "single_image"
+
+
 def workflow_record(
     workflow: PublishedWorkflow,
     model_lookup: Callable[[str], dict[str, Any] | None],
@@ -353,10 +515,12 @@ def workflow_record(
     node_pin_lookup: Callable[[str, str | None], ApprovedNodePin | dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     report = dependency_report(workflow, model_lookup, available_runtimes, node_pin_lookup)
+    workflow_payload = workflow.to_dict()
     return {
-        **workflow.to_dict(),
+        **workflow_payload,
         "status": "published" if report["ready"] else "needs_dependencies",
         "dependency_status": report,
+        "execution_summary": workflow_execution_summary(workflow_payload, report),
         "publishable": report["ready"],
     }
 

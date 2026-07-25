@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app.catalog import CatalogError, load_catalog, parse_manifest_payload  # noqa: E402
+from app.catalog import CatalogError, load_catalog, parse_manifest_payload, runtime_smoke_summary_for_manifest  # noqa: E402
 from app.scheduler import ResourcePolicy  # noqa: E402
 
 
@@ -411,6 +411,12 @@ class CatalogTests(unittest.TestCase):
 
         self.assertEqual(manifest.runtime_smoke["comfyui"]["prompt"], prompt)
         self.assertEqual(manifest.to_dict()["runtime_smoke"]["comfyui"]["timeout_seconds"], 90)
+        summary = runtime_smoke_summary_for_manifest(manifest)
+        self.assertTrue(summary["configured"])
+        self.assertEqual(summary["configured_runtimes"], ["comfyui"])
+        self.assertTrue(summary["preferred_runtime_configured"])
+        self.assertEqual(summary["runtimes"]["comfyui"]["prompt_node_count"], 1)
+        self.assertNotIn("B1RuntimeTinyImage", json.dumps(summary))
 
     def test_manifest_runtime_smoke_contract_is_validated(self) -> None:
         base_manifest = {

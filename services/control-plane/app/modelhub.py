@@ -5,7 +5,7 @@ import re
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from .catalog import CatalogError, ModelCatalog
+from .catalog import CatalogError, ModelCatalog, runtime_smoke_public_summary
 
 ACCEPTED_LICENSE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,127}@[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
 MODEL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
@@ -93,6 +93,8 @@ def public_modelhub_metadata(value: Any) -> Any:
     for key, item in value.items():
         if key == "source" and isinstance(item, dict):
             public[key] = redacted_source_metadata(item)
+        elif key == "runtime_smoke" and isinstance(item, dict):
+            public["runtime_smoke_summary"] = runtime_smoke_public_summary(item, str(value.get("preferred_runtime") or ""))
         else:
             public[key] = public_modelhub_metadata(item)
     return public

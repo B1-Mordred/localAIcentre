@@ -73,12 +73,17 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn("<ArtifactPreview artifact={outputPreview} />", self.source)
 
     def test_jobs_show_actual_local_external_and_comfy_backing(self) -> None:
+        self.assertIn("type WorkflowExecutionSummary", self.source)
+        self.assertIn("execution_summary?: WorkflowExecutionSummary;", self.source)
+        self.assertIn("function workflowExecutionLine", self.source)
         self.assertIn("function jobBacking(job: MediaJob | null", self.source)
         self.assertIn("local / ComfyUI-backed", self.source)
         self.assertIn("external / non-Comfy-backed", self.source)
         self.assertIn("local / non-Comfy-backed", self.source)
         self.assertIn('aria-label="Job backing"', self.source)
         self.assertIn("<div><dt>Backing</dt><dd>{backing.label}</dd></div>", self.source)
+        self.assertIn("<div><dt>Plan</dt><dd>{workflow ? workflowExecutionLine(workflow) : \"none\"}</dd></div>", self.source)
+        self.assertIn("workflowExecutionLine(workflow)", self.source)
         self.assertIn("<td>{job.runtime}<small>{jobBacking(job).label}</small></td>", self.source)
 
     def test_workflow_presets_are_rendered_and_merge_safe_values(self) -> None:

@@ -61,6 +61,23 @@ type WorkflowPreset = {
   values: Record<string, JsonValue>;
 };
 
+type WorkflowExecutionSummary = {
+  ready?: boolean;
+  runtime_candidates?: string[];
+  selected_runtime?: string | null;
+  locality?: string;
+  server_side_comfyui_required?: boolean;
+  server_side_comfyui_allowed?: boolean;
+  non_comfy_allowed?: boolean;
+  external_runtime_possible?: boolean;
+  requires_gpu_lease?: boolean;
+  queue_class?: string;
+  workflow_json_node_count?: number;
+  input_parameter_count?: number;
+  required_parameter_count?: number;
+  blocker_count?: number;
+};
+
 type PublishedWorkflow = {
   id: string;
   version: string;
@@ -84,6 +101,7 @@ type PublishedWorkflow = {
     ready?: boolean;
     dependencies?: Array<{ type: string; id: string; ready?: boolean; status?: string; reason?: string }>;
   };
+  execution_summary?: WorkflowExecutionSummary;
   publishable: boolean;
 };
 
@@ -330,9 +348,20 @@ function workflowIcon(workflow: PublishedWorkflow) {
 }
 
 function backendLabel(workflow: PublishedWorkflow): string {
+  const summary = workflow.execution_summary;
+  if (summary?.server_side_comfyui_required) return "local ComfyUI";
+  if (summary?.server_side_comfyui_allowed && summary?.non_comfy_allowed) return "local selectable";
   if (workflow.backend_policy === "comfyui-only") return "local ComfyUI";
   if (workflow.backend_policy === "non-comfy-only") return "non-Comfy local";
   return "local selectable";
+}
+
+function workflowExecutionLine(workflow: PublishedWorkflow): string {
+  const summary = workflow.execution_summary;
+  if (!summary) return `${backendLabel(workflow)} / ${workflow.model_alias}`;
+  const runtime = summary.selected_runtime ?? summary.runtime_candidates?.join(", ") ?? workflow.model_alias;
+  const lease = summary.requires_gpu_lease ? "GPU lease" : "no GPU lease";
+  return `${summary.locality ?? "local"} / ${runtime} / ${lease}`;
 }
 
 function jobBacking(job: MediaJob | null, workflow?: PublishedWorkflow | null): { locality: string; backend: string; label: string; className: string } {
@@ -804,6 +833,7 @@ function WorkflowList({
           {workflowIcon(workflow)}
           <span>{workflow.display_name}</span>
           <small>{backendLabel(workflow)} / {workflow.model_alias}</small>
+          <small>{workflowExecutionLine(workflow)}</small>
         </button>
       ))}
     </div>
@@ -852,6 +882,7 @@ function JobSummary({
         <div><dt>Progress</dt><dd>{job?.progress ?? 0}%</dd></div>
         <div><dt>Events</dt><dd>{eventStatus || "idle"}</dd></div>
         <div><dt>Backing</dt><dd>{backing.label}</dd></div>
+        <div><dt>Plan</dt><dd>{workflow ? workflowExecutionLine(workflow) : "none"}</dd></div>
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>
