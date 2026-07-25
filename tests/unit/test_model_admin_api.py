@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -54,11 +54,13 @@ class FakeDatabase:
         *,
         active_jobs: int = 0,
         voice_profiles: list[dict[str, Any]] | None = None,
+        runtime_reservations: list[dict[str, Any]] | None = None,
     ) -> None:
         self.row = row
         self.records = records
         self.active_jobs = active_jobs
         self.voice_profiles = voice_profiles or []
+        self.runtime_reservations = runtime_reservations or []
         self.alias_policies: dict[str, dict[str, Any]] = {}
         self.encrypted_secrets: dict[str, dict[str, Any]] = {}
         self.model_downloads: list[dict[str, Any]] = []
@@ -99,6 +101,14 @@ class FakeDatabase:
         rows = []
         for row in self.voice_profiles:
             if row.get("deleted_at") is not None and not include_deleted:
+                continue
+            rows.append(dict(row))
+        return rows
+
+    async def list_active_runtime_reservations(self, runtime_names: list[str] | None = None) -> list[dict[str, Any]]:
+        rows = []
+        for row in self.runtime_reservations:
+            if runtime_names and row.get("runtime") not in runtime_names:
                 continue
             rows.append(dict(row))
         return rows
@@ -364,6 +374,71 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(result["dependent_voice_profiles"][0]["id"], "vp_chat")
             self.assertEqual(result["active_voice_profiles"][0]["model_alias"], "chat-default")
 
+    def test_blob_quarantine_plan_blocks_active_runtime_reservation_dependency(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            row = {
+                "id": "chat-small",
+                "version": "1.0.0",
+                "status": "quarantined",
+                "manifest": manifest_payload(digest, len(data)),
+            }
+            reservation = {
+                "id": "reservation_1",
+                "owner_id": "batch-client",
+                "runtime": "localai",
+                "model_alias": "chat-default",
+                "resolved_model_version": "chat-small@1.0.0",
+                "reason": "sensitive reason text",
+                "idempotency_key": "secret-idempotency-key",
+                "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+            }
+            self.patch_common(root, FakeDatabase(row, [row], runtime_reservations=[reservation]))
+
+            result = asyncio.run(main.admin_model_blob_quarantine_plan("chat-small", "1.0.0"))
+
+            self.assertEqual(result["status"], "blocked")
+            self.assertFalse(result["can_quarantine"])
+            self.assertIn("model is referenced by active runtime reservations", result["blockers"])
+            self.assertEqual(result["active_runtime_reservations"][0]["id"], "reservation_1")
+            self.assertEqual(result["active_runtime_reservations"][0]["model_alias"], "chat-default")
+            self.assertNotIn("reason", result["active_runtime_reservations"][0])
+            self.assertNotIn("idempotency_key", result["active_runtime_reservations"][0])
+
+    def test_blob_quarantine_plan_ignores_same_alias_reservation_for_replacement_model(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            row = {
+                "id": "chat-small",
+                "version": "1.0.0",
+                "status": "quarantined",
+                "manifest": manifest_payload(digest, len(data)),
+            }
+            reservation = {
+                "id": "reservation_replacement",
+                "owner_id": "batch-client",
+                "runtime": "localai",
+                "model_alias": "chat-default",
+                "resolved_model_version": "chat-large@2.0.0",
+                "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+            }
+            self.patch_common(root, FakeDatabase(row, [row], runtime_reservations=[reservation]))
+
+            result = asyncio.run(main.admin_model_blob_quarantine_plan("chat-small", "1.0.0"))
+
+            self.assertTrue(result["can_quarantine"])
+            self.assertEqual(result["active_runtime_reservations"], [])
+
     def test_model_remove_blocks_active_voice_profile_dependency(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()
@@ -400,6 +475,44 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["message"], "model is referenced by active voice profiles")
         self.assertEqual(raised.exception.detail["dependent_voice_profiles"][0]["id"], "vp_active")
+
+    def test_model_remove_blocks_active_runtime_reservation_dependency(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        row = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "status": "installed",
+            "manifest": manifest_payload(digest, len(data)),
+        }
+        reservation = {
+            "id": "reservation_model_ref",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-quality",
+            "resolved_model_version": "chat-small@1.0.0",
+            "reason": "operator note",
+            "idempotency_key": "reservation-key",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase(row, [row], runtime_reservations=[reservation]))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_remove(
+                        "chat-small",
+                        "1.0.0",
+                        main.ModelRemoveRequest(confirm=True),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "model is referenced by active runtime reservations")
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["id"], "reservation_model_ref")
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["resolved_model_version"], "chat-small@1.0.0")
+        self.assertNotIn("reason", raised.exception.detail["active_runtime_reservations"][0])
+        self.assertNotIn("idempotency_key", raised.exception.detail["active_runtime_reservations"][0])
 
     def test_model_remove_reports_disabled_voice_profile_dependency_before_confirmation(self) -> None:
         data = b"tiny model"
@@ -466,6 +579,49 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(audit_events[0]["event_type"], "model.blobs_quarantined")
             self.assertEqual(audit_events[0]["target_id"], "chat-small@1.0.0")
             self.assertEqual(audit_events[0]["metadata"]["moved"][0]["sha256"], digest)
+
+    def test_blob_quarantine_endpoint_blocks_active_runtime_reservation_dependency(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "models" / "blobs" / digest
+            source.parent.mkdir(parents=True)
+            source.write_bytes(data)
+            row = {
+                "id": "chat-small",
+                "version": "1.0.0",
+                "status": "quarantined",
+                "manifest": manifest_payload(digest, len(data)),
+            }
+            reservation = {
+                "id": "reservation_2",
+                "owner_id": "batch-client",
+                "runtime": "localai",
+                "model_alias": "chat-default",
+                "resolved_model_version": "chat-small@1.0.0",
+                "reason": "must stay private",
+                "idempotency_key": "must-stay-private",
+                "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+            }
+            self.patch_common(root, FakeDatabase(row, [row], runtime_reservations=[reservation]))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_blob_quarantine(
+                        "chat-small",
+                        "1.0.0",
+                        main.ModelBlobQuarantineRequest(confirm=True),
+                    )
+                )
+
+            self.assertTrue(source.exists())
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "model is referenced by active runtime reservations")
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["id"], "reservation_2")
+        self.assertNotIn("must stay private", str(raised.exception.detail))
+        self.assertNotIn("must-stay-private", str(raised.exception.detail))
 
     def test_model_quarantine_cleanup_plans_deletes_and_records_audit(self) -> None:
         data = b"quarantined model blob"

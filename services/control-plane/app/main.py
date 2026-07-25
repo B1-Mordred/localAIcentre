@@ -5184,6 +5184,28 @@ async def dependent_voice_profiles_for_model(model_id: str, aliases: list[str]) 
     return profiles
 
 
+async def active_runtime_reservations_for_model(model_ref: str, aliases: list[str]) -> list[dict[str, Any]]:
+    alias_set = set(aliases)
+    reservations: list[dict[str, Any]] = []
+    for row in await database.list_active_runtime_reservations(GPU_RUNTIMES):
+        resolved_model_version = row.get("resolved_model_version")
+        matches_immutable_model = resolved_model_version == model_ref
+        matches_legacy_alias_only = not resolved_model_version and row.get("model_alias") in alias_set
+        if not (matches_immutable_model or matches_legacy_alias_only):
+            continue
+        reservations.append(
+            {
+                "id": row["id"],
+                "owner_id": row.get("owner_id"),
+                "runtime": row.get("runtime"),
+                "model_alias": row.get("model_alias"),
+                "resolved_model_version": row.get("resolved_model_version"),
+                "expires_at": row.get("expires_at"),
+            }
+        )
+    return reservations
+
+
 def active_voice_profile_dependencies(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [profile for profile in profiles if profile.get("status") == "active"]
 
@@ -8370,6 +8392,7 @@ async def admin_model_remove(
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
     dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
     active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
+    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
     if active_jobs:
         raise HTTPException(
             status_code=409,
@@ -8379,6 +8402,7 @@ async def admin_model_remove(
                 "dependent_workflows": dependent_workflows,
                 "dependent_voice_profiles": dependent_voice_profiles,
                 "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
             },
         )
     if active_voice_profiles:
@@ -8390,6 +8414,19 @@ async def admin_model_remove(
                 "dependent_workflows": dependent_workflows,
                 "dependent_voice_profiles": dependent_voice_profiles,
                 "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
+            },
+        )
+    if active_runtime_reservations:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "model is referenced by active runtime reservations",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
             },
         )
     if not request.confirm:
@@ -8401,6 +8438,7 @@ async def admin_model_remove(
                 "dependent_workflows": dependent_workflows,
                 "dependent_voice_profiles": dependent_voice_profiles,
                 "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
                 "quarantine": "database record will be marked quarantined; runtime views will be moved to recoverable quarantine; blobs remain recoverable under the authoritative blob store",
             },
         )
@@ -8423,6 +8461,7 @@ async def admin_model_remove(
             "aliases": manifest.aliases,
             "dependent_workflows": dependent_workflows,
             "dependent_voice_profiles": dependent_voice_profiles,
+            "active_runtime_reservations": active_runtime_reservations,
             "runtime_view_quarantine": view_quarantine,
             "workflow_dependencies_refreshed": workflows["count"],
         },
@@ -8433,6 +8472,7 @@ async def admin_model_remove(
         "dependent_workflows": dependent_workflows,
         "dependent_voice_profiles": dependent_voice_profiles,
         "active_voice_profiles": active_voice_profiles,
+        "active_runtime_reservations": active_runtime_reservations,
         "runtime_view_quarantine": view_quarantine,
         "workflow_refresh": workflows,
     }
@@ -8452,6 +8492,7 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
     dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
     active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
+    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
     records = await database.list_model_records()
     plan = model_lifecycle.build_blob_quarantine_plan(manifest, data_root_path(), records, model_status=row["status"])
     if active_jobs:
@@ -8468,12 +8509,20 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
             "can_quarantine": False,
             "blockers": [*plan.get("blockers", []), "model is referenced by active voice profiles"],
         }
+    if active_runtime_reservations:
+        plan = {
+            **plan,
+            "status": "blocked",
+            "can_quarantine": False,
+            "blockers": [*plan.get("blockers", []), "model is referenced by active runtime reservations"],
+        }
     return {
         **jsonable_encoder(plan),
         "active_jobs": active_jobs,
         "dependent_workflows": dependent_workflows,
         "dependent_voice_profiles": dependent_voice_profiles,
         "active_voice_profiles": active_voice_profiles,
+        "active_runtime_reservations": active_runtime_reservations,
     }
 
 
@@ -8496,6 +8545,7 @@ async def admin_model_blob_quarantine(
     dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
     dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
     active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
+    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
     if active_jobs:
         raise HTTPException(
             status_code=409,
@@ -8505,6 +8555,7 @@ async def admin_model_blob_quarantine(
                 "dependent_workflows": dependent_workflows,
                 "dependent_voice_profiles": dependent_voice_profiles,
                 "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
             },
         )
     if active_voice_profiles:
@@ -8516,6 +8567,19 @@ async def admin_model_blob_quarantine(
                 "dependent_workflows": dependent_workflows,
                 "dependent_voice_profiles": dependent_voice_profiles,
                 "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
+            },
+        )
+    if active_runtime_reservations:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "model is referenced by active runtime reservations",
+                "active_jobs": active_jobs,
+                "dependent_workflows": dependent_workflows,
+                "dependent_voice_profiles": dependent_voice_profiles,
+                "active_voice_profiles": active_voice_profiles,
+                "active_runtime_reservations": active_runtime_reservations,
             },
         )
     records = await database.list_model_records()
@@ -8542,6 +8606,7 @@ async def admin_model_blob_quarantine(
             "total_size_bytes": result["total_size_bytes"],
             "dependent_workflows": dependent_workflows,
             "dependent_voice_profiles": dependent_voice_profiles,
+            "active_runtime_reservations": active_runtime_reservations,
         },
     )
     return {
@@ -8550,6 +8615,7 @@ async def admin_model_blob_quarantine(
         "dependent_workflows": dependent_workflows,
         "dependent_voice_profiles": dependent_voice_profiles,
         "active_voice_profiles": active_voice_profiles,
+        "active_runtime_reservations": active_runtime_reservations,
     }
 
 
