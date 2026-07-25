@@ -97,7 +97,7 @@ approved_node_pins: dict[tuple[str, str], ApprovedNodePin] | None = None
 job_runners: list[Any] = []
 job_runner_tasks: list[asyncio.Task[None]] = []
 control_plane_started_at: datetime | None = None
-comfyui_native_prompt_resume: dict[str, int] | None = None
+comfyui_native_prompt_resume: dict[str, Any] | None = None
 backup_operation_lock = asyncio.Lock()
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("b1_current_request", default=None)
 modelhub_blob_rate_windows: dict[str, tuple[int, float]] = {}
@@ -3162,19 +3162,31 @@ def schedule_comfyui_prompt_tracker(job_id: str, prompt_id: str, lease_owner: st
     task.add_done_callback(discard)
 
 
-async def resume_comfyui_native_prompt_trackers(limit: int = 500) -> dict[str, int]:
+async def resume_comfyui_native_prompt_trackers(limit: int = 500) -> dict[str, Any]:
     rows = await database.list_resumable_comfyui_native_jobs(limit=limit)
     resumed = 0
     skipped = 0
+    resumed_job_ids: list[str] = []
+    native_prompt_ids: list[str] = []
     for row in rows:
         job_id = str(row.get("id") or "")
         prompt_id = row.get("native_prompt_id")
         if not job_id or not isinstance(prompt_id, str) or not prompt_id.strip():
             skipped += 1
             continue
-        schedule_comfyui_prompt_tracker(job_id, prompt_id.strip(), f"comfyui-prompt-{job_id}")
+        normalized_prompt_id = prompt_id.strip()
+        schedule_comfyui_prompt_tracker(job_id, normalized_prompt_id, f"comfyui-prompt-{job_id}")
         resumed += 1
-    return {"checked": len(rows), "resumed": resumed, "skipped": skipped}
+        if len(resumed_job_ids) < 50:
+            resumed_job_ids.append(job_id)
+            native_prompt_ids.append(normalized_prompt_id)
+    return {
+        "checked": len(rows),
+        "resumed": resumed,
+        "skipped": skipped,
+        "resumed_job_ids": resumed_job_ids,
+        "native_prompt_ids": native_prompt_ids,
+    }
 
 
 def annotate_runtime_response(body: Any, resolution: RuntimeResolution) -> Any:
@@ -6039,7 +6051,8 @@ def scheduler_reconciliation_report() -> dict[str, Any]:
         "control_plane_started_at": control_plane_started_at,
         "required_runners": required_runners,
         "missing_required_runners": missing_required,
-        "comfyui_native_prompt_resume": comfyui_native_prompt_resume or {"checked": 0, "resumed": 0, "skipped": 0},
+        "comfyui_native_prompt_resume": comfyui_native_prompt_resume
+        or {"checked": 0, "resumed": 0, "skipped": 0, "resumed_job_ids": [], "native_prompt_ids": []},
         "records": records,
     }
 

@@ -91,7 +91,16 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
             )
             self.patch_attr("job_runners", [cpu_runner, gpu_runner, download_runner])
             self.patch_attr("control_plane_started_at", datetime(2026, 7, 24, 12, 0, tzinfo=UTC))
-            self.patch_attr("comfyui_native_prompt_resume", {"checked": 2, "resumed": 2, "skipped": 0})
+            self.patch_attr(
+                "comfyui_native_prompt_resume",
+                {
+                    "checked": 2,
+                    "resumed": 2,
+                    "skipped": 0,
+                    "resumed_job_ids": ["job_comfy_native_1", "job_comfy_native_2"],
+                    "native_prompt_ids": ["prompt_native_1", "prompt_native_2"],
+                },
+            )
             self.patch_auth(frozenset({"runtimes:read"}))
 
             result = asyncio.run(main.admin_scheduler_reconciliation_get(authorization="Bearer key"))
@@ -100,7 +109,16 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
         self.assertEqual(result["control_plane_started_at"], "2026-07-24T12:00:00+00:00")
         self.assertEqual(result["required_runners"], ["cpu-job-runner", "gpu-job-runner", "model-download-runner"])
         self.assertEqual(result["missing_required_runners"], [])
-        self.assertEqual(result["comfyui_native_prompt_resume"], {"checked": 2, "resumed": 2, "skipped": 0})
+        self.assertEqual(
+            result["comfyui_native_prompt_resume"],
+            {
+                "checked": 2,
+                "resumed": 2,
+                "skipped": 0,
+                "resumed_job_ids": ["job_comfy_native_1", "job_comfy_native_2"],
+                "native_prompt_ids": ["prompt_native_1", "prompt_native_2"],
+            },
+        )
         records = {record["runner"]: record for record in result["records"]}
         self.assertEqual(records["cpu-job-runner"]["requeued"], 2)
         self.assertEqual(records["cpu-job-runner"]["requeued_job_ids"], ["job_cpu_waiting_1", "job_cpu_waiting_2"])
@@ -124,7 +142,10 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "degraded")
         self.assertEqual(result["missing_required_runners"], ["cpu-job-runner", "gpu-job-runner", "model-download-runner"])
-        self.assertEqual(result["comfyui_native_prompt_resume"], {"checked": 0, "resumed": 0, "skipped": 0})
+        self.assertEqual(
+            result["comfyui_native_prompt_resume"],
+            {"checked": 0, "resumed": 0, "skipped": 0, "resumed_job_ids": [], "native_prompt_ids": []},
+        )
 
     def test_scheduler_reconciliation_endpoint_requires_runtime_scope(self) -> None:
         self.patch_auth(frozenset({"models:read"}))

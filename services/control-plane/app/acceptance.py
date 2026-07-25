@@ -1283,6 +1283,105 @@ def _security_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _restart_reconciliation_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    restarted = _check_record(checks, "control_plane_restarted")
+    started_at = _parse_utc_datetime(restarted.get("started_at"))
+    expected_after = _parse_utc_datetime(restarted.get("expected_after") or restarted.get("started_after"))
+    if started_at is None:
+        missing.append("control_plane_restarted.started_at")
+    if expected_after is None:
+        missing.append("control_plane_restarted.expected_after")
+    if started_at is not None and expected_after is not None and started_at <= expected_after:
+        missing.append("control_plane_restarted.started_after_expected_after")
+
+    def require_runner_record(check_name: str, required_runtime_names: set[str]) -> dict[str, Any]:
+        record = _check_record(checks, check_name)
+        runtime_names = set(_as_string_list(record.get("runtime_names")))
+        if not runtime_names:
+            missing.append(f"{check_name}.runtime_names")
+        elif not required_runtime_names.issubset(runtime_names):
+            missing.append(f"{check_name}.runtime_names_include_required")
+        for count_key in ("requeued", "marked_recovery_required"):
+            count = _integer_value(record.get(count_key))
+            if count is None or count < 0:
+                missing.append(f"{check_name}.{count_key}")
+        if _parse_utc_datetime(record.get("started_at")) is None:
+            missing.append(f"{check_name}.started_at")
+        if _parse_utc_datetime(record.get("completed_at")) is None:
+            missing.append(f"{check_name}.completed_at")
+        return record
+
+    require_runner_record("cpu_runner_reconciled", {"audio-cpu"})
+    require_runner_record("gpu_runner_reconciled", {"localai", "comfyui", "voicebox"})
+
+    requeued = _check_record(checks, "waiting_jobs_requeued")
+    requeued_observed = _positive_int(requeued.get("observed"))
+    requeued_minimum = _positive_int(requeued.get("minimum"))
+    if requeued_minimum < 1:
+        missing.append("waiting_jobs_requeued.minimum")
+    if requeued_observed < max(1, requeued_minimum):
+        missing.append("waiting_jobs_requeued.observed")
+
+    recovery = _check_record(checks, "active_jobs_marked_recovery_required")
+    recovery_observed = _positive_int(recovery.get("observed"))
+    recovery_minimum = _positive_int(recovery.get("minimum"))
+    if recovery_minimum < 1:
+        missing.append("active_jobs_marked_recovery_required.minimum")
+    if recovery_observed < max(1, recovery_minimum):
+        missing.append("active_jobs_marked_recovery_required.observed")
+
+    interrupted_ids = _check_record(checks, "interrupted_job_ids_recorded")
+    requeued_job_ids = _as_string_list(interrupted_ids.get("requeued_job_ids"))
+    recovery_required_job_ids = _as_string_list(interrupted_ids.get("recovery_required_job_ids"))
+    required_requeued_samples = min(max(1, requeued_minimum), 50)
+    required_recovery_samples = min(max(1, recovery_minimum), 50)
+    if len(requeued_job_ids) < required_requeued_samples:
+        missing.append("interrupted_job_ids_recorded.requeued_job_ids")
+    if len(recovery_required_job_ids) < required_recovery_samples:
+        missing.append("interrupted_job_ids_recorded.recovery_required_job_ids")
+    if _positive_int(interrupted_ids.get("requeued_sample_count")) < required_requeued_samples:
+        missing.append("interrupted_job_ids_recorded.requeued_sample_count")
+    if _positive_int(interrupted_ids.get("recovery_required_sample_count")) < required_recovery_samples:
+        missing.append("interrupted_job_ids_recorded.recovery_required_sample_count")
+
+    resumed = _check_record(checks, "resumable_comfyui_native_prompts_reattached")
+    resumed_observed = _positive_int(resumed.get("observed"))
+    resumed_minimum = _positive_int(resumed.get("minimum"))
+    resumed_checked = _integer_value(resumed.get("checked"))
+    resumed_skipped = _integer_value(resumed.get("skipped"))
+    resumed_job_ids = _as_string_list(resumed.get("resumed_job_ids"))
+    native_prompt_ids = _as_string_list(resumed.get("native_prompt_ids"))
+    required_resumed_samples = min(max(1, resumed_minimum), 50)
+    if resumed_minimum < 1:
+        missing.append("resumable_comfyui_native_prompts_reattached.minimum")
+    if resumed_observed < max(1, resumed_minimum):
+        missing.append("resumable_comfyui_native_prompts_reattached.observed")
+    if resumed_checked is None or resumed_checked < resumed_observed:
+        missing.append("resumable_comfyui_native_prompts_reattached.checked")
+    if resumed_skipped is None or resumed_skipped < 0:
+        missing.append("resumable_comfyui_native_prompts_reattached.skipped")
+    if len(resumed_job_ids) < required_resumed_samples:
+        missing.append("resumable_comfyui_native_prompts_reattached.resumed_job_ids")
+    if len(native_prompt_ids) < required_resumed_samples:
+        missing.append("resumable_comfyui_native_prompts_reattached.native_prompt_ids")
+
+    return {
+        "restart_control_plane_started_at": started_at.isoformat() if started_at else "",
+        "restart_expected_after": expected_after.isoformat() if expected_after else "",
+        "restart_requeued_waiting_count": requeued_observed,
+        "restart_recovery_required_count": recovery_observed,
+        "restart_resumed_comfyui_native_count": resumed_observed,
+        "restart_requeued_job_ids": requeued_job_ids[:50],
+        "restart_recovery_required_job_ids": recovery_required_job_ids[:50],
+        "restart_resumed_comfyui_native_job_ids": resumed_job_ids[:50],
+        "restart_native_prompt_ids": native_prompt_ids[:50],
+        "missing_reconciliation_evidence": missing,
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -1518,6 +1617,7 @@ def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_pat
         expected_format=RESTART_RECONCILIATION_EVIDENCE_FORMAT,
         unsupported_reason="unsupported restart reconciliation acceptance evidence format",
         required_checks=RESTART_RECONCILIATION_REQUIRED_CHECKS,
+        extra_fields=_restart_reconciliation_summary(payload),
     )
 
 
@@ -2199,6 +2299,14 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append(
                 "restart reconciliation evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks)
             )
+        missing_reconciliation = restart_reconciliation_evidence.get("missing_reconciliation_evidence")
+        if not isinstance(missing_reconciliation, list):
+            blockers.append("restart reconciliation evidence lacks detailed reconciliation summary")
+        elif missing_reconciliation:
+            blockers.append(
+                "restart reconciliation evidence is missing detailed proof: "
+                + ", ".join(str(item) for item in missing_reconciliation)
+            )
     backup_evidence = (
         live_evidence.get("backup_migration_rollback") if isinstance(live_evidence.get("backup_migration_rollback"), dict) else {}
     )
@@ -2485,6 +2593,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_compatibility = evidence.get("missing_compatibility_evidence")
     if isinstance(missing_compatibility, list) and missing_compatibility:
         summary_rows.append(["missing_compatibility_evidence", ", ".join(str(item) for item in missing_compatibility)])
+    missing_reconciliation = evidence.get("missing_reconciliation_evidence")
+    if isinstance(missing_reconciliation, list) and missing_reconciliation:
+        summary_rows.append(["missing_reconciliation_evidence", ", ".join(str(item) for item in missing_reconciliation)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -3078,6 +3189,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         restart_reconciliation_evidence.get("available") is True
         and restart_reconciliation_evidence.get("status") == "ok"
         and not restart_reconciliation_evidence.get("missing_checks")
+        and restart_reconciliation_evidence.get("missing_reconciliation_evidence") == []
         and "restart_reconciliation" not in freshness_failures
     )
     backup_migration_rollback_evidence_ready = (

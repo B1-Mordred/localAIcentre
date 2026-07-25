@@ -209,6 +209,65 @@ def sample_security_checks() -> dict[str, dict[str, Any]]:
     }
 
 
+def sample_restart_reconciliation_checks() -> dict[str, dict[str, Any]]:
+    return {
+        "control_plane_restarted": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:51:00+00:00",
+            "started_at": "2026-07-24T12:51:10+00:00",
+            "expected_after": "2026-07-24T12:50:55+00:00",
+        },
+        "cpu_runner_reconciled": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:52:00+00:00",
+            "runtime_names": ["audio-cpu"],
+            "started_at": "2026-07-24T12:51:11+00:00",
+            "completed_at": "2026-07-24T12:51:12+00:00",
+            "marked_recovery_required": 0,
+            "requeued": 1,
+        },
+        "gpu_runner_reconciled": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:52:00+00:00",
+            "runtime_names": ["localai", "comfyui", "voicebox"],
+            "started_at": "2026-07-24T12:51:11+00:00",
+            "completed_at": "2026-07-24T12:51:13+00:00",
+            "marked_recovery_required": 1,
+            "requeued": 1,
+        },
+        "waiting_jobs_requeued": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:53:00+00:00",
+            "observed": 2,
+            "minimum": 1,
+        },
+        "active_jobs_marked_recovery_required": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:54:00+00:00",
+            "observed": 1,
+            "minimum": 1,
+        },
+        "interrupted_job_ids_recorded": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:54:10+00:00",
+            "requeued_job_ids": ["job_cpu_waiting_1", "job_gpu_waiting_1"],
+            "recovery_required_job_ids": ["job_gpu_active_1"],
+            "requeued_sample_count": 2,
+            "recovery_required_sample_count": 1,
+        },
+        "resumable_comfyui_native_prompts_reattached": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:54:30+00:00",
+            "observed": 1,
+            "minimum": 1,
+            "checked": 1,
+            "skipped": 0,
+            "resumed_job_ids": ["job_native_1"],
+            "native_prompt_ids": ["prompt_native_1"],
+        },
+    }
+
+
 def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
@@ -898,15 +957,17 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "resumable_comfyui_native_prompts_reattached",
             ],
             "missing_checks": [],
-            "checks": {
-                "control_plane_restarted": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
-                "cpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
-                "gpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
-                "waiting_jobs_requeued": {"status": "ok", "recorded_at": "2026-07-24T12:53:00+00:00"},
-                "active_jobs_marked_recovery_required": {"status": "ok", "recorded_at": "2026-07-24T12:54:00+00:00"},
-                "interrupted_job_ids_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:54:10+00:00"},
-                "resumable_comfyui_native_prompts_reattached": {"status": "ok", "recorded_at": "2026-07-24T12:54:30+00:00"},
-            },
+            "missing_reconciliation_evidence": [],
+            "restart_control_plane_started_at": "2026-07-24T12:51:10+00:00",
+            "restart_expected_after": "2026-07-24T12:50:55+00:00",
+            "restart_requeued_waiting_count": 2,
+            "restart_recovery_required_count": 1,
+            "restart_resumed_comfyui_native_count": 1,
+            "restart_requeued_job_ids": ["job_cpu_waiting_1", "job_gpu_waiting_1"],
+            "restart_recovery_required_job_ids": ["job_gpu_active_1"],
+            "restart_resumed_comfyui_native_job_ids": ["job_native_1"],
+            "restart_native_prompt_ids": ["prompt_native_1"],
+            "checks": sample_restart_reconciliation_checks(),
             "sample_count": 2,
             "sample_labels": ["startup-reconciliation", "recovered-job-counts"],
         },
@@ -2635,6 +2696,52 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_restart_reconciliation_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["restart_reconciliation"].pop("missing_reconciliation_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["restart_reconciliation_evidence_ready"])
+        self.assertIn("restart reconciliation evidence lacks detailed reconciliation summary", report["acceptance_blockers"])
+
+    def test_restart_reconciliation_snapshot_requires_detailed_recovery_proof(self) -> None:
+        snapshot = acceptance.restart_reconciliation_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-restart-reconciliation-acceptance/v1",
+                "generated_at": "2026-07-24T12:55:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.RESTART_RECONCILIATION_REQUIRED_CHECKS),
+                "samples": [{"label": "shallow-restart-proof"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("control_plane_restarted.started_at", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("control_plane_restarted.expected_after", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("cpu_runner_reconciled.runtime_names", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("gpu_runner_reconciled.runtime_names", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("waiting_jobs_requeued.observed", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("active_jobs_marked_recovery_required.observed", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("interrupted_job_ids_recorded.requeued_job_ids", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("interrupted_job_ids_recorded.recovery_required_job_ids", snapshot["missing_reconciliation_evidence"])
+        self.assertIn(
+            "resumable_comfyui_native_prompts_reattached.native_prompt_ids",
+            snapshot["missing_reconciliation_evidence"],
+        )
+
+        live_evidence = sample_live_evidence(restart_reconciliation=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["restart_reconciliation_evidence_ready"])
+        self.assertIn(
+            "restart reconciliation evidence is missing detailed proof:",
+            "\n".join(report["acceptance_blockers"]),
+        )
+
     def test_restart_reconciliation_snapshot_requires_interrupted_job_id_evidence(self) -> None:
         snapshot = acceptance.restart_reconciliation_evidence_snapshot(
             {
@@ -2655,6 +2762,7 @@ class AcceptanceReportTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["missing_checks"], ["interrupted_job_ids_recorded"])
+        self.assertIn("interrupted_job_ids_recorded.requeued_job_ids", snapshot["missing_reconciliation_evidence"])
 
     def test_report_blocks_handoff_without_backup_migration_rollback_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -3325,15 +3433,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "generated_at": "2026-07-24T12:55:00+00:00",
                         "base_url": "https://api.ai.b1.germering",
                         "status": "ok",
-                        "checks": {
-                            "control_plane_restarted": {"status": "ok"},
-                            "cpu_runner_reconciled": {"status": "ok"},
-                            "gpu_runner_reconciled": {"status": "ok"},
-                            "waiting_jobs_requeued": {"status": "ok"},
-                            "active_jobs_marked_recovery_required": {"status": "ok"},
-                            "interrupted_job_ids_recorded": {"status": "ok"},
-                            "resumable_comfyui_native_prompts_reattached": {"status": "ok"},
-                        },
+                        "checks": sample_restart_reconciliation_checks(),
                         "samples": [
                             {"label": "startup-reconciliation"},
                             {"label": "recovered-job-counts"},
@@ -3460,6 +3560,11 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(restart["source_path"], str(restart_reconciliation.resolve()))
         self.assertEqual(restart["status"], "ok")
         self.assertEqual(restart["missing_checks"], [])
+        self.assertEqual(restart["missing_reconciliation_evidence"], [])
+        self.assertEqual(restart["restart_requeued_waiting_count"], 2)
+        self.assertEqual(restart["restart_recovery_required_count"], 1)
+        self.assertEqual(restart["restart_resumed_comfyui_native_count"], 1)
+        self.assertEqual(restart["restart_native_prompt_ids"], ["prompt_native_1"])
         self.assertEqual(restart["sample_count"], 2)
         backup = snapshot["backup_migration_rollback"]
         self.assertTrue(backup["available"])

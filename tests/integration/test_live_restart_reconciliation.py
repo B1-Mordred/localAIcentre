@@ -210,12 +210,28 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
         self.assertIsInstance(resume, dict, payload)
         resumed_comfyui_native = int(resume.get("resumed") or 0)
         self.assertGreaterEqual(resumed_comfyui_native, self.minimum_resumed_comfyui_native, resume)
+        resumed_job_ids = [
+            str(job_id)
+            for job_id in (resume.get("resumed_job_ids") if isinstance(resume.get("resumed_job_ids"), list) else [])
+            if str(job_id)
+        ]
+        native_prompt_ids = [
+            str(prompt_id)
+            for prompt_id in (resume.get("native_prompt_ids") if isinstance(resume.get("native_prompt_ids"), list) else [])
+            if str(prompt_id)
+        ]
+        if self.minimum_resumed_comfyui_native:
+            required_resumed_samples = min(self.minimum_resumed_comfyui_native, 50)
+            self.assertGreaterEqual(len(resumed_job_ids), required_resumed_samples, resume)
+            self.assertGreaterEqual(len(native_prompt_ids), required_resumed_samples, resume)
         self.record_check(
             "resumable_comfyui_native_prompts_reattached",
             observed=resumed_comfyui_native,
             minimum=self.minimum_resumed_comfyui_native,
             checked=int(resume.get("checked") or 0),
             skipped=int(resume.get("skipped") or 0),
+            resumed_job_ids=resumed_job_ids[:50],
+            native_prompt_ids=native_prompt_ids[:50],
         )
         self.samples.append(
             {
