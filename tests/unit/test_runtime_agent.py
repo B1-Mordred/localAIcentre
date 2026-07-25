@@ -136,10 +136,25 @@ class RuntimeAgentTests(unittest.TestCase):
     def test_pinned_image_reference_validation_rejects_floating_images(self) -> None:
         pinned = "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64
         self.assertEqual(validate_pinned_image_reference(pinned), pinned)
+        registry_with_port = "registry.b1.germering:5000/b1/control-plane:0.2.0@sha256:" + "b" * 64
+        self.assertEqual(validate_pinned_image_reference(registry_with_port), registry_with_port)
         with self.assertRaises(ValueError):
             validate_pinned_image_reference("ghcr.io/b1/control-plane:latest")
         with self.assertRaises(ValueError):
             validate_pinned_image_reference("ghcr.io/b1/control-plane:0.2.0")
+        for image in [
+            " ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64,
+            "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64 + "\n",
+            "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64 + "?token=secret",
+            "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64 + "#fragment",
+            "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64 + "/extra",
+            "https://ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64,
+            "GHCR.io/b1/control-plane:0.2.0@sha256:" + "a" * 64,
+            "ghcr.io/b1/control-plane:latest@sha256:" + "a" * 64,
+        ]:
+            with self.subTest(image=image):
+                with self.assertRaises(ValueError):
+                    validate_pinned_image_reference(image)
 
     def test_require_allowed_service_rejects_unknown_service(self) -> None:
         allowed = frozenset({"control-plane"})

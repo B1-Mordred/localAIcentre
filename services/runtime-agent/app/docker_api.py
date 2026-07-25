@@ -11,7 +11,12 @@ from urllib.parse import quote, urlencode
 
 
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-SHA256_DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:$|[/?#])")
+IMAGE_NAME_COMPONENT_RE = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
+IMAGE_REFERENCE_RE = re.compile(
+    rf"^(?=.{{1,512}}$)(?:{IMAGE_NAME_COMPONENT_RE}(?::[0-9]{{1,5}})?/)?"
+    rf"(?:{IMAGE_NAME_COMPONENT_RE}/)*{IMAGE_NAME_COMPONENT_RE}"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$"
+)
 DEFAULT_RUNTIME_ACTION_SERVICES = frozenset({"localai", "comfyui", "voicebox", "audio-cpu"})
 B1_CONTAINER_LABELS = (
     "b1.ai-hub.runtime",
@@ -232,11 +237,15 @@ def validate_pinned_image_reference(image: str) -> str:
     image_ref = image.strip()
     if not image_ref:
         raise ValueError("image reference cannot be blank")
+    if image_ref != image or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in image_ref):
+        raise ValueError(f"image reference contains unsafe characters: {image_ref}")
+    if "\\" in image_ref or "?" in image_ref or "#" in image_ref or "@" not in image_ref:
+        raise ValueError(f"image reference contains unsafe characters: {image_ref}")
     tag_component = image_ref.split("@", 1)[0].rsplit("/", 1)[-1]
-    if ":latest" in tag_component:
+    if tag_component.endswith(":latest"):
         raise ValueError(f"image reference must not use latest: {image_ref}")
-    if not SHA256_DIGEST_RE.search(image_ref):
-        raise ValueError(f"image reference must include an immutable sha256 digest: {image_ref}")
+    if not IMAGE_REFERENCE_RE.fullmatch(image_ref):
+        raise ValueError(f"image reference must be a canonical name[:tag]@sha256 digest: {image_ref}")
     return image_ref
 
 
