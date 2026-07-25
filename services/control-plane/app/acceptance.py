@@ -653,6 +653,246 @@ def _modelhub_integrity_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _check_record(checks: dict[str, Any], name: str) -> dict[str, Any]:
+    record = checks.get(name)
+    return record if isinstance(record, dict) else {}
+
+
+def _nonempty_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    prompt = _check_record(checks, "prompt_submission")
+    prompt_id = _nonempty_text(prompt.get("prompt_id"))
+    if not prompt_id:
+        missing.append("prompt_submission.prompt_id")
+    if "queue_number" not in prompt:
+        missing.append("prompt_submission.queue_number")
+
+    def require_prompt_match(check_name: str) -> dict[str, Any]:
+        record = _check_record(checks, check_name)
+        value = _nonempty_text(record.get("prompt_id"))
+        if not value:
+            missing.append(f"{check_name}.prompt_id")
+        elif prompt_id and value != prompt_id:
+            missing.append(f"{check_name}.prompt_id_matches_submission")
+        return record
+
+    replay = require_prompt_match("prompt_idempotency_replay")
+    if str(replay.get("replay_header") or "").strip().lower() != "true":
+        missing.append("prompt_idempotency_replay.replay_header")
+    if _positive_int(replay.get("idempotency_key_length")) < 8:
+        missing.append("prompt_idempotency_replay.idempotency_key_length")
+
+    websocket = require_prompt_match("websocket_events")
+    event_types = websocket.get("event_types") if isinstance(websocket.get("event_types"), list) else []
+    if not event_types and _positive_int(websocket.get("binary_messages")) < 1:
+        missing.append("websocket_events.native_events_or_binary_previews")
+    if websocket.get("completed") is not True:
+        missing.append("websocket_events.completed")
+
+    history = require_prompt_match("history_available")
+    history_keys = history.get("history_keys") if isinstance(history.get("history_keys"), list) else []
+    if prompt_id and prompt_id not in {str(item) for item in history_keys}:
+        missing.append("history_available.prompt_id_in_history_keys")
+
+    durable_job = require_prompt_match("durable_job_observable")
+    job_id = _nonempty_text(durable_job.get("job_id"))
+    if not job_id:
+        missing.append("durable_job_observable.job_id")
+    if durable_job.get("state") != "completed":
+        missing.append("durable_job_observable.completed_state")
+    if _positive_int(durable_job.get("artifact_count")) < 1:
+        missing.append("durable_job_observable.artifact_count")
+
+    durable_artifacts = require_prompt_match("durable_artifacts_observable")
+    durable_artifact_job_id = _nonempty_text(durable_artifacts.get("job_id"))
+    if not durable_artifact_job_id:
+        missing.append("durable_artifacts_observable.job_id")
+    elif job_id and durable_artifact_job_id != job_id:
+        missing.append("durable_artifacts_observable.job_id_matches_durable_job")
+    if _positive_int(durable_artifacts.get("artifact_count")) < 1:
+        missing.append("durable_artifacts_observable.artifact_count")
+    if _positive_int(durable_artifacts.get("byte_count")) < 1:
+        missing.append("durable_artifacts_observable.byte_count")
+    if not _nonempty_text(durable_artifacts.get("content_type")):
+        missing.append("durable_artifacts_observable.content_type")
+
+    for check_name in ("queue_delete_accessible", "interrupt_accessible"):
+        record = require_prompt_match(check_name)
+        if _positive_int(record.get("byte_count")) < 1:
+            missing.append(f"{check_name}.byte_count")
+
+    view = require_prompt_match("view_artifact_accessible")
+    if _positive_int(view.get("byte_count")) < 1:
+        missing.append("view_artifact_accessible.byte_count")
+    if not _nonempty_text(view.get("filename")):
+        missing.append("view_artifact_accessible.filename")
+    if str(view.get("output_key") or "") not in {"images", "videos", "gifs", "audio"}:
+        missing.append("view_artifact_accessible.output_key")
+
+    return {
+        "native_prompt_id": prompt_id,
+        "durable_job_id": job_id,
+        "durable_artifact_count": _positive_int(durable_artifacts.get("artifact_count")),
+        "missing_compatibility_evidence": missing,
+    }
+
+
+def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    stop = _check_record(checks, "server_side_comfyui_stop_verified")
+    if stop.get("verified_by") != "admin_runtimes_runtime_agent_services":
+        missing.append("server_side_comfyui_stop_verified.verified_by")
+    try:
+        running_container_count = int(stop.get("running_container_count"))
+    except (TypeError, ValueError):
+        running_container_count = -1
+    if running_container_count != 0:
+        missing.append("server_side_comfyui_stop_verified.running_container_count_zero")
+
+    listed = _check_record(checks, "remote_models_listed")
+    model = _nonempty_text(listed.get("model"))
+    if _positive_int(listed.get("alias_count")) < 1:
+        missing.append("remote_models_listed.alias_count")
+    if listed.get("selected_model_visible") is not True:
+        missing.append("remote_models_listed.selected_model_visible")
+    if not model:
+        missing.append("remote_models_listed.model")
+
+    selected = _check_record(checks, "model_alias_selected")
+    selected_model = _nonempty_text(selected.get("model"))
+    if not selected_model:
+        missing.append("model_alias_selected.model")
+    elif model and selected_model != model:
+        missing.append("model_alias_selected.model_matches_visible_model")
+
+    credentials = _check_record(checks, "credentials_externalized")
+    credential_source = _nonempty_text(credentials.get("credential_source"))
+    if credential_source in {"", "none"}:
+        missing.append("credentials_externalized.credential_source")
+    workflow_secret_findings = credentials.get("workflow_secret_findings")
+    if not isinstance(workflow_secret_findings, list) or workflow_secret_findings:
+        missing.append("credentials_externalized.workflow_secret_findings_empty")
+    if _positive_int(credentials.get("inspected_workflow_count")) < 1:
+        missing.append("credentials_externalized.inspected_workflow_count")
+
+    tts = _check_record(checks, "non_comfy_tts_completed")
+    if _nonempty_text(tts.get("model")) != (selected_model or model):
+        missing.append("non_comfy_tts_completed.model_matches_selection")
+    if tts.get("runtime_policy") != "non_comfy_only":
+        missing.append("non_comfy_tts_completed.runtime_policy")
+    if _positive_int(tts.get("byte_count")) < 1:
+        missing.append("non_comfy_tts_completed.byte_count")
+
+    artifact = _check_record(checks, "artifact_downloaded")
+    if _positive_int(artifact.get("byte_count")) < 1:
+        missing.append("artifact_downloaded.byte_count")
+    if not _normalized_sha256(artifact.get("sha256")):
+        missing.append("artifact_downloaded.sha256")
+
+    return {
+        "remote_selected_model": selected_model or model,
+        "remote_tts_bytes": _positive_int(tts.get("byte_count")),
+        "missing_compatibility_evidence": missing,
+    }
+
+
+def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    native = _check_record(checks, "native_http_proxy_accessible")
+    http_status = _positive_int(native.get("http_status"))
+    if http_status < 100 or http_status >= 500:
+        missing.append("native_http_proxy_accessible.http_status")
+    if not _nonempty_text(native.get("upstream_version")):
+        missing.append("native_http_proxy_accessible.upstream_version")
+
+    lifecycle = _check_record(checks, "profile_lifecycle_validated")
+    profile_id = _nonempty_text(lifecycle.get("profile_id"))
+    if not profile_id.startswith("vp_"):
+        missing.append("profile_lifecycle_validated.profile_id")
+    if not _nonempty_text(lifecycle.get("model_alias")):
+        missing.append("profile_lifecycle_validated.model_alias")
+    if _positive_int(lifecycle.get("sample_artifact_count")) < 1:
+        missing.append("profile_lifecycle_validated.sample_artifact_count")
+
+    sample = _check_record(checks, "sample_artifact_protected")
+    sample_url = _nonempty_text(sample.get("sample_artifact_url"))
+    if sample.get("sample_url_prefix") != "/artifacts/voicebox/references/" or not sample_url.startswith(
+        "/artifacts/voicebox/references/"
+    ):
+        missing.append("sample_artifact_protected.sample_artifact_url")
+    if _positive_int(sample.get("sample_artifact_bytes")) < 1:
+        missing.append("sample_artifact_protected.sample_artifact_bytes")
+    if sample.get("profile_metadata_has_sample_payload") is not False:
+        missing.append("sample_artifact_protected.profile_metadata_has_sample_payload_false")
+    if sample.get("export_contains_raw_sample_bytes") is not False:
+        missing.append("sample_artifact_protected.export_contains_raw_sample_bytes_false")
+
+    export = _check_record(checks, "profile_export_validated")
+    if _nonempty_text(export.get("profile_id")) != profile_id:
+        missing.append("profile_export_validated.profile_id_matches_lifecycle")
+    if export.get("export_format") != "b1-ai-hub-voice-profile/v1":
+        missing.append("profile_export_validated.export_format")
+    if export.get("contains_sensitive_data") is not True:
+        missing.append("profile_export_validated.contains_sensitive_data")
+    if _positive_int(export.get("sample_artifact_count")) < 1:
+        missing.append("profile_export_validated.sample_artifact_count")
+
+    delete = _check_record(checks, "profile_delete_audited")
+    if _nonempty_text(delete.get("profile_id")) != profile_id:
+        missing.append("profile_delete_audited.profile_id_matches_lifecycle")
+    if delete.get("deleted_status") != "deleted":
+        missing.append("profile_delete_audited.deleted_status")
+
+    speech = _check_record(checks, "speech_or_limitation_recorded")
+    speech_mode = _nonempty_text(speech.get("mode"))
+    if speech_mode == "speech_validated":
+        if _positive_int(speech.get("byte_count")) < 1:
+            missing.append("speech_or_limitation_recorded.byte_count")
+        if not _normalized_sha256(speech.get("sha256")):
+            missing.append("speech_or_limitation_recorded.sha256")
+        if not _nonempty_text(speech.get("content_type")):
+            missing.append("speech_or_limitation_recorded.content_type")
+    elif speech_mode == "upstream_limitation":
+        if not _nonempty_text(speech.get("upstream_version")):
+            missing.append("speech_or_limitation_recorded.upstream_version")
+        if not _nonempty_text(speech.get("limitation")):
+            missing.append("speech_or_limitation_recorded.limitation")
+    else:
+        missing.append("speech_or_limitation_recorded.mode")
+
+    websocket = _check_record(checks, "websocket_or_limitation_recorded")
+    websocket_mode = _nonempty_text(websocket.get("mode"))
+    if websocket_mode == "websocket_validated":
+        if not _nonempty_text(websocket.get("path")):
+            missing.append("websocket_or_limitation_recorded.path")
+        if _nonempty_text(websocket.get("received_type")) not in {"none", "text", "bytes"}:
+            missing.append("websocket_or_limitation_recorded.received_type")
+    elif websocket_mode == "upstream_limitation":
+        if not _nonempty_text(websocket.get("upstream_version")):
+            missing.append("websocket_or_limitation_recorded.upstream_version")
+        if not _nonempty_text(websocket.get("limitation")):
+            missing.append("websocket_or_limitation_recorded.limitation")
+    else:
+        missing.append("websocket_or_limitation_recorded.mode")
+
+    return {
+        "voicebox_profile_id": profile_id,
+        "voicebox_speech_mode": speech_mode,
+        "voicebox_websocket_mode": websocket_mode,
+        "missing_compatibility_evidence": missing,
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -823,6 +1063,7 @@ def remote_nodes_evidence_snapshot(payload: dict[str, Any], source_path: Path | 
         expected_format=REMOTE_NODES_EVIDENCE_FORMAT,
         unsupported_reason="unsupported remote-node compatibility evidence format",
         required_checks=REMOTE_NODES_REQUIRED_CHECKS,
+        extra_fields=_remote_nodes_compatibility_summary(payload),
     )
 
 
@@ -844,6 +1085,7 @@ def native_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path 
         expected_format=NATIVE_COMFYUI_EVIDENCE_FORMAT,
         unsupported_reason="unsupported native ComfyUI compatibility evidence format",
         required_checks=NATIVE_COMFYUI_REQUIRED_CHECKS,
+        extra_fields=_native_comfyui_compatibility_summary(payload),
     )
 
 
@@ -864,6 +1106,7 @@ def voicebox_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
         expected_format=VOICEBOX_EVIDENCE_FORMAT,
         unsupported_reason="unsupported Voicebox remote compatibility evidence format",
         required_checks=VOICEBOX_REQUIRED_CHECKS,
+        extra_fields=_voicebox_compatibility_summary(payload),
     )
 
 
@@ -1181,6 +1424,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = native_comfyui_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("native ComfyUI compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_detail = native_comfyui_evidence.get("missing_compatibility_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("native ComfyUI compatibility evidence lacks detailed compatibility summary")
+        elif missing_detail:
+            blockers.append("native ComfyUI compatibility evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     legacy_comfyui_evidence = live_evidence.get("legacy_comfyui_listener") if isinstance(live_evidence.get("legacy_comfyui_listener"), dict) else {}
     if legacy_comfyui_evidence.get("available") is True:
         if legacy_comfyui_evidence.get("status") != "ok":
@@ -1199,6 +1447,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append(
                 "remote-node non-Comfy compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks)
             )
+        missing_detail = remote_nodes_evidence.get("missing_compatibility_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("remote-node non-Comfy compatibility evidence lacks detailed compatibility summary")
+        elif missing_detail:
+            blockers.append("remote-node non-Comfy compatibility evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     if modelhub_evidence.get("available") is not True:
         blockers.append("Model Hub client sync evidence is unavailable")
@@ -1222,6 +1475,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = voicebox_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("Voicebox remote compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_detail = voicebox_evidence.get("missing_compatibility_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("Voicebox remote compatibility evidence lacks detailed compatibility summary")
+        elif missing_detail:
+            blockers.append("Voicebox remote compatibility evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     security_evidence = live_evidence.get("security_acceptance") if isinstance(live_evidence.get("security_acceptance"), dict) else {}
     if security_evidence.get("available") is not True:
         blockers.append("security acceptance evidence is unavailable")
@@ -1521,6 +1779,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_integrity = evidence.get("missing_integrity_evidence")
     if isinstance(missing_integrity, list) and missing_integrity:
         summary_rows.append(["missing_integrity_evidence", ", ".join(str(item) for item in missing_integrity)])
+    missing_compatibility = evidence.get("missing_compatibility_evidence")
+    if isinstance(missing_compatibility, list) and missing_compatibility:
+        summary_rows.append(["missing_compatibility_evidence", ", ".join(str(item) for item in missing_compatibility)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -2006,6 +2267,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         native_comfyui_evidence.get("available") is True
         and native_comfyui_evidence.get("status") == "ok"
         and not native_comfyui_evidence.get("missing_checks")
+        and native_comfyui_evidence.get("missing_compatibility_evidence") == []
         and "native_comfyui_compatibility" not in freshness_failures
     )
     legacy_comfyui_evidence_ready = (
@@ -2020,6 +2282,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         remote_nodes_evidence.get("available") is True
         and remote_nodes_evidence.get("status") == "ok"
         and not remote_nodes_evidence.get("missing_checks")
+        and remote_nodes_evidence.get("missing_compatibility_evidence") == []
         and "remote_nodes_non_comfy" not in freshness_failures
     )
     modelhub_evidence_ready = (
@@ -2033,6 +2296,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         voicebox_evidence.get("available") is True
         and voicebox_evidence.get("status") == "ok"
         and not voicebox_evidence.get("missing_checks")
+        and voicebox_evidence.get("missing_compatibility_evidence") == []
         and "voicebox_remote" not in freshness_failures
     )
     security_evidence_ready = (

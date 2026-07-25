@@ -78,6 +78,10 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def ok_checks(names: tuple[str, ...]) -> dict[str, dict[str, str]]:
+    return {name: {"status": "ok"} for name in names}
+
+
 def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
@@ -162,6 +166,11 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
 
 
 def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
+    native_prompt_id = "prompt_native_1"
+    native_job_id = "job_native_1"
+    remote_artifact_sha = "b" * 64
+    voicebox_profile_id = "vp_acceptance1"
+    voicebox_speech_sha = "d" * 64
     payload = {
         "live_stack_smoke": {
             "available": True,
@@ -347,6 +356,10 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "view_artifact_accessible",
             ],
             "missing_checks": [],
+            "native_prompt_id": native_prompt_id,
+            "durable_job_id": native_job_id,
+            "durable_artifact_count": 1,
+            "missing_compatibility_evidence": [],
             "checks": {
                 "object_info_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "object_info_node_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
@@ -355,16 +368,71 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "queue_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "upload_image_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "upload_mask_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
-                "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
-                "prompt_idempotency_replay": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
-                "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+                "prompt_submission": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:32:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "queue_number": 1,
+                },
+                "prompt_idempotency_replay": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:32:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "replay_header": "true",
+                    "idempotency_key_length": 48,
+                },
+                "websocket_events": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:32:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "event_types": ["execution_start", "executing"],
+                    "binary_messages": 0,
+                    "completed": True,
+                },
                 "history_listing_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
-                "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
-                "durable_job_observable": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00", "job_id": "job_native_1"},
-                "durable_artifacts_observable": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00", "artifact_count": 1},
-                "queue_delete_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
-                "interrupt_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
-                "view_artifact_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
+                "history_available": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "history_keys": [native_prompt_id],
+                },
+                "durable_job_observable": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "job_id": native_job_id,
+                    "state": "completed",
+                    "artifact_count": 1,
+                },
+                "durable_artifacts_observable": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "job_id": native_job_id,
+                    "artifact_count": 1,
+                    "byte_count": 4096,
+                    "content_type": "image/png",
+                },
+                "queue_delete_accessible": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "byte_count": 2,
+                },
+                "interrupt_accessible": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "byte_count": 2,
+                },
+                "view_artifact_accessible": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "output_key": "images",
+                    "filename": "native-output.png",
+                    "byte_count": 4096,
+                },
             },
             "sample_count": 10,
             "sample_labels": [
@@ -404,19 +472,50 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "artifact_downloaded",
             ],
             "missing_checks": [],
+            "remote_selected_model": "tts-fast",
+            "remote_tts_bytes": 2048,
+            "missing_compatibility_evidence": [],
             "checks": {
-                "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "server_side_comfyui_stopped": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:34:00+00:00",
+                    "stop_mode": "manual",
+                },
                 "server_side_comfyui_stop_verified": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:34:05+00:00",
                     "verified_by": "admin_runtimes_runtime_agent_services",
                     "running_container_count": 0,
                 },
-                "remote_models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:34:15+00:00"},
-                "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00"},
-                "credentials_externalized": {"status": "ok", "recorded_at": "2026-07-24T12:34:30+00:00"},
-                "non_comfy_tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
-                "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
+                "remote_models_listed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:34:15+00:00",
+                    "alias_count": 12,
+                    "selected_model_visible": True,
+                    "model": "tts-fast",
+                },
+                "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00", "model": "tts-fast"},
+                "credentials_externalized": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:34:30+00:00",
+                    "credential_source": "environment_file",
+                    "inspected_workflow_count": 1,
+                    "workflow_secret_findings": [],
+                },
+                "non_comfy_tts_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:35:00+00:00",
+                    "model": "tts-fast",
+                    "runtime_policy": "non_comfy_only",
+                    "byte_count": 2048,
+                },
+                "artifact_downloaded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:35:00+00:00",
+                    "filename": "b1-remote-node-non-comfy.wav",
+                    "byte_count": 2048,
+                    "sha256": remote_artifact_sha,
+                },
             },
             "sample_count": 2,
             "sample_labels": ["remote-node-model-list", "tts-fast-non-comfy"],
@@ -502,14 +601,63 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket_or_limitation_recorded",
             ],
             "missing_checks": [],
+            "voicebox_profile_id": voicebox_profile_id,
+            "voicebox_speech_mode": "speech_validated",
+            "voicebox_websocket_mode": "websocket_validated",
+            "missing_compatibility_evidence": [],
             "checks": {
-                "native_http_proxy_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:41:00+00:00"},
-                "profile_lifecycle_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:00+00:00"},
-                "sample_artifact_protected": {"status": "ok", "recorded_at": "2026-07-24T12:42:15+00:00"},
-                "profile_export_validated": {"status": "ok", "recorded_at": "2026-07-24T12:42:30+00:00"},
-                "profile_delete_audited": {"status": "ok", "recorded_at": "2026-07-24T12:42:45+00:00"},
-                "speech_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:43:00+00:00"},
-                "websocket_or_limitation_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:44:00+00:00"},
+                "native_http_proxy_accessible": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:41:00+00:00",
+                    "http_status": 200,
+                    "upstream_version": "Jamie Pine Voicebox v0.5.0 commit 2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                },
+                "profile_lifecycle_validated": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:42:00+00:00",
+                    "profile_id": voicebox_profile_id,
+                    "model_alias": "tts-quality",
+                    "sample_artifact_count": 1,
+                },
+                "sample_artifact_protected": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:42:15+00:00",
+                    "sample_url_prefix": "/artifacts/voicebox/references/",
+                    "sample_artifact_url": "/artifacts/voicebox/references/sample.wav",
+                    "sample_artifact_bytes": 3244,
+                    "profile_metadata_has_sample_payload": False,
+                    "export_contains_raw_sample_bytes": False,
+                },
+                "profile_export_validated": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:42:30+00:00",
+                    "profile_id": voicebox_profile_id,
+                    "export_format": "b1-ai-hub-voice-profile/v1",
+                    "contains_sensitive_data": True,
+                    "sample_artifact_count": 1,
+                },
+                "profile_delete_audited": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:42:45+00:00",
+                    "profile_id": voicebox_profile_id,
+                    "deleted_status": "deleted",
+                },
+                "speech_or_limitation_recorded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:43:00+00:00",
+                    "mode": "speech_validated",
+                    "model": "tts-quality",
+                    "byte_count": 4096,
+                    "sha256": voicebox_speech_sha,
+                    "content_type": "audio/wav",
+                },
+                "websocket_or_limitation_recorded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:44:00+00:00",
+                    "mode": "websocket_validated",
+                    "path": "/ws",
+                    "received_type": "none",
+                },
             },
             "sample_count": 4,
             "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voice-sample-artifact", "voicebox-speech"],
@@ -958,6 +1106,27 @@ class AcceptanceReportTests(unittest.TestCase):
             snapshot["missing_checks"],
             ["sample_artifact_protected", "profile_export_validated", "profile_delete_audited"],
         )
+
+    def test_voicebox_snapshot_requires_profile_sample_and_runtime_details(self) -> None:
+        snapshot = acceptance.voicebox_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-voicebox-remote-compatibility/v1",
+                "generated_at": "2026-07-24T12:45:00+00:00",
+                "base_url": "https://voice.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.VOICEBOX_REQUIRED_CHECKS),
+                "samples": [{"label": "voice-profile-lifecycle"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("native_http_proxy_accessible.http_status", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.profile_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_artifact_url", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.export_format", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.deleted_status", snapshot["missing_compatibility_evidence"])
+        self.assertIn("speech_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
+        self.assertIn("websocket_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
 
     def test_report_blocks_handoff_for_degraded_development_snapshot(self) -> None:
         report = sample_report(
@@ -1599,6 +1768,26 @@ class AcceptanceReportTests(unittest.TestCase):
             ],
         )
 
+    def test_native_comfyui_snapshot_requires_prompt_job_and_artifact_details(self) -> None:
+        snapshot = acceptance.native_comfyui_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-native-comfyui-compatibility/v1",
+                "generated_at": "2026-07-24T12:33:00+00:00",
+                "base_url": "https://comfy.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.NATIVE_COMFYUI_REQUIRED_CHECKS),
+                "samples": [{"label": "prompt-submission"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("prompt_submission.prompt_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("prompt_idempotency_replay.replay_header", snapshot["missing_compatibility_evidence"])
+        self.assertIn("websocket_events.completed", snapshot["missing_compatibility_evidence"])
+        self.assertIn("durable_job_observable.job_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("durable_artifacts_observable.byte_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("view_artifact_accessible.filename", snapshot["missing_compatibility_evidence"])
+
     def test_absent_legacy_comfyui_evidence_is_non_blocking(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["legacy_comfyui_listener"] = {"available": False, "reason": "optional listener not enabled"}
@@ -1712,6 +1901,26 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertEqual(snapshot["missing_checks"], ["server_side_comfyui_stop_verified"])
 
+    def test_remote_node_snapshot_requires_stopped_non_comfy_and_artifact_details(self) -> None:
+        snapshot = acceptance.remote_nodes_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+                "generated_at": "2026-07-24T12:35:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.REMOTE_NODES_REQUIRED_CHECKS),
+                "samples": [{"label": "tts-fast-non-comfy"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("server_side_comfyui_stop_verified.verified_by", snapshot["missing_compatibility_evidence"])
+        self.assertIn("server_side_comfyui_stop_verified.running_container_count_zero", snapshot["missing_compatibility_evidence"])
+        self.assertIn("remote_models_listed.model", snapshot["missing_compatibility_evidence"])
+        self.assertIn("credentials_externalized.credential_source", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.runtime_policy", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.sha256", snapshot["missing_compatibility_evidence"])
+
     def test_report_blocks_handoff_for_incomplete_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["remote_nodes_non_comfy"] = {
@@ -1816,6 +2025,86 @@ class AcceptanceReportTests(unittest.TestCase):
         summary = acceptance.public_report_summary(report)
         self.assertFalse(summary["modelhub_evidence_ready"])
         self.assertIn("Model Hub client sync evidence lacks integrity validation summary", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_when_external_compatibility_summary_is_absent(self) -> None:
+        cases = (
+            (
+                "native_comfyui_compatibility",
+                "native_comfyui_evidence_ready",
+                "native ComfyUI compatibility evidence lacks detailed compatibility summary",
+            ),
+            (
+                "remote_nodes_non_comfy",
+                "remote_nodes_evidence_ready",
+                "remote-node non-Comfy compatibility evidence lacks detailed compatibility summary",
+            ),
+            (
+                "voicebox_remote",
+                "voicebox_evidence_ready",
+                "Voicebox remote compatibility evidence lacks detailed compatibility summary",
+            ),
+        )
+        for evidence_key, summary_key, blocker in cases:
+            with self.subTest(evidence_key=evidence_key):
+                live_evidence = sample_live_evidence()
+                live_evidence[evidence_key].pop("missing_compatibility_evidence", None)
+                report = sample_report(live_evidence=live_evidence)
+                summary = acceptance.public_report_summary(report)
+
+                self.assertFalse(report["operator_handoff_ready"])
+                self.assertFalse(summary[summary_key])
+                self.assertIn(blocker, report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_shallow_external_compatibility_evidence(self) -> None:
+        cases = (
+            (
+                "native_comfyui_compatibility",
+                acceptance.native_comfyui_evidence_snapshot,
+                "b1-ai-hub-native-comfyui-compatibility/v1",
+                acceptance.NATIVE_COMFYUI_REQUIRED_CHECKS,
+                "https://comfy.ai.b1.germering",
+                "native_comfyui_evidence_ready",
+                "native ComfyUI compatibility evidence is missing detailed proof:",
+            ),
+            (
+                "remote_nodes_non_comfy",
+                acceptance.remote_nodes_evidence_snapshot,
+                "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+                acceptance.REMOTE_NODES_REQUIRED_CHECKS,
+                "https://api.ai.b1.germering",
+                "remote_nodes_evidence_ready",
+                "remote-node non-Comfy compatibility evidence is missing detailed proof:",
+            ),
+            (
+                "voicebox_remote",
+                acceptance.voicebox_evidence_snapshot,
+                "b1-ai-hub-voicebox-remote-compatibility/v1",
+                acceptance.VOICEBOX_REQUIRED_CHECKS,
+                "https://voice.ai.b1.germering",
+                "voicebox_evidence_ready",
+                "Voicebox remote compatibility evidence is missing detailed proof:",
+            ),
+        )
+        for evidence_key, snapshot_fn, evidence_format, required_checks, base_url, summary_key, blocker_prefix in cases:
+            with self.subTest(evidence_key=evidence_key):
+                live_evidence = sample_live_evidence()
+                live_evidence[evidence_key] = snapshot_fn(
+                    {
+                        "format": evidence_format,
+                        "generated_at": "2026-07-24T12:45:00+00:00",
+                        "base_url": base_url,
+                        "status": "ok",
+                        "checks": ok_checks(required_checks),
+                        "samples": [{"label": "shallow-proof"}],
+                    }
+                )
+
+                report = sample_report(live_evidence=live_evidence)
+                summary = acceptance.public_report_summary(report)
+
+                self.assertFalse(report["operator_handoff_ready"])
+                self.assertFalse(summary[summary_key])
+                self.assertTrue(any(str(blocker).startswith(blocker_prefix) for blocker in report["acceptance_blockers"]))
 
     def test_report_blocks_handoff_without_voicebox_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2183,6 +2472,11 @@ class AcceptanceReportTests(unittest.TestCase):
             root = Path(tmp)
             evidence_root = root / "acceptance"
             evidence_root.mkdir()
+            native_prompt_id = "prompt_native_disk_1"
+            native_job_id = "job_native_disk_1"
+            remote_artifact_sha = "e" * 64
+            voicebox_profile_id = "vp_disk1"
+            voicebox_speech_sha = "f" * 64
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
             smoke = evidence_root / "live-smoke.json"
@@ -2320,13 +2614,37 @@ class AcceptanceReportTests(unittest.TestCase):
                         "base_url": "https://api.ai.b1.germering",
                         "status": "ok",
                         "checks": {
-                            "server_side_comfyui_stopped": {"status": "ok"},
-                            "server_side_comfyui_stop_verified": {"status": "ok"},
-                            "remote_models_listed": {"status": "ok"},
-                            "model_alias_selected": {"status": "ok"},
-                            "credentials_externalized": {"status": "ok"},
-                            "non_comfy_tts_completed": {"status": "ok"},
-                            "artifact_downloaded": {"status": "ok"},
+                            "server_side_comfyui_stopped": {"status": "ok", "stop_mode": "manual"},
+                            "server_side_comfyui_stop_verified": {
+                                "status": "ok",
+                                "verified_by": "admin_runtimes_runtime_agent_services",
+                                "running_container_count": 0,
+                            },
+                            "remote_models_listed": {
+                                "status": "ok",
+                                "alias_count": 12,
+                                "selected_model_visible": True,
+                                "model": "tts-fast",
+                            },
+                            "model_alias_selected": {"status": "ok", "model": "tts-fast"},
+                            "credentials_externalized": {
+                                "status": "ok",
+                                "credential_source": "environment_file",
+                                "inspected_workflow_count": 1,
+                                "workflow_secret_findings": [],
+                            },
+                            "non_comfy_tts_completed": {
+                                "status": "ok",
+                                "model": "tts-fast",
+                                "runtime_policy": "non_comfy_only",
+                                "byte_count": 2048,
+                            },
+                            "artifact_downloaded": {
+                                "status": "ok",
+                                "filename": "b1-remote-node-non-comfy.wav",
+                                "byte_count": 2048,
+                                "sha256": remote_artifact_sha,
+                            },
                         },
                         "samples": [{"label": "remote-node-model-list"}, {"label": "tts-fast-non-comfy"}],
                     }
@@ -2349,16 +2667,46 @@ class AcceptanceReportTests(unittest.TestCase):
                             "queue_accessible": {"status": "ok"},
                             "upload_image_accessible": {"status": "ok"},
                             "upload_mask_accessible": {"status": "ok"},
-                            "prompt_submission": {"status": "ok"},
-                            "prompt_idempotency_replay": {"status": "ok"},
-                            "websocket_events": {"status": "ok"},
+                            "prompt_submission": {"status": "ok", "prompt_id": native_prompt_id, "queue_number": 1},
+                            "prompt_idempotency_replay": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "replay_header": "true",
+                                "idempotency_key_length": 48,
+                            },
+                            "websocket_events": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "event_types": ["execution_start", "executing"],
+                                "binary_messages": 0,
+                                "completed": True,
+                            },
                             "history_listing_accessible": {"status": "ok"},
-                            "history_available": {"status": "ok"},
-                            "durable_job_observable": {"status": "ok"},
-                            "durable_artifacts_observable": {"status": "ok"},
-                            "queue_delete_accessible": {"status": "ok"},
-                            "interrupt_accessible": {"status": "ok"},
-                            "view_artifact_accessible": {"status": "ok"},
+                            "history_available": {"status": "ok", "prompt_id": native_prompt_id, "history_keys": [native_prompt_id]},
+                            "durable_job_observable": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "job_id": native_job_id,
+                                "state": "completed",
+                                "artifact_count": 1,
+                            },
+                            "durable_artifacts_observable": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "job_id": native_job_id,
+                                "artifact_count": 1,
+                                "byte_count": 4096,
+                                "content_type": "image/png",
+                            },
+                            "queue_delete_accessible": {"status": "ok", "prompt_id": native_prompt_id, "byte_count": 2},
+                            "interrupt_accessible": {"status": "ok", "prompt_id": native_prompt_id, "byte_count": 2},
+                            "view_artifact_accessible": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "output_key": "images",
+                                "filename": "native-output.png",
+                                "byte_count": 4096,
+                            },
                         },
                         "samples": [
                             {"label": "object-info"},
@@ -2446,13 +2794,47 @@ class AcceptanceReportTests(unittest.TestCase):
                         "base_url": "https://voice.ai.b1.germering",
                         "status": "ok",
                         "checks": {
-                            "native_http_proxy_accessible": {"status": "ok"},
-                            "profile_lifecycle_validated": {"status": "ok"},
-                            "sample_artifact_protected": {"status": "ok"},
-                            "profile_export_validated": {"status": "ok"},
-                            "profile_delete_audited": {"status": "ok"},
-                            "speech_or_limitation_recorded": {"status": "ok"},
-                            "websocket_or_limitation_recorded": {"status": "ok"},
+                            "native_http_proxy_accessible": {
+                                "status": "ok",
+                                "http_status": 200,
+                                "upstream_version": "Jamie Pine Voicebox v0.5.0 commit 2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                            },
+                            "profile_lifecycle_validated": {
+                                "status": "ok",
+                                "profile_id": voicebox_profile_id,
+                                "model_alias": "tts-quality",
+                                "sample_artifact_count": 1,
+                            },
+                            "sample_artifact_protected": {
+                                "status": "ok",
+                                "sample_url_prefix": "/artifacts/voicebox/references/",
+                                "sample_artifact_url": "/artifacts/voicebox/references/sample.wav",
+                                "sample_artifact_bytes": 3244,
+                                "profile_metadata_has_sample_payload": False,
+                                "export_contains_raw_sample_bytes": False,
+                            },
+                            "profile_export_validated": {
+                                "status": "ok",
+                                "profile_id": voicebox_profile_id,
+                                "export_format": "b1-ai-hub-voice-profile/v1",
+                                "contains_sensitive_data": True,
+                                "sample_artifact_count": 1,
+                            },
+                            "profile_delete_audited": {"status": "ok", "profile_id": voicebox_profile_id, "deleted_status": "deleted"},
+                            "speech_or_limitation_recorded": {
+                                "status": "ok",
+                                "mode": "speech_validated",
+                                "model": "tts-quality",
+                                "byte_count": 4096,
+                                "sha256": voicebox_speech_sha,
+                                "content_type": "audio/wav",
+                            },
+                            "websocket_or_limitation_recorded": {
+                                "status": "ok",
+                                "mode": "websocket_validated",
+                                "path": "/ws",
+                                "received_type": "none",
+                            },
                         },
                         "samples": [
                             {"label": "voicebox-native-http"},
@@ -2602,6 +2984,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
+        self.assertEqual(native["missing_compatibility_evidence"], [])
+        self.assertEqual(native["native_prompt_id"], native_prompt_id)
+        self.assertEqual(native["durable_job_id"], native_job_id)
+        self.assertEqual(native["durable_artifact_count"], 1)
         self.assertEqual(native["sample_count"], 12)
         legacy = snapshot["legacy_comfyui_listener"]
         self.assertTrue(legacy["available"])
@@ -2614,6 +3000,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))
         self.assertEqual(remote_nodes["status"], "ok")
         self.assertEqual(remote_nodes["missing_checks"], [])
+        self.assertEqual(remote_nodes["missing_compatibility_evidence"], [])
+        self.assertEqual(remote_nodes["remote_selected_model"], "tts-fast")
+        self.assertEqual(remote_nodes["remote_tts_bytes"], 2048)
         self.assertEqual(remote_nodes["sample_count"], 2)
         modelhub_sync = snapshot["modelhub_client_sync"]
         self.assertTrue(modelhub_sync["available"])
@@ -2626,6 +3015,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(voicebox_remote["source_path"], str(voicebox.resolve()))
         self.assertEqual(voicebox_remote["status"], "ok")
         self.assertEqual(voicebox_remote["missing_checks"], [])
+        self.assertEqual(voicebox_remote["missing_compatibility_evidence"], [])
+        self.assertEqual(voicebox_remote["voicebox_profile_id"], voicebox_profile_id)
+        self.assertEqual(voicebox_remote["voicebox_speech_mode"], "speech_validated")
+        self.assertEqual(voicebox_remote["voicebox_websocket_mode"], "websocket_validated")
         self.assertEqual(voicebox_remote["sample_count"], 4)
         security_acceptance = snapshot["security_acceptance"]
         self.assertTrue(security_acceptance["available"])
