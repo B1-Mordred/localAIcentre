@@ -15,6 +15,7 @@ import {
   ListChecks,
   LogOut,
   PauseCircle,
+  Pencil,
   PlayCircle,
   RefreshCw,
   Rocket,
@@ -892,6 +893,26 @@ type VoiceProfile = {
   updated_at?: string;
   deleted_at?: string | null;
 };
+
+type VoiceProfileForm = {
+  display_name: string;
+  runtime: "voicebox" | "audio-cpu";
+  engine: string;
+  model_alias: string;
+  profile_type: "preset" | "reference" | "clone";
+  status: "active" | "disabled";
+  visibility_roles: string;
+};
+
+const defaultVoiceProfileForm = (): VoiceProfileForm => ({
+  display_name: "",
+  runtime: "voicebox",
+  engine: "voicebox",
+  model_alias: "tts-quality",
+  profile_type: "preset",
+  status: "active",
+  visibility_roles: "admin,operator"
+});
 
 type ModelInstallPlan = {
   model_ref: string;
@@ -2048,15 +2069,8 @@ function Runtimes() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
   const [profileExport, setProfileExport] = useState("");
   const [profileMessage, setProfileMessage] = useState("idle");
-  const [profileForm, setProfileForm] = useState({
-    display_name: "",
-    runtime: "voicebox",
-    engine: "voicebox",
-    model_alias: "tts-quality",
-    profile_type: "preset",
-    status: "active",
-    visibility_roles: "admin,operator"
-  });
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [profileForm, setProfileForm] = useState<VoiceProfileForm>(defaultVoiceProfileForm);
   const [profileMetadata, setProfileMetadata] = useState("{}");
   const [profileArtifacts, setProfileArtifacts] = useState("[]");
   const [message, setMessage] = useState("idle");
@@ -2172,32 +2186,66 @@ function Runtimes() {
       .finally(() => setBusy(false));
   };
 
-  const updateProfileForm = (field: string, value: string) => {
+  const updateProfileForm = <K extends keyof VoiceProfileForm>(field: K, value: VoiceProfileForm[K]) => {
     setProfileForm((current) => ({ ...current, [field]: value }));
   };
 
-  const createVoiceProfile = () => {
+  const profileFormFromProfile = (profile: VoiceProfile): VoiceProfileForm => ({
+    display_name: profile.display_name,
+    runtime: profile.runtime,
+    engine: profile.engine,
+    model_alias: profile.model_alias,
+    profile_type: profile.profile_type,
+    status: profile.status === "disabled" ? "disabled" : "active",
+    visibility_roles: profile.visibility_roles.join(",")
+  });
+
+  const profilePayloadFromForm = () => {
+    const metadata = profileMetadata.trim() ? JSON.parse(profileMetadata) : {};
+    const sample_artifacts = profileArtifacts.trim() ? JSON.parse(profileArtifacts) : [];
+    if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") throw new Error("metadata must be an object");
+    if (!Array.isArray(sample_artifacts)) throw new Error("sample artifacts must be an array");
+    return {
+      ...profileForm,
+      display_name: profileForm.display_name.trim(),
+      engine: profileForm.engine.trim(),
+      model_alias: profileForm.model_alias.trim(),
+      visibility_roles: profileForm.visibility_roles.split(",").map((role) => role.trim()).filter(Boolean),
+      metadata,
+      sample_artifacts
+    };
+  };
+
+  const resetVoiceProfileForm = () => {
+    setSelectedProfileId(null);
+    setProfileForm(defaultVoiceProfileForm());
+    setProfileMetadata("{}");
+    setProfileArtifacts("[]");
+  };
+
+  const editVoiceProfile = (profile: VoiceProfile) => {
+    setSelectedProfileId(profile.id);
+    setProfileForm(profileFormFromProfile(profile));
+    setProfileMetadata(JSON.stringify(profile.metadata ?? {}, null, 2));
+    setProfileArtifacts(JSON.stringify(profile.sample_artifacts ?? [], null, 2));
+    setProfileExport("");
+    setProfileMessage(`editing ${profile.id}`);
+  };
+
+  const saveVoiceProfile = (profileId: string | null) => {
     setBusy(true);
-    setProfileMessage("creating");
+    setProfileMessage(profileId ? `updating ${profileId}` : "creating");
     try {
-      const metadata = profileMetadata.trim() ? JSON.parse(profileMetadata) : {};
-      const sample_artifacts = profileArtifacts.trim() ? JSON.parse(profileArtifacts) : [];
-      if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") throw new Error("metadata must be an object");
-      if (!Array.isArray(sample_artifacts)) throw new Error("sample artifacts must be an array");
-      apiJson<VoiceProfile>(`/admin/voicebox/profiles`, {
-        method: "POST",
+      const payload = profilePayloadFromForm();
+      apiJson<VoiceProfile>(profileId ? `/admin/voicebox/profiles/${encodeURIComponent(profileId)}` : `/admin/voicebox/profiles`, {
+        method: profileId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...profileForm,
-          visibility_roles: profileForm.visibility_roles.split(",").map((role) => role.trim()).filter(Boolean),
-          metadata,
-          sample_artifacts
-        })
+        body: JSON.stringify(payload)
       })
         .then((profile) => {
-          setProfileMessage(`created ${profile.id}`);
+          setProfileMessage(`${profileId ? "updated" : "created"} ${profile.id}`);
           setProfileExport("");
-          setProfileForm((current) => ({ ...current, display_name: "" }));
+          resetVoiceProfileForm();
           loadVoiceProfiles();
         })
         .catch((error: Error) => setProfileMessage(error.message))
@@ -2206,6 +2254,14 @@ function Runtimes() {
       setProfileMessage(error instanceof Error ? error.message : "invalid profile payload");
       setBusy(false);
     }
+  };
+
+  const createVoiceProfile = () => {
+    saveVoiceProfile(null);
+  };
+
+  const updateVoiceProfile = () => {
+    saveVoiceProfile(selectedProfileId);
   };
 
   const exportVoiceProfile = (profile: VoiceProfile) => {
@@ -2226,6 +2282,7 @@ function Runtimes() {
     apiJson<VoiceProfile>(`/admin/voicebox/profiles/${encodeURIComponent(profile.id)}`, { method: "DELETE" })
       .then((payload) => {
         setProfileMessage(`${payload.id} ${payload.status}`);
+        if (profile.id === selectedProfileId) resetVoiceProfileForm();
         loadVoiceProfiles();
       })
       .catch((error: Error) => setProfileMessage(error.message))
@@ -2360,7 +2417,7 @@ function Runtimes() {
           <div className="stack">
             <label>Display name<input value={profileForm.display_name} onChange={(event) => updateProfileForm("display_name", event.target.value)} /></label>
             <label>Runtime
-              <select value={profileForm.runtime} onChange={(event) => updateProfileForm("runtime", event.target.value)}>
+              <select value={profileForm.runtime} onChange={(event) => updateProfileForm("runtime", event.target.value as VoiceProfileForm["runtime"])}>
                 <option value="voicebox">voicebox</option>
                 <option value="audio-cpu">audio-cpu</option>
               </select>
@@ -2368,14 +2425,14 @@ function Runtimes() {
             <label>Engine<input value={profileForm.engine} onChange={(event) => updateProfileForm("engine", event.target.value)} /></label>
             <label>Model alias<input value={profileForm.model_alias} onChange={(event) => updateProfileForm("model_alias", event.target.value)} /></label>
             <label>Profile type
-              <select value={profileForm.profile_type} onChange={(event) => updateProfileForm("profile_type", event.target.value)}>
+              <select value={profileForm.profile_type} onChange={(event) => updateProfileForm("profile_type", event.target.value as VoiceProfileForm["profile_type"])}>
                 <option value="preset">preset</option>
                 <option value="reference">reference</option>
                 <option value="clone">clone</option>
               </select>
             </label>
             <label>Status
-              <select value={profileForm.status} onChange={(event) => updateProfileForm("status", event.target.value)}>
+              <select value={profileForm.status} onChange={(event) => updateProfileForm("status", event.target.value as VoiceProfileForm["status"])}>
                 <option value="active">active</option>
                 <option value="disabled">disabled</option>
               </select>
@@ -2383,7 +2440,17 @@ function Runtimes() {
             <label>Visibility roles<input value={profileForm.visibility_roles} onChange={(event) => updateProfileForm("visibility_roles", event.target.value)} /></label>
             <label>Metadata JSON<textarea value={profileMetadata} onChange={(event) => setProfileMetadata(event.target.value)} /></label>
             <label>Sample artifacts JSON<textarea value={profileArtifacts} onChange={(event) => setProfileArtifacts(event.target.value)} /></label>
-            <button title="Create voice profile" onClick={createVoiceProfile} disabled={busy || !profileForm.display_name.trim()}><Upload size={16} />Create</button>
+            <div className="table-actions">
+              {selectedProfileId ? (
+                <>
+                  <button title={`Save voice profile ${selectedProfileId}`} onClick={updateVoiceProfile} disabled={busy || !profileForm.display_name.trim()}><CheckCircle2 size={16} />Save</button>
+                  <button title="Cancel voice profile edit" onClick={resetVoiceProfileForm} disabled={busy}><RotateCcw size={16} />Cancel</button>
+                </>
+              ) : (
+                <button title="Create voice profile" onClick={createVoiceProfile} disabled={busy || !profileForm.display_name.trim()}><Upload size={16} />Create</button>
+              )}
+            </div>
+            {selectedProfileId && <small>Editing {selectedProfileId}</small>}
           </div>
           <div className="stack">
             <table>
@@ -2397,6 +2464,7 @@ function Runtimes() {
                     <td>{profile.visibility_roles.join(", ")}</td>
                     <td>{profile.sample_artifacts.length}</td>
                     <td><div className="table-actions">
+                      <button title={`Edit ${profile.id}`} onClick={() => editVoiceProfile(profile)} disabled={busy}><Pencil size={16} /></button>
                       <button title={`Export ${profile.id}`} onClick={() => exportVoiceProfile(profile)} disabled={busy}><Download size={16} /></button>
                       <button title={`Delete ${profile.id}`} onClick={() => deleteVoiceProfile(profile)} disabled={busy}><Trash2 size={16} /></button>
                     </div></td>
