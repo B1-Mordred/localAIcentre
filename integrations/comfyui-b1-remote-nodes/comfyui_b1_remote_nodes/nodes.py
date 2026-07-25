@@ -136,6 +136,23 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def has_unsafe_path_segment(path: str) -> bool:
+    for segment in path.split("/"):
+        if not segment:
+            continue
+        if BAD_PERCENT_ESCAPE_PATTERN.search(segment):
+            return True
+        try:
+            decoded = urllib.parse.unquote(segment, errors="strict")
+        except UnicodeDecodeError:
+            return True
+        if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
+            return True
+        if any(ord(character) < 32 or ord(character) == 127 for character in decoded):
+            return True
+    return False
+
+
 def resolve_secret_file_path(value: str, config_path: Path | None) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute() and config_path is not None:
@@ -158,12 +175,23 @@ def read_api_key_file(path: Path) -> str:
 
 def api_base() -> str:
     value = config_value("api_base", "B1_AI_HUB_API_BASE", "https://api.ai.b1.germering").strip().rstrip("/")
-    parsed = urllib.parse.urlsplit(value)
+    if "\\" in value or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value):
+        raise B1RemoteNodeError("B1 API base contains unsafe characters")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise B1RemoteNodeError("B1 API base must be a valid HTTP(S) URL") from exc
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise B1RemoteNodeError("B1 API base must be an HTTP(S) URL")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or "?" in value or "#" in value:
         raise B1RemoteNodeError("B1 API base must not include credentials, query, or fragment")
-    return value
+    if "\\" in parsed.netloc or "\\" in parsed.path or not parsed.hostname:
+        raise B1RemoteNodeError("B1 API base contains unsafe characters")
+    path = parsed.path.rstrip("/")
+    if has_unsafe_path_segment(path):
+        raise B1RemoteNodeError("B1 API base path contains unsafe traversal segments")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 def api_key() -> str:
@@ -208,9 +236,17 @@ def configured_download_dir() -> Path:
 
 
 def request_url(path: str) -> str:
-    if not path.startswith("/"):
-        raise B1RemoteNodeError("B1 API path must start with /")
-    return api_base() + path
+    raw = str(path or "")
+    if raw != raw.strip():
+        raise B1RemoteNodeError("B1 API path is unsafe")
+    if "\\" in raw or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in raw):
+        raise B1RemoteNodeError("B1 API path is unsafe")
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or "?" in raw or "#" in raw or not parsed.path.startswith("/"):
+        raise B1RemoteNodeError("B1 API path must be an internal path without scheme, host, query, or fragment")
+    if has_unsafe_path_segment(parsed.path):
+        raise B1RemoteNodeError("B1 API path is unsafe")
+    return api_base() + parsed.path
 
 
 def response_error_detail(exc: urllib.error.HTTPError) -> str:

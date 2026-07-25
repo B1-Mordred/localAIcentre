@@ -324,15 +324,62 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             "file:///tmp/api",
             "https://user:pass@api.test.local",
             "https://api.test.local?token=secret",
+            "https://api.test.local?",
             "https://api.test.local/#fragment",
+            "https://api.test.local/#",
+            "https://api.test.local/../admin",
+            "https://api.test.local/%2e%2e/admin",
+            "https://api.test.local/base%2Fescape",
+            "https://api.test.local:bad",
+            "https://api.test.local/base\nadmin",
+            "https://api.test.local/base\\admin",
         ]:
             with self.subTest(value=value), EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_BASE=value):
                 with self.assertRaises(nodes.B1RemoteNodeError):
                     nodes.api_base()
 
     def test_request_url_rejects_paths_that_are_not_api_routes(self) -> None:
-        with self.assertRaises(nodes.B1RemoteNodeError):
-            nodes.request_url("v1/models")
+        for value in [
+            "v1/models",
+            "https://api.test.local/v1/models",
+            "//api.test.local/v1/models",
+            "/v1/models?token=secret",
+            "/v1/models?",
+            "/v1/models#fragment",
+            "/v1/models#",
+            "/v1/%2e%2e/admin",
+            "/v1/%2Fsecret",
+            "/v1/models%3Ftoken",
+            "/v1/models%23fragment",
+            "/v1/models%00name",
+            "/v1/models%name",
+            "/v1/models%2/name",
+            "/v1/models%zzname",
+            "/v1/models%ffname",
+            "/v1/models\\admin",
+            "/v1/models\nadmin",
+        ]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.request_url(value)
+
+    def test_request_json_rejects_unsafe_path_before_network(self) -> None:
+        called = False
+
+        def fake_urlopen(request: Any, timeout: int = 0) -> FakeResponse:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called for unsafe B1 API paths")
+
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with EnvPatch(B1_AI_HUB_API_BASE="https://api.test.local", B1_AI_HUB_API_KEY="b1k_public.secret"):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "B1 API path"):
+                nodes.request_json("/v1/%2e%2e/admin")
+
+        self.assertFalse(called)
 
     def test_text_to_speech_calls_unified_audio_endpoint_not_comfyui(self) -> None:
         calls: list[dict[str, Any]] = []
