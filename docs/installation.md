@@ -80,6 +80,16 @@ After installing real GPU model manifests and publishing at least one target-hos
 
 Bootstrap creates `/srv/b1-ai-hub/workflows/acceptance/` and copies editable prompt/job templates there once. Review the copied files and replace placeholder checkpoint names, upload names, and workflow references before collecting final evidence.
 
+Generate the target-host acceptance environment once the deployed stack has API clients, real model aliases, and reviewed workflow templates:
+
+```bash
+make acceptance-env
+export B1_ACCEPTANCE_API_KEY=...
+. /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
+```
+
+The generated file contains no secrets by default. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`.
+
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...

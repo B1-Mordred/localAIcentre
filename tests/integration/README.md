@@ -125,4 +125,14 @@ All harnesses that use the shared live API client refuse to send bearer keys ove
 
 Native ComfyUI REST/WebSocket compatibility, optional legacy ComfyUI listener checks, external ComfyUI remote-node execution, Model Hub blob semantics, and Voicebox remote/server scenarios live under `tests/compatibility/`; deployed security acceptance lives under `tests/security/`.
 
+To avoid rebuilding this environment by hand from each section, generate the reviewed target-host acceptance env file:
+
+```bash
+make acceptance-env
+export B1_ACCEPTANCE_API_KEY=...
+. /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
+```
+
+The file contains default LAN URLs, Caddy internal CA paths, prompt/job template paths, evidence output paths, and explicit blank values for the restart reconciliation timestamp, Model Hub sync aliases, browser session/password, and any split-scope API keys. It contains no secrets by default and the generator refuses to overwrite an existing file unless rerun directly with `--force`.
+
 When every required live-test environment variable is configured and the restart-reconciliation drill state has already been prepared, `make operator-live-acceptance` runs the live smoke, installed workflow, LocalAI, GPU, external compatibility, security, and restart-reconciliation harnesses with their default evidence paths under `$B1_BACKUP_ROOT/acceptance/`. It does not generate backup/migration/rollback evidence; that remains a reviewed artifact flow.

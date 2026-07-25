@@ -143,6 +143,19 @@ See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS, temporary-host
 
 Compose bootstrap seeds editable acceptance templates once under `/srv/b1-ai-hub/workflows/acceptance/`. Existing files there are preserved, so bind real checkpoint names, uploaded image names, and published workflow IDs in the external data-root copies before final handoff runs.
 
+Generate a sourceable live-acceptance environment file with all default URLs, CA paths, prompt/job files, and evidence outputs:
+
+```bash
+make acceptance-env
+```
+
+The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. Review it, fill the blank API-key, Model Hub, browser-session, and restart-drill values, then source it before running the live acceptance targets:
+
+```bash
+export B1_ACCEPTANCE_API_KEY=...
+. /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
+```
+
 Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 
 ```bash

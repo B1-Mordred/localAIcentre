@@ -109,6 +109,9 @@ class CiQualityGateTests(unittest.TestCase):
         for variable, filename in expected_defaults:
             with self.subTest(variable=variable):
                 self.assertIn(f"{variable} ?= $(B1_BACKUP_ROOT)/acceptance/{filename}", self.makefile_text)
+        self.assertIn("B1_ACCEPTANCE_ENV ?= $(B1_BACKUP_ROOT)/acceptance/operator-live-acceptance.env", self.makefile_text)
+        self.assertIn("\nacceptance-env:", self.makefile_text)
+        self.assertIn('deploy/scripts/acceptance_env.py --data-root "$(B1_DATA_ROOT)" --output "$(B1_ACCEPTANCE_ENV)"', self.makefile_text)
 
         expected_targets = (
             ("live-smoke-acceptance", "B1_SMOKE_LIVE_TEST=1", "B1_SMOKE_EVIDENCE"),
