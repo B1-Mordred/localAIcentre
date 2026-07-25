@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -40,6 +40,7 @@ MODEL_MEASUREMENT_RUN_FIELDS = (
     "peak_ram_mib",
     "resource_estimate",
 )
+MEDIA_JOB_LINK_NAMES = ("self", "events", "artifacts", "cancel")
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -47,6 +48,27 @@ def env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def media_job_link(job: dict[str, Any], link_name: str, fallback_suffix: str = "") -> str:
+    links = job.get("links")
+    if isinstance(links, dict):
+        candidate = links.get(link_name)
+        if isinstance(candidate, str) and candidate.startswith("/v1/media/jobs/"):
+            return candidate
+    job_id = quote(str(job.get("id") or ""), safe="")
+    if not job_id:
+        raise AssertionError("media job response did not include an id")
+    return f"/v1/media/jobs/{job_id}{fallback_suffix}"
+
+
+def assert_media_job_links(testcase: unittest.TestCase, job: dict[str, Any]) -> None:
+    links = job.get("links")
+    testcase.assertIsInstance(links, dict, job)
+    for name in MEDIA_JOB_LINK_NAMES:
+        value = links.get(name) if isinstance(links, dict) else None
+        testcase.assertIsInstance(value, str, job)
+        testcase.assertTrue(value.startswith("/v1/media/jobs/"), value)
 
 
 class LiveApiClient:
@@ -320,20 +342,22 @@ class LiveStackSmokeTests(unittest.TestCase):
             headers={"Idempotency-Key": f"smoke-tts-{uuid.uuid4().hex}"},
             require_auth=True,
         )
-        self.assert_json_status(status, job)
+        self.assert_json_status(status, job, expected=202)
+        assert_media_job_links(self, job)
         job_id = job["id"]
-        final_job = self.wait_for_terminal_job(job_id)
+        final_job = self.wait_for_terminal_job(job)
+        assert_media_job_links(self, final_job)
         self.assertEqual(final_job.get("state"), "completed", final_job)
-        self.samples.append({"label": "tts-job", "job_id": job_id, "state": final_job.get("state"), "model": model})
+        self.samples.append({"label": "tts-job", "job_id": job_id, "state": final_job.get("state"), "model": model, "link_keys": list(MEDIA_JOB_LINK_NAMES)})
         self.record_check("tts_media_job_completed", job_id=job_id, model=model)
 
-        status, _, events = self.client.request("GET", f"/v1/media/jobs/{job_id}/events", require_auth=True)
+        status, _, events = self.client.request("GET", media_job_link(final_job, "events", "/events"), require_auth=True)
         self.assertEqual(status, 200, events[:500])
         self.assertIn(b"event: job", events)
         self.samples.append({"label": "job-events", "job_id": job_id, "bytes": len(events)})
-        self.record_check("job_events_streamed", job_id=job_id, bytes=len(events))
+        self.record_check("job_events_streamed", job_id=job_id, bytes=len(events), link=media_job_link(final_job, "events", "/events"))
 
-        status, _, artifact_payload = self.client.json_request("GET", f"/v1/media/jobs/{job_id}/artifacts", require_auth=True)
+        status, _, artifact_payload = self.client.json_request("GET", media_job_link(final_job, "artifacts", "/artifacts"), require_auth=True)
         self.assert_json_status(status, artifact_payload)
         artifacts = artifact_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
@@ -367,11 +391,12 @@ class LiveStackSmokeTests(unittest.TestCase):
         self.assertIn(payload.get("status"), {"ok", "degraded"})
         self.assertIsInstance(payload.get("checks"), list)
 
-    def wait_for_terminal_job(self, job_id: str) -> dict[str, Any]:
+    def wait_for_terminal_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(job.get("id") or "")
         deadline = time.monotonic() + self.job_timeout_seconds
-        last: dict[str, Any] | None = None
+        last: dict[str, Any] | None = job
         while time.monotonic() < deadline:
-            status, _, payload = self.client.json_request("GET", f"/v1/media/jobs/{job_id}", require_auth=True)
+            status, _, payload = self.client.json_request("GET", media_job_link(last or job, "self"), require_auth=True)
             self.assert_json_status(status, payload)
             last = payload
             if payload.get("state") in TERMINAL_STATES:

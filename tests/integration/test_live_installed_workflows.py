@@ -18,7 +18,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
-from test_live_stack import LiveApiClient, TERMINAL_STATES, measured_model_alias  # noqa: E402
+from test_live_stack import (  # noqa: E402
+    LiveApiClient,
+    TERMINAL_STATES,
+    assert_media_job_links,
+    measured_model_alias,
+    media_job_link,
+)
 
 
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
@@ -438,14 +444,16 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             headers={"Idempotency-Key": f"workflow-{label}-{uuid.uuid4().hex}"},
             require_auth=True,
         )
-        self.assertEqual(status, 200, job)
+        self.assertEqual(status, 202, job)
         self.assertIsInstance(job, dict)
-        final_job = self.wait_for_terminal_job(str(job["id"]))
+        assert_media_job_links(self, job)
+        final_job = self.wait_for_terminal_job(job)
+        assert_media_job_links(self, final_job)
         self.assertEqual(final_job.get("state"), "completed", final_job)
         if measurement:
             self.assertEqual(final_job.get("resolved_model_version"), measurement.get("resolved_model_version"), final_job)
             self.assertEqual(final_job.get("runtime"), measurement.get("runtime"), final_job)
-        status, _, artifact_payload = self.client.json_request("GET", f"/v1/media/jobs/{job['id']}/artifacts", require_auth=True)
+        status, _, artifact_payload = self.client.json_request("GET", media_job_link(final_job, "artifacts", "/artifacts"), require_auth=True)
         self.assertEqual(status, 200, artifact_payload)
         artifacts = artifact_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
@@ -470,6 +478,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             peak_vram_mib=final_job.get("peak_vram_mib"),
             peak_ram_mib=final_job.get("peak_ram_mib"),
             model_measurement=measurement,
+            job_links=final_job.get("links"),
             artifact_count=len(artifacts),
             first_artifact_bytes=len(content),
             first_artifact_sha256=digest,
@@ -486,17 +495,19 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "run_time_ms": final_job.get("run_time_ms"),
                 "peak_vram_mib": final_job.get("peak_vram_mib"),
                 "peak_ram_mib": final_job.get("peak_ram_mib"),
+                "job_links": final_job.get("links"),
                 "artifact_count": len(artifacts),
                 "first_artifact_bytes": len(content),
                 "first_artifact_sha256": digest,
             }
         )
 
-    def wait_for_terminal_job(self, job_id: str) -> dict[str, Any]:
+    def wait_for_terminal_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(job.get("id") or "")
         deadline = time.monotonic() + self.job_timeout_seconds
-        last: dict[str, Any] | None = None
+        last: dict[str, Any] | None = job
         while time.monotonic() < deadline:
-            status, _, payload = self.client.json_request("GET", f"/v1/media/jobs/{job_id}", require_auth=True)
+            status, _, payload = self.client.json_request("GET", media_job_link(last or job, "self"), require_auth=True)
             self.assertEqual(status, 200, payload)
             self.assertIsInstance(payload, dict)
             last = payload

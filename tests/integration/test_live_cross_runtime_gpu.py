@@ -14,7 +14,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
-from test_live_stack import LiveApiClient, TERMINAL_STATES, measured_model_alias  # noqa: E402
+from test_live_stack import (  # noqa: E402
+    LiveApiClient,
+    TERMINAL_STATES,
+    assert_media_job_links,
+    measured_model_alias,
+    media_job_link,
+)
 
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
@@ -221,11 +227,12 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.__class__.vram_samples.append(sample)
         self.record_check("vram_reserve_enforced", sample_count=len(self.__class__.vram_samples), latest_sample=sample)
 
-    def wait_for_terminal_job(self, job_id: str) -> dict[str, Any]:
+    def wait_for_terminal_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(job.get("id") or "")
         deadline = time.monotonic() + self.job_timeout_seconds
-        last: dict[str, Any] | None = None
+        last: dict[str, Any] | None = job
         while time.monotonic() < deadline:
-            status, _, payload = self.client.json_request("GET", f"/v1/media/jobs/{job_id}", require_auth=True)
+            status, _, payload = self.client.json_request("GET", media_job_link(last or job, "self"), require_auth=True)
             self.assertEqual(status, 200, payload)
             self.assertIsInstance(payload, dict)
             last = payload
@@ -242,9 +249,12 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             headers={"Idempotency-Key": f"gpu-acceptance-{uuid.uuid4().hex}"},
             require_auth=True,
         )
-        self.assertEqual(status, 200, job)
+        self.assertEqual(status, 202, job)
         self.assertIsInstance(job, dict)
-        return self.wait_for_terminal_job(str(job["id"]))
+        assert_media_job_links(self, job)
+        final_job = self.wait_for_terminal_job(job)
+        assert_media_job_links(self, final_job)
+        return final_job
 
     def test_resource_policy_and_runtime_readiness_are_acceptance_safe(self) -> None:
         status = self.admin_status()

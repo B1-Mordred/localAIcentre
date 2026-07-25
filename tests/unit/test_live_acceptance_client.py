@@ -273,6 +273,28 @@ class LiveAcceptanceClientTests(unittest.TestCase):
 
         self.assertNotIn("called", seen)
 
+    def test_media_job_link_uses_server_links_and_validates_shape(self) -> None:
+        job = {
+            "id": "job_1",
+            "links": {
+                "self": "/v1/media/jobs/job_1",
+                "events": "/v1/media/jobs/job_1/events",
+                "artifacts": "/v1/media/jobs/job_1/artifacts",
+                "cancel": "/v1/media/jobs/job_1",
+            },
+        }
+
+        live_stack.assert_media_job_links(self, job)
+        self.assertEqual(live_stack.media_job_link(job, "events", "/events"), "/v1/media/jobs/job_1/events")
+        self.assertEqual(live_stack.media_job_link(job, "artifacts", "/artifacts"), "/v1/media/jobs/job_1/artifacts")
+
+    def test_media_job_link_fallback_percent_encodes_legacy_job_ids(self) -> None:
+        job = {"id": "job/one two", "links": {"events": "https://evil.test/v1/media/jobs/job_1/events"}}
+
+        self.assertEqual(live_stack.media_job_link(job, "events", "/events"), "/v1/media/jobs/job%2Fone%20two/events")
+        with self.assertRaises(AssertionError):
+            live_stack.assert_media_job_links(self, job)
+
     def test_measured_model_alias_compacts_admin_model_measurements(self) -> None:
         payload = {
             "aliases": [

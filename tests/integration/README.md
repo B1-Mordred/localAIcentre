@@ -21,7 +21,7 @@ The first live integration path checks `/admin/runtimes` adapter-contract, healt
 
 ## Installed Workflow Acceptance
 
-Run the installed workflow suite on the target host after the public aliases are backed by real installed models, each alias has a successful persisted model-smoke measurement, and the required workflows are approved. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report. The API key must include normal inference scopes plus `models:read` and `runtimes:read` so the harness can verify installed model measurements and read `/admin/scheduler/lease` before and after the CPU-audio probe.
+Run the installed workflow suite on the target host after the public aliases are backed by real installed models, each alias has a successful persisted model-smoke measurement, and the required workflows are approved. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder CPU audio output by default, follows the accepted media job's advertised polling/artifact links, downloads generated artifacts, and writes evidence for the Control Center handoff report. The API key must include normal inference scopes plus `models:read` and `runtimes:read` so the harness can verify installed model measurements and read `/admin/scheduler/lease` before and after the CPU-audio probe.
 
 ```bash
 export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering

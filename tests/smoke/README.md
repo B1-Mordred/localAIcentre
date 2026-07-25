@@ -44,6 +44,7 @@ The live suite currently checks:
 - gateway/control-plane `/healthz`
 - authenticated `/v1/models`
 - async TTS media-job creation through `tts-fast`
+- advertised media-job `self`, `events`, `artifacts`, and `cancel` links
 - terminal job polling
 - SSE job event delivery
 - artifact listing and authenticated artifact download
