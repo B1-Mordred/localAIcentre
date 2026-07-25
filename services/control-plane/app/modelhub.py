@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .catalog import CatalogError, ModelCatalog
 
 ACCEPTED_LICENSE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,127}@[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
+MODEL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[A-Fa-f0-9]{64}$")
 
 
@@ -19,6 +20,12 @@ def validate_blob_sha256(value: str) -> str:
     if not SHA256_PATTERN.fullmatch(value):
         raise CatalogError("invalid SHA-256")
     return value.lower()
+
+
+def validate_model_identifier(value: str) -> str:
+    if not MODEL_IDENTIFIER_PATTERN.fullmatch(value):
+        raise CatalogError("invalid model id or alias")
+    return value
 
 
 def parse_accepted_license_refs(header_value: str | None) -> set[str]:

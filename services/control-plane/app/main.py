@@ -5140,6 +5140,13 @@ def validate_modelhub_blob_sha256(sha256: str) -> str:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def validate_modelhub_model_identifier(model_id: str) -> str:
+    try:
+        return modelhub_policy.validate_model_identifier(model_id)
+    except CatalogError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def model_allowed_by_client(client: dict[str, Any] | None, model_id: str, record: dict[str, Any] | None = None) -> bool:
     if client is None:
         return True
@@ -5221,6 +5228,7 @@ async def modelhub_client_for_auth(auth: AuthContext) -> dict[str, Any] | None:
 
 
 async def require_modelhub_model_authorized(auth: AuthContext, model_id: str, *, for_download: bool) -> dict[str, Any] | None:
+    model_id = validate_modelhub_model_identifier(model_id)
     client = await modelhub_client_for_auth(auth)
     if client is not None and for_download and not client.get("allow_downloads", True):
         raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download blobs")
@@ -8982,6 +8990,7 @@ async def modelhub_catalog(authorization: str | None = Header(default=None)) -> 
 
 
 def modelhub_model_record(model_id: str) -> dict[str, Any]:
+    model_id = validate_modelhub_model_identifier(model_id)
     model = catalog_snapshot().model_or_alias_record(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="model not found")
@@ -9032,9 +9041,10 @@ async def modelhub_blob(
 async def modelhub_sync_plan(payload: ModelHubSyncPlanRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:sync")
+    models = [validate_modelhub_model_identifier(model_id) for model_id in payload.models]
     installed = {blob.sha256.lower(): blob.size_bytes for blob in payload.installed_blobs}
     client = await modelhub_client_for_auth(auth)
-    for model_id in payload.models:
+    for model_id in models:
         await require_modelhub_model_authorized(auth, model_id, for_download=True)
 
     def record_allowed(model_id: str, record: dict[str, Any]) -> bool:
@@ -9043,7 +9053,7 @@ async def modelhub_sync_plan(payload: ModelHubSyncPlanRequest, authorization: st
         return model_allowed_by_auth_permissions(auth, model_id, record, "download")
 
     try:
-        return modelhub_policy.build_sync_plan(catalog_snapshot(), payload.models, installed, record_filter=record_allowed)
+        return modelhub_policy.build_sync_plan(catalog_snapshot(), models, installed, record_filter=record_allowed)
     except CatalogError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
