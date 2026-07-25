@@ -393,6 +393,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             http_status=status,
             allow_origin=header_map.get("access-control-allow-origin", ""),
             allow_credentials=header_map.get("access-control-allow-credentials", ""),
+            wildcard_credentials=False,
         )
         self.sample("cors-denied-origin", http_status=status, allow_origin=header_map.get("access-control-allow-origin", ""))
 
@@ -418,7 +419,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.record_check("comfyui_management_routes_blocked", path=path, http_status=status)
         self.sample("comfyui-manager-denied", path=path, http_status=status)
 
-    def assert_import_url_rejected(self, check_name: str, manifest_url: str) -> None:
+    def assert_import_url_rejected(self, check_name: str, manifest_url: str, *, policy_case: str) -> None:
         status, _headers, payload = self.request_json(
             self.api_base,
             "POST",
@@ -435,6 +436,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             check_name,
             path="/admin/models/download-plan",
             http_status=status,
+            policy_case=policy_case,
             rejected_scheme=parsed.scheme,
             rejected_host=parsed.hostname or "",
         )
@@ -444,18 +446,22 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.assert_import_url_rejected(
             "import_ssrf_blocked",
             os.getenv("B1_SECURITY_SSRF_MANIFEST_URL", "http://127.0.0.1:1/manifest.json"),
+            policy_case="loopback-ssrf",
         )
         self.assert_import_url_rejected(
             "import_metadata_ssrf_blocked",
             os.getenv("B1_SECURITY_METADATA_MANIFEST_URL", "https://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+            policy_case="link-local-metadata",
         )
         self.assert_import_url_rejected(
             "import_private_network_blocked",
             os.getenv("B1_SECURITY_PRIVATE_MANIFEST_URL", "https://172.17.0.1/manifest.json"),
+            policy_case="private-network",
         )
         self.assert_import_url_rejected(
             "import_plain_http_blocked",
             os.getenv("B1_SECURITY_HTTP_MANIFEST_URL", "http://example.com/manifest.json"),
+            policy_case="plain-http",
         )
 
     def verify_artifact_traversal_blocked(self) -> None:
@@ -585,6 +591,10 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             "runtime_agent_mutation_guard",
             path="/admin/self-test",
             http_status=status,
+            auth_configured=data.get("auth_configured"),
+            allow_missing_auth=data.get("allow_missing_auth"),
+            mtls_enabled=data.get("mtls_enabled"),
+            client_cert_required=data.get("client_cert_required"),
             mutation_rate_limit_per_minute=rate_limit,
             allowed_service_count=len(allowed_services),
             runtime_action_service_count=len(runtime_action_services),
@@ -643,7 +653,15 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
                 self.assertNotIn(value, text)
         self.assertNotIn("github_pat_", text)
         self.assertIsNone(re.search(r"Authorization:\s*Bearer\s+(?!<redacted>)[A-Za-z0-9._~+/=-]+", text, re.IGNORECASE))
-        self.record_check("logs_redacted", service=service, http_status=status, line_count=len(entries))
+        self.record_check(
+            "logs_redacted",
+            service=service,
+            http_status=status,
+            line_count=len(entries),
+            secret_values_checked=len([value for value in secret_values if value]),
+            github_pat_absent=True,
+            bearer_tokens_redacted=True,
+        )
         self.sample("service-logs-redacted", service=service, http_status=status, line_count=len(entries))
 
 

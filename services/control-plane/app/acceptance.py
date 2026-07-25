@@ -744,6 +744,13 @@ def _positive_int(value: Any) -> int:
     return parsed if parsed > 0 else 0
 
 
+def _integer_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _modelhub_expected_etag(blob: str) -> str:
     return f'"sha256:{blob}"'
 
@@ -1152,6 +1159,130 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _security_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    def require_status(check_name: str, expected: int | set[int]) -> dict[str, Any]:
+        record = _check_record(checks, check_name)
+        status = _integer_value(record.get("http_status"))
+        expected_values = expected if isinstance(expected, set) else {expected}
+        if status not in expected_values:
+            missing.append(f"{check_name}.http_status")
+        return record
+
+    unauthenticated = require_status("unauthenticated_requests_rejected", 401)
+    if not _nonempty_text(unauthenticated.get("path")):
+        missing.append("unauthenticated_requests_rejected.path")
+
+    under_scoped = require_status("under_scoped_requests_rejected", 403)
+    if under_scoped.get("auth_status") is not True:
+        missing.append("under_scoped_requests_rejected.auth_status")
+    if not _nonempty_text(under_scoped.get("rejected_path")):
+        missing.append("under_scoped_requests_rejected.rejected_path")
+
+    cors = require_status("cors_credentials_not_wildcard", 400)
+    if not _nonempty_text(cors.get("blocked_origin")):
+        missing.append("cors_credentials_not_wildcard.blocked_origin")
+    allow_origin = _nonempty_text(cors.get("allow_origin"))
+    allow_credentials = _nonempty_text(cors.get("allow_credentials")).lower()
+    if allow_origin == "*":
+        missing.append("cors_credentials_not_wildcard.allow_origin_not_wildcard")
+    if allow_origin == "*" and allow_credentials == "true":
+        missing.append("cors_credentials_not_wildcard.no_wildcard_credentials")
+    if cors.get("wildcard_credentials") is not False:
+        missing.append("cors_credentials_not_wildcard.wildcard_credentials_false")
+
+    csrf = require_status("csrf_browser_mutation_rejected", 403)
+    if not _nonempty_text(csrf.get("path")):
+        missing.append("csrf_browser_mutation_rejected.path")
+
+    comfyui = require_status("comfyui_management_routes_blocked", 403)
+    if not _nonempty_text(comfyui.get("path")):
+        missing.append("comfyui_management_routes_blocked.path")
+
+    import_policy_cases = {
+        "import_ssrf_blocked": "loopback-ssrf",
+        "import_metadata_ssrf_blocked": "link-local-metadata",
+        "import_private_network_blocked": "private-network",
+        "import_plain_http_blocked": "plain-http",
+    }
+    for check_name, policy_case in import_policy_cases.items():
+        record = require_status(check_name, 422)
+        if record.get("policy_case") != policy_case:
+            missing.append(f"{check_name}.policy_case")
+        if not _nonempty_text(record.get("path")):
+            missing.append(f"{check_name}.path")
+        if not _nonempty_text(record.get("rejected_scheme")):
+            missing.append(f"{check_name}.rejected_scheme")
+        if not _nonempty_text(record.get("rejected_host")):
+            missing.append(f"{check_name}.rejected_host")
+
+    traversal = require_status("artifact_traversal_blocked", {400, 403, 404})
+    traversal_path = _nonempty_text(traversal.get("path"))
+    if not traversal_path.startswith("/artifacts/"):
+        missing.append("artifact_traversal_blocked.path")
+    response_bytes = _integer_value(traversal.get("response_bytes"))
+    if response_bytes is None or response_bytes < 0 or response_bytes > 4096:
+        missing.append("artifact_traversal_blocked.response_bytes_bounded")
+
+    artifact_auth = _check_record(checks, "artifact_authorization_enforced")
+    artifact_path = _nonempty_text(artifact_auth.get("path"))
+    if not artifact_path.startswith("/artifacts/"):
+        missing.append("artifact_authorization_enforced.path")
+    if _integer_value(artifact_auth.get("unauthenticated_status")) != 401:
+        missing.append("artifact_authorization_enforced.unauthenticated_status")
+    if _integer_value(artifact_auth.get("under_scoped_status")) != 403:
+        missing.append("artifact_authorization_enforced.under_scoped_status")
+    if _integer_value(artifact_auth.get("other_owner_status")) != 403:
+        missing.append("artifact_authorization_enforced.other_owner_status")
+
+    guard = require_status("runtime_agent_mutation_guard", 200)
+    if guard.get("auth_configured") is not True:
+        missing.append("runtime_agent_mutation_guard.auth_configured")
+    if guard.get("allow_missing_auth") is not False:
+        missing.append("runtime_agent_mutation_guard.allow_missing_auth_false")
+    if guard.get("mtls_enabled") is not True:
+        missing.append("runtime_agent_mutation_guard.mtls_enabled")
+    if guard.get("client_cert_required") is not True:
+        missing.append("runtime_agent_mutation_guard.client_cert_required")
+    if _positive_int(guard.get("mutation_rate_limit_per_minute")) < 1:
+        missing.append("runtime_agent_mutation_guard.mutation_rate_limit_per_minute")
+    if _positive_int(guard.get("allowed_service_count")) < 1:
+        missing.append("runtime_agent_mutation_guard.allowed_service_count")
+    if _positive_int(guard.get("runtime_action_service_count")) < 1:
+        missing.append("runtime_agent_mutation_guard.runtime_action_service_count")
+
+    arbitrary_runtime = _check_record(checks, "runtime_agent_arbitrary_runtime_rejected")
+    if _integer_value(arbitrary_runtime.get("http_status")) not in {404, 422}:
+        missing.append("runtime_agent_arbitrary_runtime_rejected.http_status")
+    if not _nonempty_text(arbitrary_runtime.get("runtime")):
+        missing.append("runtime_agent_arbitrary_runtime_rejected.runtime")
+
+    arbitrary_logs = require_status("runtime_agent_arbitrary_logs_rejected", 404)
+    if not _nonempty_text(arbitrary_logs.get("service")):
+        missing.append("runtime_agent_arbitrary_logs_rejected.service")
+
+    logs = require_status("logs_redacted", 200)
+    if not _nonempty_text(logs.get("service")):
+        missing.append("logs_redacted.service")
+    line_count = _integer_value(logs.get("line_count"))
+    if line_count is None or line_count < 0:
+        missing.append("logs_redacted.line_count")
+    if _positive_int(logs.get("secret_values_checked")) < 2:
+        missing.append("logs_redacted.secret_values_checked")
+    if logs.get("github_pat_absent") is not True:
+        missing.append("logs_redacted.github_pat_absent")
+    if logs.get("bearer_tokens_redacted") is not True:
+        missing.append("logs_redacted.bearer_tokens_redacted")
+
+    return {
+        "missing_security_evidence": missing,
+        "security_rejection_check_count": len(SECURITY_REQUIRED_CHECKS),
+        "security_log_lines_checked": max(0, line_count or 0),
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -1376,6 +1507,7 @@ def security_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
         expected_format=SECURITY_EVIDENCE_FORMAT,
         unsupported_reason="unsupported security acceptance evidence format",
         required_checks=SECURITY_REQUIRED_CHECKS,
+        extra_fields=_security_acceptance_summary(payload),
     )
 
 
@@ -2047,6 +2179,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = security_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("security acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_security = security_evidence.get("missing_security_evidence")
+        if not isinstance(missing_security, list):
+            blockers.append("security acceptance evidence lacks detailed security summary")
+        elif missing_security:
+            blockers.append("security acceptance evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_security))
     restart_reconciliation_evidence = (
         live_evidence.get("restart_reconciliation") if isinstance(live_evidence.get("restart_reconciliation"), dict) else {}
     )
@@ -2934,6 +3071,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         security_evidence.get("available") is True
         and security_evidence.get("status") == "ok"
         and not security_evidence.get("missing_checks")
+        and security_evidence.get("missing_security_evidence") == []
         and "security_acceptance" not in freshness_failures
     )
     restart_reconciliation_evidence_ready = (

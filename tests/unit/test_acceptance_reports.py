@@ -82,6 +82,133 @@ def ok_checks(names: tuple[str, ...]) -> dict[str, dict[str, str]]:
     return {name: {"status": "ok"} for name in names}
 
 
+def sample_security_checks() -> dict[str, dict[str, Any]]:
+    return {
+        "unauthenticated_requests_rejected": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:46:00+00:00",
+            "path": "/admin/self-test",
+            "http_status": 401,
+        },
+        "under_scoped_requests_rejected": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:47:00+00:00",
+            "auth_status": True,
+            "rejected_path": "/admin/self-test",
+            "http_status": 403,
+            "temporary_client": True,
+        },
+        "cors_credentials_not_wildcard": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:47:00+00:00",
+            "blocked_origin": "https://evil.example",
+            "http_status": 400,
+            "allow_origin": "",
+            "allow_credentials": "",
+            "wildcard_credentials": False,
+        },
+        "csrf_browser_mutation_rejected": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:48:00+00:00",
+            "path": "/admin/network-policy/validate",
+            "http_status": 403,
+        },
+        "comfyui_management_routes_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:48:00+00:00",
+            "path": "/api/manager/install",
+            "http_status": 403,
+        },
+        "import_ssrf_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "path": "/admin/models/download-plan",
+            "http_status": 422,
+            "policy_case": "loopback-ssrf",
+            "rejected_scheme": "http",
+            "rejected_host": "127.0.0.1",
+        },
+        "import_metadata_ssrf_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "path": "/admin/models/download-plan",
+            "http_status": 422,
+            "policy_case": "link-local-metadata",
+            "rejected_scheme": "https",
+            "rejected_host": "169.254.169.254",
+        },
+        "import_private_network_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "path": "/admin/models/download-plan",
+            "http_status": 422,
+            "policy_case": "private-network",
+            "rejected_scheme": "https",
+            "rejected_host": "172.17.0.1",
+        },
+        "import_plain_http_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "path": "/admin/models/download-plan",
+            "http_status": 422,
+            "policy_case": "plain-http",
+            "rejected_scheme": "http",
+            "rejected_host": "example.com",
+        },
+        "artifact_traversal_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "path": "/artifacts/%2e%2e/secrets/master_encryption_key",
+            "http_status": 403,
+            "response_bytes": 96,
+        },
+        "artifact_authorization_enforced": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:30+00:00",
+            "path": "/artifacts/audio-cpu/job_123/speech.wav",
+            "unauthenticated_status": 401,
+            "under_scoped_status": 403,
+            "other_owner_status": 403,
+            "temporary_reader_client": True,
+        },
+        "runtime_agent_mutation_guard": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:50:00+00:00",
+            "path": "/admin/self-test",
+            "http_status": 200,
+            "auth_configured": True,
+            "allow_missing_auth": False,
+            "mtls_enabled": True,
+            "client_cert_required": True,
+            "mutation_rate_limit_per_minute": 12,
+            "allowed_service_count": 8,
+            "runtime_action_service_count": 4,
+        },
+        "runtime_agent_arbitrary_runtime_rejected": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:50:00+00:00",
+            "runtime": "postgres",
+            "http_status": 404,
+        },
+        "runtime_agent_arbitrary_logs_rejected": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:50:00+00:00",
+            "service": "postgres",
+            "http_status": 404,
+        },
+        "logs_redacted": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:50:00+00:00",
+            "service": "control-plane",
+            "http_status": 200,
+            "line_count": 42,
+            "secret_values_checked": 2,
+            "github_pat_absent": True,
+            "bearer_tokens_redacted": True,
+        },
+    }
+
+
 def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
@@ -731,23 +858,10 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "logs_redacted",
             ],
             "missing_checks": [],
-            "checks": {
-                "unauthenticated_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
-                "under_scoped_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
-                "cors_credentials_not_wildcard": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
-                "csrf_browser_mutation_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
-                "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
-                "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "import_metadata_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "import_private_network_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "import_plain_http_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "artifact_authorization_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:49:30+00:00"},
-                "runtime_agent_mutation_guard": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
-                "runtime_agent_arbitrary_runtime_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
-                "runtime_agent_arbitrary_logs_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
-                "logs_redacted": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
-            },
+            "missing_security_evidence": [],
+            "security_rejection_check_count": 15,
+            "security_log_lines_checked": 42,
+            "checks": sample_security_checks(),
             "sample_count": 15,
             "sample_labels": [
                 "unauthenticated-admin",
@@ -2445,6 +2559,42 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_security_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["security_acceptance"].pop("missing_security_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["security_evidence_ready"])
+        self.assertIn("security acceptance evidence lacks detailed security summary", report["acceptance_blockers"])
+
+    def test_security_snapshot_requires_detailed_security_proof(self) -> None:
+        snapshot = acceptance.security_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-security-acceptance/v1",
+                "generated_at": "2026-07-24T12:50:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.SECURITY_REQUIRED_CHECKS),
+                "samples": [{"label": "shallow-security-proof"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("unauthenticated_requests_rejected.http_status", snapshot["missing_security_evidence"])
+        self.assertIn("under_scoped_requests_rejected.auth_status", snapshot["missing_security_evidence"])
+        self.assertIn("cors_credentials_not_wildcard.wildcard_credentials_false", snapshot["missing_security_evidence"])
+        self.assertIn("import_ssrf_blocked.policy_case", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.unauthenticated_status", snapshot["missing_security_evidence"])
+        self.assertIn("runtime_agent_mutation_guard.mtls_enabled", snapshot["missing_security_evidence"])
+        self.assertIn("logs_redacted.bearer_tokens_redacted", snapshot["missing_security_evidence"])
+
+        live_evidence = sample_live_evidence(security_acceptance=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("security acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
     def test_report_blocks_handoff_without_restart_reconciliation_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["restart_reconciliation"] = {"available": False, "reason": "missing"}
@@ -3145,23 +3295,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "generated_at": "2026-07-24T12:50:00+00:00",
                         "base_url": "https://api.ai.b1.germering",
                         "status": "ok",
-                        "checks": {
-                            "unauthenticated_requests_rejected": {"status": "ok"},
-                            "under_scoped_requests_rejected": {"status": "ok"},
-                            "cors_credentials_not_wildcard": {"status": "ok"},
-                            "csrf_browser_mutation_rejected": {"status": "ok"},
-                            "comfyui_management_routes_blocked": {"status": "ok"},
-                            "import_ssrf_blocked": {"status": "ok"},
-                            "import_metadata_ssrf_blocked": {"status": "ok"},
-                            "import_private_network_blocked": {"status": "ok"},
-                            "import_plain_http_blocked": {"status": "ok"},
-                            "artifact_traversal_blocked": {"status": "ok"},
-                            "artifact_authorization_enforced": {"status": "ok"},
-                            "runtime_agent_mutation_guard": {"status": "ok"},
-                            "runtime_agent_arbitrary_runtime_rejected": {"status": "ok"},
-                            "runtime_agent_arbitrary_logs_rejected": {"status": "ok"},
-                            "logs_redacted": {"status": "ok"},
-                        },
+                        "checks": sample_security_checks(),
                         "samples": [
                             {"label": "unauthenticated-admin"},
                             {"label": "under-scoped-admin"},
@@ -3318,6 +3452,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(security_acceptance["source_path"], str(security.resolve()))
         self.assertEqual(security_acceptance["status"], "ok")
         self.assertEqual(security_acceptance["missing_checks"], [])
+        self.assertEqual(security_acceptance["missing_security_evidence"], [])
+        self.assertEqual(security_acceptance["security_log_lines_checked"], 42)
         self.assertEqual(security_acceptance["sample_count"], 15)
         restart = snapshot["restart_reconciliation"]
         self.assertTrue(restart["available"])
