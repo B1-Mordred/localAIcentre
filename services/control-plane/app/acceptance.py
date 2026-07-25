@@ -348,6 +348,7 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
         "dns_readiness": plan.get("dns_readiness") if isinstance(plan.get("dns_readiness"), dict) else {"available": False},
         "hardware_readiness": plan.get("hardware_readiness") if isinstance(plan.get("hardware_readiness"), dict) else {"available": False},
+        "gpu_runtime_readiness": plan.get("gpu_runtime_readiness") if isinstance(plan.get("gpu_runtime_readiness"), dict) else {"available": False},
         "runtime_agent_socket_readiness": plan.get("runtime_agent_socket_readiness")
         if isinstance(plan.get("runtime_agent_socket_readiness"), dict)
         else {"available": False},
@@ -1083,6 +1084,15 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("cutover hardware readiness is unavailable")
         elif hardware.get("accepted") is not True or hardware.get("operator_must_review_hardware") is True:
             blockers.append("cutover hardware readiness requires operator review")
+        gpu_runtime = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
+        if gpu_runtime.get("available") is not True:
+            blockers.append("cutover GPU container runtime readiness is unavailable")
+        elif (
+            gpu_runtime.get("accepted") is not True
+            or gpu_runtime.get("operator_must_review_gpu_runtime") is True
+            or _as_string_list(gpu_runtime.get("warnings"))
+        ):
+            blockers.append("cutover GPU container runtime readiness requires operator review")
         runtime_agent_socket = (
             preservation.get("runtime_agent_socket_readiness")
             if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
@@ -1358,6 +1368,7 @@ def markdown_report(report: dict[str, Any]) -> str:
 
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
@@ -1410,6 +1421,17 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         if key in hardware_readiness:
             preservation_summary_rows.append([f"hardware.{key}", _format_value(hardware_readiness.get(key))])
+    for key in (
+        "accepted",
+        "nvidia_smi_available",
+        "detected_gpu_count",
+        "docker_nvidia_runtime_available",
+        "nvidia_container_toolkit_available",
+        "nvidia_container_toolkit_version",
+        "operator_must_review_gpu_runtime",
+    ):
+        if key in gpu_runtime_readiness:
+            preservation_summary_rows.append([f"gpu_runtime.{key}", _format_value(gpu_runtime_readiness.get(key))])
     for key in (
         "path",
         "gid",
@@ -1649,6 +1671,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
@@ -1673,6 +1696,12 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and runtime_agent_socket_readiness.get("runtime_agent_group_access_ready") is True
         and runtime_agent_socket_readiness.get("operator_must_review_runtime_agent_socket") is not True
         and not _as_string_list(runtime_agent_socket_readiness.get("warnings"))
+    )
+    gpu_runtime_ready = (
+        gpu_runtime_readiness.get("available") is True
+        and gpu_runtime_readiness.get("accepted") is True
+        and gpu_runtime_readiness.get("operator_must_review_gpu_runtime") is not True
+        and not _as_string_list(gpu_runtime_readiness.get("warnings"))
     )
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
@@ -1779,6 +1808,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True
+        and gpu_runtime_ready
         and runtime_agent_socket_ready
         and open_webui_preservation_ready
         and not cutover_warnings,
@@ -1787,6 +1817,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,
+        "gpu_runtime_ready": gpu_runtime_ready,
         "runtime_agent_socket_ready": runtime_agent_socket_ready,
         "open_webui_preservation_ready": open_webui_preservation_ready,
         "smoke_evidence_ready": smoke_evidence_ready,

@@ -273,6 +273,29 @@ def verify_cutover_hardware_readiness(payload: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def verify_cutover_gpu_runtime_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    gpu_runtime = payload.get("gpu_runtime_readiness") if isinstance(payload.get("gpu_runtime_readiness"), dict) else {}
+    if not gpu_runtime:
+        raise EvidenceError("cutover GPU container runtime readiness is missing")
+    warnings = _string_list(gpu_runtime.get("warnings"))
+    if gpu_runtime.get("available") is not True:
+        raise EvidenceError("cutover GPU container runtime readiness is unavailable")
+    if gpu_runtime.get("accepted") is not True or gpu_runtime.get("operator_must_review_gpu_runtime") is True or warnings:
+        raise EvidenceError("cutover GPU container runtime readiness requires operator review")
+    return {
+        "available": True,
+        "accepted": True,
+        "operator_must_review_gpu_runtime": False,
+        "nvidia_smi_available": gpu_runtime.get("nvidia_smi_available"),
+        "detected_gpu_count": gpu_runtime.get("detected_gpu_count"),
+        "docker_nvidia_runtime_available": gpu_runtime.get("docker_nvidia_runtime_available"),
+        "nvidia_container_toolkit_available": gpu_runtime.get("nvidia_container_toolkit_available"),
+        "nvidia_container_toolkit_returncode": gpu_runtime.get("nvidia_container_toolkit_returncode"),
+        "nvidia_container_toolkit_version": gpu_runtime.get("nvidia_container_toolkit_version") or "",
+        "warnings": [],
+    }
+
+
 def verify_cutover_runtime_agent_socket_readiness(payload: dict[str, Any]) -> dict[str, Any]:
     socket = payload.get("runtime_agent_socket_readiness") if isinstance(payload.get("runtime_agent_socket_readiness"), dict) else {}
     if not socket:
@@ -334,6 +357,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         raise EvidenceError("cutover plan still has warnings")
     dns_readiness = verify_cutover_dns_readiness(payload)
     hardware_readiness = verify_cutover_hardware_readiness(payload)
+    gpu_runtime_readiness = verify_cutover_gpu_runtime_readiness(payload)
     runtime_agent_socket_readiness = verify_cutover_runtime_agent_socket_readiness(payload)
     open_webui_preservation = verify_cutover_open_webui_preservation(payload)
     safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
@@ -354,6 +378,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "resource_count": resource_count,
         "dns_readiness": dns_readiness,
         "hardware_readiness": hardware_readiness,
+        "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "open_webui_preservation": open_webui_preservation,
         "reviewed_by": old_scope.get("reviewed_by"),

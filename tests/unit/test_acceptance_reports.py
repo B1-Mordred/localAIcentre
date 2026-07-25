@@ -74,6 +74,20 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "operator_must_review_hardware": False,
             "warnings": [],
         },
+        "gpu_runtime_readiness": {
+            "available": True,
+            "accepted": True,
+            "nvidia_smi_available": True,
+            "detected_gpu_count": 1,
+            "docker_nvidia_runtime_available": True,
+            "docker_runtimes": ["nvidia", "runc"],
+            "docker_default_runtime": "runc",
+            "nvidia_container_toolkit_available": True,
+            "nvidia_container_toolkit_returncode": 0,
+            "nvidia_container_toolkit_version": "NVIDIA Container Toolkit CLI version 1.17.8",
+            "operator_must_review_gpu_runtime": False,
+            "warnings": [],
+        },
         "runtime_agent_socket_readiness": {
             "available": True,
             "path": "/var/run/docker.sock",
@@ -1237,6 +1251,28 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_hardware_ready"])
         self.assertIn("cutover hardware readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_gpu_runtime_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                gpu_runtime_readiness={
+                    "available": True,
+                    "accepted": False,
+                    "nvidia_smi_available": True,
+                    "detected_gpu_count": 1,
+                    "docker_nvidia_runtime_available": False,
+                    "nvidia_container_toolkit_available": False,
+                    "operator_must_review_gpu_runtime": True,
+                    "warnings": ["Docker does not report an nvidia runtime"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["gpu_runtime_ready"])
+        self.assertIn("cutover GPU container runtime readiness requires operator review", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_when_runtime_agent_socket_requires_review(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -1333,6 +1369,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 },
                 "dns_readiness": sample_cutover_preservation()["dns_readiness"],
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
+                "gpu_runtime_readiness": sample_cutover_preservation()["gpu_runtime_readiness"],
                 "runtime_agent_socket_readiness": sample_cutover_preservation()["runtime_agent_socket_readiness"],
                 "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
                 "warnings": ["review DNS"],
@@ -1347,6 +1384,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertEqual(snapshot["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
+        self.assertTrue(snapshot["gpu_runtime_readiness"]["accepted"])
         self.assertTrue(snapshot["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(snapshot["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])

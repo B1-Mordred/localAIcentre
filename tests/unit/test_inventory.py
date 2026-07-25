@@ -88,6 +88,17 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(hardware["largest_gpu_vram_mib"], 6144)
         self.assertTrue(any("12288 MiB" in warning for warning in hardware["warnings"]))
 
+        gpu_runtime = inventory.summarize_gpu_container_runtime(
+            gpu_devices=[],
+            nvidia_smi_available=False,
+            docker_info={"nvidia_runtime_available": False, "runtimes": ["runc"], "default_runtime": "runc"},
+            nvidia_toolkit={"available": True, "returncode": 127, "version": ""},
+        )
+        self.assertFalse(gpu_runtime["accepted"])
+        self.assertTrue(gpu_runtime["operator_must_review_gpu_runtime"])
+        self.assertIn("runc", gpu_runtime["docker_runtimes"])
+        self.assertTrue(any("Docker does not report an nvidia runtime" in warning for warning in gpu_runtime["warnings"]))
+
     def test_docker_socket_readiness_records_group_gid_and_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -256,6 +267,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(classifications["hermes-bot"], "preserve-unrelated")
         self.assertEqual(classifications["b1-ai-hub-control-plane-1"], "b1-ai-hub-current-preserve")
         self.assertEqual(report["docker"]["info"]["nvidia_runtime_available"], True)
+        self.assertTrue(report["migration_readiness"]["gpu_container_runtime"]["accepted"])
+        self.assertTrue(report["migration_readiness"]["gpu_container_runtime"]["docker_nvidia_runtime_available"])
+        self.assertTrue(report["migration_readiness"]["gpu_container_runtime"]["nvidia_container_toolkit_available"])
         self.assertTrue(report["docker"]["socket"]["runtime_agent_group_access_ready"])
         self.assertEqual(report["migration_readiness"]["runtime_agent_docker_socket"]["gid"], docker_gid)
         report_json = json.dumps(report, sort_keys=True)

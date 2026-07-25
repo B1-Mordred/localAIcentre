@@ -125,6 +125,20 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "operator_must_review_hardware": False,
                     "warnings": [],
                 },
+                "gpu_runtime_readiness": {
+                    "available": True,
+                    "accepted": True,
+                    "nvidia_smi_available": True,
+                    "detected_gpu_count": 1,
+                    "docker_nvidia_runtime_available": True,
+                    "docker_runtimes": ["nvidia", "runc"],
+                    "docker_default_runtime": "runc",
+                    "nvidia_container_toolkit_available": True,
+                    "nvidia_container_toolkit_returncode": 0,
+                    "nvidia_container_toolkit_version": "NVIDIA Container Toolkit CLI version 1.17.8",
+                    "operator_must_review_gpu_runtime": False,
+                    "warnings": [],
+                },
                 "runtime_agent_socket_readiness": {
                     "available": True,
                     "path": "/var/run/docker.sock",
@@ -200,6 +214,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             ["monitoring.ai.b1.germering"],
         )
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
+        self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["gpu_runtime_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(payload["checks"]["cutover_plan_reviewed"]["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual([sample["label"] for sample in payload["samples"]], ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"])
@@ -285,6 +300,29 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(cutover_plan, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "cutover Open WebUI preservation requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_gpu_runtime_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["gpu_runtime_readiness"]["accepted"] = False
+            payload["gpu_runtime_readiness"]["operator_must_review_gpu_runtime"] = True
+            payload["gpu_runtime_readiness"]["warnings"] = ["Docker does not report an nvidia runtime"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover GPU container runtime readiness requires operator review"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

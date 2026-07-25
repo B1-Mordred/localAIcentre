@@ -390,6 +390,50 @@ def analyze_hardware_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any
     return {**hardware, "available": True, "operator_must_review_hardware": bool(cutover_warnings)}, cutover_warnings
 
 
+def analyze_gpu_runtime_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    gpu_runtime = readiness.get("gpu_container_runtime") if isinstance(readiness.get("gpu_container_runtime"), dict) else {}
+    if not gpu_runtime:
+        docker = inventory.get("docker") if isinstance(inventory.get("docker"), dict) else {}
+        host = inventory.get("host") if isinstance(inventory.get("host"), dict) else {}
+        docker_info = docker.get("info") if isinstance(docker.get("info"), dict) else {}
+        gpu = host.get("gpu") if isinstance(host.get("gpu"), dict) else {}
+        toolkit = host.get("nvidia_container_toolkit") if isinstance(host.get("nvidia_container_toolkit"), dict) else {}
+        if docker_info or gpu or toolkit:
+            gpu_runtime = {
+                "available": True,
+                "accepted": bool(
+                    gpu.get("nvidia_smi_available") is True
+                    and gpu.get("devices")
+                    and docker_info.get("nvidia_runtime_available") is True
+                    and toolkit.get("available") is True
+                    and toolkit.get("returncode") == 0
+                ),
+                "nvidia_smi_available": gpu.get("nvidia_smi_available"),
+                "detected_gpu_count": len(gpu.get("devices") or []) if isinstance(gpu.get("devices"), list) else 0,
+                "docker_nvidia_runtime_available": docker_info.get("nvidia_runtime_available"),
+                "nvidia_container_toolkit_available": toolkit.get("available") is True and toolkit.get("returncode") == 0,
+                "nvidia_container_toolkit_returncode": toolkit.get("returncode"),
+                "nvidia_container_toolkit_version": toolkit.get("version"),
+                "warnings": [],
+            }
+    if not gpu_runtime:
+        return (
+            {
+                "available": False,
+                "accepted": False,
+                "warnings": ["GPU container runtime readiness was not present in inventory"],
+                "operator_must_review_gpu_runtime": True,
+            },
+            ["GPU container runtime readiness was not present in inventory; rerun inventory before cutover"],
+        )
+    warnings = [str(item) for item in gpu_runtime.get("warnings", []) if isinstance(item, str)]
+    if gpu_runtime.get("accepted") is not True and not warnings:
+        warnings.append("GPU container runtime did not satisfy NVIDIA driver, Docker runtime, and toolkit readiness")
+    cutover_warnings = [f"GPU container runtime requires operator review before cutover: {warning}" for warning in warnings]
+    return {**gpu_runtime, "available": True, "operator_must_review_gpu_runtime": bool(cutover_warnings), "warnings": warnings}, cutover_warnings
+
+
 def analyze_runtime_agent_socket_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
     socket = readiness.get("runtime_agent_docker_socket") if isinstance(readiness.get("runtime_agent_docker_socket"), dict) else {}
@@ -473,6 +517,8 @@ def build_plan(
     warnings.extend(dns_warnings)
     hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
     warnings.extend(hardware_warnings)
+    gpu_runtime_readiness, gpu_runtime_warnings = analyze_gpu_runtime_readiness(inventory)
+    warnings.extend(gpu_runtime_warnings)
     runtime_agent_socket_readiness, runtime_agent_socket_warnings = analyze_runtime_agent_socket_readiness(inventory)
     warnings.extend(runtime_agent_socket_warnings)
     open_webui_preservation, open_webui_warnings = analyze_open_webui_preservation(
@@ -536,6 +582,7 @@ def build_plan(
         },
         "port_readiness": port_readiness,
         "hardware_readiness": hardware_readiness,
+        "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "dns_readiness": dns_readiness,
         "open_webui_preservation": open_webui_preservation,
@@ -548,6 +595,7 @@ def build_plan(
                     "Confirm no unrelated Hermes, Yggdrasil, Discord, DNS, database, or automation services are scoped.",
                     "Confirm temporary B1 staging ports are free and production port listeners are expected old-stack routes or reverse proxies.",
                     "Confirm hardware_readiness satisfies the initial 12 GB VRAM / 32 GB RAM profile or document a reduced-resource plan before cutover.",
+                    "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
                     "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",

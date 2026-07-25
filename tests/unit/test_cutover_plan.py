@@ -55,6 +55,20 @@ class CutoverPlanTests(unittest.TestCase):
                     "host_total_ram_mib": 32168,
                     "warnings": [],
                 },
+                "gpu_container_runtime": {
+                    "available": True,
+                    "accepted": True,
+                    "nvidia_smi_available": True,
+                    "detected_gpu_count": 1,
+                    "docker_nvidia_runtime_available": True,
+                    "docker_runtimes": ["nvidia", "runc"],
+                    "docker_default_runtime": "runc",
+                    "nvidia_container_toolkit_available": True,
+                    "nvidia_container_toolkit_returncode": 0,
+                    "nvidia_container_toolkit_version": "NVIDIA Container Toolkit CLI version 1.17.8",
+                    "operator_must_review_gpu_runtime": False,
+                    "warnings": [],
+                },
                 "runtime_agent_docker_socket": {
                     "path": "/var/run/docker.sock",
                     "exists": True,
@@ -224,6 +238,8 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertTrue(plan["hardware_readiness"]["accepted"])
         self.assertFalse(plan["hardware_readiness"]["operator_must_review_hardware"])
+        self.assertTrue(plan["gpu_runtime_readiness"]["accepted"])
+        self.assertFalse(plan["gpu_runtime_readiness"]["operator_must_review_gpu_runtime"])
         self.assertTrue(plan["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(plan["runtime_agent_socket_readiness"]["operator_must_review_runtime_agent_socket"])
         self.assertEqual(plan["warnings"], [])
@@ -263,6 +279,43 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["hardware_readiness"]["accepted"])
         self.assertTrue(plan["hardware_readiness"]["operator_must_review_hardware"])
         self.assertTrue(any("Hardware profile requires operator review" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_warns_when_gpu_container_runtime_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inventory_payload = self.inventory()
+            inventory_payload["migration_readiness"]["gpu_container_runtime"] = {
+                "available": True,
+                "accepted": False,
+                "nvidia_smi_available": True,
+                "detected_gpu_count": 1,
+                "docker_nvidia_runtime_available": False,
+                "nvidia_container_toolkit_available": False,
+                "operator_must_review_gpu_runtime": True,
+                "warnings": ["Docker does not report an nvidia runtime; NVIDIA Container Toolkit is not wired into Docker"],
+            }
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+            open_webui_plan_path = self.write_open_webui_plan(root / "open-webui-plan.json", inventory_path, backup_dir)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                open_webui_plan_path=open_webui_plan_path,
+            )
+
+        self.assertFalse(plan["gpu_runtime_readiness"]["accepted"])
+        self.assertTrue(plan["gpu_runtime_readiness"]["operator_must_review_gpu_runtime"])
+        self.assertTrue(any("GPU container runtime requires operator review" in warning for warning in plan["warnings"]))
 
     def test_build_plan_warns_when_open_webui_plan_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

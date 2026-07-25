@@ -820,6 +820,42 @@ def summarize_hardware_profile(gpu_devices: list[dict[str, Any]], memory: dict[s
     }
 
 
+def summarize_gpu_container_runtime(
+    *,
+    gpu_devices: list[dict[str, Any]],
+    nvidia_smi_available: bool,
+    docker_info: dict[str, Any],
+    nvidia_toolkit: dict[str, Any],
+) -> dict[str, Any]:
+    docker_nvidia_runtime_available = docker_info.get("nvidia_runtime_available") is True
+    toolkit_available = nvidia_toolkit.get("available") is True and nvidia_toolkit.get("returncode") == 0
+    detected_gpu_count = len(gpu_devices)
+    warnings: list[str] = []
+    if not nvidia_smi_available:
+        warnings.append("nvidia-smi is unavailable or failed; NVIDIA driver/NVML readiness is not proven")
+    if detected_gpu_count <= 0:
+        warnings.append("no NVIDIA GPU was detected by nvidia-smi")
+    if not docker_nvidia_runtime_available:
+        warnings.append("Docker does not report an nvidia runtime; NVIDIA Container Toolkit is not wired into Docker")
+    if not toolkit_available:
+        reason = "command missing" if nvidia_toolkit.get("available") is not True else f"returncode {nvidia_toolkit.get('returncode')}"
+        warnings.append(f"nvidia-ctk is not available for verification ({reason})")
+    return {
+        "available": True,
+        "accepted": not warnings,
+        "nvidia_smi_available": nvidia_smi_available,
+        "detected_gpu_count": detected_gpu_count,
+        "docker_nvidia_runtime_available": docker_nvidia_runtime_available,
+        "docker_runtimes": docker_info.get("runtimes") if isinstance(docker_info.get("runtimes"), list) else [],
+        "docker_default_runtime": docker_info.get("default_runtime"),
+        "nvidia_container_toolkit_available": toolkit_available,
+        "nvidia_container_toolkit_returncode": nvidia_toolkit.get("returncode"),
+        "nvidia_container_toolkit_version": str(nvidia_toolkit.get("version") or ""),
+        "operator_must_review_gpu_runtime": bool(warnings),
+        "warnings": warnings,
+    }
+
+
 def parse_gid(value: str | None) -> int | None:
     if value is None or not value.strip():
         return None
@@ -1093,6 +1129,13 @@ def build_inventory(
 
     gpu_devices = parse_nvidia_smi(captured["nvidia_smi"]["stdout"])
     host_memory = parse_free_mib(captured["free"]["stdout"])
+    docker_info = parse_docker_info(captured["docker_info"]["stdout"])
+    nvidia_smi_available = captured["nvidia_smi"]["available"] and captured["nvidia_smi"]["returncode"] == 0
+    nvidia_toolkit = {
+        "available": captured["nvidia_container_toolkit"]["available"],
+        "returncode": captured["nvidia_container_toolkit"]["returncode"],
+        "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
+    }
     docker_socket = inspect_docker_socket(docker_socket_path, configured_docker_gid)
 
     return {
@@ -1113,7 +1156,7 @@ def build_inventory(
             "networks": network_rows,
             "container_inspects": container_inspects,
             "volume_inspects": volume_inspects,
-            "info": parse_docker_info(captured["docker_info"]["stdout"]),
+            "info": docker_info,
             "version": parse_json_object(captured["docker_version"]["stdout"]),
             "socket": docker_socket,
         },
@@ -1121,13 +1164,9 @@ def build_inventory(
             "listening_tcp": listening_tcp,
             "gpu": {
                 "devices": gpu_devices,
-                "nvidia_smi_available": captured["nvidia_smi"]["available"] and captured["nvidia_smi"]["returncode"] == 0,
+                "nvidia_smi_available": nvidia_smi_available,
             },
-            "nvidia_container_toolkit": {
-                "available": captured["nvidia_container_toolkit"]["available"],
-                "returncode": captured["nvidia_container_toolkit"]["returncode"],
-                "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
-            },
+            "nvidia_container_toolkit": nvidia_toolkit,
             "memory": host_memory,
             "disks": parse_df(captured["df"]["stdout"]),
             "mounts": parse_json_object(captured["mounts"]["stdout"]),
@@ -1150,6 +1189,12 @@ def build_inventory(
         "migration_readiness": {
             "port_review": analyze_listening_tcp(listening_tcp),
             "hardware_profile": summarize_hardware_profile(gpu_devices, host_memory),
+            "gpu_container_runtime": summarize_gpu_container_runtime(
+                gpu_devices=gpu_devices,
+                nvidia_smi_available=nvidia_smi_available,
+                docker_info=docker_info,
+                nvidia_toolkit=nvidia_toolkit,
+            ),
             "runtime_agent_docker_socket": docker_socket,
             "model_storage": summarize_model_storage(model_directories),
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
