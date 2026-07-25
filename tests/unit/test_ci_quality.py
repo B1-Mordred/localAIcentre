@@ -112,6 +112,8 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("B1_ACCEPTANCE_ENV ?= $(B1_BACKUP_ROOT)/acceptance/operator-live-acceptance.env", self.makefile_text)
         self.assertIn("\nacceptance-env:", self.makefile_text)
         self.assertIn('deploy/scripts/acceptance_env.py --data-root "$(B1_DATA_ROOT)" --output "$(B1_ACCEPTANCE_ENV)"', self.makefile_text)
+        self.assertIn("\nacceptance-preflight:", self.makefile_text)
+        self.assertIn('deploy/scripts/acceptance_preflight.py --data-root "$(B1_DATA_ROOT)" --env-file "$(B1_ACCEPTANCE_ENV)"', self.makefile_text)
 
         expected_targets = (
             ("live-smoke-acceptance", "B1_SMOKE_LIVE_TEST=1", "B1_SMOKE_EVIDENCE"),

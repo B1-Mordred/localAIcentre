@@ -156,6 +156,12 @@ export B1_ACCEPTANCE_API_KEY=...
 . /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
 ```
 
+Before starting the full live group, run the non-network preflight. It parses the generated env file safely, checks required scoped keys and final handoff values, verifies Caddy CA and evidence paths, and rejects unedited acceptance templates such as `REPLACE_WITH_*` placeholders or the tiny ComfyUI smoke prompt:
+
+```bash
+make acceptance-preflight
+```
+
 Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 
 ```bash
@@ -213,6 +219,7 @@ make security-acceptance
 After all required live-test environment variables are set and the restart-reconciliation drill state has been prepared, the operator can run the live evidence group:
 
 ```bash
+make acceptance-preflight
 make operator-live-acceptance
 ```
 

@@ -86,9 +86,10 @@ Generate the target-host acceptance environment once the deployed stack has API 
 make acceptance-env
 export B1_ACCEPTANCE_API_KEY=...
 . /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
+make acceptance-preflight
 ```
 
-The generated file contains no secrets by default. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`.
+The generated file contains no secrets by default. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`. `make acceptance-preflight` does not call the deployed APIs; it only validates the local handoff environment, output paths, TLS CA file, safety gates, and edited workflow/prompt JSON so the live suite does not spend time on a run that would skip or produce incomplete evidence.
 
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
