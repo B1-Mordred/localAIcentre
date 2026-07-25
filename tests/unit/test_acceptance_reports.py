@@ -510,6 +510,50 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+TLS_ROUTE_HOSTS = {
+    "chat": "ai.b1.germering",
+    "control": "control.ai.b1.germering",
+    "media": "media.ai.b1.germering",
+    "comfy": "comfy.ai.b1.germering",
+    "voice": "voice.ai.b1.germering",
+    "models": "models.ai.b1.germering",
+    "api": "api.ai.b1.germering",
+}
+TLS_ROUTE_PATHS = {
+    "chat": "/",
+    "control": "/",
+    "media": "/",
+    "comfy": "/healthz",
+    "voice": "/healthz",
+    "models": "/healthz",
+    "api": "/healthz",
+}
+
+
+def sample_tls_routing_check(route_keys: tuple[str, ...] | None = None) -> dict[str, Any]:
+    selected = route_keys or ("chat", "control", "media", "comfy", "voice", "models", "api")
+    return {
+        "name": "tls:routing",
+        "status": "ok",
+        "detail": "TLS gateway routes and security headers checked",
+        "data": {
+            "routes": [
+                {
+                    "url": f"https://{TLS_ROUTE_HOSTS[key]}{TLS_ROUTE_PATHS[key]}",
+                    "route_keys": [key],
+                    "status": "ok",
+                    "http_status": 200,
+                    "security_headers": "ok",
+                }
+                for key in selected
+            ],
+            "expected_route_keys": ["chat", "control", "media", "comfy", "voice", "models", "api"],
+            "verify_tls": True,
+            "ca_file": "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
+        },
+    }
+
+
 def sample_report(**overrides: Any) -> dict[str, Any]:
     report_id = overrides.pop("report_id", "acceptance-20260724t120000z-deadbeef")
     self_test = overrides.pop(
@@ -518,23 +562,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
             "status": "ok",
             "checks": [
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
-                {
-                    "name": "tls:routing",
-                    "status": "ok",
-                    "detail": "TLS gateway routes and security headers checked",
-                    "data": {
-                        "routes": [
-                            {
-                                "url": "https://api.ai.b1.germering/healthz",
-                                "status": "ok",
-                                "http_status": 200,
-                                "security_headers": "ok",
-                            }
-                        ],
-                        "verify_tls": True,
-                        "ca_file": "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
-                    },
-                },
+                sample_tls_routing_check(),
                 {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                 {"name": "runtimes:production-readiness", "status": "ok", "detail": "required runtimes are production-ready"},
                 {
@@ -763,26 +791,17 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("TLS gateway routing check is absent", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_for_failed_tls_routing_check(self) -> None:
+        failed_tls_check = sample_tls_routing_check()
+        failed_tls_check["status"] = "failed"
+        failed_tls_check["detail"] = "one or more TLS gateway route or security-header checks failed"
+        failed_tls_check["data"]["routes"][0]["status"] = "failed"
+        failed_tls_check["data"]["routes"][0]["security_headers"] = "failed"
         report = sample_report(
             self_test={
                 "status": "failed",
                 "checks": [
                     {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
-                    {
-                        "name": "tls:routing",
-                        "status": "failed",
-                        "detail": "one or more TLS gateway route or security-header checks failed",
-                        "data": {
-                            "routes": [
-                                {
-                                    "url": "https://api.ai.b1.germering/healthz",
-                                    "status": "failed",
-                                    "http_status": 200,
-                                    "security_headers": "failed",
-                                }
-                            ]
-                        },
-                    },
+                    failed_tls_check,
                     {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                     {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
                     {
@@ -818,27 +837,34 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("TLS gateway routing evidence lists no checked routes", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_tls_routing_evidence_misses_required_host(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(("chat", "control", "media", "comfy", "models", "api")),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("TLS gateway routing evidence is missing required hosts: voice", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_without_runtime_agent_mutation_guard_check(self) -> None:
         report = sample_report(
             self_test={
                 "status": "ok",
                 "checks": [
                     {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
-                    {
-                        "name": "tls:routing",
-                        "status": "ok",
-                        "detail": "TLS gateway routes and security headers checked",
-                        "data": {
-                            "routes": [
-                                {
-                                    "url": "https://api.ai.b1.germering/healthz",
-                                    "status": "ok",
-                                    "http_status": 200,
-                                    "security_headers": "ok",
-                                }
-                            ]
-                        },
-                    },
+                    sample_tls_routing_check(),
                     {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                     {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
                 ],
@@ -854,21 +880,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "status": "failed",
                 "checks": [
                     {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
-                    {
-                        "name": "tls:routing",
-                        "status": "ok",
-                        "detail": "TLS gateway routes and security headers checked",
-                        "data": {
-                            "routes": [
-                                {
-                                    "url": "https://api.ai.b1.germering/healthz",
-                                    "status": "ok",
-                                    "http_status": 200,
-                                    "security_headers": "ok",
-                                }
-                            ]
-                        },
-                    },
+                    sample_tls_routing_check(),
                     {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                     {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
                     {

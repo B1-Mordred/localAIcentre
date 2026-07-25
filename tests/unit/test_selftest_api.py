@@ -178,6 +178,8 @@ class SelfTestApiTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["routes"][0]["security_headers"], "ok")
+        self.assertEqual(result["data"]["routes"][0]["route_keys"], ["api"])
+        self.assertEqual(result["data"]["expected_route_keys"], ["chat", "control", "media", "comfy", "voice", "models", "api"])
         self.assertEqual(FakeAsyncClient.calls[0]["verify"], str(ca_file))  # type: ignore[attr-defined]
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Accept"], "application/json")  # type: ignore[attr-defined]
 

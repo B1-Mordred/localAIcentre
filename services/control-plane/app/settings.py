@@ -43,6 +43,28 @@ def _words(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(value.strip() for value in raw.replace(",", " ").split() if value.strip())
 
 
+def _default_self_test_tls_urls(
+    *,
+    host_chat: str,
+    host_control: str,
+    host_media: str,
+    host_comfy: str,
+    host_voice: str,
+    host_models: str,
+    host_api: str,
+) -> str:
+    routes = (
+        (host_chat, "/"),
+        (host_control, "/"),
+        (host_media, "/"),
+        (host_comfy, "/healthz"),
+        (host_voice, "/healthz"),
+        (host_models, "/healthz"),
+        (host_api, "/healthz"),
+    )
+    return " ".join(f"https://{host}{path}" for host, path in routes if host.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     service_name: str
@@ -253,7 +275,18 @@ def load_settings() -> Settings:
         session_ttl_seconds=_int("B1_SESSION_TTL_SECONDS", 8 * 60 * 60),
         cors_allow_origins=cors_allow_origins,
         trusted_proxy_cidrs=_words("B1_TRUSTED_PROXY_CIDRS", "127.0.0.1/32 ::1/128 172.16.0.0/12 fd00::/8"),
-        self_test_tls_urls=_words("B1_SELF_TEST_TLS_URLS", f"https://{host_api}/healthz"),
+        self_test_tls_urls=_words(
+            "B1_SELF_TEST_TLS_URLS",
+            _default_self_test_tls_urls(
+                host_chat=host_chat,
+                host_control=host_control,
+                host_media=host_media,
+                host_comfy=host_comfy,
+                host_voice=host_voice,
+                host_models=host_models,
+                host_api=host_api,
+            ),
+        ),
         self_test_tls_ca_file=os.getenv("B1_SELF_TEST_TLS_CA_FILE", "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt"),
         self_test_tls_verify=_bool("B1_SELF_TEST_TLS_VERIFY", True),
         self_test_tiny_inference_enabled=_bool("B1_SELF_TEST_TINY_INFERENCE_ENABLED", True),

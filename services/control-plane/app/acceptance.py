@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
@@ -28,6 +29,7 @@ DEFAULT_HANDOFF_HOSTS = {
     "models": "models.ai.b1.germering",
     "api": "api.ai.b1.germering",
 }
+HANDOFF_URL_KEYS = ("chat", "control", "media", "comfy", "voice", "models", "api")
 HANDOFF_URL_PURPOSES = {
     "chat": "Open WebUI for chat, RAG, voice, and ordinary users",
     "control": "B1 AI Control Center",
@@ -247,17 +249,58 @@ def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | Non
     return None
 
 
-def _tls_routing_evidence_failures(check: dict[str, Any]) -> list[str]:
+def _hostname_from_url(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    hostname = parsed.hostname or ""
+    return hostname.strip().lower().rstrip(".")
+
+
+def _handoff_url_host_map(report: dict[str, Any]) -> dict[str, str]:
+    handoff = report.get("handoff") if isinstance(report.get("handoff"), dict) else {}
+    hosts: dict[str, str] = {}
+    for item in handoff.get("default_urls") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if key not in HANDOFF_URL_KEYS:
+            continue
+        hostname = _hostname_from_url(item.get("url"))
+        if hostname:
+            hosts[key] = hostname
+    if hosts:
+        return hosts
+    return {key: _hostname_from_url(value) for key, value in DEFAULT_HANDOFF_HOSTS.items() if key in HANDOFF_URL_KEYS}
+
+
+def _tls_route_keys(route: dict[str, Any], host_map: dict[str, str]) -> set[str]:
+    keys: set[str] = set()
+    raw_keys = route.get("route_keys")
+    if isinstance(raw_keys, list):
+        keys.update(str(item).strip() for item in raw_keys if str(item).strip() in HANDOFF_URL_KEYS)
+    raw_key = route.get("route_key")
+    if isinstance(raw_key, str) and raw_key.strip() in HANDOFF_URL_KEYS:
+        keys.add(raw_key.strip())
+    route_host = _hostname_from_url(route.get("url"))
+    if route_host:
+        keys.update(key for key, hostname in host_map.items() if hostname == route_host)
+    return keys
+
+
+def _tls_routing_evidence_failures(check: dict[str, Any], host_map: dict[str, str]) -> list[str]:
     data = check.get("data") if isinstance(check.get("data"), dict) else {}
     routes = data.get("routes")
     if not isinstance(routes, list) or not routes:
         return ["TLS gateway routing evidence lists no checked routes"]
 
     failures: list[str] = []
+    covered_keys: set[str] = set()
     for index, route in enumerate(routes, start=1):
         if not isinstance(route, dict):
             failures.append(f"TLS gateway routing route {index} is invalid")
             continue
+        covered_keys.update(_tls_route_keys(route, host_map))
         url = str(route.get("url") or "")
         if not url.startswith("https://"):
             failures.append(f"TLS gateway routing route {index} is not HTTPS")
@@ -265,6 +308,9 @@ def _tls_routing_evidence_failures(check: dict[str, Any]) -> list[str]:
             failures.append(f"TLS gateway routing route {index} status is {route.get('status', 'unknown')}")
         if route.get("security_headers") != "ok":
             failures.append(f"TLS gateway routing route {index} security headers are {route.get('security_headers', 'unknown')}")
+    missing_keys = [key for key in HANDOFF_URL_KEYS if key in host_map and key not in covered_keys]
+    if missing_keys:
+        failures.append("TLS gateway routing evidence is missing required hosts: " + ", ".join(missing_keys))
     return failures
 
 
@@ -997,7 +1043,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("TLS gateway routing check is absent")
     elif tls_routing.get("status") != "ok":
         blockers.append(f"TLS gateway routing check is {tls_routing.get('status', 'unknown')}")
-    elif failures := _tls_routing_evidence_failures(tls_routing):
+    elif failures := _tls_routing_evidence_failures(tls_routing, _handoff_url_host_map(report)):
         blockers.extend(failures)
     gpu_check = _check_by_name(report.get("self_test") or {}, "gpu:nvml")
     if not gpu_check:

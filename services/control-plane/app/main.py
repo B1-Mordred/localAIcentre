@@ -6298,6 +6298,39 @@ def self_test_tls_verify_value() -> bool | str:
     return True
 
 
+SELF_TEST_PUBLIC_HOST_KEYS = ("chat", "control", "media", "comfy", "voice", "models", "api")
+
+
+def normalized_public_host(value: str) -> str:
+    if not value.strip():
+        return ""
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    hostname = parsed.hostname or value
+    return hostname.strip().lower().rstrip(".")
+
+
+def self_test_public_host_map() -> dict[str, str]:
+    hosts = {
+        "chat": settings.host_chat,
+        "control": settings.host_control,
+        "media": settings.host_media,
+        "comfy": settings.host_comfy,
+        "voice": settings.host_voice,
+        "models": settings.host_models,
+        "api": settings.host_api,
+    }
+    return {key: normalized_public_host(value) for key, value in hosts.items() if normalized_public_host(value)}
+
+
+def self_test_route_keys(url: str) -> list[str]:
+    parsed = urlsplit(url)
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        return []
+    host_map = self_test_public_host_map()
+    return [key for key in SELF_TEST_PUBLIC_HOST_KEYS if host_map.get(key) == hostname]
+
+
 async def self_test_tls_routing() -> dict[str, Any]:
     routes: list[dict[str, Any]] = []
     urls = list(settings.self_test_tls_urls)
@@ -6319,6 +6352,7 @@ async def self_test_tls_routing() -> dict[str, Any]:
             route_ok = response.status_code < 400 and not header_failures
             route: dict[str, Any] = {
                 "url": url,
+                "route_keys": self_test_route_keys(url),
                 "status": "ok" if route_ok else "failed",
                 "http_status": response.status_code,
                 "security_headers": "ok" if not header_failures else "failed",
@@ -6333,6 +6367,7 @@ async def self_test_tls_routing() -> dict[str, Any]:
         "TLS gateway routes and security headers checked" if not failed else "one or more TLS gateway route or security-header checks failed",
         {
             "routes": routes,
+            "expected_route_keys": list(SELF_TEST_PUBLIC_HOST_KEYS),
             "verify_tls": settings.self_test_tls_verify,
             "ca_file": settings.self_test_tls_ca_file if Path(settings.self_test_tls_ca_file).is_file() else None,
         },
