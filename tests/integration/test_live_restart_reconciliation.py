@@ -22,6 +22,7 @@ RESTART_RECONCILIATION_REQUIRED_CHECKS = (
     "gpu_runner_reconciled",
     "waiting_jobs_requeued",
     "active_jobs_marked_recovery_required",
+    "resumable_comfyui_native_prompts_reattached",
 )
 
 
@@ -84,6 +85,7 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
         )
         cls.minimum_requeued = int_env("B1_RESTART_RECONCILIATION_MIN_REQUEUED", 1)
         cls.minimum_marked_recovery_required = int_env("B1_RESTART_RECONCILIATION_MIN_MARKED_RECOVERY_REQUIRED", 1)
+        cls.minimum_resumed_comfyui_native = int_env("B1_RESTART_RECONCILIATION_MIN_RESUMED_COMFYUI_NATIVE", 1)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -178,12 +180,24 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
             observed=total_marked_recovery,
             minimum=self.minimum_marked_recovery_required,
         )
+        resume = payload.get("comfyui_native_prompt_resume")
+        self.assertIsInstance(resume, dict, payload)
+        resumed_comfyui_native = int(resume.get("resumed") or 0)
+        self.assertGreaterEqual(resumed_comfyui_native, self.minimum_resumed_comfyui_native, resume)
+        self.record_check(
+            "resumable_comfyui_native_prompts_reattached",
+            observed=resumed_comfyui_native,
+            minimum=self.minimum_resumed_comfyui_native,
+            checked=int(resume.get("checked") or 0),
+            skipped=int(resume.get("skipped") or 0),
+        )
         self.samples.append(
             {
                 "label": "startup-reconciliation",
                 "status": payload.get("status"),
                 "control_plane_started_at": started_at.isoformat(),
                 "required_runners": required_runners,
+                "comfyui_native_prompt_resume": resume,
                 "records": typed_records,
             }
         )
@@ -192,6 +206,7 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
                 "label": "recovered-job-counts",
                 "total_requeued": total_requeued,
                 "total_marked_recovery_required": total_marked_recovery,
+                "resumed_comfyui_native_prompts": resumed_comfyui_native,
             }
         )
 

@@ -523,6 +523,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "gpu_runner_reconciled",
                 "waiting_jobs_requeued",
                 "active_jobs_marked_recovery_required",
+                "resumable_comfyui_native_prompts_reattached",
             ],
             "missing_checks": [],
             "checks": {
@@ -531,6 +532,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "gpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
                 "waiting_jobs_requeued": {"status": "ok", "recorded_at": "2026-07-24T12:53:00+00:00"},
                 "active_jobs_marked_recovery_required": {"status": "ok", "recorded_at": "2026-07-24T12:54:00+00:00"},
+                "resumable_comfyui_native_prompts_reattached": {"status": "ok", "recorded_at": "2026-07-24T12:54:30+00:00"},
             },
             "sample_count": 2,
             "sample_labels": ["startup-reconciliation", "recovered-job-counts"],
@@ -1566,7 +1568,11 @@ class AcceptanceReportTests(unittest.TestCase):
         live_evidence["restart_reconciliation"] = {
             **live_evidence["restart_reconciliation"],
             "status": "incomplete",
-            "missing_checks": ["waiting_jobs_requeued", "active_jobs_marked_recovery_required"],
+            "missing_checks": [
+                "waiting_jobs_requeued",
+                "active_jobs_marked_recovery_required",
+                "resumable_comfyui_native_prompts_reattached",
+            ],
             "checks": {
                 "control_plane_restarted": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
                 "cpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
@@ -1581,7 +1587,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("restart reconciliation evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "restart reconciliation evidence is missing required checks: waiting_jobs_requeued, active_jobs_marked_recovery_required",
+            "restart reconciliation evidence is missing required checks: waiting_jobs_requeued, active_jobs_marked_recovery_required, resumable_comfyui_native_prompts_reattached",
             report["acceptance_blockers"],
         )
 
@@ -2103,6 +2109,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "gpu_runner_reconciled": {"status": "ok"},
                             "waiting_jobs_requeued": {"status": "ok"},
                             "active_jobs_marked_recovery_required": {"status": "ok"},
+                            "resumable_comfyui_native_prompts_reattached": {"status": "ok"},
                         },
                         "samples": [
                             {"label": "startup-reconciliation"},

@@ -163,6 +163,7 @@ RESTART_RECONCILIATION_REQUIRED_CHECKS = (
     "gpu_runner_reconciled",
     "waiting_jobs_requeued",
     "active_jobs_marked_recovery_required",
+    "resumable_comfyui_native_prompts_reattached",
 )
 BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT = "b1-ai-hub-backup-migration-rollback-acceptance/v1"
 BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS = (
@@ -187,7 +188,7 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("backup_verified", "B1 and old-stack backups were created and verified"),
     ("restore_rehearsed", "Restore-to-alternate-directory rehearsal completed"),
     ("migration_rehearsed", "Old-stack inventory, Open WebUI migration plan, and cutover plan were reviewed"),
-    ("restart_reconciliation", "Control-plane restart reconciliation requeued waiting jobs and marked interrupted active jobs for recovery"),
+    ("restart_reconciliation", "Control-plane restart reconciliation requeued waiting jobs, marked interrupted active jobs for recovery, and reattached resumable native ComfyUI prompts"),
     ("rollback_rehearsed", "Rollback procedure was tested and old resources remain preserved"),
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )

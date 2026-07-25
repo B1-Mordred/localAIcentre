@@ -97,6 +97,7 @@ approved_node_pins: dict[tuple[str, str], ApprovedNodePin] | None = None
 job_runners: list[Any] = []
 job_runner_tasks: list[asyncio.Task[None]] = []
 control_plane_started_at: datetime | None = None
+comfyui_native_prompt_resume: dict[str, int] | None = None
 backup_operation_lock = asyncio.Lock()
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("b1_current_request", default=None)
 modelhub_blob_rate_windows: dict[str, tuple[int, float]] = {}
@@ -3441,7 +3442,7 @@ async def create_job_record(
 
 @app.on_event("startup")
 async def startup() -> None:
-    global redis_client, job_runners, job_runner_tasks, control_plane_started_at
+    global redis_client, job_runners, job_runner_tasks, control_plane_started_at, comfyui_native_prompt_resume
     control_plane_started_at = datetime.now(tz=UTC)
     settings_for_startup = load_settings()
     globals()["settings"] = settings_for_startup
@@ -3469,7 +3470,7 @@ async def startup() -> None:
     database.configure_scheduler_redis(redis_client)
     job_runners = []
     job_runner_tasks = []
-    resumed_comfyui_native = await resume_comfyui_native_prompt_trackers()
+    comfyui_native_prompt_resume = await resume_comfyui_native_prompt_trackers()
     if settings_for_startup.job_runner_enabled:
         cpu_runner = CpuJobRunner(
             Path(settings_for_startup.artifact_root),
@@ -3522,8 +3523,8 @@ async def startup() -> None:
         workflows_seeded=seeded_workflows["count"],
         expired_browser_sessions_revoked=expired_sessions,
         open_webui_client_ready=bool(open_webui_client),
-        resumed_comfyui_native_prompts=resumed_comfyui_native["resumed"],
-        skipped_comfyui_native_prompts=resumed_comfyui_native["skipped"],
+        resumed_comfyui_native_prompts=comfyui_native_prompt_resume["resumed"],
+        skipped_comfyui_native_prompts=comfyui_native_prompt_resume["skipped"],
         backup_scheduler_enabled=settings_for_startup.backup_scheduler_enabled,
     )
 
@@ -5799,6 +5800,7 @@ def scheduler_reconciliation_report() -> dict[str, Any]:
         "control_plane_started_at": control_plane_started_at,
         "required_runners": required_runners,
         "missing_required_runners": missing_required,
+        "comfyui_native_prompt_resume": comfyui_native_prompt_resume or {"checked": 0, "resumed": 0, "skipped": 0},
         "records": records,
     }
 
