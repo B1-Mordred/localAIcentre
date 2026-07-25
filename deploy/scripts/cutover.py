@@ -25,6 +25,7 @@ PRODUCTION_HOSTS = (
     "models.ai.b1.germering",
     "api.ai.b1.germering",
 )
+OPTIONAL_PRODUCTION_HOSTS = ("monitoring.ai.b1.germering",)
 LEGACY_COMFY_PORT = 8188
 
 
@@ -223,9 +224,14 @@ def dns_record_descriptions(records: dict[str, list[str]], hosts: list[str]) -> 
     return [f"{host}={','.join(records.get(host, [])) or '<missing>'}" for host in hosts]
 
 
-def analyze_dns_readiness(inventory: dict[str, Any], production_hosts: tuple[str, ...] = PRODUCTION_HOSTS) -> tuple[dict[str, Any], list[str]]:
+def analyze_dns_readiness(
+    inventory: dict[str, Any],
+    production_hosts: tuple[str, ...] = PRODUCTION_HOSTS,
+    optional_hosts: tuple[str, ...] = OPTIONAL_PRODUCTION_HOSTS,
+) -> tuple[dict[str, Any], list[str]]:
     records = inventory_dns_records(inventory)
     hosts = list(production_hosts)
+    optional = list(optional_hosts)
     missing_hosts = [host for host in hosts if not records.get(host)]
     resolved_hosts = [host for host in hosts if records.get(host)]
     common_addresses: list[str] = []
@@ -242,9 +248,16 @@ def analyze_dns_readiness(inventory: dict[str, Any], production_hosts: tuple[str
         for host in resolved_hosts
         if reference_addresses and set(records.get(host, [])) != set(reference_addresses)
     ]
+    optional_missing_hosts = [host for host in optional if not records.get(host)]
+    optional_resolved_hosts = [host for host in optional if records.get(host)]
+    optional_divergent_hosts = [
+        host
+        for host in optional_resolved_hosts
+        if reference_addresses and set(records.get(host, [])) != set(reference_addresses)
+    ]
     all_hosts_resolve = not missing_hosts
     all_hosts_share_gateway_address = all_hosts_resolve and bool(common_addresses)
-    operator_must_review = bool(missing_hosts or divergent_hosts or not all_hosts_share_gateway_address)
+    operator_must_review = bool(missing_hosts or divergent_hosts or optional_divergent_hosts or not all_hosts_share_gateway_address)
 
     warnings: list[str] = []
     if missing_hosts:
@@ -262,6 +275,11 @@ def analyze_dns_readiness(inventory: dict[str, Any], production_hosts: tuple[str
             f"DNS inventory records differ from {reference_host}; verify all B1 virtual hosts terminate at the Caddy gateway: "
             + "; ".join(dns_record_descriptions(records, [reference_host, *divergent_hosts]))
         )
+    if optional_divergent_hosts:
+        warnings.append(
+            f"Optional DNS inventory records differ from {reference_host}; verify optional profile hosts terminate at the Caddy gateway before enabling them: "
+            + "; ".join(dns_record_descriptions(records, [reference_host, *optional_divergent_hosts]))
+        )
 
     return (
         {
@@ -269,12 +287,17 @@ def analyze_dns_readiness(inventory: dict[str, Any], production_hosts: tuple[str
             "all_hosts_share_gateway_address": all_hosts_share_gateway_address,
             "operator_must_review_dns": operator_must_review,
             "intended_hosts": hosts,
+            "core_hosts": hosts,
+            "optional_hosts": optional,
             "records": {host: records.get(host, []) for host in hosts},
+            "optional_records": {host: records.get(host, []) for host in optional},
             "missing_hosts": missing_hosts,
+            "optional_missing_hosts": optional_missing_hosts,
             "common_addresses": common_addresses,
             "reference_host": reference_host,
             "reference_addresses": reference_addresses,
             "divergent_hosts": divergent_hosts,
+            "optional_divergent_hosts": optional_divergent_hosts,
         },
         warnings,
     )
@@ -483,6 +506,7 @@ def build_plan(
             "temporary_ports": {"http": temporary_http_port, "https": temporary_https_port},
             "production_ports": {"http": production_http_port, "https": production_https_port},
             "production_hosts": list(PRODUCTION_HOSTS),
+            "optional_hosts": list(OPTIONAL_PRODUCTION_HOSTS),
         },
         "port_readiness": port_readiness,
         "hardware_readiness": hardware_readiness,

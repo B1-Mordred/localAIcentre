@@ -56,8 +56,11 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(disks[0]["type"], "ext4")
         self.assertEqual(disks[0]["available_1k"], 750)
 
-        dns = inventory.parse_dns_hosts("192.168.2.100 ai.b1.germering api.ai.b1.germering\n")
+        dns = inventory.parse_dns_hosts(
+            "192.168.2.100 ai.b1.germering api.ai.b1.germering monitoring.ai.b1.germering\n"
+        )
         self.assertEqual(dns["ai.b1.germering"], ["192.168.2.100"])
+        self.assertEqual(dns["monitoring.ai.b1.germering"], ["192.168.2.100"])
 
         roots = inventory.summarize_open_webui_data_roots(
             [
@@ -133,7 +136,7 @@ class InventoryTests(unittest.TestCase):
                 "free": "              total used free shared buff/cache available\nMem:          32168 1000 2000 0 0 29168\nSwap:          2048 0 2048\n",
                 "df": "Filesystem Type 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 ext4 1000 250 750 25% /\n",
                 "mounts": json.dumps({"filesystems": [{"target": "/", "source": "/dev/sda1"}]}),
-                "dns_hosts": "192.168.2.100 ai.b1.germering api.ai.b1.germering\n",
+                "dns_hosts": "192.168.2.100 ai.b1.germering api.ai.b1.germering monitoring.ai.b1.germering\n",
             }
             container_inspects = {
                 "1": [
@@ -230,6 +233,10 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(report["migration_readiness"]["hardware_profile"]["accepted"])
         self.assertEqual(report["migration_readiness"]["hardware_profile"]["largest_gpu_vram_mib"], 12288)
         self.assertEqual(report["migration_readiness"]["hardware_profile"]["host_total_ram_mib"], 32168)
+        self.assertEqual(report["host"]["dns"]["core_hosts"], list(inventory.CORE_INTENDED_HOSTS))
+        self.assertEqual(report["host"]["dns"]["optional_hosts"], list(inventory.OPTIONAL_INTENDED_HOSTS))
+        self.assertIn("monitoring.ai.b1.germering", report["host"]["dns"]["intended_hosts"])
+        self.assertEqual(report["host"]["dns"]["records"]["monitoring.ai.b1.germering"], ["192.168.2.100"])
         self.assertTrue(any(item["path"].endswith("compose.yaml") for item in report["paths"]["compose_file_candidates"]))
         self.assertTrue(any(item["path"].endswith("webui.db") for item in report["paths"]["open_webui_database_candidates"]))
         self.assertTrue(any(item["path"].endswith("alternate.db") for item in report["paths"]["open_webui_database_candidates"]))

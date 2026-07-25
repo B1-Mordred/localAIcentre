@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 
-INTENDED_HOSTS = (
+CORE_INTENDED_HOSTS = (
     "ai.b1.germering",
     "control.ai.b1.germering",
     "media.ai.b1.germering",
@@ -24,6 +24,8 @@ INTENDED_HOSTS = (
     "models.ai.b1.germering",
     "api.ai.b1.germering",
 )
+OPTIONAL_INTENDED_HOSTS = ("monitoring.ai.b1.germering",)
+INTENDED_HOSTS = CORE_INTENDED_HOSTS + OPTIONAL_INTENDED_HOSTS
 
 COMMANDS = {
     "docker_ps_all": ["docker", "ps", "-a", "--format", "json"],
@@ -1054,6 +1056,8 @@ def build_inventory(
             "mounts": parse_json_object(captured["mounts"]["stdout"]),
             "dns": {
                 "intended_hosts": list(INTENDED_HOSTS),
+                "core_hosts": list(CORE_INTENDED_HOSTS),
+                "optional_hosts": list(OPTIONAL_INTENDED_HOSTS),
                 "records": parse_dns_hosts(captured["dns_hosts"]["stdout"]),
                 "resolv_conf": read_resolv_conf(),
             },

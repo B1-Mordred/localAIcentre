@@ -64,7 +64,9 @@ class CutoverPlanTests(unittest.TestCase):
             },
             "host": {
                 "dns": {
-                    "intended_hosts": list(cutover.PRODUCTION_HOSTS),
+                    "intended_hosts": list(cutover.PRODUCTION_HOSTS) + list(cutover.OPTIONAL_PRODUCTION_HOSTS),
+                    "core_hosts": list(cutover.PRODUCTION_HOSTS),
+                    "optional_hosts": list(cutover.OPTIONAL_PRODUCTION_HOSTS),
                     "records": records,
                 }
             },
@@ -194,6 +196,8 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertTrue(plan["port_readiness"]["temporary_ports_clear"])
         self.assertTrue(plan["dns_readiness"]["all_hosts_resolve"])
         self.assertEqual(plan["dns_readiness"]["common_addresses"], ["192.168.2.100"])
+        self.assertEqual(plan["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertEqual(plan["b1_ai_hub"]["optional_hosts"], ["monitoring.ai.b1.germering"])
         self.assertEqual(plan["inputs"]["open_webui_migration_plan"], str(open_webui_plan_path.resolve()))
         self.assertTrue(plan["open_webui_preservation"]["plan_supplied"])
         self.assertEqual(plan["open_webui_preservation"]["recommended_strategy"], "preserve-backed-up-sqlite-and-test-supported-open-webui-import")
@@ -383,6 +387,35 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertTrue(plan["dns_readiness"]["operator_must_review_dns"])
         self.assertTrue(any("DNS inventory did not resolve every B1 virtual host" in warning for warning in plan["warnings"]))
 
+    def test_build_plan_tracks_missing_optional_monitoring_dns_without_blocking_cutover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            records = {host: ["192.168.2.100"] for host in cutover.PRODUCTION_HOSTS}
+            inventory_path = self.write_json(root / "inventory.json", self.inventory(dns_records=records))
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+            )
+
+        self.assertTrue(plan["dns_readiness"]["all_hosts_resolve"])
+        self.assertTrue(plan["dns_readiness"]["all_hosts_share_gateway_address"])
+        self.assertFalse(plan["dns_readiness"]["operator_must_review_dns"])
+        self.assertEqual(plan["dns_readiness"]["missing_hosts"], [])
+        self.assertEqual(plan["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertEqual(plan["dns_readiness"]["optional_records"], {"monitoring.ai.b1.germering": []})
+        self.assertFalse(any("monitoring.ai.b1.germering" in warning for warning in plan["warnings"]))
+
     def test_build_plan_warns_on_divergent_dns_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -410,6 +443,34 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertEqual(plan["dns_readiness"]["divergent_hosts"], ["api.ai.b1.germering"])
         self.assertTrue(any("do not share a common gateway address" in warning for warning in plan["warnings"]))
         self.assertTrue(any("DNS inventory records differ from ai.b1.germering" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_warns_on_divergent_optional_monitoring_dns_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            records = {host: ["192.168.2.100"] for host in cutover.PRODUCTION_HOSTS}
+            records["monitoring.ai.b1.germering"] = ["192.168.2.101"]
+            inventory_path = self.write_json(root / "inventory.json", self.inventory(dns_records=records))
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+            )
+
+        self.assertTrue(plan["dns_readiness"]["all_hosts_resolve"])
+        self.assertTrue(plan["dns_readiness"]["all_hosts_share_gateway_address"])
+        self.assertTrue(plan["dns_readiness"]["operator_must_review_dns"])
+        self.assertEqual(plan["dns_readiness"]["optional_divergent_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertTrue(any("Optional DNS inventory records differ from ai.b1.germering" in warning for warning in plan["warnings"]))
 
     def test_build_plan_refuses_containers_classified_as_unrelated_or_current_b1(self) -> None:
         for container, classification in (
