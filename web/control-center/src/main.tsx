@@ -943,7 +943,11 @@ const defaultVoiceProfileForm = (): VoiceProfileForm => ({
 type VoiceProfileMetadataField = {
   key: string;
   label: string;
+  runtime_field?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  input_mode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  accepted_json_types?: string[];
+  max_string_length?: number;
 };
 
 const VOICE_PROFILE_METADATA_FIELDS: VoiceProfileMetadataField[] = [
@@ -957,6 +961,10 @@ const VOICE_PROFILE_METADATA_FIELDS: VoiceProfileMetadataField[] = [
   { key: "style", label: "Style" },
   { key: "speed", label: "Speed", inputMode: "decimal" }
 ] as const;
+
+const voiceProfileMetadataInputMode = (field: VoiceProfileMetadataField): React.HTMLAttributes<HTMLInputElement>["inputMode"] => (
+  field.inputMode ?? field.input_mode ?? (field.key === "speed" ? "decimal" : "text")
+);
 
 type ModelInstallPlan = {
   model_ref: string;
@@ -2113,6 +2121,8 @@ function Runtimes() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
   const [profileExport, setProfileExport] = useState("");
   const [profileMessage, setProfileMessage] = useState("idle");
+  const [profilePolicyMessage, setProfilePolicyMessage] = useState("policy fallback");
+  const [profileMetadataFields, setProfileMetadataFields] = useState<VoiceProfileMetadataField[]>(VOICE_PROFILE_METADATA_FIELDS);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [profileForm, setProfileForm] = useState<VoiceProfileForm>(defaultVoiceProfileForm);
   const [profileMetadata, setProfileMetadata] = useState("{}");
@@ -2175,9 +2185,24 @@ function Runtimes() {
       .catch((error: Error) => setProfileMessage(error.message));
   };
 
+  const loadVoiceProfilePolicy = () => {
+    setProfilePolicyMessage("policy loading");
+    apiJson<{ object: string; safe_metadata_fields?: VoiceProfileMetadataField[] }>(`/admin/voicebox/profile-policy`)
+      .then((payload) => {
+        const fields = (payload.safe_metadata_fields ?? []).filter((field) => field.key && field.label);
+        setProfileMetadataFields(fields.length ? fields : VOICE_PROFILE_METADATA_FIELDS);
+        setProfilePolicyMessage(`${fields.length || VOICE_PROFILE_METADATA_FIELDS.length} selectors`);
+      })
+      .catch((error: Error) => {
+        setProfileMetadataFields(VOICE_PROFILE_METADATA_FIELDS);
+        setProfilePolicyMessage(`policy fallback: ${error.message}`);
+      });
+  };
+
   useEffect(() => {
     loadRuntimes();
     loadExternalConfigs();
+    loadVoiceProfilePolicy();
     loadVoiceProfiles();
   }, []);
 
@@ -2522,8 +2547,9 @@ function Runtimes() {
       <section className="panel wide">
         <SectionTitle icon={<TerminalSquare size={18} />} title="Voicebox Profiles" />
         <div className="toolbar">
-          <button title="Refresh voice profiles" onClick={loadVoiceProfiles} disabled={busy}><RefreshCw size={16} />Refresh</button>
+          <button title="Refresh voice profiles" onClick={() => { loadVoiceProfilePolicy(); loadVoiceProfiles(); }} disabled={busy}><RefreshCw size={16} />Refresh</button>
           <span className="toolbar-status">{profileMessage}</span>
+          <span className="toolbar-status">{profilePolicyMessage}</span>
         </div>
         <div className="split voice-profile-admin">
           <div className="stack">
@@ -2551,10 +2577,10 @@ function Runtimes() {
             </label>
             <label>Visibility roles<input value={profileForm.visibility_roles} onChange={(event) => updateProfileForm("visibility_roles", event.target.value)} /></label>
             <div className="metadata-grid">
-              {VOICE_PROFILE_METADATA_FIELDS.map((field) => (
+              {profileMetadataFields.map((field) => (
                 <label key={field.key}>{field.label}
                   <input
-                    inputMode={field.inputMode ?? "text"}
+                    inputMode={voiceProfileMetadataInputMode(field)}
                     value={profileMetadataFieldValue(field.key)}
                     onChange={(event) => updateProfileMetadataField(field.key, event.target.value)}
                   />

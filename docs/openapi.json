@@ -1675,6 +1675,96 @@
         "title": "VoiceProfileCreate",
         "type": "object"
       },
+      "VoiceProfileMetadataPolicyField": {
+        "properties": {
+          "accepted_json_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted Json Types",
+            "type": "array"
+          },
+          "input_mode": {
+            "enum": [
+              "text",
+              "decimal"
+            ],
+            "title": "Input Mode",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "max_string_length": {
+            "title": "Max String Length",
+            "type": "integer"
+          },
+          "runtime_field": {
+            "title": "Runtime Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "runtime_field",
+          "input_mode",
+          "accepted_json_types",
+          "max_string_length"
+        ],
+        "title": "VoiceProfileMetadataPolicyField",
+        "type": "object"
+      },
+      "VoiceProfilePolicyResponse": {
+        "properties": {
+          "forbidden_metadata_key_fragments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Forbidden Metadata Key Fragments",
+            "type": "array"
+          },
+          "metadata_max_bytes": {
+            "title": "Metadata Max Bytes",
+            "type": "integer"
+          },
+          "metadata_string_max_length": {
+            "title": "Metadata String Max Length",
+            "type": "integer"
+          },
+          "object": {
+            "const": "voicebox.profile_policy",
+            "title": "Object",
+            "type": "string"
+          },
+          "safe_metadata_fields": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceProfileMetadataPolicyField"
+            },
+            "title": "Safe Metadata Fields",
+            "type": "array"
+          },
+          "sample_artifact_url_prefix": {
+            "title": "Sample Artifact Url Prefix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object",
+          "metadata_max_bytes",
+          "metadata_string_max_length",
+          "safe_metadata_fields",
+          "forbidden_metadata_key_fragments",
+          "sample_artifact_url_prefix"
+        ],
+        "title": "VoiceProfilePolicyResponse",
+        "type": "object"
+      },
       "VoiceProfileSampleArtifact": {
         "properties": {
           "bytes": {
@@ -7838,6 +7928,52 @@
           }
         },
         "summary": "Admin Update Stage"
+      }
+    },
+    "/admin/voicebox/profile-policy": {
+      "get": {
+        "operationId": "admin_voice_profile_policy_admin_voicebox_profile_policy_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceProfilePolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Voice Profile Policy"
       }
     },
     "/admin/voicebox/profiles": {

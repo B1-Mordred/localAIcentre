@@ -271,6 +271,32 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 422)
         self.assertEqual(fake_database.rows, {})
 
+    def test_profile_policy_reports_safe_metadata_contract(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        self.patch_common(fake_database)
+
+        result = asyncio.run(main.admin_voice_profile_policy())
+
+        self.assertEqual(result["object"], "voicebox.profile_policy")
+        self.assertEqual(result["metadata_max_bytes"], main.VOICE_PROFILE_MAX_METADATA_BYTES)
+        self.assertEqual(result["metadata_string_max_length"], 256)
+        self.assertEqual(result["sample_artifact_url_prefix"], "/artifacts/voicebox/references/")
+        fields = {field["key"]: field for field in result["safe_metadata_fields"]}
+        self.assertEqual(fields["upstream_voice_id"]["runtime_field"], "voice")
+        self.assertEqual(fields["upstream_speaker_id"]["runtime_field"], "speaker_id")
+        self.assertEqual(fields["speed"]["input_mode"], "decimal")
+        self.assertIn("sample", result["forbidden_metadata_key_fragments"])
+
+    def test_service_role_cannot_read_voice_profile_policy(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        auth = AuthContext(subject_id="service_1", role=Role.SERVICE, scopes=frozenset({"runtimes:read"}))
+        self.patch_common(fake_database, auth=auth)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.admin_voice_profile_policy())
+
+        self.assertEqual(caught.exception.status_code, 403)
+
     def test_create_rejects_non_tts_alias_and_runtime_mismatch(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
         self.patch_common(fake_database)

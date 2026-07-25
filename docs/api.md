@@ -40,6 +40,7 @@ GET  /admin/runtime-reservations
 GET  /admin/runtimes
 POST /admin/runtimes/{runtime}/recover
 POST /admin/runtimes/{runtime}/unload
+GET  /admin/voicebox/profile-policy
 GET  /admin/voicebox/profiles
 POST /admin/voicebox/sample-artifacts
 POST /admin/voicebox/sample-artifacts/retention-plan
@@ -280,7 +281,7 @@ curl -s https://api.ai.b1.germering/admin/voicebox/sample-artifacts \
   --data-binary @narrator.wav
 ```
 
-`GET /admin/voicebox/profiles` requires `runtimes:read` and an `admin` or `operator` role. It supports `include_deleted`, `runtime`, `status`, and `owner_id` filters. `POST` and `PATCH` require `runtimes:write`; `DELETE` soft-deletes the profile by marking it `deleted` and setting `deleted_at`, so backups and audits can still recover the record. `POST /admin/voicebox/profiles/{profile_id}/export` returns a portable profile metadata bundle and writes an audit event. `POST /admin/voicebox/sample-artifacts` accepts a bounded raw audio upload, stores it under `/artifacts/voicebox/references/...`, writes an audit event, and returns a `sample_artifacts[]` entry containing the internal URL, SHA-256, MIME type, and byte count.
+`GET /admin/voicebox/profile-policy` requires `runtimes:read` and an `admin` or `operator` role. It returns the allowlisted upstream selector metadata fields, runtime payload mappings, metadata size limits, forbidden sensitive-key fragments, and the internal sample artifact prefix used by Control Center profile forms. `GET /admin/voicebox/profiles` uses the same read gate and supports `include_deleted`, `runtime`, `status`, and `owner_id` filters. `POST` and `PATCH` require `runtimes:write`; `DELETE` soft-deletes the profile by marking it `deleted` and setting `deleted_at`, so backups and audits can still recover the record. `POST /admin/voicebox/profiles/{profile_id}/export` returns a portable profile metadata bundle and writes an audit event. `POST /admin/voicebox/sample-artifacts` accepts a bounded raw audio upload, stores it under `/artifacts/voicebox/references/...`, writes an audit event, and returns a `sample_artifacts[]` entry containing the internal URL, SHA-256, MIME type, and byte count.
 
 `POST /admin/voicebox/sample-artifacts/retention-plan` requires `storage:read` plus an administrator or operator role and dry-runs cleanup of unreferenced files under `/artifacts/voicebox/references`. `POST /admin/voicebox/sample-artifacts/cleanup` requires `storage:write`, `confirm=true`, and the same role check. Referenced samples from any Voicebox profile row, including deleted rows retained for recovery, are preserved. Symlinked paths, malformed artifact paths, new files, and non-file entries are reported but not deleted.
 

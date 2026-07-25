@@ -373,6 +373,24 @@ class VoiceProfileUpdate(BaseModel):
     sample_artifacts: list[VoiceProfileSampleArtifact] | None = None
 
 
+class VoiceProfileMetadataPolicyField(BaseModel):
+    key: str
+    label: str
+    runtime_field: str
+    input_mode: Literal["text", "decimal"]
+    accepted_json_types: list[str]
+    max_string_length: int
+
+
+class VoiceProfilePolicyResponse(BaseModel):
+    object: Literal["voicebox.profile_policy"]
+    metadata_max_bytes: int
+    metadata_string_max_length: int
+    safe_metadata_fields: list[VoiceProfileMetadataPolicyField]
+    forbidden_metadata_key_fragments: list[str]
+    sample_artifact_url_prefix: str
+
+
 class ModelInstallPlanRequest(BaseModel):
     model: str | None = Field(default=None, max_length=128)
     manifest: dict[str, Any] | None = None
@@ -6055,6 +6073,21 @@ async def admin_voice_profiles(
     require_runtime_admin(auth)
     rows = await database.list_voice_profiles(include_deleted=include_deleted, owner_id=owner_id, runtime=runtime, status=status)
     return {"object": "list", "data": [public_voice_profile(row) for row in rows]}
+
+
+@app.get("/admin/voicebox/profile-policy")
+async def admin_voice_profile_policy(authorization: str | None = Header(default=None)) -> VoiceProfilePolicyResponse:
+    auth = await authenticate(authorization)
+    require_scope(auth, "runtimes:read")
+    require_runtime_admin(auth)
+    return {
+        "object": "voicebox.profile_policy",
+        "metadata_max_bytes": VOICE_PROFILE_MAX_METADATA_BYTES,
+        "metadata_string_max_length": voice_profile_policy.VOICE_PROFILE_METADATA_STRING_MAX_LENGTH,
+        "safe_metadata_fields": voice_profile_policy.metadata_policy_fields(),
+        "forbidden_metadata_key_fragments": sorted(VOICE_PROFILE_FORBIDDEN_METADATA_KEYS),
+        "sample_artifact_url_prefix": "/artifacts/voicebox/references/",
+    }
 
 
 @app.post(

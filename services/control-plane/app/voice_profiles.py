@@ -17,7 +17,20 @@ VOICE_PROFILE_UPSTREAM_METADATA_FIELDS = {
     "style": "style",
     "speed": "speed",
 }
+VOICE_PROFILE_UPSTREAM_METADATA_LABELS = {
+    "upstream_voice": "Upstream voice",
+    "upstream_voice_id": "Voice ID",
+    "upstream_profile": "Profile",
+    "upstream_profile_id": "Profile ID",
+    "upstream_speaker": "Speaker",
+    "upstream_speaker_id": "Speaker ID",
+    "language": "Language",
+    "style": "Style",
+    "speed": "Speed",
+}
+VOICE_PROFILE_NUMERIC_METADATA_FIELDS = {"speed"}
 VOICE_PROFILE_SAFE_METADATA_KEYS = frozenset(VOICE_PROFILE_UPSTREAM_METADATA_FIELDS)
+VOICE_PROFILE_METADATA_STRING_MAX_LENGTH = 256
 
 
 def valid_voice_profile_id(value: str) -> bool:
@@ -58,7 +71,7 @@ def safe_runtime_metadata_value(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     stripped = value.strip()
-    if not stripped or len(stripped) > 256:
+    if not stripped or len(stripped) > VOICE_PROFILE_METADATA_STRING_MAX_LENGTH:
         return False
     lowered = stripped.lower()
     if lowered.startswith(("data:", "file:", "http://", "https://")):
@@ -66,6 +79,22 @@ def safe_runtime_metadata_value(value: Any) -> bool:
     if any(ord(character) < 32 for character in stripped):
         return False
     return True
+
+
+def metadata_policy_fields() -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for key, runtime_key in VOICE_PROFILE_UPSTREAM_METADATA_FIELDS.items():
+        fields.append(
+            {
+                "key": key,
+                "label": VOICE_PROFILE_UPSTREAM_METADATA_LABELS[key],
+                "runtime_field": runtime_key,
+                "input_mode": "decimal" if key in VOICE_PROFILE_NUMERIC_METADATA_FIELDS else "text",
+                "accepted_json_types": ["string", "number", "boolean"],
+                "max_string_length": VOICE_PROFILE_METADATA_STRING_MAX_LENGTH,
+            }
+        )
+    return fields
 
 
 def voice_profile_upstream_metadata(row: dict[str, Any]) -> dict[str, Any]:
