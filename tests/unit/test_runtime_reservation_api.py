@@ -75,6 +75,11 @@ class FakeReservationDatabase:
         row = await self.get_runtime_reservation(reservation_id)
         if row is None:
             return None
+        if row.get("status") != "active":
+            return dict(row)
+        if row.get("expires_at") <= datetime.now(tz=UTC):
+            self.row = {**row, "status": "expired"}
+            return dict(self.row)
         self.cancelled.append(reservation_id)
         self.row = {**row, "status": "cancelled", "cancelled_at": datetime.now(tz=UTC)}
         return dict(self.row)
@@ -430,6 +435,34 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertNotIn("reason", result)
         self.assertEqual(fake_database.cancelled, ["reservation_1"])
         self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.cancelled")
+
+    def test_delete_expired_reservation_returns_noop_without_cancel_audit(self) -> None:
+        fake_database = FakeReservationDatabase(reservation_row(expires_at=datetime.now(tz=UTC) - timedelta(seconds=1)))
+        audit_events: list[dict[str, Any]] = []
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_audit(audit_events)
+
+        result = asyncio.run(main.runtime_reservation_delete("reservation_1"))
+
+        self.assertEqual(result["status"], "expired")
+        self.assertEqual(fake_database.cancelled, [])
+        self.assertEqual(audit_events, [])
+
+    def test_delete_already_cancelled_reservation_returns_noop_without_duplicate_audit(self) -> None:
+        fake_database = FakeReservationDatabase(
+            reservation_row(status="cancelled", cancelled_at=datetime(2026, 7, 22, 12, 5, tzinfo=UTC))
+        )
+        audit_events: list[dict[str, Any]] = []
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+        self.patch_audit(audit_events)
+
+        result = asyncio.run(main.runtime_reservation_delete("reservation_1"))
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(fake_database.cancelled, [])
+        self.assertEqual(audit_events, [])
 
 
 if __name__ == "__main__":

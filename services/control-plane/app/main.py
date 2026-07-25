@@ -9235,15 +9235,16 @@ async def runtime_reservation_delete(reservation_id: str = ApiPath(alias="id"), 
     row = await database.cancel_runtime_reservation(reservation_id)
     if row is None:
         raise HTTPException(status_code=404, detail="runtime reservation not found")
-    log_event("runtime_reservation_cancelled", reservation_id=reservation_id)
-    await record_audit_event(
-        auth,
-        "runtime_reservation.cancelled",
-        target_type="runtime_reservation",
-        target_id=reservation_id,
-        summary=f"Cancelled runtime reservation {reservation_id}",
-        metadata={"runtime": row["runtime"], "model": row["model_alias"], "status": row["status"], "cancelled_at": row.get("cancelled_at")},
-    )
+    if existing.get("status") != "cancelled" and row.get("status") == "cancelled":
+        log_event("runtime_reservation_cancelled", reservation_id=reservation_id)
+        await record_audit_event(
+            auth,
+            "runtime_reservation.cancelled",
+            target_type="runtime_reservation",
+            target_id=reservation_id,
+            summary=f"Cancelled runtime reservation {reservation_id}",
+            metadata={"runtime": row["runtime"], "model": row["model_alias"], "status": row["status"], "cancelled_at": row.get("cancelled_at")},
+        )
     return public_runtime_reservation(row)
 
 
