@@ -24,6 +24,7 @@ MEASUREMENT_RUN_STATUSES = {"ok", "warning", "failed", "skipped", "unconfirmed"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:$")
+BAD_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
 OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
     "llm": {
         "chat": {"chat", "chat-completion", "chat-completions", "completion", "completions", "responses", "text-generation"},
@@ -511,7 +512,12 @@ def _safe_relative_path(value: str, context: str) -> str:
     if WINDOWS_DRIVE_PATTERN.match(normalized.parts[0]):
         raise CatalogError(f"{context} must not contain traversal segments")
     for part in normalized.parts:
-        decoded = unquote(part)
+        if BAD_PERCENT_ESCAPE_PATTERN.search(part):
+            raise CatalogError(f"{context} must not contain encoded path-control segments")
+        try:
+            decoded = unquote(part, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise CatalogError(f"{context} must not contain encoded path-control segments") from exc
         if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
             raise CatalogError(f"{context} must not contain encoded path-control segments")
         if any(ord(character) < 32 or ord(character) == 127 for character in decoded):

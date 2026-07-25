@@ -28,6 +28,7 @@ class ModelLifecycleError(ValueError):
 SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
 SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 QUARANTINE_SET_RE = re.compile(r"^(?P<version>.+)-(?P<timestamp>\d{8}T\d{6}Z)$")
 SUPPORTED_ARCHIVE_FORMATS = {"zip", "tar", "tar.gz", "tgz", "tar.bz2", "tbz2", "tar.xz", "txz"}
 ARCHIVE_FORMAT_BY_SUFFIX = {
@@ -179,7 +180,12 @@ def safe_relative_parts(value: str, context: str) -> tuple[str, ...]:
     if WINDOWS_DRIVE_RE.match(rel.parts[0]):
         raise ModelLifecycleError(f"{context} uses an unsafe relative path")
     for part in rel.parts:
-        decoded = unquote(part)
+        if BAD_PERCENT_ESCAPE_RE.search(part):
+            raise ModelLifecycleError(f"{context} uses an unsafe encoded path-control segment")
+        try:
+            decoded = unquote(part, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ModelLifecycleError(f"{context} uses an unsafe encoded path-control segment") from exc
         if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
             raise ModelLifecycleError(f"{context} uses an unsafe encoded path-control segment")
         if any(ord(character) < 32 or ord(character) == 127 for character in decoded):

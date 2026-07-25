@@ -144,7 +144,15 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertFalse(staging_root.exists() and any(staging_root.rglob("*")))
 
     def test_safe_zip_archive_rejects_traversal(self) -> None:
-        for member_name in ("../escape.gguf", "%2e%2e/escape.gguf", "weights/safe%2Fescape.gguf"):
+        for member_name in (
+            "../escape.gguf",
+            "%2e%2e/escape.gguf",
+            "weights/safe%2Fescape.gguf",
+            "weights/%/escape.gguf",
+            "weights/%2/escape.gguf",
+            "weights/%zz/escape.gguf",
+            "weights/%ffescape.gguf",
+        ):
             with self.subTest(member_name=member_name), tempfile.TemporaryDirectory() as tmp:
                 archive = Path(tmp) / "bad.zip"
                 with zipfile.ZipFile(archive, "w") as handle:
@@ -384,6 +392,10 @@ class ModelLifecycleTests(unittest.TestCase):
             "weights/safe%3Ftoken.gguf",
             "weights/safe%23fragment.gguf",
             "weights/%00model.gguf",
+            "weights/%/model.gguf",
+            "weights/%2/model.gguf",
+            "weights/%zz/model.gguf",
+            "weights/%ffmodel.gguf",
             "C:/model.gguf",
         ):
             with self.subTest(unsafe_path=unsafe_path):
