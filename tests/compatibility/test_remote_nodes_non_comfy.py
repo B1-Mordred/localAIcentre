@@ -22,6 +22,7 @@ from comfyui_b1_remote_nodes import nodes  # noqa: E402
 REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1"
 REMOTE_NODES_REQUIRED_CHECKS = (
     "server_side_comfyui_stopped",
+    "server_side_comfyui_stop_verified",
     "remote_models_listed",
     "model_alias_selected",
     "credentials_externalized",
@@ -122,6 +123,58 @@ def configured_credential_source() -> str:
     return "none"
 
 
+def comfyui_container_is_running(container: dict[str, Any]) -> bool:
+    state = str(container.get("state") or "").strip().lower()
+    status = str(container.get("status") or "").strip().lower()
+    return state == "running" or status.startswith("up ")
+
+
+def comfyui_stop_verification_from_runtime_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+    inventory = payload.get("runtime_agent_services")
+    if not isinstance(inventory, dict):
+        raise AssertionError("/admin/runtimes did not include runtime_agent_services")
+    if inventory.get("error"):
+        raise AssertionError(f"runtime-agent service inventory is unavailable: {inventory.get('error')}")
+    services = inventory.get("services")
+    if not isinstance(services, list):
+        raise AssertionError("runtime-agent service inventory did not include a services list")
+    service = next((item for item in services if isinstance(item, dict) and item.get("name") == "comfyui"), None)
+    if not isinstance(service, dict):
+        raise AssertionError("runtime-agent service inventory did not include the comfyui service")
+    if service.get("docker_error"):
+        raise AssertionError(f"runtime-agent could not inspect the comfyui service: {service.get('docker_error')}")
+    containers = service.get("containers")
+    if not isinstance(containers, list):
+        raise AssertionError("runtime-agent comfyui service record did not include containers")
+    compact_containers = [
+        {
+            "short_id": str(container.get("short_id") or ""),
+            "name": str(container.get("name") or ""),
+            "state": str(container.get("state") or ""),
+            "status": str(container.get("status") or ""),
+            "image": str(container.get("image") or ""),
+        }
+        for container in containers
+        if isinstance(container, dict)
+    ]
+    running = [container for container in compact_containers if comfyui_container_is_running(container)]
+    snapshot = {
+        "verified_by": "admin_runtimes_runtime_agent_services",
+        "service": "comfyui",
+        "container_count": len(compact_containers),
+        "running_container_count": len(running),
+        "containers": compact_containers[:10],
+    }
+    if running:
+        raise AssertionError("server-side B1 ComfyUI service still has running containers: " + json.dumps(snapshot, sort_keys=True))
+    return snapshot
+
+
+def verify_server_side_comfyui_stopped_via_admin() -> dict[str, Any]:
+    timeout = int(os.getenv("B1_REMOTE_NODES_VERIFY_TIMEOUT_SECONDS", "30"))
+    return comfyui_stop_verification_from_runtime_inventory(nodes.request_json("/admin/runtimes", timeout_seconds=timeout))
+
+
 @unittest.skipUnless(os.getenv("B1_REMOTE_NODES_LIVE_TEST") == "1", "set B1_REMOTE_NODES_LIVE_TEST=1 to run live remote-node compatibility tests")
 class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
@@ -172,10 +225,12 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
         runtime_policy = "non_comfy_only"
         self.verify_credentials_externalized()
         with server_side_comfyui_stopped_context():
+            stop_verification = verify_server_side_comfyui_stopped_via_admin()
             self.record_check(
                 "server_side_comfyui_stopped",
                 stop_mode=os.getenv("B1_REMOTE_NODES_COMFYUI_STOP_MODE", "").strip().lower(),
             )
+            self.record_check("server_side_comfyui_stop_verified", **stop_verification)
             aliases_json, raw_models_json = nodes.B1ListModels().run()
             aliases = json.loads(aliases_json)
             raw_models = json.loads(raw_models_json)

@@ -390,6 +390,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "status": "ok",
             "required_checks": [
                 "server_side_comfyui_stopped",
+                "server_side_comfyui_stop_verified",
                 "remote_models_listed",
                 "model_alias_selected",
                 "credentials_externalized",
@@ -399,6 +400,12 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_checks": [],
             "checks": {
                 "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "server_side_comfyui_stop_verified": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:34:05+00:00",
+                    "verified_by": "admin_runtimes_runtime_agent_services",
+                    "running_container_count": 0,
+                },
                 "remote_models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:34:15+00:00"},
                 "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00"},
                 "credentials_externalized": {"status": "ok", "recorded_at": "2026-07-24T12:34:30+00:00"},
@@ -1601,6 +1608,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "status": "ok",
                 "checks": {
                     "server_side_comfyui_stopped": {"status": "ok"},
+                    "server_side_comfyui_stop_verified": {"status": "ok"},
                     "non_comfy_tts_completed": {"status": "ok"},
                     "artifact_downloaded": {"status": "ok"},
                 },
@@ -1613,6 +1621,27 @@ class AcceptanceReportTests(unittest.TestCase):
             ["remote_models_listed", "model_alias_selected", "credentials_externalized"],
         )
 
+    def test_remote_node_snapshot_requires_comfyui_stop_verification(self) -> None:
+        snapshot = acceptance.remote_nodes_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+                "generated_at": "2026-07-24T12:35:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "server_side_comfyui_stopped": {"status": "ok"},
+                    "remote_models_listed": {"status": "ok"},
+                    "model_alias_selected": {"status": "ok"},
+                    "credentials_externalized": {"status": "ok"},
+                    "non_comfy_tts_completed": {"status": "ok"},
+                    "artifact_downloaded": {"status": "ok"},
+                },
+                "samples": [{"label": "tts-fast-non-comfy"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], ["server_side_comfyui_stop_verified"])
+
     def test_report_blocks_handoff_for_incomplete_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["remote_nodes_non_comfy"] = {
@@ -1621,6 +1650,7 @@ class AcceptanceReportTests(unittest.TestCase):
             "missing_checks": ["artifact_downloaded"],
             "checks": {
                 "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "server_side_comfyui_stop_verified": {"status": "ok", "recorded_at": "2026-07-24T12:34:05+00:00"},
                 "remote_models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:34:15+00:00"},
                 "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00"},
                 "credentials_externalized": {"status": "ok", "recorded_at": "2026-07-24T12:34:30+00:00"},
@@ -2155,6 +2185,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "status": "ok",
                         "checks": {
                             "server_side_comfyui_stopped": {"status": "ok"},
+                            "server_side_comfyui_stop_verified": {"status": "ok"},
                             "remote_models_listed": {"status": "ok"},
                             "model_alias_selected": {"status": "ok"},
                             "credentials_externalized": {"status": "ok"},

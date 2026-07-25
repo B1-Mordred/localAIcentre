@@ -96,6 +96,7 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
 REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1"
 REMOTE_NODES_REQUIRED_CHECKS = (
     "server_side_comfyui_stopped",
+    "server_side_comfyui_stop_verified",
     "remote_models_listed",
     "model_alias_selected",
     "credentials_externalized",
