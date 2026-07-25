@@ -159,6 +159,13 @@ def write_private_json(path: Path, payload: dict[str, Any]) -> None:
         path.chmod(PRIVATE_FILE_MODE)
 
 
+def absolute_path_without_symlink_resolution(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 def run(command: list[str]) -> dict[str, Any]:
     if shutil.which(command[0]) is None:
         return {"available": False, "command": command, "stdout": "", "stderr": "command not found", "returncode": 127}
@@ -1094,7 +1101,7 @@ def main() -> None:
     parser.add_argument("--b1-root", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"))
     parser.add_argument("--scan-root", action="append", default=None, help="Root to scan for Compose files. May be repeated.")
     args = parser.parse_args()
-    output = Path(args.output).resolve()
+    output = absolute_path_without_symlink_resolution(args.output)
     scan_roots = [Path(item).resolve() for item in args.scan_root] if args.scan_root else None
     inventory = build_inventory(b1_root=Path(args.b1_root).resolve(), scan_roots=scan_roots)
     write_private_json(output, inventory)

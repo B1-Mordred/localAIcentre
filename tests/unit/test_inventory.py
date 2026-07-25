@@ -286,6 +286,26 @@ class InventoryTests(unittest.TestCase):
 
             self.assertEqual(target.read_text(encoding="utf-8"), "old")
 
+    @unittest.skipIf(os.name == "nt" or not hasattr(os, "O_NOFOLLOW"), "symlink output refusal is POSIX-specific")
+    def test_main_refuses_symlink_output_without_resolving_to_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            link = root / "inventory.json"
+            target.write_text("old", encoding="utf-8")
+            link.symlink_to(target)
+            self.assertEqual(inventory.absolute_path_without_symlink_resolution(str(link)), Path(os.path.abspath(str(link))))
+
+            self.patch_attr("build_inventory", lambda **kwargs: {"format": "b1-ai-hub-host-inventory/v1"})
+            original_argv = sys.argv
+            sys.argv = ["inventory.py", "--output", str(link), "--b1-root", str(root)]
+            self.addCleanup(lambda: setattr(sys, "argv", original_argv))
+
+            with self.assertRaises(OSError):
+                inventory.main()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "old")
+
 
 if __name__ == "__main__":
     unittest.main()
