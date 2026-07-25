@@ -73,6 +73,41 @@ def silence_wav_base64() -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def placeholder_proof(headers: dict[str, str], payload: Any, *, runtime: str | None = None) -> dict[str, Any]:
+    header_map = {str(key).lower(): str(value).strip() for key, value in headers.items()}
+    header_placeholder = header_map.get("x-b1-placeholder")
+    body_placeholder = payload.get("b1_placeholder") if isinstance(payload, dict) else None
+    marker: bool | None = None
+    if isinstance(header_placeholder, str) and header_placeholder.lower() in {"true", "false"}:
+        marker = header_placeholder.lower() == "true"
+    elif isinstance(body_placeholder, bool):
+        marker = body_placeholder
+
+    cpu_audio_engine = header_map.get("x-b1-cpu-audio-engine", "")
+    if not cpu_audio_engine and isinstance(payload, dict):
+        for key in ("b1_stt_engine", "b1_engine"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                cpu_audio_engine = value.strip()
+                break
+
+    runtime_name = str(runtime or "").strip().lower()
+    reasons: list[str] = []
+    if marker is True:
+        reasons.append("explicit_placeholder_marker")
+    if runtime_name == "audio-cpu" and marker is not False:
+        reasons.append("audio_cpu_non_placeholder_marker_missing")
+    if cpu_audio_engine.strip().lower() == "scaffold":
+        reasons.append("scaffold_cpu_audio_engine")
+    return {
+        "placeholder": marker,
+        "runtime": runtime_name or None,
+        "cpu_audio_engine": cpu_audio_engine or None,
+        "placeholder_failure": bool(reasons),
+        "reasons": reasons,
+    }
+
+
 @unittest.skipUnless(os.getenv("B1_WORKFLOWS_LIVE_TEST") == "1", "set B1_WORKFLOWS_LIVE_TEST=1 to run installed workflow acceptance")
 class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
@@ -161,13 +196,15 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.__class__.model_measurements[alias] = measurement
         return measurement
 
-    def assert_not_placeholder(self, headers: dict[str, str], payload: Any, label: str) -> None:
-        header_map = {key.lower(): value for key, value in headers.items()}
-        header_placeholder = str(header_map.get("x-b1-placeholder", "")).lower()
-        body_placeholder = payload.get("b1_placeholder") if isinstance(payload, dict) else None
-        placeholder = header_placeholder == "true" or body_placeholder is True
-        if placeholder and not self.allow_placeholder:
-            raise AssertionError(f"{label} returned placeholder output; install a real model/runtime before acceptance")
+    def placeholder_check_status(self, proof: dict[str, Any]) -> str:
+        return "incomplete" if proof.get("placeholder_failure") else "ok"
+
+    def raise_if_disallowed_placeholder(self, proof: dict[str, Any], label: str) -> None:
+        if proof.get("placeholder_failure") and not self.allow_placeholder:
+            reason = ", ".join(str(item) for item in proof.get("reasons") or []) or "placeholder output"
+            raise AssertionError(
+                f"{label} returned placeholder or unproven output ({reason}); install a real model/runtime before acceptance"
+            )
 
     def test_chat_audio_image_edit_and_video_installed_workflows(self) -> None:
         self.verify_chat()
@@ -238,15 +275,18 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         choices = payload.get("choices")
         self.assertIsInstance(choices, list)
         self.assertGreater(len(choices), 0, payload)
-        self.assert_not_placeholder(headers, payload, "chat")
+        runtime = payload.get("b1_runtime") or measurement.get("runtime")
+        proof = placeholder_proof(headers, payload, runtime=str(runtime or ""))
         resolved_model = payload.get("b1_resolved_model") if isinstance(payload.get("b1_resolved_model"), str) else measurement.get("resolved_model_version")
         self.assertEqual(resolved_model, measurement.get("resolved_model_version"), payload)
         self.record_check(
             "chat_completed",
+            self.placeholder_check_status(proof),
             model=model,
             resolved_model_version=measurement.get("resolved_model_version"),
-            runtime=payload.get("b1_runtime") or measurement.get("runtime"),
+            runtime=runtime,
             model_measurement=measurement,
+            placeholder_proof=proof,
             choice_count=len(choices),
         )
         self.samples.append(
@@ -254,10 +294,11 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "label": "chat",
                 "model": model,
                 "resolved_model_version": measurement.get("resolved_model_version"),
-                "runtime": payload.get("b1_runtime") or measurement.get("runtime"),
+                "runtime": runtime,
                 "choice_count": len(choices),
             }
         )
+        self.raise_if_disallowed_placeholder(proof, "chat")
 
     def verify_tts(self) -> None:
         model = os.getenv("B1_WORKFLOWS_TTS_MODEL", "tts-fast")
@@ -272,14 +313,16 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         status, headers, content = self.client.request("POST", "/v1/audio/speech", body=body, headers={"Accept": "audio/*"}, require_auth=True)
         self.assertEqual(status, 200, content[:200])
         self.assertGreater(len(content), 0, "TTS returned an empty response")
-        self.assert_not_placeholder(headers, None, "tts")
+        proof = placeholder_proof(headers, None, runtime=str(measurement.get("runtime") or ""))
         digest = hashlib.sha256(content).hexdigest()
         self.record_check(
             "tts_completed",
+            self.placeholder_check_status(proof),
             model=model,
             resolved_model_version=measurement.get("resolved_model_version"),
             runtime=measurement.get("runtime"),
             model_measurement=measurement,
+            placeholder_proof=proof,
             byte_count=len(content),
             sha256=digest,
         )
@@ -293,6 +336,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "sha256": digest,
             }
         )
+        self.raise_if_disallowed_placeholder(proof, "tts")
 
     def verify_stt(self) -> None:
         model = os.getenv("B1_WORKFLOWS_STT_MODEL", "stt-default")
@@ -307,14 +351,16 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertIsInstance(payload, dict)
         self.assertIn("text", payload)
-        self.assert_not_placeholder(headers, payload, "stt")
+        proof = placeholder_proof(headers, payload, runtime=str(measurement.get("runtime") or ""))
         text_length = len(str(payload.get("text") or ""))
         self.record_check(
             "stt_completed",
+            self.placeholder_check_status(proof),
             model=model,
             resolved_model_version=measurement.get("resolved_model_version"),
             runtime=measurement.get("runtime"),
             model_measurement=measurement,
+            placeholder_proof=proof,
             text_length=text_length,
         )
         self.samples.append(
@@ -326,6 +372,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "text_length": text_length,
             }
         )
+        self.raise_if_disallowed_placeholder(proof, "stt")
 
     def scheduler_lease_snapshot(self) -> dict[str, Any]:
         status, _, payload = self.client.json_request("GET", "/admin/scheduler/lease", require_auth=True)
@@ -366,7 +413,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertGreater(len(tts_content), 0, "CPU TTS returned an empty response")
         tts_header_map = {key.lower(): value for key, value in tts_headers.items()}
         self.assertEqual(str(tts_header_map.get("x-b1-gpu-lease-required", "")).lower(), "false", tts_header_map)
-        self.assert_not_placeholder(tts_headers, None, "cpu-tts")
+        tts_proof = placeholder_proof(tts_headers, None, runtime="audio-cpu")
 
         status, stt_headers, stt_payload = self.client.json_request(
             "POST",
@@ -382,7 +429,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertEqual(status, 200, stt_payload)
         self.assertIsInstance(stt_payload, dict)
         self.assertIs(stt_payload.get("gpu_lease_required"), False, stt_payload)
-        self.assert_not_placeholder(stt_headers, stt_payload, "cpu-stt")
+        stt_proof = placeholder_proof(stt_headers, stt_payload, runtime="audio-cpu")
 
         after = self.scheduler_lease_snapshot()
         before_owner = self.lease_owner(before)
@@ -398,11 +445,14 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         )
         self.record_check(
             "cpu_audio_does_not_take_gpu_lease",
+            "incomplete" if tts_proof.get("placeholder_failure") or stt_proof.get("placeholder_failure") else "ok",
             tts_model=tts_model,
             stt_model=stt_model,
             tts_resolved_model_version=tts_measurement.get("resolved_model_version"),
             stt_resolved_model_version=stt_measurement.get("resolved_model_version"),
             model_measurements={"tts": tts_measurement, "stt": stt_measurement},
+            tts_placeholder_proof=tts_proof,
+            stt_placeholder_proof=stt_proof,
             runtime_policy=runtime_policy,
             scheduler_owner_before=before_owner or "none",
             scheduler_owner_after=after_owner or "none",
@@ -422,6 +472,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "scheduler_owner_after": after_owner or "none",
             }
         )
+        self.raise_if_disallowed_placeholder(tts_proof, "cpu-tts")
+        self.raise_if_disallowed_placeholder(stt_proof, "cpu-stt")
 
     def media_job_body(
         self,
