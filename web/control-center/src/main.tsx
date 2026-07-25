@@ -940,6 +940,24 @@ const defaultVoiceProfileForm = (): VoiceProfileForm => ({
   visibility_roles: "admin,operator"
 });
 
+type VoiceProfileMetadataField = {
+  key: string;
+  label: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+};
+
+const VOICE_PROFILE_METADATA_FIELDS: VoiceProfileMetadataField[] = [
+  { key: "upstream_voice", label: "Upstream voice" },
+  { key: "upstream_voice_id", label: "Voice ID" },
+  { key: "upstream_profile", label: "Profile" },
+  { key: "upstream_profile_id", label: "Profile ID" },
+  { key: "upstream_speaker", label: "Speaker" },
+  { key: "upstream_speaker_id", label: "Speaker ID" },
+  { key: "language", label: "Language" },
+  { key: "style", label: "Style" },
+  { key: "speed", label: "Speed", inputMode: "decimal" }
+] as const;
+
 type ModelInstallPlan = {
   model_ref: string;
   status: string;
@@ -2103,6 +2121,14 @@ function Runtimes() {
   const [profileSampleInputKey, setProfileSampleInputKey] = useState(0);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
+  const profileMetadataObject = useMemo<Record<string, unknown>>(() => {
+    try {
+      const parsed = profileMetadata.trim() ? JSON.parse(profileMetadata) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }, [profileMetadata]);
 
   const loadRuntimes = () => {
     setMessage("loading");
@@ -2216,6 +2242,26 @@ function Runtimes() {
 
   const updateProfileForm = <K extends keyof VoiceProfileForm>(field: K, value: VoiceProfileForm[K]) => {
     setProfileForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const profileMetadataFieldValue = (key: string): string => {
+    const value = profileMetadataObject[key];
+    if (value === undefined || value === null) return "";
+    return String(value);
+  };
+
+  const updateProfileMetadataField = (key: string, value: string) => {
+    const next = { ...profileMetadataObject };
+    const trimmed = value.trim();
+    if (!trimmed) {
+      delete next[key];
+    } else if (key === "speed") {
+      const numeric = Number(trimmed);
+      next[key] = Number.isFinite(numeric) ? numeric : trimmed;
+    } else {
+      next[key] = trimmed;
+    }
+    setProfileMetadata(JSON.stringify(next, null, 2));
   };
 
   const profileFormFromProfile = (profile: VoiceProfile): VoiceProfileForm => ({
@@ -2504,6 +2550,17 @@ function Runtimes() {
               </select>
             </label>
             <label>Visibility roles<input value={profileForm.visibility_roles} onChange={(event) => updateProfileForm("visibility_roles", event.target.value)} /></label>
+            <div className="metadata-grid">
+              {VOICE_PROFILE_METADATA_FIELDS.map((field) => (
+                <label key={field.key}>{field.label}
+                  <input
+                    inputMode={field.inputMode ?? "text"}
+                    value={profileMetadataFieldValue(field.key)}
+                    onChange={(event) => updateProfileMetadataField(field.key, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
             <label>Metadata JSON<textarea value={profileMetadata} onChange={(event) => setProfileMetadata(event.target.value)} /></label>
             <label>Sample upload<input key={profileSampleInputKey} type="file" accept="audio/wav,audio/mpeg,audio/ogg,audio/*" onChange={(event) => setProfileSampleFile(event.target.files?.[0] ?? null)} /></label>
             <button title="Upload voice reference sample" onClick={uploadVoiceSampleArtifact} disabled={busy || !profileSampleFile}><Upload size={16} />Upload Sample</button>

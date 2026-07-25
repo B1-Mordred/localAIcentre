@@ -618,6 +618,12 @@ code {
   resize: vertical;
 }
 
+.metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .stack button {
   display: inline-flex;
   align-items: center;
@@ -987,6 +993,7 @@ td {
   .split,
   .inline-form,
   .policy-grid,
+  .metadata-grid,
   .evidence-grid,
   .job-detail {
     grid-template-columns: 1fr;
