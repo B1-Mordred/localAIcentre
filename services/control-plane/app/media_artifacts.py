@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import mimetypes
+import os
+import stat
 import uuid
 from pathlib import Path
 from typing import Any
@@ -45,12 +48,70 @@ def safe_artifact_segment(value: str, fallback: str) -> str:
 
 
 def artifact_store_path(artifact_root: Path, relative_path: str) -> Path:
-    artifact_policy.artifact_url_for_path(relative_path)
+    artifact_url = artifact_policy.artifact_url_for_path(relative_path)
+    normalized_relative = artifact_url.removeprefix("/artifacts/")
+    if artifact_root.is_symlink():
+        raise ValueError("artifact root is a symlink")
     root = artifact_root.resolve()
-    path = (root / relative_path).resolve()
+    current = root
+    for segment in normalized_relative.split("/"):
+        current = current / segment
+        if current.is_symlink():
+            raise ValueError("artifact path contains a symlink")
+    path = current.resolve(strict=False)
     if root not in path.parents and path != root:
         raise ValueError("artifact path escapes artifact root")
     return path
+
+
+def read_regular_file_bytes(path: Path) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("artifact file is a symlink") from exc
+        raise
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("artifact file is not a regular file")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def write_regular_file_bytes(path: Path, content: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(content)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def extension_for_mime_type(mime_type: str, fallback: str = ".bin") -> str:
@@ -322,10 +383,9 @@ def write_staged_input_bytes(
     relative = f"inputs/{owner_segment}/{upload_id}/{field_segment}-{stored_name}"
     target = artifact_store_path(artifact_root, relative)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    target = artifact_store_path(artifact_root, relative)
     digest = hashlib.sha256(content)
-    temporary.write_bytes(content)
-    temporary.replace(target)
+    write_regular_file_bytes(target, content)
     return {
         "source": "staged_upload",
         "id": upload_id,
@@ -346,9 +406,10 @@ def read_staged_input_bytes(artifact_root: Path, reference: dict[str, Any]) -> t
     if not isinstance(relative, str) or not relative.startswith("inputs/"):
         raise ValueError("staged upload path is invalid")
     target = artifact_store_path(artifact_root, relative)
-    if not target.is_file():
-        raise FileNotFoundError(relative)
-    content = target.read_bytes()
+    try:
+        content = read_regular_file_bytes(target)
+    except FileNotFoundError:
+        raise FileNotFoundError(relative) from None
     expected_size = reference.get("bytes")
     if isinstance(expected_size, int) and expected_size != len(content):
         raise ValueError("staged upload size mismatch")
@@ -380,10 +441,9 @@ def write_artifact_bytes(
     relative = f"{namespace_segment}/{job_segment}/{index}{extension}"
     target = artifact_store_path(artifact_root, relative)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    target = artifact_store_path(artifact_root, relative)
     digest = hashlib.sha256(content)
-    temporary.write_bytes(content)
-    temporary.replace(target)
+    write_regular_file_bytes(target, content)
     return {
         "id": f"artifact_{namespace_segment}_{job_segment}_{index}",
         "kind": kind_for_mime_type(mime_type),

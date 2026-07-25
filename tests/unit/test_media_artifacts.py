@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import tempfile
 import unittest
@@ -51,6 +52,14 @@ WEBM_BYTES = b"\x1a\x45\xdf\xa3\x42\x82\x84webm" + (b"\x00" * 8)
 
 
 class MediaArtifactTests(unittest.TestCase):
+    def symlink_or_skip(self, target: Path, link: Path, *, target_is_directory: bool = False) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlink creation is unavailable")
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
     def test_sniffs_supported_structural_media_types(self) -> None:
         for content, expected in (
             (PNG_BYTES, "image/png"),
@@ -182,6 +191,68 @@ class MediaArtifactTests(unittest.TestCase):
                         "sha256": hashlib.sha256(PNG_BYTES).hexdigest(),
                     },
                 )
+
+    def test_artifact_store_path_rejects_symlink_root_and_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "artifacts"
+            root.mkdir()
+            linked_root = base / "linked-root"
+            self.symlink_or_skip(root, linked_root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "artifact root is a symlink"):
+                media_artifacts.artifact_store_path(linked_root, "inputs/client/upload_1/file.png")
+
+            real_dir = root / "real"
+            real_dir.mkdir()
+            linked_dir = root / "linked"
+            self.symlink_or_skip(real_dir, linked_dir, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "artifact path contains a symlink"):
+                media_artifacts.artifact_store_path(root, "linked/file.png")
+
+    def test_read_staged_input_rejects_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "real.png"
+            real.write_bytes(PNG_BYTES)
+            relative = "inputs/client/upload_1/image-file.png"
+            target = root / relative
+            target.parent.mkdir(parents=True)
+            self.symlink_or_skip(real, target)
+
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                media_artifacts.read_staged_input_bytes(
+                    root,
+                    {
+                        "source": "staged_upload",
+                        "path": relative,
+                        "mime_type": "image/png",
+                        "bytes": len(PNG_BYTES),
+                        "sha256": hashlib.sha256(PNG_BYTES).hexdigest(),
+                    },
+                )
+
+    def test_write_artifact_bytes_refuses_existing_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "outside.png"
+            real.write_bytes(b"outside")
+            target = root / "localai" / "job_1" / "0.png"
+            target.parent.mkdir(parents=True)
+            self.symlink_or_skip(real, target)
+
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                media_artifacts.write_artifact_bytes(
+                    root,
+                    namespace="localai",
+                    job_id="job_1",
+                    index=0,
+                    content=PNG_BYTES,
+                    mime_type="image/png",
+                    source="runtime",
+                )
+
+            self.assertEqual(real.read_bytes(), b"outside")
+            self.assertTrue(target.is_symlink())
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from . import artifacts as artifact_policy
+from . import media_artifacts
 
 
 COMFYUI_OUTPUT_KEYS = {
@@ -142,12 +142,7 @@ def comfyui_view_path_for_artifact(artifact: dict[str, Any]) -> str | None:
 
 
 def artifact_store_path(artifact_root: Path, relative_path: str) -> Path:
-    artifact_policy.artifact_url_for_path(relative_path)
-    root = artifact_root.resolve()
-    path = (root / relative_path).resolve()
-    if root not in path.parents and path != root:
-        raise ValueError("artifact path escapes artifact root")
-    return path
+    return media_artifacts.artifact_store_path(artifact_root, relative_path)
 
 
 async def ingest_comfyui_artifact(
@@ -168,6 +163,7 @@ async def ingest_comfyui_artifact(
     try:
         target = artifact_store_path(artifact_root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
+        target = artifact_store_path(artifact_root, relative)
     except (OSError, ValueError) as exc:
         return {**artifact, "ingest_status": "failed", "ingest_error": exc.__class__.__name__}
 
@@ -187,8 +183,9 @@ async def ingest_comfyui_artifact(
                         handle.write(chunk)
                         digest.update(chunk)
                         byte_count += len(chunk)
+        target = artifact_store_path(artifact_root, relative)
         temporary.replace(target)
-    except (OSError, httpx.HTTPError) as exc:
+    except (OSError, ValueError, httpx.HTTPError) as exc:
         temporary.unlink(missing_ok=True)
         return {**artifact, "ingest_status": "failed", "ingest_error": exc.__class__.__name__}
 

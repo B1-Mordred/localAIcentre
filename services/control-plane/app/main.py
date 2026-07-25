@@ -1641,12 +1641,7 @@ def comfyui_view_path_for_artifact(artifact: dict[str, Any]) -> str | None:
 
 
 def artifact_store_path(relative_path: str) -> Path:
-    artifact_policy.artifact_url_for_path(relative_path)
-    root = Path(settings.artifact_root).resolve()
-    path = (root / relative_path).resolve()
-    if root not in path.parents and path != root:
-        raise ValueError("artifact path escapes artifact root")
-    return path
+    return media_artifacts.artifact_store_path(Path(settings.artifact_root), relative_path)
 
 
 async def ingest_comfyui_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1662,6 +1657,7 @@ async def ingest_comfyui_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     try:
         target = artifact_store_path(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
+        target = artifact_store_path(relative)
     except (OSError, ValueError) as exc:
         return {**artifact, "ingest_status": "failed", "ingest_error": exc.__class__.__name__}
     digest = hashlib.sha256()
@@ -1680,8 +1676,9 @@ async def ingest_comfyui_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
                         handle.write(chunk)
                         digest.update(chunk)
                         byte_count += len(chunk)
+        target = artifact_store_path(relative)
         temporary.replace(target)
-    except (OSError, httpx.HTTPError) as exc:
+    except (OSError, ValueError, httpx.HTTPError) as exc:
         with suppress(OSError):
             temporary.unlink()
         return {**artifact, "ingest_status": "failed", "ingest_error": exc.__class__.__name__}
@@ -4386,10 +4383,9 @@ def write_voice_profile_sample_artifact(
     relative = f"voicebox/references/{owner_segment}/{sample_id}/{stored_name}"
     target = media_artifacts.artifact_store_path(Path(settings.artifact_root), relative)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    target = media_artifacts.artifact_store_path(Path(settings.artifact_root), relative)
     digest = hashlib.sha256(content).hexdigest()
-    temporary.write_bytes(content)
-    temporary.replace(target)
+    media_artifacts.write_regular_file_bytes(target, content)
     return {
         "url": f"/artifacts/{relative}",
         "sha256": digest,
