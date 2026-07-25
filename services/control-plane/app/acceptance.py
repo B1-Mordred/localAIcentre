@@ -273,6 +273,7 @@ GPU_ACCEPTANCE_REQUIRED_CHECKS = (
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
+    "open_webui_health_ok",
     "models_listed",
     "tts_media_job_completed",
     "tts_media_job_resolved_model_recorded",
@@ -972,9 +973,29 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     missing: list[str] = []
 
     labels = _sample_labels(payload)
-    for label in ("healthz", "models", "tts-job", "job-events", "artifact-download"):
+    for label in ("healthz", "open-webui-health", "models", "tts-job", "job-events", "artifact-download"):
         if label not in labels:
             missing.append(f"samples.{label}")
+
+    open_webui = _check_record(checks, "open_webui_health_ok")
+    open_webui_base_url = _nonempty_text(open_webui.get("base_url") or payload.get("open_webui_base_url"))
+    open_webui_status_code = _integer_value(open_webui.get("status_code"))
+    if not open_webui_base_url:
+        missing.append("open_webui_health_ok.base_url")
+    elif urlsplit(open_webui_base_url).scheme != "https":
+        missing.append("open_webui_health_ok.https_base_url")
+    if open_webui_status_code != 200:
+        missing.append("open_webui_health_ok.status_code")
+    if open_webui.get("response_status") is not True:
+        missing.append("open_webui_health_ok.response_status_true")
+    permissions_policy = _nonempty_text(open_webui.get("permissions_policy")).lower()
+    if "camera=(self)" not in permissions_policy or "microphone=(self)" not in permissions_policy:
+        missing.append("open_webui_health_ok.permissions_policy_media_capture")
+    strict_transport_security = _nonempty_text(open_webui.get("strict_transport_security")).lower()
+    if "max-age=" not in strict_transport_security:
+        missing.append("open_webui_health_ok.strict_transport_security")
+    if _nonempty_text(open_webui.get("x_content_type_options")).lower() != "nosniff":
+        missing.append("open_webui_health_ok.x_content_type_options")
 
     models = _check_record(checks, "models_listed")
     model_count = _positive_int(models.get("model_count"))
@@ -1050,6 +1071,8 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "smoke_tts_model": model,
         "smoke_tts_runtime": runtime,
         "smoke_tts_resolved_model_version": resolved_model_version,
+        "smoke_open_webui_base_url": open_webui_base_url,
+        "smoke_open_webui_status_code": open_webui_status_code,
         "smoke_artifact_bytes": artifact_bytes,
         "smoke_artifact_sha256": artifact_sha256,
         "missing_smoke_evidence": missing,

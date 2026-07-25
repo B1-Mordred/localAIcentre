@@ -560,9 +560,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "source_path": "/srv/b1-ai-hub/backups/acceptance/live-smoke.json",
             "generated_at": "2026-07-24T12:25:00+00:00",
             "base_url": "https://api.ai.b1.germering",
+            "open_webui_base_url": "https://ai.b1.germering",
             "status": "ok",
             "required_checks": [
                 "healthz_ok",
+                "open_webui_health_ok",
                 "models_listed",
                 "tts_media_job_completed",
                 "tts_media_job_resolved_model_recorded",
@@ -575,6 +577,16 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_checks": [],
             "checks": {
                 "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
+                "open_webui_health_ok": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:20:30+00:00",
+                    "base_url": "https://ai.b1.germering",
+                    "status_code": 200,
+                    "response_status": True,
+                    "permissions_policy": "camera=(self), microphone=(self), geolocation=()",
+                    "strict_transport_security": "max-age=31536000; includeSubDomains",
+                    "x_content_type_options": "nosniff",
+                },
                 "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00", "model_count": 4},
                 "tts_media_job_completed": {
                     "status": "ok",
@@ -639,11 +651,13 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "smoke_tts_model": "tts-fast",
             "smoke_tts_runtime": "audio-cpu",
             "smoke_tts_resolved_model_version": "b1-tts-fast@1.0.0",
+            "smoke_open_webui_base_url": "https://ai.b1.germering",
+            "smoke_open_webui_status_code": 200,
             "smoke_artifact_bytes": 4096,
             "smoke_artifact_sha256": smoke_artifact_sha,
             "missing_smoke_evidence": [],
-            "sample_count": 5,
-            "sample_labels": ["healthz", "models", "tts-job", "job-events", "artifact-download"],
+            "sample_count": 6,
+            "sample_labels": ["healthz", "open-webui-health", "models", "tts-job", "job-events", "artifact-download"],
         },
         "gpu_acceptance": {
             "available": True,
@@ -2287,6 +2301,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(
             snapshot["missing_checks"],
             [
+                "open_webui_health_ok",
                 "tts_media_job_resolved_model_recorded",
                 "tts_media_job_not_placeholder",
                 "job_events_terminal_state_observed",
@@ -2294,6 +2309,13 @@ class AcceptanceReportTests(unittest.TestCase):
             ],
         )
         self.assertIn("samples.healthz", snapshot["missing_smoke_evidence"])
+        self.assertIn("samples.open-webui-health", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.base_url", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.status_code", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.response_status_true", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.permissions_policy_media_capture", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.strict_transport_security", snapshot["missing_smoke_evidence"])
+        self.assertIn("open_webui_health_ok.x_content_type_options", snapshot["missing_smoke_evidence"])
         self.assertIn("models_listed.model_count", snapshot["missing_smoke_evidence"])
         self.assertIn("tts_media_job_completed.job_id", snapshot["missing_smoke_evidence"])
         self.assertIn("tts_media_job_resolved_model_recorded.resolved_model_version", snapshot["missing_smoke_evidence"])
@@ -4054,7 +4076,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(smoke_snapshot["missing_checks"], [])
         self.assertEqual(smoke_snapshot["missing_smoke_evidence"], [])
         self.assertEqual(smoke_snapshot["smoke_artifact_bytes"], 4096)
-        self.assertEqual(smoke_snapshot["sample_count"], 5)
+        self.assertEqual(smoke_snapshot["smoke_open_webui_base_url"], "https://ai.b1.germering")
+        self.assertEqual(smoke_snapshot["smoke_open_webui_status_code"], 200)
+        self.assertEqual(smoke_snapshot["sample_count"], 6)
         gpu = snapshot["gpu_acceptance"]
         self.assertTrue(gpu["available"])
         self.assertEqual(gpu["source_path"], str(current.resolve()))

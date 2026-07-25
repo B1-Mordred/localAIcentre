@@ -51,7 +51,7 @@ This repository currently contains the first runnable project slice:
 - Control Center rollback rehearsal status and report generation from reviewed cutover plans, with fixed backup-root output and cutover-plan checksum binding
 - configurable media-job queue/rate admission, artifact-storage headroom checks, and production GPU hardware/resource-policy admission for media jobs, native ComfyUI prompt jobs, GPU model smoke tests, runtime reservations, and synchronous GPU inference, exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing, returning HTTP 429, 503, or 507 before work is accepted when limits or safety policy would be exceeded
 - runtime reservation fleet visibility for administrators/operators with Jobs tab creation/cancellation controls and current GPU scheduler lease inspection
-- opt-in live smoke tests for deployed health, authenticated model listing, async TTS media jobs, non-placeholder TTS proof, resolved runtime/model evidence, terminal SSE events, artifact download/metadata integrity, optional admin self-test, LocalAI streaming/unload acceptance, an RTX 3060 cross-runtime GPU acceptance sequence for LocalAI -> ComfyUI -> Voicebox switching plus bounded runtime recovery, and a restart reconciliation drill that proves sampled waiting-job IDs are requeued, sampled non-resumable active-job IDs become `recovery_required`, and resumable native ComfyUI jobs are reattached by native prompt ID
+- opt-in live smoke tests for deployed API health, Open WebUI chat-host health/security-header proof, authenticated model listing, async TTS media jobs, non-placeholder TTS proof, resolved runtime/model evidence, terminal SSE events, artifact download/metadata integrity, optional admin self-test, LocalAI streaming/unload acceptance, an RTX 3060 cross-runtime GPU acceptance sequence for LocalAI -> ComfyUI -> Voicebox switching plus bounded runtime recovery, and a restart reconciliation drill that proves sampled waiting-job IDs are requeued, sampled non-resumable active-job IDs become `recovery_required`, and resumable native ComfyUI jobs are reattached by native prompt ID
 
 The placeholder runtime containers are intentional at this stage. They keep `docker compose up -d` runnable on a small host without downloading model weights while the scheduler, registry, adapters, and UI flows are implemented. They are service-compatible placeholders to be replaced by pinned upstream runtime images/builds as each adapter reaches production readiness. The control plane now reports `runtimes:production-readiness` in `/admin/self-test` and `/admin/runtimes`: default `B1_RUNTIME_DEPLOYMENT_MODE=development` degrades when required runtimes are placeholders, while `B1_RUNTIME_DEPLOYMENT_MODE=production` fails self-test until `B1_RUNTIME_PRODUCTION_REQUIRED` runtimes are real, healthy, and non-placeholder. The readiness check combines runtime health with runtime-agent service inventory labels/image references, so a mock service cannot pass production mode merely by returning an `ok` health payload.
 
@@ -134,12 +134,13 @@ Run opt-in live smoke checks against a deployed stack:
 
 ```bash
 B1_SMOKE_LIVE_TEST=1 \
+B1_SMOKE_OPEN_WEBUI_BASE=https://ai.b1.germering \
 B1_AI_HUB_API_KEY=... \
 B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json \
 make live-smoke-acceptance
 ```
 
-See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS, temporary-host options, and the development-only placeholder override. Handoff smoke evidence requires real, non-placeholder TTS output.
+See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS, temporary-host options, and the development-only placeholder override. Handoff smoke evidence requires chat-host Open WebUI health/security-header proof and real, non-placeholder TTS output.
 
 Compose bootstrap seeds editable acceptance templates once under `/srv/b1-ai-hub/workflows/acceptance/`. Existing files there are preserved, so bind real checkpoint names, uploaded image names, and published workflow IDs in the external data-root copies before final handoff runs.
 

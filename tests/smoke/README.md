@@ -7,6 +7,7 @@ Run the first live path through Make with a scoped key that has `models:read`, `
 ```bash
 export B1_SMOKE_LIVE_TEST=1
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_SMOKE_OPEN_WEBUI_BASE=https://ai.b1.germering
 export B1_AI_HUB_API_KEY=...
 export B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json
 make live-smoke-acceptance
@@ -23,6 +24,8 @@ When testing through `https://127.0.0.1` or another temporary address, set the r
 ```bash
 export B1_AI_HUB_API_BASE=https://127.0.0.1
 export B1_SMOKE_HOST_HEADER=api.ai.b1.germering
+export B1_SMOKE_OPEN_WEBUI_BASE=https://127.0.0.1
+export B1_SMOKE_OPEN_WEBUI_HOST_HEADER=ai.b1.germering
 ```
 
 For the default Caddy internal CA, either trust the generated root certificate on the test machine or pass it directly:
@@ -42,6 +45,7 @@ Smoke and integration harnesses refuse to send bearer API keys over plain HTTP b
 The live suite currently checks:
 
 - gateway/control-plane `/healthz`
+- Open WebUI `/health` through the chat virtual host, including HTTPS and Caddy media-capture/security-header evidence
 - authenticated `/v1/models`
 - async TTS media-job creation through `tts-fast`
 - advertised media-job `self`, `events`, `artifacts`, and `cancel` links
@@ -54,13 +58,15 @@ The live suite currently checks:
 - artifact metadata integrity against the downloaded bytes, including SHA-256, size, ETag, and range support
 - optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` has sufficient scope
 
-When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, non-placeholder TTS proof, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete.
+When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if API health, Open WebUI chat-host health/security-header proof, model listing, async TTS completion, non-placeholder TTS proof, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete.
 
 Useful knobs:
 
 - `B1_SMOKE_TTS_MODEL`, default `tts-fast`
 - `B1_SMOKE_TTS_RUNTIME_POLICY`, default `non_comfy_only`
 - `B1_SMOKE_TTS_VOICE`, default `default`
+- `B1_SMOKE_OPEN_WEBUI_BASE`, default `https://ai.b1.germering`
+- `B1_SMOKE_OPEN_WEBUI_HOST_HEADER`, optional routed host override for temporary gateway addresses
 - `B1_SMOKE_ALLOW_PLACEHOLDER=1`, development-only; lets the unittest finish against scaffold audio but records incomplete evidence
 - `B1_SMOKE_EVIDENCE`, optional machine-readable handoff evidence path
 - `B1_SMOKE_JOB_TIMEOUT_SECONDS`, default `120`

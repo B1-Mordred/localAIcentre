@@ -21,6 +21,7 @@ ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
+    "open_webui_health_ok",
     "models_listed",
     "tts_media_job_completed",
     "tts_media_job_resolved_model_recorded",
@@ -302,13 +303,22 @@ class LiveStackSmokeTests(unittest.TestCase):
         cls.checks = {}
         cls.samples = []
         tls_verify = os.getenv("B1_SMOKE_TLS_VERIFY", "1").strip().lower() not in {"0", "false", "no"}
+        ca_file = os.getenv("B1_SMOKE_CA_FILE", "")
+        timeout_seconds = float(os.getenv("B1_SMOKE_HTTP_TIMEOUT_SECONDS", "10"))
         cls.client = LiveApiClient(
             os.getenv("B1_SMOKE_API_BASE") or os.getenv("B1_AI_HUB_API_BASE") or "https://api.ai.b1.germering",
             api_key=os.getenv("B1_SMOKE_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or "",
             host_header=os.getenv("B1_SMOKE_HOST_HEADER", ""),
-            timeout_seconds=float(os.getenv("B1_SMOKE_HTTP_TIMEOUT_SECONDS", "10")),
+            timeout_seconds=timeout_seconds,
             tls_verify=tls_verify,
-            ca_file=os.getenv("B1_SMOKE_CA_FILE", ""),
+            ca_file=ca_file,
+        )
+        cls.open_webui_client = LiveApiClient(
+            os.getenv("B1_SMOKE_OPEN_WEBUI_BASE") or "https://ai.b1.germering",
+            host_header=os.getenv("B1_SMOKE_OPEN_WEBUI_HOST_HEADER", ""),
+            timeout_seconds=timeout_seconds,
+            tls_verify=tls_verify,
+            ca_file=ca_file,
         )
         cls.job_timeout_seconds = float(os.getenv("B1_SMOKE_JOB_TIMEOUT_SECONDS", "120"))
         cls.allow_placeholder = env_flag("B1_SMOKE_ALLOW_PLACEHOLDER", False)
@@ -327,6 +337,7 @@ class LiveStackSmokeTests(unittest.TestCase):
                     "format": SMOKE_EVIDENCE_FORMAT,
                     "generated_at": datetime.now(tz=UTC).isoformat(),
                     "base_url": cls.client.base_url,
+                    "open_webui_base_url": cls.open_webui_client.base_url,
                     "status": status,
                     "required_checks": list(SMOKE_REQUIRED_CHECKS),
                     "checks": cls.checks,
@@ -356,6 +367,32 @@ class LiveStackSmokeTests(unittest.TestCase):
         self.assertEqual(payload.get("status"), "ok")
         self.samples.append({"label": "healthz", "status": payload.get("status")})
         self.record_check("healthz_ok")
+
+    def test_open_webui_health_through_gateway(self) -> None:
+        status, headers, payload = self.open_webui_client.json_request("GET", "/health")
+        self.assert_json_status(status, payload)
+        self.assertIs(payload.get("status"), True)
+        permissions_policy = response_header(headers, "permissions-policy")
+        strict_transport_security = response_header(headers, "strict-transport-security")
+        x_content_type_options = response_header(headers, "x-content-type-options")
+        self.samples.append(
+            {
+                "label": "open-webui-health",
+                "base_url": self.open_webui_client.base_url,
+                "status_code": status,
+                "response_status": payload.get("status"),
+            }
+        )
+        self.record_check(
+            "open_webui_health_ok",
+            base_url=self.open_webui_client.base_url,
+            host_header=self.open_webui_client.host_header,
+            status_code=status,
+            response_status=payload.get("status"),
+            permissions_policy=permissions_policy,
+            strict_transport_security=strict_transport_security,
+            x_content_type_options=x_content_type_options,
+        )
 
     def test_models_endpoint_requires_real_auth_path(self) -> None:
         status, _, payload = self.client.json_request("GET", "/v1/models", require_auth=True)
