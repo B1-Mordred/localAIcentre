@@ -244,6 +244,7 @@ Control Center acceptance reports require machine-readable evidence that B1 back
 - that B1 backup was restored to an alternate directory and produced `restore-report.json`
 - the old-stack inventory, old-stack backup, Open WebUI migration plan, and cutover plan were reviewed
 - the cutover plan has no unresolved warnings, its core virtual-host DNS readiness is accepted, its hardware readiness is accepted, GPU container runtime readiness is accepted, runtime-agent Docker socket group access is ready, and Open WebUI preservation no longer requires operator review
+- every alias used by LocalAI runtime acceptance, RTX 3060 GPU acceptance, and installed workflow acceptance has a successful persisted model-smoke measurement for the immutable installed model version
 - rollback commands/actions were rehearsed and old resources remain preserved
 
 Create the rollback rehearsal report after reviewing the rollback phase in the cutover plan and verifying that old-stack resources are still present:

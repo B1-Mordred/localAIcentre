@@ -21,7 +21,7 @@ The first live integration path checks `/admin/runtimes` adapter-contract, healt
 
 ## Installed Workflow Acceptance
 
-Run the installed workflow suite on the target host after the public aliases are backed by real installed models and approved workflows. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report. The API key must include normal inference scopes plus `runtimes:read` so the harness can read `/admin/scheduler/lease` before and after the CPU-audio probe.
+Run the installed workflow suite on the target host after the public aliases are backed by real installed models, each alias has a successful persisted model-smoke measurement, and the required workflows are approved. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder CPU audio output by default, downloads generated artifacts, and writes evidence for the Control Center handoff report. The API key must include normal inference scopes plus `models:read` and `runtimes:read` so the harness can verify installed model measurements and read `/admin/scheduler/lease` before and after the CPU-audio probe.
 
 ```bash
 export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering
@@ -49,7 +49,7 @@ export B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-
 make localai-acceptance
 ```
 
-The API key must include chat/inference access plus `runtimes:read` and `runtimes:write`. The unload check is intentional: it exercises the same guarded admin route operators use to clear LocalAI residency. Keep `B1_LOCALAI_ACCEPTANCE_REQUIRE_PRODUCTION=true` for handoff evidence; disable it only for a labelled temporary-hostname dry run.
+The API key must include chat/inference access plus `models:read`, `runtimes:read`, and `runtimes:write`. Before sending chat, the harness verifies that the selected chat alias is installed and has a successful persisted model-smoke measurement for the immutable model version. The unload check is intentional: it exercises the same guarded admin route operators use to clear LocalAI residency. Keep `B1_LOCALAI_ACCEPTANCE_REQUIRE_PRODUCTION=true` for handoff evidence; disable it only for a labelled temporary-hostname dry run.
 
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
@@ -67,7 +67,7 @@ export B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtim
 make gpu-acceptance
 ```
 
-The suite verifies the persisted RTX 3060 resource policy, production runtime readiness when `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION` is left enabled, runtime-agent GPU/NVML metrics, and the live switch sequence LocalAI chat -> ComfyUI media job -> Voicebox speech. After each step it checks that at most one managed GPU runtime reports a resident model/pipeline, that physical GPU VRAM is at least the configured policy total, and that sampled VRAM stays within the configured total-minus-reserve policy. When `B1_GPU_ACCEPTANCE_EVIDENCE` is set, the output JSON includes `status`, `required_checks`, per-check records, and runtime/metric samples; Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` file and block handoff if the required checks are absent or incomplete. Set `B1_GPU_ACCEPTANCE_SKIP_VOICEBOX=1` only for a documented no-Voicebox deployment. Set `B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1` only during a maintenance acceptance window to exercise the predefined runtime recovery endpoint.
+The suite verifies the persisted RTX 3060 resource policy, production runtime readiness when `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION` is left enabled, runtime-agent GPU/NVML metrics, persisted model-smoke measurements for the selected LocalAI, ComfyUI, and Voicebox aliases, and the live switch sequence LocalAI chat -> ComfyUI media job -> Voicebox speech. After each step it checks that at most one managed GPU runtime reports a resident model/pipeline, that physical GPU VRAM is at least the configured policy total, and that sampled VRAM stays within the configured total-minus-reserve policy. When `B1_GPU_ACCEPTANCE_EVIDENCE` is set, the output JSON includes `status`, `required_checks`, per-check records, runtime/metric samples, required model aliases, and compact measurement summaries; Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` file and block handoff if the required checks or measured model runs are absent or incomplete. Set `B1_GPU_ACCEPTANCE_SKIP_VOICEBOX=1` only for a documented no-Voicebox deployment. Set `B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1` only during a maintenance acceptance window to exercise the predefined runtime recovery endpoint.
 
 ## Restart Reconciliation Acceptance
 

@@ -24,6 +24,22 @@ SMOKE_REQUIRED_CHECKS = (
     "job_events_streamed",
     "artifact_downloaded",
 )
+MODEL_MEASUREMENT_RUN_FIELDS = (
+    "id",
+    "type",
+    "status",
+    "runtime",
+    "model_alias",
+    "resolved_model_version",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "load_time_ms",
+    "run_time_ms",
+    "peak_vram_mib",
+    "peak_ram_mib",
+    "resource_estimate",
+)
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -125,6 +141,91 @@ class LiveApiClient:
             return status, response_headers, json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise AssertionError(f"{method} {path} returned non-JSON body: {raw[:200]!r}") from exc
+
+
+def compact_measurement_run(run: dict[str, Any]) -> dict[str, Any]:
+    return {key: run[key] for key in MODEL_MEASUREMENT_RUN_FIELDS if key in run}
+
+
+def model_record_ref(record: dict[str, Any]) -> str:
+    return f"{record.get('id')}@{record.get('version')}"
+
+
+def latest_ok_measurement_run(manifest: dict[str, Any], resolved_model_version: str, alias: str) -> tuple[dict[str, Any] | None, int]:
+    measurements = manifest.get("measurements") if isinstance(manifest.get("measurements"), dict) else {}
+    runs = measurements.get("runs") if isinstance(measurements.get("runs"), list) else []
+    ok_runs = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("status") == "ok"
+        and run.get("resolved_model_version") == resolved_model_version
+        and (run.get("model_alias") == alias or alias in manifest.get("aliases", []))
+    ]
+    return (compact_measurement_run(ok_runs[-1]) if ok_runs else None, len(ok_runs))
+
+
+def measured_model_alias(client: LiveApiClient, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
+    status, _, payload = client.json_request("GET", "/admin/models", require_auth=True)
+    if status == 403:
+        raise unittest.SkipTest("provided acceptance key lacks admin model-read scope required for measurement evidence")
+    if status != 200 or not isinstance(payload, dict):
+        raise AssertionError(f"GET /admin/models failed while resolving measured model {alias!r}: status={status} payload={payload!r}")
+    aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
+    alias_record = next((item for item in aliases if isinstance(item, dict) and item.get("id") == alias), None)
+    if not isinstance(alias_record, dict):
+        raise AssertionError(f"alias {alias!r} is not present in /admin/models")
+    if alias_record.get("status") != "installed":
+        raise AssertionError(f"alias {alias!r} is not backed by an installed model manifest: {alias_record}")
+    resolved = alias_record.get("resolved_model")
+    if not isinstance(resolved, dict) or not resolved.get("id") or not resolved.get("version"):
+        raise AssertionError(f"alias {alias!r} lacks resolved immutable model evidence: {alias_record}")
+    resolved_model_version = f"{resolved['id']}@{resolved['version']}"
+    records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    model_record = next(
+        (
+            item
+            for item in records
+            if isinstance(item, dict)
+            and item.get("id") == resolved["id"]
+            and item.get("version") == resolved["version"]
+        ),
+        None,
+    )
+    if not isinstance(model_record, dict):
+        raise AssertionError(f"resolved model {resolved_model_version!r} for alias {alias!r} is absent from installed model records")
+    manifest = model_record.get("manifest") if isinstance(model_record.get("manifest"), dict) else {}
+    measurements = manifest.get("measurements") if isinstance(manifest.get("measurements"), dict) else {}
+    latest_ok_run, ok_run_count = latest_ok_measurement_run(manifest, resolved_model_version, alias)
+    runtime = str((latest_ok_run or {}).get("runtime") or alias_record.get("preferred_runtime") or model_record.get("preferred_runtime") or "")
+    if expected_runtime and runtime != expected_runtime:
+        raise AssertionError(
+            f"alias {alias!r} latest measurement runtime {runtime!r} does not match expected runtime {expected_runtime!r}"
+        )
+    summary = {
+        "alias": alias,
+        "status": alias_record.get("status"),
+        "modality": alias_record.get("modality"),
+        "preferred_runtime": alias_record.get("preferred_runtime"),
+        "runtime": runtime,
+        "runtimes": alias_record.get("runtimes") or [],
+        "resource_label": alias_record.get("resource_label") or model_record.get("resource_label"),
+        "resolved_model_version": resolved_model_version,
+        "model_id": resolved.get("id"),
+        "model_version": resolved.get("version"),
+        "display_name": resolved.get("display_name") or model_record.get("display_name"),
+        "measurement_available": latest_ok_run is not None,
+        "ok_run_count": ok_run_count,
+        "measurements_updated_at": measurements.get("updated_at") if isinstance(measurements, dict) else "",
+        "latest_resource_estimate": measurements.get("latest_resource_estimate") if isinstance(measurements, dict) else {},
+        "latest_ok_run": latest_ok_run or {},
+    }
+    if latest_ok_run is None:
+        raise AssertionError(
+            f"alias {alias!r} resolved to {resolved_model_version}, but no persisted ok model smoke measurement exists; "
+            "run the Control Center model smoke test after installing the model before creating handoff evidence"
+        )
+    return summary
 
 
 @unittest.skipUnless(os.getenv("B1_SMOKE_LIVE_TEST") == "1", "set B1_SMOKE_LIVE_TEST=1 to run live stack smoke tests")

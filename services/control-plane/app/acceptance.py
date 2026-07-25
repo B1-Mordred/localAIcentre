@@ -313,6 +313,85 @@ def _as_string_list(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
 
 
+def _compact_model_measurement(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    latest_run = value.get("latest_ok_run") if isinstance(value.get("latest_ok_run"), dict) else {}
+    latest_estimate = value.get("latest_resource_estimate") if isinstance(value.get("latest_resource_estimate"), dict) else {}
+    return {
+        "alias": str(value.get("alias") or ""),
+        "status": str(value.get("status") or ""),
+        "modality": str(value.get("modality") or ""),
+        "runtime": str(value.get("runtime") or ""),
+        "preferred_runtime": str(value.get("preferred_runtime") or ""),
+        "resource_label": str(value.get("resource_label") or ""),
+        "resolved_model_version": str(value.get("resolved_model_version") or ""),
+        "model_id": str(value.get("model_id") or ""),
+        "model_version": str(value.get("model_version") or ""),
+        "display_name": str(value.get("display_name") or ""),
+        "measurement_available": value.get("measurement_available") is True,
+        "ok_run_count": int(value.get("ok_run_count") or 0) if isinstance(value.get("ok_run_count"), (int, float)) else 0,
+        "measurements_updated_at": str(value.get("measurements_updated_at") or ""),
+        "latest_resource_estimate": {
+            key: latest_estimate.get(key)
+            for key in ("vram_gib", "ram_gib", "disk_gib", "context_tokens", "max_resolution", "max_frames")
+            if key in latest_estimate
+        },
+        "latest_ok_run": {
+            key: latest_run.get(key)
+            for key in (
+                "id",
+                "type",
+                "status",
+                "runtime",
+                "model_alias",
+                "resolved_model_version",
+                "started_at",
+                "completed_at",
+                "duration_ms",
+                "load_time_ms",
+                "run_time_ms",
+                "peak_vram_mib",
+                "peak_ram_mib",
+                "resource_estimate",
+            )
+            if key in latest_run
+        },
+    }
+
+
+def _model_measurement_ok(alias: str, value: Any) -> bool:
+    compact = _compact_model_measurement(value)
+    latest_run = compact.get("latest_ok_run") if isinstance(compact.get("latest_ok_run"), dict) else {}
+    resolved = str(compact.get("resolved_model_version") or "")
+    return (
+        bool(alias)
+        and compact.get("alias") == alias
+        and compact.get("status") == "installed"
+        and compact.get("measurement_available") is True
+        and int(compact.get("ok_run_count") or 0) > 0
+        and "@" in resolved
+        and latest_run.get("status") == "ok"
+        and latest_run.get("resolved_model_version") == resolved
+    )
+
+
+def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    required_aliases = _as_string_list(payload.get("required_model_aliases"))
+    raw_measurements = payload.get("model_measurements") if isinstance(payload.get("model_measurements"), dict) else {}
+    measurements = {
+        str(alias): _compact_model_measurement(item)
+        for alias, item in raw_measurements.items()
+        if isinstance(alias, str) and isinstance(item, dict)
+    }
+    missing = [alias for alias in required_aliases if not _model_measurement_ok(alias, measurements.get(alias))]
+    return {
+        "required_model_aliases": required_aliases,
+        "model_measurements": measurements,
+        "missing_model_measurements": missing,
+    }
+
+
 def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     if plan.get("format") != CUTOVER_PLAN_FORMAT:
         return {"available": False, "reason": "unsupported cutover plan format"}
@@ -398,6 +477,7 @@ def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path 
         return {"available": False, "reason": "unsupported GPU acceptance evidence format"}
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    measurements = _model_measurement_summary(payload)
     missing_checks = [
         name
         for name in GPU_ACCEPTANCE_REQUIRED_CHECKS
@@ -417,6 +497,7 @@ def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path 
         "status": str(payload.get("status") or "unknown"),
         "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
         "missing_checks": missing_checks,
+        **measurements,
         "checks": checks,
         "sample_count": len(samples),
         "sample_labels": sample_labels[:100],
@@ -458,6 +539,7 @@ def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None 
         return {"available": False, "reason": "unsupported LocalAI runtime acceptance evidence format"}
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    measurements = _model_measurement_summary(payload)
     missing_checks = [
         name
         for name in LOCALAI_REQUIRED_CHECKS
@@ -477,6 +559,7 @@ def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None 
         "status": str(payload.get("status") or "unknown"),
         "required_checks": list(LOCALAI_REQUIRED_CHECKS),
         "missing_checks": missing_checks,
+        **measurements,
         "checks": checks,
         "sample_count": len(samples),
         "sample_labels": sample_labels[:100],
@@ -488,6 +571,7 @@ def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: 
         return {"available": False, "reason": "unsupported installed workflow acceptance evidence format"}
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    measurements = _model_measurement_summary(payload)
     missing_checks = [
         name
         for name in INSTALLED_WORKFLOWS_REQUIRED_CHECKS
@@ -507,6 +591,7 @@ def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: 
         "status": str(payload.get("status") or "unknown"),
         "required_checks": list(INSTALLED_WORKFLOWS_REQUIRED_CHECKS),
         "missing_checks": missing_checks,
+        **measurements,
         "checks": checks,
         "sample_count": len(samples),
         "sample_labels": sample_labels[:100],
@@ -952,6 +1037,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = gpu_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("RTX 3060 GPU acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_models = gpu_evidence.get("missing_model_measurements")
+        if isinstance(missing_models, list) and missing_models:
+            blockers.append("RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     if localai_evidence.get("available") is not True:
         blockers.append("LocalAI runtime acceptance evidence is unavailable")
@@ -961,6 +1049,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = localai_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("LocalAI runtime acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_models = localai_evidence.get("missing_model_measurements")
+        if isinstance(missing_models, list) and missing_models:
+            blockers.append("LocalAI runtime acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     if installed_workflows_evidence.get("available") is not True:
         blockers.append("installed workflow evidence is unavailable")
@@ -970,6 +1061,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = installed_workflows_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("installed workflow evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_models = installed_workflows_evidence.get("missing_model_measurements")
+        if isinstance(missing_models, list) and missing_models:
+            blockers.append("installed workflow evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
     )
@@ -1302,6 +1396,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_checks = evidence.get("missing_checks")
     if isinstance(missing_checks, list) and missing_checks:
         summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_checks)])
+    missing_models = evidence.get("missing_model_measurements")
+    if isinstance(missing_models, list) and missing_models:
+        summary_rows.append(["missing_model_measurements", ", ".join(str(item) for item in missing_models)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -1312,12 +1409,31 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
                 _format_value(check.get("status")),
                 _format_value(check.get("recorded_at")),
             ])
+    measurement_rows = [["Alias", "Resolved Model", "Runtime", "OK Runs", "Peak VRAM MiB", "Peak RAM MiB", "Run ms"]]
+    measurements = evidence.get("model_measurements") if isinstance(evidence.get("model_measurements"), dict) else {}
+    for alias in sorted(measurements):
+        measurement = measurements.get(alias)
+        if not isinstance(measurement, dict):
+            continue
+        latest = measurement.get("latest_ok_run") if isinstance(measurement.get("latest_ok_run"), dict) else {}
+        measurement_rows.append(
+            [
+                _format_value(alias),
+                _format_value(measurement.get("resolved_model_version")),
+                _format_value(measurement.get("runtime")),
+                _format_value(measurement.get("ok_run_count")),
+                _format_value(latest.get("peak_vram_mib")),
+                _format_value(latest.get("peak_ram_mib")),
+                _format_value(latest.get("run_time_ms")),
+            ]
+        )
     return (
         label
         + "\n\n"
         + _table(summary_rows)
         + "\n\n"
         + (_table(check_rows) if len(check_rows) > 1 else _format_value(evidence.get("reason") or no_checks_message))
+        + ("\n\n" + _table(measurement_rows) if len(measurement_rows) > 1 else "")
     )
 
 
@@ -1735,18 +1851,21 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         gpu_evidence.get("available") is True
         and gpu_evidence.get("status") == "ok"
         and not gpu_evidence.get("missing_checks")
+        and not gpu_evidence.get("missing_model_measurements")
         and "gpu_acceptance" not in freshness_failures
     )
     localai_evidence_ready = (
         localai_evidence.get("available") is True
         and localai_evidence.get("status") == "ok"
         and not localai_evidence.get("missing_checks")
+        and not localai_evidence.get("missing_model_measurements")
         and "localai_runtime" not in freshness_failures
     )
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
         and installed_workflows_evidence.get("status") == "ok"
         and not installed_workflows_evidence.get("missing_checks")
+        and not installed_workflows_evidence.get("missing_model_measurements")
         and "installed_workflows" not in freshness_failures
     )
     native_comfyui_evidence_ready = (

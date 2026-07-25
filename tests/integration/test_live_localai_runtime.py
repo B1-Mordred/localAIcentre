@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
-from test_live_stack import LiveApiClient  # noqa: E402
+from test_live_stack import LiveApiClient, measured_model_alias  # noqa: E402
 
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
@@ -35,11 +35,15 @@ def env_flag(name: str, default: bool = False) -> bool:
 class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
     evidence: list[dict[str, Any]] = []
     checks: dict[str, dict[str, Any]] = {}
+    model_measurements: dict[str, dict[str, Any]] = {}
+    required_model_aliases: set[str] = set()
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.evidence = []
         cls.checks = {}
+        cls.model_measurements = {}
+        cls.required_model_aliases = set()
         api_key = os.getenv("B1_LOCALAI_ACCEPTANCE_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_LOCALAI_ACCEPTANCE_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -79,6 +83,8 @@ class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
                     "required_checks": list(REQUIRED_CHECKS),
                     "checks": cls.checks,
                     "samples": cls.evidence,
+                    "required_model_aliases": sorted(cls.required_model_aliases),
+                    "model_measurements": cls.model_measurements,
                 },
                 indent=2,
                 sort_keys=True,
@@ -93,6 +99,17 @@ class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
             "recorded_at": datetime.now(tz=UTC).isoformat(),
             **data,
         }
+
+    def require_measured_model(self, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
+        self.__class__.required_model_aliases.add(alias)
+        existing = self.__class__.model_measurements.get(alias)
+        if existing is not None:
+            if expected_runtime and existing.get("runtime") != expected_runtime:
+                raise AssertionError(f"cached measurement for {alias!r} does not match expected runtime {expected_runtime!r}: {existing}")
+            return existing
+        measurement = measured_model_alias(self.client, alias, expected_runtime=expected_runtime)
+        self.__class__.model_measurements[alias] = measurement
+        return measurement
 
     def json_request(self, method: str, path: str, *, body: dict[str, Any] | None = None, expected: int = 200) -> dict[str, Any]:
         status, _, payload = self.client.json_request(method, path, body=body, require_auth=True)
@@ -145,6 +162,7 @@ class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
         return events
 
     def stream_chat(self) -> list[Any]:
+        measurement = self.require_measured_model(self.model, expected_runtime="localai")
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": os.getenv("B1_LOCALAI_ACCEPTANCE_PROMPT", "Reply with the word ready.")}],
@@ -178,12 +196,21 @@ class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
             {
                 "label": "localai-stream-chat",
                 "model": self.model,
+                "resolved_model_version": measurement.get("resolved_model_version"),
+                "model_measurement": measurement,
                 "event_count": len(events),
                 "content_type": content_type,
                 "bytes": len(raw),
             }
         )
-        self.record_check("streaming_chat_completed", model=self.model, event_count=len(events), bytes=len(raw))
+        self.record_check(
+            "streaming_chat_completed",
+            model=self.model,
+            resolved_model_version=measurement.get("resolved_model_version"),
+            model_measurement=measurement,
+            event_count=len(events),
+            bytes=len(raw),
+        )
         return events
 
     def verify_single_localai_backend(self) -> None:

@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
-from test_live_stack import LiveApiClient, TERMINAL_STATES  # noqa: E402
+from test_live_stack import LiveApiClient, TERMINAL_STATES, measured_model_alias  # noqa: E402
 
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
@@ -47,11 +47,15 @@ def load_json_from_env(value_name: str, file_name: str) -> dict[str, Any] | None
 class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
     evidence: list[dict[str, Any]] = []
     checks: dict[str, dict[str, Any]] = {}
+    model_measurements: dict[str, dict[str, Any]] = {}
+    required_model_aliases: set[str] = set()
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.evidence = []
         cls.checks = {}
+        cls.model_measurements = {}
+        cls.required_model_aliases = set()
         api_key = os.getenv("B1_GPU_ACCEPTANCE_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_GPU_ACCEPTANCE_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -92,6 +96,8 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                     "required_checks": list(required_checks),
                     "checks": cls.checks,
                     "samples": cls.evidence,
+                    "required_model_aliases": sorted(cls.required_model_aliases),
+                    "model_measurements": cls.model_measurements,
                 },
                 indent=2,
                 sort_keys=True,
@@ -106,6 +112,17 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             "recorded_at": datetime.now(tz=UTC).isoformat(),
             **data,
         }
+
+    def require_measured_model(self, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
+        self.__class__.required_model_aliases.add(alias)
+        existing = self.__class__.model_measurements.get(alias)
+        if existing is not None:
+            if expected_runtime and existing.get("runtime") != expected_runtime:
+                raise AssertionError(f"cached measurement for {alias!r} does not match expected runtime {expected_runtime!r}: {existing}")
+            return existing
+        measurement = measured_model_alias(self.client, alias, expected_runtime=expected_runtime)
+        self.__class__.model_measurements[alias] = measurement
+        return measurement
 
     def json_request(self, method: str, path: str, *, body: dict[str, Any] | None = None, expected: int = 200) -> dict[str, Any]:
         status, _, payload = self.client.json_request(method, path, body=body, require_auth=True)
@@ -241,6 +258,8 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         chat_model = os.getenv("B1_GPU_ACCEPTANCE_CHAT_MODEL", "chat-default")
         image_model = os.getenv("B1_GPU_ACCEPTANCE_COMFY_MODEL", "image-default")
         voicebox_model = os.getenv("B1_GPU_ACCEPTANCE_VOICEBOX_MODEL", "tts-quality")
+        chat_measurement = self.require_measured_model(chat_model, expected_runtime="localai")
+        comfyui_measurement = self.require_measured_model(image_model, expected_runtime="comfyui")
 
         chat_body = {
             "model": chat_model,
@@ -274,6 +293,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
 
         if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False):
             self.skipTest("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX requested")
+        voicebox_measurement = self.require_measured_model(voicebox_model, expected_runtime="voicebox")
         voicebox_job = self.create_media_job(
             {
                 "modality": "tts",
@@ -294,8 +314,16 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.record_check(
             "localai_comfyui_voicebox_switch",
             chat_model=chat_model,
+            chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
             comfyui_model=image_model,
+            comfyui_resolved_model_version=comfyui_measurement.get("resolved_model_version"),
             voicebox_model=voicebox_model,
+            voicebox_resolved_model_version=voicebox_measurement.get("resolved_model_version"),
+            model_measurements={
+                "chat": chat_measurement,
+                "comfyui": comfyui_measurement,
+                "voicebox": voicebox_measurement,
+            },
             comfyui_job_id=comfy_job.get("id"),
             voicebox_job_id=voicebox_job.get("id"),
         )

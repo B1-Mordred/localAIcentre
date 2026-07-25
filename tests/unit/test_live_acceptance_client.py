@@ -28,6 +28,7 @@ def load_module(relative_path: str, module_name: str) -> Any:
 class FakeResponse:
     status = 200
     headers = {"Content-Type": "application/json"}
+    body = b'{"status":"ok"}'
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -39,7 +40,15 @@ class FakeResponse:
         return self.status
 
     def read(self) -> bytes:
-        return b'{"status":"ok"}'
+        return self.body
+
+
+class FakePayloadResponse(FakeResponse):
+    def __init__(self, body: dict[str, Any], status: int = 200) -> None:
+        self.status = status
+        import json
+
+        self.body = json.dumps(body).encode("utf-8")
 
 
 class LiveAcceptanceClientTests(unittest.TestCase):
@@ -263,6 +272,87 @@ class LiveAcceptanceClientTests(unittest.TestCase):
                 client.json_request("GET", "/v1/models", require_auth=True)
 
         self.assertNotIn("called", seen)
+
+    def test_measured_model_alias_compacts_admin_model_measurements(self) -> None:
+        payload = {
+            "aliases": [
+                {
+                    "id": "chat-default",
+                    "status": "installed",
+                    "modality": "llm",
+                    "preferred_runtime": "localai",
+                    "runtimes": ["localai"],
+                    "resource_label": "expected",
+                    "resolved_model": {"id": "b1-chat", "version": "1.0.0", "display_name": "B1 Chat"},
+                }
+            ],
+            "records": [
+                {
+                    "id": "b1-chat",
+                    "version": "1.0.0",
+                    "display_name": "B1 Chat",
+                    "preferred_runtime": "localai",
+                    "resource_label": "expected",
+                    "manifest": {
+                        "aliases": ["chat-default"],
+                        "measurements": {
+                            "updated_at": "2026-07-24T12:00:00+00:00",
+                            "latest_resource_estimate": {"vram_gib": 6.5, "ram_gib": 8.0, "disk_gib": 4.0},
+                            "runs": [
+                                {
+                                    "id": "modelsmoke-1",
+                                    "type": "install-smoke",
+                                    "status": "ok",
+                                    "runtime": "localai",
+                                    "model_alias": "chat-default",
+                                    "resolved_model_version": "b1-chat@1.0.0",
+                                    "duration_ms": 5000,
+                                    "run_time_ms": 2000,
+                                    "peak_vram_mib": 6144,
+                                    "peak_ram_mib": 8192,
+                                    "unsafe_extra": "ignored",
+                                }
+                            ],
+                        },
+                    },
+                }
+            ],
+        }
+
+        original = live_stack.urlopen
+        try:
+            live_stack.urlopen = lambda *args, **kwargs: FakePayloadResponse(payload)  # type: ignore[assignment]
+            client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
+            summary = live_stack.measured_model_alias(client, "chat-default", expected_runtime="localai")
+        finally:
+            live_stack.urlopen = original
+
+        self.assertTrue(summary["measurement_available"])
+        self.assertEqual(summary["resolved_model_version"], "b1-chat@1.0.0")
+        self.assertEqual(summary["latest_ok_run"]["peak_vram_mib"], 6144)
+        self.assertNotIn("unsafe_extra", summary["latest_ok_run"])
+
+    def test_measured_model_alias_requires_successful_smoke_measurement(self) -> None:
+        payload = {
+            "aliases": [
+                {
+                    "id": "chat-default",
+                    "status": "installed",
+                    "preferred_runtime": "localai",
+                    "resolved_model": {"id": "b1-chat", "version": "1.0.0"},
+                }
+            ],
+            "records": [{"id": "b1-chat", "version": "1.0.0", "manifest": {"aliases": ["chat-default"], "measurements": {"runs": []}}}],
+        }
+
+        original = live_stack.urlopen
+        try:
+            live_stack.urlopen = lambda *args, **kwargs: FakePayloadResponse(payload)  # type: ignore[assignment]
+            client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
+            with self.assertRaisesRegex(AssertionError, "no persisted ok model smoke measurement"):
+                live_stack.measured_model_alias(client, "chat-default")
+        finally:
+            live_stack.urlopen = original
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
-from test_live_stack import LiveApiClient, TERMINAL_STATES  # noqa: E402
+from test_live_stack import LiveApiClient, TERMINAL_STATES, measured_model_alias  # noqa: E402
 
 
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
@@ -70,11 +70,15 @@ def silence_wav_base64() -> str:
 class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
+    model_measurements: dict[str, dict[str, Any]] = {}
+    required_model_aliases: set[str] = set()
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.checks = {}
         cls.samples = []
+        cls.model_measurements = {}
+        cls.required_model_aliases = set()
         api_key = os.getenv("B1_WORKFLOWS_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_WORKFLOWS_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -112,6 +116,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                     "required_checks": list(INSTALLED_WORKFLOWS_REQUIRED_CHECKS),
                     "checks": cls.checks,
                     "samples": cls.samples,
+                    "required_model_aliases": sorted(cls.required_model_aliases),
+                    "model_measurements": cls.model_measurements,
                 },
                 indent=2,
                 sort_keys=True,
@@ -126,6 +132,17 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             "recorded_at": datetime.now(tz=UTC).isoformat(),
             **data,
         }
+
+    def require_measured_model(self, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
+        self.__class__.required_model_aliases.add(alias)
+        existing = self.__class__.model_measurements.get(alias)
+        if existing is not None:
+            if expected_runtime and existing.get("runtime") != expected_runtime:
+                raise AssertionError(f"cached measurement for {alias!r} does not match expected runtime {expected_runtime!r}: {existing}")
+            return existing
+        measurement = measured_model_alias(self.client, alias, expected_runtime=expected_runtime)
+        self.__class__.model_measurements[alias] = measurement
+        return measurement
 
     def assert_not_placeholder(self, headers: dict[str, str], payload: Any, label: str) -> None:
         header_map = {key.lower(): value for key, value in headers.items()}
@@ -189,6 +206,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
 
     def verify_chat(self) -> None:
         model = os.getenv("B1_WORKFLOWS_CHAT_MODEL", "chat-default")
+        measurement = self.require_measured_model(model)
         body = {
             "model": model,
             "messages": [{"role": "user", "content": os.getenv("B1_WORKFLOWS_CHAT_PROMPT", "Reply with exactly: ready")}],
@@ -203,11 +221,29 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertIsInstance(choices, list)
         self.assertGreater(len(choices), 0, payload)
         self.assert_not_placeholder(headers, payload, "chat")
-        self.record_check("chat_completed", model=model, choice_count=len(choices))
-        self.samples.append({"label": "chat", "model": model, "choice_count": len(choices)})
+        resolved_model = payload.get("b1_resolved_model") if isinstance(payload.get("b1_resolved_model"), str) else measurement.get("resolved_model_version")
+        self.assertEqual(resolved_model, measurement.get("resolved_model_version"), payload)
+        self.record_check(
+            "chat_completed",
+            model=model,
+            resolved_model_version=measurement.get("resolved_model_version"),
+            runtime=payload.get("b1_runtime") or measurement.get("runtime"),
+            model_measurement=measurement,
+            choice_count=len(choices),
+        )
+        self.samples.append(
+            {
+                "label": "chat",
+                "model": model,
+                "resolved_model_version": measurement.get("resolved_model_version"),
+                "runtime": payload.get("b1_runtime") or measurement.get("runtime"),
+                "choice_count": len(choices),
+            }
+        )
 
     def verify_tts(self) -> None:
         model = os.getenv("B1_WORKFLOWS_TTS_MODEL", "tts-fast")
+        measurement = self.require_measured_model(model)
         body = {
             "model": model,
             "input": os.getenv("B1_WORKFLOWS_TTS_TEXT", "B1 AI Hub installed workflow acceptance speech."),
@@ -220,11 +256,29 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertGreater(len(content), 0, "TTS returned an empty response")
         self.assert_not_placeholder(headers, None, "tts")
         digest = hashlib.sha256(content).hexdigest()
-        self.record_check("tts_completed", model=model, byte_count=len(content), sha256=digest)
-        self.samples.append({"label": "tts", "model": model, "byte_count": len(content), "sha256": digest})
+        self.record_check(
+            "tts_completed",
+            model=model,
+            resolved_model_version=measurement.get("resolved_model_version"),
+            runtime=measurement.get("runtime"),
+            model_measurement=measurement,
+            byte_count=len(content),
+            sha256=digest,
+        )
+        self.samples.append(
+            {
+                "label": "tts",
+                "model": model,
+                "resolved_model_version": measurement.get("resolved_model_version"),
+                "runtime": measurement.get("runtime"),
+                "byte_count": len(content),
+                "sha256": digest,
+            }
+        )
 
     def verify_stt(self) -> None:
         model = os.getenv("B1_WORKFLOWS_STT_MODEL", "stt-default")
+        measurement = self.require_measured_model(model)
         body = {
             "model": model,
             "audio": os.getenv("B1_WORKFLOWS_STT_AUDIO_BASE64", "") or silence_wav_base64(),
@@ -237,8 +291,23 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertIn("text", payload)
         self.assert_not_placeholder(headers, payload, "stt")
         text_length = len(str(payload.get("text") or ""))
-        self.record_check("stt_completed", model=model, text_length=text_length)
-        self.samples.append({"label": "stt", "model": model, "text_length": text_length})
+        self.record_check(
+            "stt_completed",
+            model=model,
+            resolved_model_version=measurement.get("resolved_model_version"),
+            runtime=measurement.get("runtime"),
+            model_measurement=measurement,
+            text_length=text_length,
+        )
+        self.samples.append(
+            {
+                "label": "stt",
+                "model": model,
+                "resolved_model_version": measurement.get("resolved_model_version"),
+                "runtime": measurement.get("runtime"),
+                "text_length": text_length,
+            }
+        )
 
     def scheduler_lease_snapshot(self) -> dict[str, Any]:
         status, _, payload = self.client.json_request("GET", "/admin/scheduler/lease", require_auth=True)
@@ -257,6 +326,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
     def verify_cpu_audio_does_not_take_gpu_lease(self) -> None:
         tts_model = os.getenv("B1_WORKFLOWS_CPU_TTS_MODEL", os.getenv("B1_WORKFLOWS_TTS_MODEL", "tts-fast"))
         stt_model = os.getenv("B1_WORKFLOWS_CPU_STT_MODEL", os.getenv("B1_WORKFLOWS_STT_MODEL", "stt-default"))
+        tts_measurement = self.require_measured_model(tts_model, expected_runtime="audio-cpu")
+        stt_measurement = self.require_measured_model(stt_model, expected_runtime="audio-cpu")
         runtime_policy = os.getenv("B1_WORKFLOWS_CPU_AUDIO_RUNTIME_POLICY", "non_comfy_only")
         before = self.scheduler_lease_snapshot()
 
@@ -311,6 +382,9 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             "cpu_audio_does_not_take_gpu_lease",
             tts_model=tts_model,
             stt_model=stt_model,
+            tts_resolved_model_version=tts_measurement.get("resolved_model_version"),
+            stt_resolved_model_version=stt_measurement.get("resolved_model_version"),
+            model_measurements={"tts": tts_measurement, "stt": stt_measurement},
             runtime_policy=runtime_policy,
             scheduler_owner_before=before_owner or "none",
             scheduler_owner_after=after_owner or "none",
@@ -324,6 +398,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "label": "cpu-audio-no-gpu-lease",
                 "tts_model": tts_model,
                 "stt_model": stt_model,
+                "tts_resolved_model_version": tts_measurement.get("resolved_model_version"),
+                "stt_resolved_model_version": stt_measurement.get("resolved_model_version"),
                 "scheduler_owner_before": before_owner or "none",
                 "scheduler_owner_after": after_owner or "none",
             }
@@ -353,6 +429,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         }
 
     def verify_media_job(self, check_name: str, label: str, body: dict[str, Any]) -> None:
+        model = body.get("model")
+        measurement = self.require_measured_model(str(model)) if isinstance(model, str) and model else {}
         status, _, job = self.client.json_request(
             "POST",
             "/v1/media/jobs",
@@ -364,6 +442,9 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertIsInstance(job, dict)
         final_job = self.wait_for_terminal_job(str(job["id"]))
         self.assertEqual(final_job.get("state"), "completed", final_job)
+        if measurement:
+            self.assertEqual(final_job.get("resolved_model_version"), measurement.get("resolved_model_version"), final_job)
+            self.assertEqual(final_job.get("runtime"), measurement.get("runtime"), final_job)
         status, _, artifact_payload = self.client.json_request("GET", f"/v1/media/jobs/{job['id']}/artifacts", require_auth=True)
         self.assertEqual(status, 200, artifact_payload)
         artifacts = artifact_payload.get("artifacts")
@@ -380,9 +461,15 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             check_name,
             job_id=job["id"],
             model=body.get("model"),
+            resolved_model_version=final_job.get("resolved_model_version"),
             runtime=final_job.get("runtime"),
             modality=body.get("modality"),
             operation=body.get("operation"),
+            load_time_ms=final_job.get("load_time_ms"),
+            run_time_ms=final_job.get("run_time_ms"),
+            peak_vram_mib=final_job.get("peak_vram_mib"),
+            peak_ram_mib=final_job.get("peak_ram_mib"),
+            model_measurement=measurement,
             artifact_count=len(artifacts),
             first_artifact_bytes=len(content),
             first_artifact_sha256=digest,
@@ -393,7 +480,12 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "label": label,
                 "job_id": job["id"],
                 "model": body.get("model"),
+                "resolved_model_version": final_job.get("resolved_model_version"),
                 "runtime": final_job.get("runtime"),
+                "load_time_ms": final_job.get("load_time_ms"),
+                "run_time_ms": final_job.get("run_time_ms"),
+                "peak_vram_mib": final_job.get("peak_vram_mib"),
+                "peak_ram_mib": final_job.get("peak_ram_mib"),
                 "artifact_count": len(artifacts),
                 "first_artifact_bytes": len(content),
                 "first_artifact_sha256": digest,

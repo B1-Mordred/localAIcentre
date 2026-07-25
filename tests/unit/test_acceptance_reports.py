@@ -36,6 +36,47 @@ def complete_operator_evidence() -> dict[str, bool]:
     return {item["key"]: True for item in acceptance.required_operator_evidence_items()}
 
 
+def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None = None, version: str = "1.0.0") -> dict[str, Any]:
+    resolved_model_id = model_id or alias.replace("_", "-")
+    resolved = f"{resolved_model_id}@{version}"
+    return {
+        "alias": alias,
+        "status": "installed",
+        "modality": "tts" if alias.startswith("tts") else "image" if alias.startswith("image") else "llm",
+        "preferred_runtime": runtime,
+        "runtime": runtime,
+        "runtimes": [runtime],
+        "resource_label": "expected",
+        "resolved_model_version": resolved,
+        "model_id": resolved_model_id,
+        "model_version": version,
+        "display_name": alias,
+        "measurement_available": True,
+        "ok_run_count": 1,
+        "measurements_updated_at": "2026-07-24T12:00:00+00:00",
+        "latest_resource_estimate": {
+            "vram_gib": 0 if runtime == "audio-cpu" else 6.5,
+            "ram_gib": 1.0 if runtime == "audio-cpu" else 8.0,
+            "disk_gib": 4.0,
+        },
+        "latest_ok_run": {
+            "id": f"modelsmoke-{alias}",
+            "type": "install-smoke",
+            "status": "ok",
+            "runtime": runtime,
+            "model_alias": alias,
+            "resolved_model_version": resolved,
+            "started_at": "2026-07-24T12:00:00+00:00",
+            "completed_at": "2026-07-24T12:00:05+00:00",
+            "duration_ms": 5000,
+            "load_time_ms": 1000,
+            "run_time_ms": 2000,
+            "peak_vram_mib": 0 if runtime == "audio-cpu" else 6144,
+            "peak_ram_mib": 768 if runtime == "audio-cpu" else 8192,
+        },
+    }
+
+
 def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
@@ -155,9 +196,22 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "status": "ok",
             "required_checks": ["resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch"],
             "missing_checks": [],
+            "required_model_aliases": ["chat-default", "image-default", "tts-quality"],
+            "model_measurements": {
+                "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                "tts-quality": sample_model_measurement("tts-quality", "voicebox", model_id="b1-tts-quality"),
+            },
+            "missing_model_measurements": [],
             "checks": {
                 "resource_policy_and_runtime_readiness": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
-                "localai_comfyui_voicebox_switch": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
+                "localai_comfyui_voicebox_switch": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:00+00:00",
+                    "chat_resolved_model_version": "b1-chat-default@1.0.0",
+                    "comfyui_resolved_model_version": "b1-image-default@1.0.0",
+                    "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
+                },
             },
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
@@ -171,6 +225,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "status": "ok",
             "required_checks": ["streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified"],
             "missing_checks": [],
+            "required_model_aliases": ["chat-default"],
+            "model_measurements": {
+                "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+            },
+            "missing_model_measurements": [],
             "checks": {
                 "streaming_chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:10+00:00"},
                 "single_backend_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:30:20+00:00"},
@@ -196,6 +255,16 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "short_video_completed",
             ],
             "missing_checks": [],
+            "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
+            "model_measurements": {
+                "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                "tts-fast": sample_model_measurement("tts-fast", "audio-cpu", model_id="b1-tts-fast"),
+                "stt-default": sample_model_measurement("stt-default", "audio-cpu", model_id="b1-stt-default"),
+                "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                "image-edit": sample_model_measurement("image-edit", "comfyui", model_id="b1-image-edit"),
+                "video-text": sample_model_measurement("video-text", "comfyui", model_id="b1-video-text"),
+            },
+            "missing_model_measurements": [],
             "checks": {
                 "chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:26:00+00:00"},
                 "tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:27:00+00:00"},
@@ -562,6 +631,8 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("live-smoke.json", markdown)
             self.assertIn("Live stack smoke", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
+            self.assertIn("b1-chat-default@1.0.0", markdown)
+            self.assertIn("| chat-default | b1-chat-default@1.0.0 | localai | 1 |", markdown)
             self.assertIn("installed-workflows.json", markdown)
             self.assertIn("Installed workflow acceptance", markdown)
             self.assertIn("native-comfyui.json", markdown)
@@ -810,6 +881,28 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_for_missing_gpu_model_measurements(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["gpu_acceptance"] = {
+            **live_evidence["gpu_acceptance"],
+            "required_model_aliases": ["chat-default", "image-default", "tts-quality"],
+            "model_measurements": {
+                "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+            },
+            "missing_model_measurements": ["tts-quality"],
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn(
+            "RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: tts-quality",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_for_stale_live_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["gpu_acceptance"] = {
@@ -882,6 +975,25 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_for_missing_localai_model_measurement(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["localai_runtime"] = {
+            **live_evidence["localai_runtime"],
+            "required_model_aliases": ["chat-default"],
+            "model_measurements": {},
+            "missing_model_measurements": ["chat-default"],
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn(
+            "LocalAI runtime acceptance evidence is missing measured model runs for aliases: chat-default",
+            report["acceptance_blockers"],
+        )
+
     def test_report_blocks_handoff_without_installed_workflow_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["installed_workflows"] = {"available": False, "reason": "missing"}
@@ -915,6 +1027,29 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("installed workflow evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
             "installed workflow evidence is missing required checks: image_edit_completed, short_video_completed",
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_for_missing_installed_workflow_model_measurements(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["installed_workflows"] = {
+            **live_evidence["installed_workflows"],
+            "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
+            "model_measurements": {
+                key: value
+                for key, value in live_evidence["installed_workflows"]["model_measurements"].items()
+                if key != "video-text"
+            },
+            "missing_model_measurements": ["video-text"],
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn(
+            "installed workflow evidence is missing measured model runs for aliases: video-text",
             report["acceptance_blockers"],
         )
 
@@ -1435,6 +1570,12 @@ class AcceptanceReportTests(unittest.TestCase):
                             "resource_policy_and_runtime_readiness": {"status": "ok"},
                             "localai_comfyui_voicebox_switch": {"status": "ok"},
                         },
+                        "required_model_aliases": ["chat-default", "image-default", "tts-quality"],
+                        "model_measurements": {
+                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                            "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                            "tts-quality": sample_model_measurement("tts-quality", "voicebox", model_id="b1-tts-quality"),
+                        },
                         "samples": [
                             {"label": "initial-readiness"},
                             {"label": "after-localai-chat"},
@@ -1455,6 +1596,10 @@ class AcceptanceReportTests(unittest.TestCase):
                             "streaming_chat_completed": {"status": "ok"},
                             "single_backend_enforced": {"status": "ok"},
                             "graceful_unload_verified": {"status": "ok"},
+                        },
+                        "required_model_aliases": ["chat-default"],
+                        "model_measurements": {
+                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
                         },
                         "samples": [
                             {"label": "localai-stream-chat"},
@@ -1481,6 +1626,15 @@ class AcceptanceReportTests(unittest.TestCase):
                             "image_generation_completed": {"status": "ok"},
                             "image_edit_completed": {"status": "ok"},
                             "short_video_completed": {"status": "ok"},
+                        },
+                        "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
+                        "model_measurements": {
+                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                            "tts-fast": sample_model_measurement("tts-fast", "audio-cpu", model_id="b1-tts-fast"),
+                            "stt-default": sample_model_measurement("stt-default", "audio-cpu", model_id="b1-stt-default"),
+                            "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                            "image-edit": sample_model_measurement("image-edit", "comfyui", model_id="b1-image-edit"),
+                            "video-text": sample_model_measurement("video-text", "comfyui", model_id="b1-video-text"),
                         },
                         "samples": [
                             {"label": "chat"},
@@ -1701,18 +1855,24 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["source_path"], str(current.resolve()))
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
+        self.assertEqual(gpu["missing_model_measurements"], [])
+        self.assertEqual(gpu["model_measurements"]["chat-default"]["resolved_model_version"], "b1-chat-default@1.0.0")
         self.assertEqual(gpu["sample_count"], 2)
         localai_snapshot = snapshot["localai_runtime"]
         self.assertTrue(localai_snapshot["available"])
         self.assertEqual(localai_snapshot["source_path"], str(localai.resolve()))
         self.assertEqual(localai_snapshot["status"], "ok")
         self.assertEqual(localai_snapshot["missing_checks"], [])
+        self.assertEqual(localai_snapshot["missing_model_measurements"], [])
+        self.assertEqual(localai_snapshot["model_measurements"]["chat-default"]["runtime"], "localai")
         self.assertEqual(localai_snapshot["sample_count"], 3)
         workflows = snapshot["installed_workflows"]
         self.assertTrue(workflows["available"])
         self.assertEqual(workflows["source_path"], str(installed.resolve()))
         self.assertEqual(workflows["status"], "ok")
         self.assertEqual(workflows["missing_checks"], [])
+        self.assertEqual(workflows["missing_model_measurements"], [])
+        self.assertEqual(workflows["model_measurements"]["video-text"]["runtime"], "comfyui")
         self.assertEqual(workflows["sample_count"], 7)
         native = snapshot["native_comfyui_compatibility"]
         self.assertTrue(native["available"])

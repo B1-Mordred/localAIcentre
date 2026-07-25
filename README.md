@@ -22,7 +22,7 @@ This repository currently contains the first runnable project slice:
 - database-backed model install planning from catalog IDs, uploaded manifests, or bounded HTTPS manifest URLs; licence-gated resumable direct-url and Hugging Face repository blob downloads with Control Center pause/resume and retry/requeue; verified staged-blob publication; hardlinked or safely extracted per-runtime read-only model views; recoverable record/blob quarantine with confirmed quarantine retention cleanup; and catalog overlay refresh
 - runtime-agent with default-on internal mTLS, fail-closed token-protected allowlisted Docker status, bounded redacted logs surfaced through Control Center, disabled-by-default service mutations, and predefined runtime recover/unload actions
 - runtime-agent CPU/memory/disk/GPU metrics and Control Center system self-test with TLS route, tiny inference, dry-run unload, and artifact delivery probes
-- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/restart reconciliation/rollback/security, machine-readable RTX GPU, LocalAI streaming/unload, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, deployed security including artifact authorization, restart reconciliation, web-managed backup/migration/rollback evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
+- durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/restart reconciliation/rollback/security, machine-readable RTX GPU, LocalAI streaming/unload, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, deployed security including artifact authorization, restart reconciliation, web-managed backup/migration/rollback evidence, persisted model-smoke measurements for every required acceptance alias, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
 - lightweight Control Center observability backed by `GET /admin/metrics`, showing queue waits, recent job timing/resource summaries, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring Prometheus or Grafana for the base appliance
 - optional `compose.monitoring.yaml` profile with pinned Prometheus and Grafana images, a metrics-only generated scrape token, internal-only backend services, and the gateway-routed `https://monitoring.ai.b1.germering/` Grafana host
 - PostgreSQL-backed audit log for administrative changes with recursive metadata redaction and Control Center visibility
@@ -139,7 +139,7 @@ make smoke
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS and temporary-host options.
 
-Run LocalAI runtime acceptance after a real chat alias is installed, then run target-host cross-runtime GPU acceptance after real GPU models and a ComfyUI API prompt are installed:
+Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 
 ```bash
 B1_LOCALAI_ACCEPTANCE_API_KEY=... \
@@ -152,7 +152,7 @@ B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.j
 make gpu-acceptance
 ```
 
-Run installed workflow acceptance after chat, CPU TTS/STT, image, edit, and short-video aliases are backed by real installed models:
+Run installed workflow acceptance after chat, CPU TTS/STT, image, edit, and short-video aliases are backed by real installed models with persisted successful model-smoke measurements:
 
 ```bash
 B1_WORKFLOWS_LIVE_TEST=1 \
