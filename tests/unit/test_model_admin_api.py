@@ -682,6 +682,62 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(fake_database.alias_policies["chat-default"]["updated_by"], "test-admin")
             self.assertEqual(audit_events[0]["event_type"], "model_alias_policy.updated")
 
+    def test_alias_policy_disable_blocks_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "reason": "operator note",
+            "idempotency_key": "reservation-key",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            self.patch_common(Path(tmp), fake_database)
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_alias_policy_update(
+                        "chat-default",
+                        main.ModelAliasPolicyRequest(enabled=False),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["message"], "alias has active runtime reservations and cannot be disabled")
+        self.assertEqual(raised.exception.detail["active_jobs"], 0)
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["id"], "reservation_alias")
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["model_alias"], "chat-default")
+        self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["resolved_model_version"], "chat-small@1.0.0")
+        self.assertNotIn("operator note", str(raised.exception.detail))
+        self.assertNotIn("reservation-key", str(raised.exception.detail))
+        self.assertEqual(fake_database.alias_policies, {})
+
+    def test_alias_policy_enable_allows_active_runtime_reservation_dependency(self) -> None:
+        reservation = {
+            "id": "reservation_alias",
+            "owner_id": "batch-client",
+            "runtime": "localai",
+            "model_alias": "chat-default",
+            "resolved_model_version": "chat-small@1.0.0",
+            "expires_at": datetime.now(tz=UTC) + timedelta(minutes=10),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0, runtime_reservations=[reservation])
+            self.patch_common(Path(tmp), fake_database)
+
+            result = asyncio.run(
+                main.admin_model_alias_policy_update(
+                    "chat-default",
+                    main.ModelAliasPolicyRequest(enabled=True),
+                )
+            )
+
+        self.assertTrue(result["policy"]["enabled"])
+        self.assertTrue(fake_database.alias_policies["chat-default"]["enabled"])
+
     def test_alias_policy_delete_resets_seed_policy(self) -> None:
         audit_events: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as tmp:

@@ -5184,6 +5184,17 @@ async def dependent_voice_profiles_for_model(model_id: str, aliases: list[str]) 
     return profiles
 
 
+def public_runtime_reservation_dependency(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "owner_id": row.get("owner_id"),
+        "runtime": row.get("runtime"),
+        "model_alias": row.get("model_alias"),
+        "resolved_model_version": row.get("resolved_model_version"),
+        "expires_at": row.get("expires_at"),
+    }
+
+
 async def active_runtime_reservations_for_model(model_ref: str, aliases: list[str]) -> list[dict[str, Any]]:
     alias_set = set(aliases)
     reservations: list[dict[str, Any]] = []
@@ -5193,16 +5204,16 @@ async def active_runtime_reservations_for_model(model_ref: str, aliases: list[st
         matches_legacy_alias_only = not resolved_model_version and row.get("model_alias") in alias_set
         if not (matches_immutable_model or matches_legacy_alias_only):
             continue
-        reservations.append(
-            {
-                "id": row["id"],
-                "owner_id": row.get("owner_id"),
-                "runtime": row.get("runtime"),
-                "model_alias": row.get("model_alias"),
-                "resolved_model_version": row.get("resolved_model_version"),
-                "expires_at": row.get("expires_at"),
-            }
-        )
+        reservations.append(public_runtime_reservation_dependency(row))
+    return reservations
+
+
+async def active_runtime_reservations_for_alias(alias: str) -> list[dict[str, Any]]:
+    reservations: list[dict[str, Any]] = []
+    for row in await database.list_active_runtime_reservations(GPU_RUNTIMES):
+        if row.get("model_alias") != alias:
+            continue
+        reservations.append(public_runtime_reservation_dependency(row))
     return reservations
 
 
@@ -8085,8 +8096,25 @@ async def admin_model_alias_policy_update(
     policy = validate_model_alias_policy_payload(alias_id, payload)
     if not policy["enabled"]:
         active_jobs = await database.count_active_jobs_for_model(f"alias-policy:{alias_id}", [alias_id])
+        active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
         if active_jobs > 0:
-            raise HTTPException(status_code=409, detail={"message": "alias has active jobs and cannot be disabled", "active_jobs": active_jobs})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "alias has active jobs and cannot be disabled",
+                    "active_jobs": active_jobs,
+                    "active_runtime_reservations": active_runtime_reservations,
+                },
+            )
+        if active_runtime_reservations:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "alias has active runtime reservations and cannot be disabled",
+                    "active_jobs": active_jobs,
+                    "active_runtime_reservations": active_runtime_reservations,
+                },
+            )
     row = await database.upsert_model_alias_policy({**policy, "updated_by": auth.subject_id})
     await refresh_catalog_cache()
     await refresh_workflow_dependency_statuses()
