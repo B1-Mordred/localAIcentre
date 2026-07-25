@@ -6873,6 +6873,7 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
             for row in await database.list_runtime_reservations(limit=50, status="active")
         ],
         deployment=deployment,
+        deployment_pins=acceptance.deployment_pins_snapshot(Path.cwd()),
         recent_updates=[public_update_plan(row) for row in await database.list_update_plans(limit=5)],
         source_control=acceptance.source_control_snapshot(Path.cwd()),
         operator_evidence=payload.operator_evidence,

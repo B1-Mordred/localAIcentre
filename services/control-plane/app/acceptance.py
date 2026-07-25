@@ -63,6 +63,187 @@ ADMIN_ONBOARDING_STEPS = (
     "Install or import real model manifests, run smoke tests, publish workflows, and regenerate this acceptance report before cutover.",
 )
 RECOMMENDED_HARDWARE_UPGRADE = "Upgrade system RAM from 32 GB to at least 64 GB first; consider a larger VRAM GPU after RAM if video, large VLM, or higher-context workflows dominate."
+DEPLOYMENT_PINS_FORMAT = "b1-ai-hub-deployment-pins/v1"
+BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
+    "format": DEPLOYMENT_PINS_FORMAT,
+    "schema_version": 1,
+    "source": "bundled",
+    "compose_images": [
+        {
+            "file": "compose.yaml",
+            "service": "bootstrap",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "compose.yaml",
+            "service": "gateway",
+            "image": "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+        },
+        {
+            "file": "compose.yaml",
+            "service": "postgres",
+            "image": "postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3",
+        },
+        {
+            "file": "compose.yaml",
+            "service": "redis",
+            "image": "redis:7.4.5-bookworm@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb",
+        },
+        {
+            "file": "compose.production-localai.yaml",
+            "service": "localai",
+            "image": "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}",
+        },
+        {
+            "file": "compose.production-comfyui.yaml",
+            "service": "comfyui",
+            "image": "${B1_COMFYUI_IMAGE:-b1-ai-hub/comfyui:v0.3.77-b1}",
+        },
+        {
+            "file": "compose.production-voicebox.yaml",
+            "service": "voicebox",
+            "image": "${B1_VOICEBOX_IMAGE:-b1-ai-hub/voicebox:v0.5.0-b1}",
+        },
+        {
+            "file": "compose.monitoring.yaml",
+            "service": "prometheus",
+            "image": "prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
+            "profile": "monitoring",
+        },
+        {
+            "file": "compose.monitoring.yaml",
+            "service": "grafana",
+            "image": "grafana/grafana:12.1.1@sha256:a1701c2180249361737a99a01bc770db39381640e4d631825d38ff4535efa47d",
+            "profile": "monitoring",
+        },
+    ],
+    "dockerfile_bases": [
+        {
+            "file": "deploy/open-webui/Dockerfile",
+            "component": "open-webui",
+            "stage": "final",
+            "image": "ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4",
+        },
+        {
+            "file": "deploy/localai/Dockerfile",
+            "component": "localai",
+            "stage": "final",
+            "image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+        },
+        {
+            "file": "deploy/comfyui/Dockerfile",
+            "component": "comfyui",
+            "stage": "final",
+            "image": "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime@sha256:e05438443ae3c407e8d04447091a959dbb6757b6290b128770c3c787d4bd442b",
+        },
+        {
+            "file": "deploy/voicebox/Dockerfile",
+            "component": "voicebox",
+            "stage": "frontend",
+            "image": "oven/bun:1.3.8@sha256:371d30538b69303ced927bb5915697ac7e2fa8cb409ee332c66009de64de5aa3",
+        },
+        {
+            "file": "deploy/voicebox/Dockerfile",
+            "component": "voicebox",
+            "stage": "backend-builder",
+            "image": "python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
+        },
+        {
+            "file": "deploy/voicebox/Dockerfile",
+            "component": "voicebox",
+            "stage": "final",
+            "image": "python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
+        },
+        {
+            "file": "services/control-plane/Dockerfile",
+            "component": "control-plane",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "services/runtime-agent/Dockerfile",
+            "component": "runtime-agent",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "services/artifact-server/Dockerfile",
+            "component": "artifact-server",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "services/audio-cpu/Dockerfile",
+            "component": "audio-cpu",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "web/control-center/Dockerfile",
+            "component": "control-center",
+            "stage": "build",
+            "image": "node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e",
+        },
+        {
+            "file": "web/control-center/Dockerfile",
+            "component": "control-center",
+            "stage": "final",
+            "image": "nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8",
+        },
+        {
+            "file": "web/media-studio/Dockerfile",
+            "component": "media-studio",
+            "stage": "build",
+            "image": "node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e",
+        },
+        {
+            "file": "web/media-studio/Dockerfile",
+            "component": "media-studio",
+            "stage": "final",
+            "image": "nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8",
+        },
+        {
+            "file": "integrations/b1-model-client/Dockerfile",
+            "component": "b1-model-client",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+    ],
+    "runtime_sources": [
+        {
+            "runtime": "localai",
+            "upstream_version": "v4.7.1-gpu-nvidia-cuda-12",
+            "upstream_commit": "b224c96db6f4b87306a33a808650bfce63b12588",
+            "base_image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+        },
+        {
+            "runtime": "comfyui",
+            "upstream_version": "v0.3.77",
+            "upstream_commit": "59afc3984868289f808d02fa5cd180edfb2de240",
+            "tarball_sha256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1",
+            "base_image": "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime@sha256:e05438443ae3c407e8d04447091a959dbb6757b6290b128770c3c787d4bd442b",
+        },
+        {
+            "runtime": "voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "tarball_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            "qwen3_tts_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+            "linacodec_commit": "c0ae7c7285e121475c27592cfbb600624b714290",
+            "luxtts_commit": "28ae6a61151684fffc9d1a7aa15eafa02286fe0b",
+            "frontend_base_image": "oven/bun:1.3.8@sha256:371d30538b69303ced927bb5915697ac7e2fa8cb409ee332c66009de64de5aa3",
+            "backend_base_image": "python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
+        },
+        {
+            "runtime": "audio-cpu",
+            "engine": "piper",
+            "upstream_release": "2023.11.14-2",
+            "asset": "piper_linux_x86_64.tar.gz",
+            "asset_sha256": "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992",
+            "base_image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+    ],
+}
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "resource_policy_and_runtime_readiness",
@@ -1304,6 +1485,293 @@ def source_control_snapshot(repo_root: Path | None = None, environ: dict[str, st
     return snapshot
 
 
+COMPOSE_PIN_FILES = (
+    "compose.yaml",
+    "compose.production-localai.yaml",
+    "compose.production-comfyui.yaml",
+    "compose.production-voicebox.yaml",
+    "compose.monitoring.yaml",
+)
+DOCKERFILE_PIN_FILES = (
+    ("open-webui", "deploy/open-webui/Dockerfile"),
+    ("localai", "deploy/localai/Dockerfile"),
+    ("comfyui", "deploy/comfyui/Dockerfile"),
+    ("voicebox", "deploy/voicebox/Dockerfile"),
+    ("control-plane", "services/control-plane/Dockerfile"),
+    ("runtime-agent", "services/runtime-agent/Dockerfile"),
+    ("artifact-server", "services/artifact-server/Dockerfile"),
+    ("audio-cpu", "services/audio-cpu/Dockerfile"),
+    ("control-center", "web/control-center/Dockerfile"),
+    ("media-studio", "web/media-studio/Dockerfile"),
+    ("b1-model-client", "integrations/b1-model-client/Dockerfile"),
+)
+ARG_DEFAULT_RE = re.compile(r"^ARG\s+([A-Z0-9_]+)=(.*)$")
+FROM_RE = re.compile(r"^FROM\s+([^\s]+)(?:\s+AS\s+([^\s]+))?")
+COMPOSE_SERVICE_RE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(?:#.*)?$")
+COMPOSE_IMAGE_RE = re.compile(r"^\s{4}image:\s*(.+?)\s*(?:#.*)?$")
+
+
+def _json_clone(value: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(value))
+
+
+def _strip_yaml_scalar(value: str) -> str:
+    stripped = value.strip()
+    if (stripped.startswith('"') and stripped.endswith('"')) or (stripped.startswith("'") and stripped.endswith("'")):
+        return stripped[1:-1]
+    return stripped
+
+
+def _image_default_ref(image_ref: str) -> str:
+    stripped = _strip_yaml_scalar(image_ref)
+    match = re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-(.+)\}", stripped)
+    return match.group(1).strip() if match else stripped
+
+
+def _image_digest(image_ref: str) -> str:
+    default_ref = _image_default_ref(image_ref)
+    match = re.search(r"@sha256:([a-fA-F0-9]{64})(?:$|[^a-fA-F0-9])", default_ref)
+    return match.group(1).lower() if match else ""
+
+
+def _image_tag(image_ref: str) -> str:
+    without_digest = _image_default_ref(image_ref).split("@", 1)[0]
+    tail = without_digest.rsplit("/", 1)[-1]
+    if ":" not in tail:
+        return ""
+    return tail.rsplit(":", 1)[1]
+
+
+def _image_pin_type(image_ref: str) -> str:
+    if _image_digest(image_ref):
+        return "digest"
+    tag = _image_tag(image_ref)
+    if not tag:
+        return "unpinned"
+    if tag.lower() == "latest":
+        return "floating-latest"
+    if _image_default_ref(image_ref).startswith("b1-ai-hub/"):
+        return "versioned-local-build"
+    return "versioned-tag"
+
+
+def _annotate_image_pin(item: dict[str, Any]) -> dict[str, Any]:
+    annotated = dict(item)
+    image_ref = str(annotated.get("image") or "")
+    annotated["default_image"] = _image_default_ref(image_ref)
+    annotated["pin_type"] = _image_pin_type(image_ref)
+    if digest := _image_digest(image_ref):
+        annotated["digest"] = digest
+    if tag := _image_tag(image_ref):
+        annotated["tag"] = tag
+    return annotated
+
+
+def _read_repo_text(repo_root: Path, relative_path: str) -> str | None:
+    path = (repo_root / relative_path).resolve()
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _parse_compose_images(repo_root: Path) -> list[dict[str, Any]]:
+    images: list[dict[str, Any]] = []
+    for relative_path in COMPOSE_PIN_FILES:
+        text = _read_repo_text(repo_root, relative_path)
+        if text is None:
+            continue
+        service = ""
+        for line in text.splitlines():
+            if match := COMPOSE_SERVICE_RE.match(line):
+                service = match.group(1)
+                continue
+            if match := COMPOSE_IMAGE_RE.match(line):
+                item: dict[str, Any] = {
+                    "file": relative_path,
+                    "service": service or "unknown",
+                    "image": _strip_yaml_scalar(match.group(1)),
+                }
+                if relative_path == "compose.monitoring.yaml":
+                    item["profile"] = "monitoring"
+                images.append(_annotate_image_pin(item))
+    return images
+
+
+def _parse_dockerfile_bases(repo_root: Path) -> list[dict[str, Any]]:
+    bases: list[dict[str, Any]] = []
+    for component, relative_path in DOCKERFILE_PIN_FILES:
+        text = _read_repo_text(repo_root, relative_path)
+        if text is None:
+            continue
+        for line in text.splitlines():
+            match = FROM_RE.match(line.strip())
+            if not match:
+                continue
+            stage = match.group(2) or "final"
+            bases.append(
+                _annotate_image_pin(
+                    {
+                        "file": relative_path,
+                        "component": component,
+                        "stage": stage,
+                        "image": match.group(1),
+                    }
+                )
+            )
+    return bases
+
+
+def _parse_dockerfile_args(repo_root: Path, relative_path: str) -> dict[str, str]:
+    text = _read_repo_text(repo_root, relative_path) or ""
+    args: dict[str, str] = {}
+    for line in text.splitlines():
+        match = ARG_DEFAULT_RE.match(line.strip())
+        if match:
+            args[match.group(1)] = match.group(2).strip()
+    return args
+
+
+def _first_base_for(bases: list[dict[str, Any]], component: str, stage: str | None = None) -> str:
+    for base in bases:
+        if base.get("component") != component:
+            continue
+        if stage is not None and base.get("stage") != stage:
+            continue
+        return str(base.get("default_image") or base.get("image") or "")
+    return ""
+
+
+def _runtime_sources_from_repo(repo_root: Path, bases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    localai = _parse_dockerfile_args(repo_root, "deploy/localai/Dockerfile")
+    comfyui = _parse_dockerfile_args(repo_root, "deploy/comfyui/Dockerfile")
+    voicebox = _parse_dockerfile_args(repo_root, "deploy/voicebox/Dockerfile")
+    audio_cpu = _parse_dockerfile_args(repo_root, "services/audio-cpu/Dockerfile")
+    return [
+        {
+            "runtime": "localai",
+            "upstream_version": localai.get("B1_LOCALAI_UPSTREAM_VERSION", ""),
+            "upstream_commit": localai.get("B1_LOCALAI_UPSTREAM_COMMIT", ""),
+            "base_image": _first_base_for(bases, "localai"),
+        },
+        {
+            "runtime": "comfyui",
+            "upstream_version": comfyui.get("B1_COMFYUI_VERSION", ""),
+            "upstream_commit": comfyui.get("B1_COMFYUI_COMMIT", ""),
+            "tarball_sha256": comfyui.get("B1_COMFYUI_TARBALL_SHA256", ""),
+            "base_image": _first_base_for(bases, "comfyui"),
+        },
+        {
+            "runtime": "voicebox",
+            "upstream_version": voicebox.get("B1_VOICEBOX_VERSION", ""),
+            "upstream_commit": voicebox.get("B1_VOICEBOX_COMMIT", ""),
+            "tarball_sha256": voicebox.get("B1_VOICEBOX_TARBALL_SHA256", ""),
+            "qwen3_tts_commit": voicebox.get("B1_QWEN3_TTS_COMMIT", ""),
+            "linacodec_commit": voicebox.get("B1_LINACODEC_COMMIT", ""),
+            "luxtts_commit": voicebox.get("B1_LUXTTS_COMMIT", ""),
+            "frontend_base_image": _first_base_for(bases, "voicebox", "frontend"),
+            "backend_base_image": _first_base_for(bases, "voicebox", "backend-builder"),
+        },
+        {
+            "runtime": "audio-cpu",
+            "engine": "piper",
+            "upstream_release": audio_cpu.get("B1_PIPER_RELEASE", ""),
+            "asset": audio_cpu.get("B1_PIPER_ASSET", ""),
+            "asset_sha256": audio_cpu.get("B1_PIPER_SHA256", ""),
+            "base_image": _first_base_for(bases, "audio-cpu"),
+        },
+    ]
+
+
+def _deployment_pin_integrity(pins: dict[str, Any]) -> dict[str, Any]:
+    floating_latest_refs: list[str] = []
+    unpinned_refs: list[str] = []
+    missing_runtime_pins: list[str] = []
+    missing_sections = [
+        section
+        for section in ("compose_images", "dockerfile_bases", "runtime_sources")
+        if not isinstance(pins.get(section), list) or not pins.get(section)
+    ]
+    for section, label_key in (("compose_images", "service"), ("dockerfile_bases", "component")):
+        for item in pins.get(section) or []:
+            if not isinstance(item, dict):
+                continue
+            ref_label = f"{item.get('file', section)}:{item.get(label_key, 'unknown')}"
+            pin_type = _image_pin_type(str(item.get("image") or item.get("default_image") or ""))
+            if pin_type == "floating-latest":
+                floating_latest_refs.append(ref_label)
+            elif pin_type == "unpinned":
+                unpinned_refs.append(ref_label)
+    for source in pins.get("runtime_sources") or []:
+        if not isinstance(source, dict):
+            continue
+        runtime = str(source.get("runtime") or "unknown")
+        if runtime in {"localai", "comfyui", "voicebox"} and not str(source.get("upstream_commit") or "").strip():
+            missing_runtime_pins.append(f"{runtime}.upstream_commit")
+        if runtime in {"comfyui", "voicebox"} and not SHA256_HEX_RE.fullmatch(str(source.get("tarball_sha256") or "")):
+            missing_runtime_pins.append(f"{runtime}.tarball_sha256")
+        if runtime == "audio-cpu" and not SHA256_HEX_RE.fullmatch(str(source.get("asset_sha256") or "")):
+            missing_runtime_pins.append("audio-cpu.asset_sha256")
+    return {
+        "floating_latest_refs": floating_latest_refs,
+        "unpinned_refs": unpinned_refs,
+        "missing_runtime_pins": missing_runtime_pins,
+        "missing_sections": missing_sections,
+    }
+
+
+def _deployment_pin_status(pins: dict[str, Any]) -> str:
+    integrity = pins.get("integrity") if isinstance(pins.get("integrity"), dict) else _deployment_pin_integrity(pins)
+    has_findings = any(bool(integrity.get(key)) for key in ("floating_latest_refs", "unpinned_refs", "missing_runtime_pins", "missing_sections"))
+    return "ok" if pins.get("format") == DEPLOYMENT_PINS_FORMAT and not has_findings else "blocked"
+
+
+def _normalize_deployment_pins(pins: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _json_clone(BUNDLED_DEPLOYMENT_PINS) if not isinstance(pins, dict) else _json_clone(pins)
+    normalized["format"] = str(normalized.get("format") or "")
+    normalized["source"] = str(normalized.get("source") or "supplied")
+    normalized["compose_images"] = [
+        _annotate_image_pin(item)
+        for item in (normalized.get("compose_images") or [])
+        if isinstance(item, dict)
+    ]
+    normalized["dockerfile_bases"] = [
+        _annotate_image_pin(item)
+        for item in (normalized.get("dockerfile_bases") or [])
+        if isinstance(item, dict)
+    ]
+    normalized["runtime_sources"] = [
+        item for item in (normalized.get("runtime_sources") or []) if isinstance(item, dict)
+    ]
+    normalized["integrity"] = _deployment_pin_integrity(normalized)
+    normalized["status"] = _deployment_pin_status(normalized)
+    return normalized
+
+
+def deployment_pins_snapshot(repo_root: Path | None = None) -> dict[str, Any]:
+    if repo_root is None or not (repo_root / "compose.yaml").is_file():
+        return _normalize_deployment_pins(BUNDLED_DEPLOYMENT_PINS)
+    compose_images = _parse_compose_images(repo_root)
+    dockerfile_bases = _parse_dockerfile_bases(repo_root)
+    if not compose_images or not dockerfile_bases:
+        fallback = _normalize_deployment_pins(BUNDLED_DEPLOYMENT_PINS)
+        fallback["source"] = "bundled"
+        fallback["repository_parse_error"] = "repository deployment pin files were incomplete or unreadable"
+        return fallback
+    return _normalize_deployment_pins(
+        {
+            "format": DEPLOYMENT_PINS_FORMAT,
+            "schema_version": 1,
+            "source": "repository",
+            "compose_images": compose_images,
+            "dockerfile_bases": dockerfile_bases,
+            "runtime_sources": _runtime_sources_from_repo(repo_root, dockerfile_bases),
+        }
+    )
+
+
 def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     if report.get("status") != "ok":
@@ -1368,6 +1836,18 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("source-control evidence is unavailable")
     elif not re.fullmatch(r"[a-f0-9]{40}", source_commit):
         blockers.append("source-control evidence lacks a valid 40-character commit")
+    deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
+    if deployment_pins.get("status") != "ok":
+        blockers.append("deployment pin manifest is not clean")
+    pin_integrity = deployment_pins.get("integrity") if isinstance(deployment_pins.get("integrity"), dict) else {}
+    if pin_integrity.get("floating_latest_refs"):
+        blockers.append("deployment pin manifest contains floating latest image refs: " + ", ".join(pin_integrity["floating_latest_refs"]))
+    if pin_integrity.get("unpinned_refs"):
+        blockers.append("deployment pin manifest contains unpinned image refs: " + ", ".join(pin_integrity["unpinned_refs"]))
+    if pin_integrity.get("missing_runtime_pins"):
+        blockers.append("deployment pin manifest is missing runtime source pins: " + ", ".join(pin_integrity["missing_runtime_pins"]))
+    if pin_integrity.get("missing_sections"):
+        blockers.append("deployment pin manifest is missing sections: " + ", ".join(pin_integrity["missing_sections"]))
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
@@ -1689,6 +2169,7 @@ def build_report(
     runtime_states: list[dict[str, Any]],
     runtime_reservations: list[dict[str, Any]],
     deployment: dict[str, Any] | None = None,
+    deployment_pins: dict[str, Any] | None = None,
     recent_updates: list[dict[str, Any]] | None = None,
     source_control: dict[str, Any] | None = None,
     operator_evidence: dict[str, Any] | None = None,
@@ -1717,6 +2198,7 @@ def build_report(
         "runtime_states": runtime_states,
         "runtime_reservations": runtime_reservations,
         "deployment": deployment or {},
+        "deployment_pins": _normalize_deployment_pins(deployment_pins),
         "recent_updates": recent_updates or [],
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
@@ -1987,6 +2469,60 @@ def markdown_report(report: dict[str, Any]) -> str:
     if len(source_rows) == 1:
         source_rows.append(["source", _format_value(source_control.get("reason") or "unavailable")])
 
+    deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
+    pin_summary_rows = [["Field", "Value"]]
+    pin_summary_rows.append(["source", _format_value(deployment_pins.get("source") or "unavailable")])
+    pin_summary_rows.append(["status", _format_value(deployment_pins.get("status") or "unknown")])
+    integrity = deployment_pins.get("integrity") if isinstance(deployment_pins.get("integrity"), dict) else {}
+    for key in ("floating_latest_refs", "unpinned_refs", "missing_runtime_pins", "missing_sections"):
+        values = integrity.get(key) if isinstance(integrity.get(key), list) else []
+        pin_summary_rows.append([key, ", ".join(str(item) for item in values) if values else "none"])
+    compose_pin_rows = [["Service", "File", "Image", "Pin"]]
+    for item in deployment_pins.get("compose_images") or []:
+        if isinstance(item, dict):
+            compose_pin_rows.append(
+                [
+                    _format_value(item.get("service")),
+                    _format_value(item.get("file")),
+                    _format_value(item.get("default_image") or item.get("image")),
+                    _format_value(item.get("pin_type")),
+                ]
+            )
+    base_pin_rows = [["Component", "Stage", "File", "Base Image", "Pin"]]
+    for item in deployment_pins.get("dockerfile_bases") or []:
+        if isinstance(item, dict):
+            base_pin_rows.append(
+                [
+                    _format_value(item.get("component")),
+                    _format_value(item.get("stage")),
+                    _format_value(item.get("file")),
+                    _format_value(item.get("default_image") or item.get("image")),
+                    _format_value(item.get("pin_type")),
+                ]
+            )
+    runtime_pin_rows = [["Runtime", "Version/Release", "Commit Pins", "SHA-256 Pins"]]
+    for item in deployment_pins.get("runtime_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        commits = [
+            f"{key}={value}"
+            for key, value in sorted(item.items())
+            if key.endswith("_commit") and value
+        ]
+        hashes = [
+            f"{key}={value}"
+            for key, value in sorted(item.items())
+            if key.endswith("_sha256") and value
+        ]
+        runtime_pin_rows.append(
+            [
+                _format_value(item.get("runtime")),
+                _format_value(item.get("upstream_version") or item.get("upstream_release") or item.get("engine")),
+                ", ".join(commits) if commits else "none",
+                ", ".join(hashes) if hashes else "none",
+            ]
+        )
+
     deployment = report.get("deployment") or {}
     service_rows = [["Service", "Container", "State", "Image", "Image ID"]]
     for service in deployment.get("services") or []:
@@ -2083,6 +2619,15 @@ def markdown_report(report: dict[str, Any]) -> str:
             + _format_value(handoff.get("recommended_hardware_upgrade") or RECOMMENDED_HARDWARE_UPGRADE),
             "## Resource Policy\n\n" + _table(resource_rows),
             "## Source Control\n\n" + _table(source_rows),
+            "## Deployment Pins\n\n"
+            + "### Pin Summary\n\n"
+            + _table(pin_summary_rows)
+            + "\n\n### Compose Images\n\n"
+            + (_table(compose_pin_rows) if len(compose_pin_rows) > 1 else "No Compose image pins recorded.")
+            + "\n\n### Dockerfile Base Images\n\n"
+            + (_table(base_pin_rows) if len(base_pin_rows) > 1 else "No Dockerfile base image pins recorded.")
+            + "\n\n### Runtime Source Pins\n\n"
+            + (_table(runtime_pin_rows) if len(runtime_pin_rows) > 1 else "No runtime source pins recorded."),
             "## Deployment Services\n\n" + (_table(service_rows) if len(service_rows) > 1 else _format_value(deployment.get("error") or "No runtime-agent service inventory recorded.")),
             "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
@@ -2240,6 +2785,8 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     source_control = report.get("source_control") if isinstance(report.get("source_control"), dict) else {}
     source_commit = str(source_control.get("source_commit") or source_control.get("commit") or "").lower()
     source_control_ready = source_control.get("available") is True and bool(re.fullmatch(r"[a-f0-9]{40}", source_commit))
+    deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
+    deployment_pins_ready = deployment_pins.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
     smoke_evidence_ready = (
         smoke_evidence.get("available") is True
@@ -2332,6 +2879,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "runtime_deployment_mode": report.get("runtime_deployment_mode"),
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "source_control_ready": source_control_ready,
+        "deployment_pins_ready": deployment_pins_ready,
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0

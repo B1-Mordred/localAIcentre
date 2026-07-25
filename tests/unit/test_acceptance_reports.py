@@ -899,6 +899,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 ]
             },
         ),
+        deployment_pins=overrides.pop("deployment_pins", None),
         recent_updates=overrides.pop(
             "recent_updates",
             [
@@ -965,6 +966,11 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("ghcr.io/b1/control-plane", markdown)
             self.assertIn("## Recent Update Records", markdown)
             self.assertIn("## Source Control", markdown)
+            self.assertIn("## Deployment Pins", markdown)
+            self.assertIn("caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d", markdown)
+            self.assertIn("localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973", markdown)
+            self.assertIn("59afc3984868289f808d02fa5cd180edfb2de240", markdown)
+            self.assertIn("d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083", markdown)
             self.assertIn("## Operator Evidence", markdown)
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
@@ -1006,7 +1012,81 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(loaded["format"], acceptance.REPORT_FORMAT)
         self.assertEqual(loaded["handoff"]["default_urls"][1]["url"], "https://control.ai.b1.germering/")
         self.assertEqual(loaded["handoff"]["commands"][0]["key"], "fresh_install")
+        self.assertTrue(loaded["deployment_pins"]["status"] == "ok")
+        self.assertTrue(summary["deployment_pins_ready"])
         self.assertEqual([item["id"] for item in listed], [report["id"]])
+
+    def test_deployment_pin_snapshot_reads_repository_and_matches_bundled_runtime_pins(self) -> None:
+        repository = acceptance.deployment_pins_snapshot(ROOT)
+        bundled = acceptance.deployment_pins_snapshot(Path("/tmp/b1-ai-hub-no-repo"))
+
+        self.assertEqual(repository["source"], "repository")
+        self.assertEqual(repository["status"], "ok")
+        self.assertEqual(repository["integrity"]["floating_latest_refs"], [])
+        self.assertEqual(repository["integrity"]["unpinned_refs"], [])
+        self.assertEqual(repository["integrity"]["missing_runtime_pins"], [])
+        self.assertEqual(repository["integrity"]["missing_sections"], [])
+        self.assertEqual(bundled["source"], "bundled")
+        self.assertEqual(bundled["status"], "ok")
+
+        compose = {
+            (item["file"], item["service"]): item["default_image"]
+            for item in repository["compose_images"]
+        }
+        self.assertEqual(
+            compose[("compose.yaml", "gateway")],
+            "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+        )
+        self.assertEqual(
+            compose[("compose.production-comfyui.yaml", "comfyui")],
+            "b1-ai-hub/comfyui:v0.3.77-b1",
+        )
+        self.assertEqual(
+            compose[("compose.monitoring.yaml", "prometheus")],
+            "prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
+        )
+
+        bases = {
+            (item["file"], item["component"], item["stage"]): item["default_image"]
+            for item in repository["dockerfile_bases"]
+        }
+        self.assertEqual(
+            bases[("deploy/localai/Dockerfile", "localai", "final")],
+            "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+        )
+        self.assertEqual(
+            bases[("deploy/comfyui/Dockerfile", "comfyui", "final")],
+            "pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime@sha256:e05438443ae3c407e8d04447091a959dbb6757b6290b128770c3c787d4bd442b",
+        )
+        self.assertEqual(
+            bases[("deploy/voicebox/Dockerfile", "voicebox", "backend-builder")],
+            "python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
+        )
+
+        repository_runtimes = {item["runtime"]: item for item in repository["runtime_sources"]}
+        bundled_runtimes = {item["runtime"]: item for item in bundled["runtime_sources"]}
+        for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(repository_runtimes[runtime], bundled_runtimes[runtime])
+
+    def test_report_blocks_handoff_for_unsafe_deployment_pin_manifest(self) -> None:
+        report = sample_report(
+            deployment_pins={
+                "format": acceptance.DEPLOYMENT_PINS_FORMAT,
+                "source": "test",
+                "compose_images": [{"file": "compose.yaml", "service": "bad", "image": "example.invalid/bad:latest"}],
+                "dockerfile_bases": [],
+                "runtime_sources": [{"runtime": "comfyui", "upstream_commit": "f" * 40}],
+            }
+        )
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["deployment_pins_ready"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("deployment pin manifest contains floating latest image refs", blockers)
+        self.assertIn("deployment pin manifest is missing runtime source pins: comfyui.tarball_sha256", blockers)
+        self.assertIn("deployment pin manifest is missing sections: dockerfile_bases", blockers)
 
     def test_report_file_path_rejects_unknown_names_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
