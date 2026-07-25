@@ -141,6 +141,8 @@ make live-smoke-acceptance
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS, temporary-host options, and the development-only placeholder override. Handoff smoke evidence requires real, non-placeholder TTS output.
 
+Compose bootstrap seeds editable acceptance templates once under `/srv/b1-ai-hub/workflows/acceptance/`. Existing files there are preserved, so bind real checkpoint names, uploaded image names, and published workflow IDs in the external data-root copies before final handoff runs.
+
 Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 
 ```bash
@@ -167,7 +169,7 @@ B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json
 make installed-workflows-acceptance
 ```
 
-Run native ComfyUI compatibility from an external client after a real API-format workflow is installed:
+Run native ComfyUI compatibility from an external client after a real API-format workflow is installed. For route-level rehearsals, `/srv/b1-ai-hub/workflows/acceptance/native-comfyui-smoke-prompt.json` produces a deterministic tiny image through the B1 ComfyUI hook, but production handoff should use a real prompt such as the edited text-to-image template.
 
 ```bash
 B1_NATIVE_COMFYUI_LIVE_TEST=1 \

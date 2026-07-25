@@ -218,6 +218,19 @@ class ComposePolicyTests(unittest.TestCase):
             self.assertIn(f"models/runtime-views/{runtime}", healthcheck)
         self.assertIn("data/prometheus", healthcheck)
         self.assertIn("data/grafana", healthcheck)
+        self.assertIn("workflows/acceptance", healthcheck)
+        for filename in (
+            "native-comfyui-smoke-prompt.json",
+            "text-to-image-api-prompt.json",
+            "image-generation-job.json",
+            "image-edit-job.json",
+            "short-video-job.json",
+        ):
+            self.assertIn(f"workflows/acceptance/{filename}", healthcheck)
+
+    def test_bootstrap_mounts_acceptance_templates_read_only(self) -> None:
+        volumes = self.compose["services"]["bootstrap"].get("volumes", [])
+        self.assertIn("./workflows/acceptance:/opt/b1/workflows/acceptance:ro", volumes)
 
     def test_control_plane_mounts_generated_secrets_read_only(self) -> None:
         volumes = self.compose["services"]["control-plane"].get("volumes", [])
@@ -629,6 +642,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn('@PromptServer.instance.routes.post("/b1/runtime/{action}")', hooks)
         self.assertIn("model_management.unload_all_models()", hooks)
         self.assertIn("B1RuntimeSmoke", hooks)
+        self.assertIn("B1RuntimeTinyImage", hooks)
 
     def test_production_comfyui_override_points_control_plane_to_native_port(self) -> None:
         control_plane = self.production_comfyui_compose["services"]["control-plane"]

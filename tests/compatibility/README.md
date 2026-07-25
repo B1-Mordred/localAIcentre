@@ -6,6 +6,8 @@ Compatibility tests will cover native ComfyUI REST/WebSocket clients, the option
 
 The native ComfyUI compatibility path uses the public `comfy.ai.b1.germering` gateway endpoint, not the internal `comfyui` container port. It verifies metadata routes including node-specific `/object_info/{node}`, native image and mask uploads, native prompt submission, `Idempotency-Key` replay of the same native `prompt_id`, native WebSocket events, native history listing and prompt lookup, native queue deletion, targeted interrupt, and `/view` artifact retrieval with a real API-format prompt supplied by the operator.
 
+Bootstrap copies editable prompt templates once to `/srv/b1-ai-hub/workflows/acceptance/` and preserves later operator edits. Use `native-comfyui-smoke-prompt.json` only for route-level rehearsals; it emits a deterministic tiny image through the B1 runtime hook and is not model acceptance evidence. Final handoff should use a real prompt such as the edited `text-to-image-api-prompt.json`.
+
 ```bash
 export B1_NATIVE_COMFYUI_LIVE_TEST=1
 export B1_NATIVE_COMFYUI_BASE=https://comfy.ai.b1.germering

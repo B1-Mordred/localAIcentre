@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -40,6 +41,7 @@ class BootstrapTests(unittest.TestCase):
         "models/stt",
         "models/blobs",
         "workflows",
+        "workflows/acceptance",
         "artifacts/images",
         "artifacts/audio",
         "artifacts/video",
@@ -155,6 +157,67 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue(self.REQUIRED_B1_MANAGED_DIRS <= covered_dirs)
             created_relative = {str(Path(path).relative_to(root)) for path in result["created_dirs"]}
             self.assertEqual(created_relative, set(bootstrap.DIRS))
+
+    def test_acceptance_templates_are_valid_json_and_match_live_harness_contract(self) -> None:
+        source = ROOT / "workflows" / "acceptance"
+        missing = [filename for filename in bootstrap.ACCEPTANCE_TEMPLATE_FILES if not (source / filename).is_file()]
+        self.assertEqual(missing, [])
+
+        prompt = json.loads((source / "text-to-image-api-prompt.json").read_text(encoding="utf-8"))
+        smoke_prompt = json.loads((source / "native-comfyui-smoke-prompt.json").read_text(encoding="utf-8"))
+        image_job = json.loads((source / "image-generation-job.json").read_text(encoding="utf-8"))
+        image_edit_job = json.loads((source / "image-edit-job.json").read_text(encoding="utf-8"))
+        video_job = json.loads((source / "short-video-job.json").read_text(encoding="utf-8"))
+
+        self.assertIn("prompt", prompt)
+        self.assertIn("CheckpointLoaderSimple", {node.get("class_type") for node in prompt["prompt"].values()})
+        self.assertIn("SaveImage", {node.get("class_type") for node in prompt["prompt"].values()})
+        self.assertIn("B1RuntimeTinyImage", {node.get("class_type") for node in smoke_prompt["prompt"].values()})
+        self.assertIn("SaveImage", {node.get("class_type") for node in smoke_prompt["prompt"].values()})
+
+        for body, modality, operation, model in (
+            (image_job, "image", "generation", "image-default"),
+            (image_edit_job, "image", "edit", "image-edit"),
+            (video_job, "video", "generation", "video-text"),
+        ):
+            self.assertEqual(body["modality"], modality)
+            self.assertEqual(body["operation"], operation)
+            self.assertEqual(body["model"], model)
+            self.assertEqual(body["runtime_policy"], "any")
+            self.assertIsInstance(body["input"], dict)
+        self.assertIn("comfyui_prompt", image_job["input"])
+        self.assertIn("comfyui_prompt", image_edit_job["input"])
+        self.assertEqual(video_job["input"]["workflow_id"], "text-to-video")
+        self.assertEqual(video_job["input"]["workflow_version"], "0.1.0")
+
+    def test_acceptance_templates_copy_once_without_overwriting_operator_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data-root"
+            source = Path(tmp) / "source"
+            target = root / "workflows" / "acceptance"
+            source.mkdir(parents=True)
+            target.mkdir(parents=True)
+            for filename in bootstrap.ACCEPTANCE_TEMPLATE_FILES:
+                (source / filename).write_text(f"repo template: {filename}\n", encoding="utf-8")
+            edited = target / "image-generation-job.json"
+            edited.write_text("operator-edited\n", encoding="utf-8")
+
+            created = bootstrap.copy_acceptance_templates(root, source=source)
+            second = bootstrap.copy_acceptance_templates(root, source=source)
+
+            created_relative = {str(Path(path).relative_to(root)) for path in created}
+            expected = {
+                f"workflows/acceptance/{filename}"
+                for filename in bootstrap.ACCEPTANCE_TEMPLATE_FILES
+                if filename != "image-generation-job.json"
+            }
+            self.assertEqual(created_relative, expected)
+            self.assertEqual(second, [])
+            self.assertEqual(edited.read_text(encoding="utf-8"), "operator-edited\n")
+            for relative in expected:
+                path = root / relative
+                self.assertTrue(path.exists(), relative)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o664)
 
 
 if __name__ == "__main__":

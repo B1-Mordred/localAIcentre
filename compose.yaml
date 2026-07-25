@@ -25,6 +25,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-b1_ai_hub}
     volumes:
       - ./deploy/scripts:/opt/b1/deploy/scripts:ro
+      - ./workflows/acceptance:/opt/b1/workflows/acceptance:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}:${B1_DATA_ROOT:-/srv/b1-ai-hub}
     networks:
       - app
@@ -51,13 +52,24 @@ services:
               "models/runtime-views/comfyui",
               "models/runtime-views/voicebox",
               "models/runtime-views/audio-cpu",
+              "workflows/acceptance",
               "artifacts/temporary",
               "secrets",
               "backups",
           )
+          required_files = (
+              "workflows/acceptance/native-comfyui-smoke-prompt.json",
+              "workflows/acceptance/text-to-image-api-prompt.json",
+              "workflows/acceptance/image-generation-job.json",
+              "workflows/acceptance/image-edit-job.json",
+              "workflows/acceptance/short-video-job.json",
+          )
           missing = [relative for relative in required if not (root / relative).is_dir()]
           if missing:
               raise SystemExit("missing bootstrap directories: " + ", ".join(missing))
+          missing_files = [relative for relative in required_files if not (root / relative).is_file()]
+          if missing_files:
+              raise SystemExit("missing bootstrap acceptance templates: " + ", ".join(missing_files))
           PY
       interval: 10s
       timeout: 5s

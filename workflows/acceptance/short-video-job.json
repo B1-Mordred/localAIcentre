@@ -1,0 +1,17 @@
+{
+  "modality": "video",
+  "operation": "generation",
+  "model": "video-text",
+  "priority": "video",
+  "runtime_policy": "any",
+  "input": {
+    "workflow_id": "text-to-video",
+    "workflow_version": "0.1.0",
+    "parameters": {
+      "prompt": "B1 AI Hub short acceptance clip, simple motion, clean composition",
+      "frames": 8,
+      "steps": 12,
+      "duration_seconds": 1.0
+    }
+  }
+}

@@ -78,6 +78,8 @@ The smoke suite checks gateway health, authenticated model listing, an async `tt
 
 After installing real GPU model manifests and publishing at least one target-host ComfyUI API prompt/workflow, run the cross-runtime RTX acceptance suite during a maintenance validation window:
 
+Bootstrap creates `/srv/b1-ai-hub/workflows/acceptance/` and copies editable prompt/job templates there once. Review the copied files and replace placeholder checkpoint names, upload names, and workflow references before collecting final evidence.
+
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...

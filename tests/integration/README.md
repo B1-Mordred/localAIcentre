@@ -23,6 +23,8 @@ The first live integration path checks `/admin/runtimes` adapter-contract, healt
 
 Run the installed workflow suite on the target host after the public aliases are backed by real installed models, each alias has a successful persisted model-smoke measurement, and the required workflows are approved. It exercises the user-facing paths for chat, synchronous TTS, synchronous STT, CPU-audio GPU-lease isolation, image generation, image edit, and short video, rejects placeholder or unmarked `audio-cpu` output by default, follows the accepted media job's advertised polling/artifact links, downloads generated artifacts, and verifies artifact metadata, `Content-Length`, `ETag`, byte count, and SHA-256 before writing evidence for the Control Center handoff report. The API key must include normal inference scopes plus `models:read` and `runtimes:read` so the harness can verify installed model measurements and read `/admin/scheduler/lease` before and after the CPU-audio probe.
 
+Compose bootstrap copies editable job templates once to `/srv/b1-ai-hub/workflows/acceptance/`. It never overwrites existing files, so review and edit those external data-root copies to match installed aliases, checkpoint filenames, uploaded edit inputs, and published workflow IDs before collecting production evidence.
+
 ```bash
 export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering
 export B1_WORKFLOWS_API_KEY=...

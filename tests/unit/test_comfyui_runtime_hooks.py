@@ -140,6 +140,11 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertIn("/b1/runtime/{action}", routes.posts)
         self.assertIn("B1RuntimeSmoke", hooks.NODE_CLASS_MAPPINGS)
         self.assertEqual(hooks.NODE_DISPLAY_NAME_MAPPINGS["B1RuntimeSmoke"], "B1 Runtime Smoke")
+        self.assertIn("B1RuntimeTinyImage", hooks.NODE_CLASS_MAPPINGS)
+        self.assertEqual(hooks.NODE_DISPLAY_NAME_MAPPINGS["B1RuntimeTinyImage"], "B1 Runtime Tiny Image")
+        self.assertEqual(hooks.B1RuntimeTinyImage.RETURN_TYPES, ("IMAGE",))
+        required_inputs = hooks.B1RuntimeTinyImage.INPUT_TYPES()["required"]
+        self.assertEqual(set(required_inputs), {"width", "height", "red", "green", "blue"})
 
     def test_runtime_action_requires_configured_bearer_token(self) -> None:
         hooks, _routes, _queue = load_hooks()

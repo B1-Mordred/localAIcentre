@@ -330,5 +330,40 @@ class B1RuntimeSmoke:
         return ("ok",)
 
 
-NODE_CLASS_MAPPINGS = {"B1RuntimeSmoke": B1RuntimeSmoke}
-NODE_DISPLAY_NAME_MAPPINGS = {"B1RuntimeSmoke": "B1 Runtime Smoke"}
+class B1RuntimeTinyImage:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, dict[str, Any]]:
+        return {
+            "required": {
+                "width": ("INT", {"default": 64, "min": 1, "max": 512, "step": 1}),
+                "height": ("INT", {"default": 64, "min": 1, "max": 512, "step": 1}),
+                "red": ("INT", {"default": 47, "min": 0, "max": 255, "step": 1}),
+                "green": ("INT", {"default": 111, "min": 0, "max": 255, "step": 1}),
+                "blue": ("INT", {"default": 115, "min": 0, "max": 255, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "run"
+    CATEGORY = "B1/runtime"
+
+    def run(self, width: int = 64, height: int = 64, red: int = 47, green: int = 111, blue: int = 115) -> tuple[Any]:
+        import torch
+
+        safe_width = max(1, min(int(width), 512))
+        safe_height = max(1, min(int(height), 512))
+        image = torch.zeros((1, safe_height, safe_width, 3), dtype=torch.float32)
+        image[:, :, :, 0] = max(0, min(int(red), 255)) / 255.0
+        image[:, :, :, 1] = max(0, min(int(green), 255)) / 255.0
+        image[:, :, :, 2] = max(0, min(int(blue), 255)) / 255.0
+        return (image,)
+
+
+NODE_CLASS_MAPPINGS = {
+    "B1RuntimeSmoke": B1RuntimeSmoke,
+    "B1RuntimeTinyImage": B1RuntimeTinyImage,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "B1RuntimeSmoke": "B1 Runtime Smoke",
+    "B1RuntimeTinyImage": "B1 Runtime Tiny Image",
+}
