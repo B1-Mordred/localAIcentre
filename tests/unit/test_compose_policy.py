@@ -391,7 +391,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_BACKUP_ROOT"], "/srv/b1-ai-hub/backups")
         self.assertEqual(environment["B1_RESTORE_TEST_ROOT"], "/srv/b1-ai-hub/restore-tests")
         self.assertEqual(environment["B1_RUNTIME_DEPLOYMENT_MODE"], "${B1_RUNTIME_DEPLOYMENT_MODE:-development}")
-        self.assertEqual(environment["B1_RUNTIME_PRODUCTION_REQUIRED"], "${B1_RUNTIME_PRODUCTION_REQUIRED:-localai comfyui audio-cpu}")
+        self.assertEqual(environment["B1_RUNTIME_PRODUCTION_REQUIRED"], "${B1_RUNTIME_PRODUCTION_REQUIRED:-localai,comfyui,audio-cpu}")
 
     def test_runtime_containers_mount_only_runtime_model_views(self) -> None:
         expected_mounts = {
@@ -450,10 +450,12 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(self.production_env["COMPOSE_PROFILES"], "voicebox")
         self.assertNotIn("compose.legacy-comfy.yaml", self.production_env["COMPOSE_FILE"])
         self.assertEqual(self.production_env["B1_RUNTIME_DEPLOYMENT_MODE"], "production")
-        self.assertEqual(
-            set(self.production_env["B1_RUNTIME_PRODUCTION_REQUIRED"].split()),
-            {"localai", "comfyui", "audio-cpu", "voicebox"},
-        )
+        required_runtimes = {
+            item
+            for item in self.production_env["B1_RUNTIME_PRODUCTION_REQUIRED"].replace(",", " ").split()
+            if item
+        }
+        self.assertEqual(required_runtimes, {"localai", "comfyui", "audio-cpu", "voicebox"})
 
     def test_docs_keep_compose_up_as_fresh_install_start_command(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

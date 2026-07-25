@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -54,7 +55,12 @@ class PrepareEnvTests(unittest.TestCase):
             output = root / ".env"
             socket_path = root / "docker.sock"
             template.write_text("B1_DOCKER_GID=0\n", encoding="utf-8")
-            output.write_text("CUSTOM_VALUE=kept\nB1_DOCKER_GID=0\n", encoding="utf-8")
+            output.write_text(
+                "CUSTOM_VALUE=kept\n"
+                "B1_RUNTIME_PRODUCTION_REQUIRED=localai comfyui audio-cpu voicebox\n"
+                "B1_DOCKER_GID=0\n",
+                encoding="utf-8",
+            )
             sock = self.unix_socket(socket_path)
             self.addCleanup(sock.close)
 
@@ -68,6 +74,8 @@ class PrepareEnvTests(unittest.TestCase):
             content = output.read_text(encoding="utf-8")
             self.assertFalse(result["created"])
             self.assertIn("CUSTOM_VALUE=kept", content)
+            self.assertIn("B1_RUNTIME_PRODUCTION_REQUIRED=localai,comfyui,audio-cpu,voicebox", content)
+            self.assertIn("B1_RUNTIME_PRODUCTION_REQUIRED", result["updated_keys"])
             self.assertIn(f"B1_DOCKER_GID={os.stat(socket_path).st_gid}", content)
 
     def test_prepare_appends_missing_docker_gid_key(self) -> None:
@@ -147,6 +155,38 @@ class PrepareEnvTests(unittest.TestCase):
 
             with self.assertRaisesRegex(prepare_env.PrepareEnvError, "not a Unix socket"):
                 prepare_env.docker_socket_gid(regular_file)
+
+    def test_prepared_production_template_is_shell_sourceable_for_preflights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / ".env"
+            socket_path = root / "docker.sock"
+            sock = self.unix_socket(socket_path)
+            self.addCleanup(sock.close)
+
+            prepare_env.prepare_production_env(
+                template=ROOT / ".env.production.example",
+                output=output,
+                docker_socket=socket_path,
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'set -euo pipefail; set -a; . "$1"; set +a; '
+                    'test "$B1_DOCKER_GID" = "$2"; '
+                    'test "$B1_RUNTIME_PRODUCTION_REQUIRED" = "localai,comfyui,audio-cpu,voicebox"',
+                    "bash",
+                    str(output),
+                    str(os.stat(socket_path).st_gid),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

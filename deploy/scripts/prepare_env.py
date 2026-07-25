@@ -13,6 +13,9 @@ class PrepareEnvError(RuntimeError):
     pass
 
 
+NORMALIZED_LIST_KEYS = {"B1_RUNTIME_PRODUCTION_REQUIRED"}
+
+
 def docker_socket_gid(path: Path) -> int:
     try:
         info = path.stat()
@@ -21,6 +24,14 @@ def docker_socket_gid(path: Path) -> int:
     if not stat.S_ISSOCK(info.st_mode):
         raise PrepareEnvError(f"Docker socket path is not a Unix socket: {path}")
     return info.st_gid
+
+
+def normalize_env_value(key: str, value: str) -> str:
+    if key in NORMALIZED_LIST_KEYS:
+        items = [item.strip() for item in value.replace(",", " ").split() if item.strip()]
+        if items:
+            return ",".join(items)
+    return value
 
 
 def render_env(source: str, values: dict[str, str]) -> tuple[str, list[str]]:
@@ -36,6 +47,12 @@ def render_env(source: str, values: dict[str, str]) -> tuple[str, list[str]]:
         if key in values:
             lines.append(f"{key}={values[key]}")
             seen.add(key)
+            updated.append(key)
+            continue
+        original_value = line.split("=", 1)[1]
+        normalized_value = normalize_env_value(key, original_value)
+        if normalized_value != original_value:
+            lines.append(f"{key}={normalized_value}")
             updated.append(key)
             continue
         lines.append(line)
