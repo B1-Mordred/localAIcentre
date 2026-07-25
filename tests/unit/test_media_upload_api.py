@@ -28,6 +28,14 @@ else:
     MISSING_DEPENDENCY = ""
 
 
+PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000049454e44ae426082"
+)
+
+
 class FakeRequest:
     def __init__(self, body: bytes = b"", headers: dict[str, str] | None = None, json_payload: Any = None) -> None:
         self._body = body
@@ -49,12 +57,11 @@ class MediaUploadApiTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(main, "settings", original))
 
     def test_raw_image_edit_body_is_staged_as_image_reference(self) -> None:
-        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
             request = FakeRequest(
-                body=png_bytes,
+                body=PNG_BYTES,
                 headers={"content-type": "application/octet-stream", "X-B1-Filename": "../input.png"},
             )
 
@@ -63,7 +70,7 @@ class MediaUploadApiTests(unittest.TestCase):
             self.assertEqual(payload["image"]["source"], "staged_upload")
             self.assertEqual(payload["image"]["mime_type"], "image/png")
             self.assertEqual(payload["image"]["filename"], "input.png")
-            self.assertEqual((Path(tmp) / payload["image"]["path"]).read_bytes(), png_bytes)
+            self.assertEqual((Path(tmp) / payload["image"]["path"]).read_bytes(), PNG_BYTES)
 
     def test_raw_upload_rejects_configured_size_limit(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))

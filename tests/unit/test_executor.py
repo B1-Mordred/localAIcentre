@@ -25,6 +25,30 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test e
     security = None  # type: ignore[assignment]
 
 
+PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000049454e44ae426082"
+)
+WAV_BYTES = (
+    b"RIFF"
+    + (38).to_bytes(4, "little")
+    + b"WAVE"
+    + b"fmt "
+    + (16).to_bytes(4, "little")
+    + (1).to_bytes(2, "little")
+    + (1).to_bytes(2, "little")
+    + (16000).to_bytes(4, "little")
+    + (32000).to_bytes(4, "little")
+    + (2).to_bytes(2, "little")
+    + (16).to_bytes(2, "little")
+    + b"data"
+    + (2).to_bytes(4, "little")
+    + b"\x00\x00"
+)
+
+
 class FakeDatabase:
     def __init__(self, lease_acquired: bool = True, runtime: str = "voicebox", claim_job: bool = True) -> None:
         self.lease_acquired = lease_acquired
@@ -383,14 +407,13 @@ class ExecutorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            wav_bytes = b"RIFF\x00\x00\x00\x00WAVEfmt "
             staged = executor.media_artifacts.write_staged_input_bytes(
                 root,
                 owner_id="client_1",
                 field_name="audio",
                 filename="clip.wav",
                 declared_mime_type="audio/wav",
-                content=wav_bytes,
+                content=WAV_BYTES,
             )
             fake.job.update(
                 {
@@ -405,7 +428,7 @@ class ExecutorTests(unittest.TestCase):
             processed = asyncio.run(runner.run_once())
 
             self.assertTrue(processed)
-            self.assertEqual(runner.payloads[0]["audio"], base64.b64encode(wav_bytes).decode("ascii"))
+            self.assertEqual(runner.payloads[0]["audio"], base64.b64encode(WAV_BYTES).decode("ascii"))
             self.assertEqual(runner.payloads[0]["audio_mime_type"], "audio/wav")
             self.assertEqual(runner.payloads[0]["filename"], "clip.wav")
             self.assertEqual(fake.job["state"], "completed")
@@ -1257,14 +1280,13 @@ class ExecutorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRsource"
             source = executor.media_artifacts.write_staged_input_bytes(
                 root,
                 owner_id="client_1",
                 field_name="source_image",
                 filename="source.png",
                 declared_mime_type="image/png",
-                content=source_bytes,
+                content=PNG_BYTES,
             )
             fake.job["request_params"] = {
                 "input": {
@@ -1284,7 +1306,7 @@ class ExecutorTests(unittest.TestCase):
             endpoint, data, files = runner.multipart_posts[0]
             self.assertEqual(endpoint, "/v1/videos/image-to-video")
             self.assertEqual(data, {"model": "image-video-model", "prompt": "animate the image", "frames": "8"})
-            self.assertEqual(files, [("image", ("source.png", source_bytes, "image/png"))])
+            self.assertEqual(files, [("image", ("source.png", PNG_BYTES, "image/png"))])
             self.assertEqual(fake.job["state"], "completed")
             artifact = fake.job["artifacts"][0]
             self.assertEqual(artifact["kind"], "video")
@@ -1308,14 +1330,13 @@ class ExecutorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
             staged = executor.media_artifacts.write_staged_input_bytes(
                 root,
                 owner_id="client_1",
                 field_name="image",
                 filename="input.png",
                 declared_mime_type="image/png",
-                content=png_bytes,
+                content=PNG_BYTES,
             )
             fake.job["request_params"] = {
                 "input": {
@@ -1332,7 +1353,7 @@ class ExecutorTests(unittest.TestCase):
             endpoint, data, files = runner.multipart_posts[0]
             self.assertEqual(endpoint, "/v1/images/edits")
             self.assertEqual(data, {"model": "model", "prompt": "replace background", "size": "512x512"})
-            self.assertEqual(files, [("image", ("input.png", png_bytes, "image/png"))])
+            self.assertEqual(files, [("image", ("input.png", PNG_BYTES, "image/png"))])
             self.assertEqual(fake.job["state"], "completed")
             artifact = fake.job["artifacts"][0]
             self.assertEqual(artifact["runtime"], "localai")
@@ -1368,15 +1389,13 @@ class ExecutorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRsource"
-            mask_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRmask"
             source = executor.media_artifacts.write_staged_input_bytes(
                 root,
                 owner_id="client_1",
                 field_name="source_image",
                 filename="source.png",
                 declared_mime_type="image/png",
-                content=source_bytes,
+                content=PNG_BYTES,
             )
             mask = executor.media_artifacts.write_staged_input_bytes(
                 root,
@@ -1384,7 +1403,7 @@ class ExecutorTests(unittest.TestCase):
                 field_name="mask_image",
                 filename="mask.png",
                 declared_mime_type="image/png",
-                content=mask_bytes,
+                content=PNG_BYTES,
             )
             fake.job["request_params"] = {
                 "input": {
@@ -1408,8 +1427,8 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(
                 files,
                 [
-                    ("image", ("source.png", source_bytes, "image/png")),
-                    ("mask", ("mask.png", mask_bytes, "image/png")),
+                    ("image", ("source.png", PNG_BYTES, "image/png")),
+                    ("mask", ("mask.png", PNG_BYTES, "image/png")),
                 ],
             )
             self.assertEqual(fake.job["state"], "completed")

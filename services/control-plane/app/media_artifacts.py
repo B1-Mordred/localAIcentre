@@ -71,25 +71,204 @@ def normalize_mime_type(value: str | None) -> str:
     return (value or "").split(";")[0].strip().lower()
 
 
+def _u16le(content: bytes, offset: int) -> int:
+    return int.from_bytes(content[offset : offset + 2], "little")
+
+
+def _u32be(content: bytes, offset: int) -> int:
+    return int.from_bytes(content[offset : offset + 4], "big")
+
+
+def _u32le(content: bytes, offset: int) -> int:
+    return int.from_bytes(content[offset : offset + 4], "little")
+
+
+def _looks_like_png(content: bytes) -> bool:
+    if len(content) < 45 or not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    seen_ihdr = False
+    chunks_seen = 0
+    while offset + 12 <= len(content) and chunks_seen < 256:
+        chunk_length = _u32be(content, offset)
+        chunk_type = content[offset + 4 : offset + 8]
+        data_start = offset + 8
+        data_end = data_start + chunk_length
+        crc_end = data_end + 4
+        if data_end < data_start or crc_end > len(content):
+            return False
+        if chunks_seen == 0:
+            if chunk_type != b"IHDR" or chunk_length != 13:
+                return False
+            width = _u32be(content, data_start)
+            height = _u32be(content, data_start + 4)
+            bit_depth = content[data_start + 8]
+            color_type = content[data_start + 9]
+            if width <= 0 or height <= 0 or bit_depth not in {1, 2, 4, 8, 16} or color_type not in {0, 2, 3, 4, 6}:
+                return False
+            seen_ihdr = True
+        elif chunk_type == b"IHDR":
+            return False
+        if chunk_type == b"IEND":
+            return seen_ihdr and chunk_length == 0 and crc_end == len(content)
+        offset = crc_end
+        chunks_seen += 1
+    return False
+
+
+def _looks_like_jpeg(content: bytes) -> bool:
+    return len(content) >= 4 and content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9")
+
+
+def _looks_like_gif(content: bytes) -> bool:
+    if len(content) < 14 or not content.startswith((b"GIF87a", b"GIF89a")) or not content.endswith(b";"):
+        return False
+    width = _u16le(content, 6)
+    height = _u16le(content, 8)
+    if width <= 0 or height <= 0:
+        return False
+    packed = content[10]
+    global_color_table_size = 3 * (2 << (packed & 0x07)) if packed & 0x80 else 0
+    return len(content) >= 13 + global_color_table_size + 1
+
+
+def _riff_declared_end(content: bytes, form_type: bytes) -> int | None:
+    if len(content) < 12 or not content.startswith(b"RIFF") or content[8:12] != form_type:
+        return None
+    declared_size = _u32le(content, 4)
+    declared_end = declared_size + 8
+    if declared_end != len(content) or declared_end < 12:
+        return None
+    return declared_end
+
+
+def _looks_like_webp(content: bytes) -> bool:
+    declared_end = _riff_declared_end(content, b"WEBP")
+    if declared_end is None or declared_end < 20:
+        return False
+    chunk_type = content[12:16]
+    chunk_size = _u32le(content, 16)
+    return chunk_type in {b"VP8 ", b"VP8L", b"VP8X"} and 20 + chunk_size + (chunk_size % 2) <= declared_end
+
+
+def _looks_like_wav(content: bytes) -> bool:
+    declared_end = _riff_declared_end(content, b"WAVE")
+    if declared_end is None:
+        return False
+    offset = 12
+    has_fmt = False
+    has_data = False
+    while offset + 8 <= declared_end:
+        chunk_type = content[offset : offset + 4]
+        chunk_size = _u32le(content, offset + 4)
+        data_start = offset + 8
+        data_end = data_start + chunk_size
+        if data_end < data_start or data_end > declared_end:
+            return False
+        if chunk_type == b"fmt ":
+            if chunk_size < 16:
+                return False
+            audio_format = _u16le(content, data_start)
+            channels = _u16le(content, data_start + 2)
+            sample_rate = _u32le(content, data_start + 4)
+            bits_per_sample = _u16le(content, data_start + 14)
+            if audio_format not in {1, 3, 65534} or channels <= 0 or channels > 8 or sample_rate <= 0 or bits_per_sample <= 0:
+                return False
+            has_fmt = True
+        elif chunk_type == b"data":
+            has_data = True
+        offset = data_end + (chunk_size % 2)
+    return has_fmt and has_data
+
+
+def _syncsafe_int(content: bytes) -> int | None:
+    if len(content) != 4 or any(byte & 0x80 for byte in content):
+        return None
+    return (content[0] << 21) | (content[1] << 14) | (content[2] << 7) | content[3]
+
+
+def _looks_like_mpeg_audio_frame(content: bytes, offset: int = 0) -> bool:
+    if offset + 4 > len(content):
+        return False
+    header = int.from_bytes(content[offset : offset + 4], "big")
+    sync = (header >> 21) & 0x7FF
+    version = (header >> 19) & 0x03
+    layer = (header >> 17) & 0x03
+    bitrate = (header >> 12) & 0x0F
+    sample_rate = (header >> 10) & 0x03
+    return sync == 0x7FF and version != 0x01 and layer != 0 and bitrate not in {0, 0x0F} and sample_rate != 0x03
+
+
+def _looks_like_mp3(content: bytes) -> bool:
+    if content.startswith(b"ID3"):
+        if len(content) < 14:
+            return False
+        tag_size = _syncsafe_int(content[6:10])
+        if tag_size is None:
+            return False
+        audio_offset = 10 + tag_size
+        return audio_offset < len(content) and _looks_like_mpeg_audio_frame(content, audio_offset)
+    return _looks_like_mpeg_audio_frame(content)
+
+
+def _looks_like_ogg(content: bytes) -> bool:
+    if len(content) < 27 or not content.startswith(b"OggS") or content[4] != 0:
+        return False
+    page_segments = content[26]
+    segment_table_end = 27 + page_segments
+    if segment_table_end > len(content):
+        return False
+    body_size = sum(content[27:segment_table_end])
+    return segment_table_end + body_size <= len(content)
+
+
+def _looks_like_mp4(content: bytes) -> bool:
+    if len(content) < 24:
+        return False
+    box_size = _u32be(content, 0)
+    box_header_size = 8
+    if box_size == 1:
+        if len(content) < 32:
+            return False
+        box_size = int.from_bytes(content[8:16], "big")
+        box_header_size = 16
+    if content[4:8] != b"ftyp" or box_size < box_header_size + 8 or box_size > len(content):
+        return False
+    brand_start = box_header_size
+    major_brand = content[brand_start : brand_start + 4]
+    compatible_brands = content[brand_start + 8 : box_size]
+    if not all(32 <= byte <= 126 for byte in major_brand):
+        return False
+    return len(compatible_brands) >= 4 and len(compatible_brands) % 4 == 0 and all(
+        32 <= byte <= 126 for byte in compatible_brands
+    )
+
+
+def _looks_like_webm(content: bytes) -> bool:
+    if len(content) < 16 or not content.startswith(b"\x1a\x45\xdf\xa3"):
+        return False
+    return b"webm" in content[:4096].lower()
+
+
 def sniff_media_mime_type(content: bytes, declared_mime_type: str | None = None) -> str:
     del declared_mime_type
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+    if _looks_like_png(content):
         return "image/png"
-    if content.startswith(b"\xff\xd8\xff"):
+    if _looks_like_jpeg(content):
         return "image/jpeg"
-    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+    if _looks_like_webp(content):
         return "image/webp"
-    if content.startswith((b"GIF87a", b"GIF89a")):
+    if _looks_like_gif(content):
         return "image/gif"
-    if content.startswith(b"RIFF") and content[8:12] == b"WAVE":
+    if _looks_like_wav(content):
         return "audio/wav"
-    if content.startswith(b"ID3") or (len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0):
+    if _looks_like_mp3(content):
         return "audio/mpeg"
-    if content.startswith(b"OggS"):
+    if _looks_like_ogg(content):
         return "audio/ogg"
-    if len(content) >= 12 and content[4:8] == b"ftyp":
+    if _looks_like_mp4(content):
         return "video/mp4"
-    if content.startswith(b"\x1a\x45\xdf\xa3"):
+    if _looks_like_webm(content):
         return "video/webm"
     return "application/octet-stream"
 

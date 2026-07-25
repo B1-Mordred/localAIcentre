@@ -30,6 +30,14 @@ else:
     MISSING_DEPENDENCY = ""
 
 
+PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000049454e44ae426082"
+)
+
+
 def resolution() -> Any:
     return main.RuntimeResolution(
         public_alias="image-default",
@@ -521,7 +529,7 @@ class AdmissionApiTests(unittest.TestCase):
                 artifact_storage_max_bytes=4,
                 artifact_storage_reserve_bytes=0,
             )
-            request = FakeRequest(body=b"\x89PNG\r\n\x1a\n", headers={"content-type": "image/png"})
+            request = FakeRequest(body=PNG_BYTES, headers={"content-type": "image/png"})
 
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(main.media_upload_create(request))

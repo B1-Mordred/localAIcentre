@@ -31,6 +31,30 @@ else:
     MISSING_DEPENDENCY = ""
 
 
+PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000049454e44ae426082"
+)
+WAV_BYTES = (
+    b"RIFF"
+    + (38).to_bytes(4, "little")
+    + b"WAVE"
+    + b"fmt "
+    + (16).to_bytes(4, "little")
+    + (1).to_bytes(2, "little")
+    + (1).to_bytes(2, "little")
+    + (16000).to_bytes(4, "little")
+    + (32000).to_bytes(4, "little")
+    + (2).to_bytes(2, "little")
+    + (16).to_bytes(2, "little")
+    + b"data"
+    + (2).to_bytes(4, "little")
+    + b"\x00\x00"
+)
+
+
 def voice_profile_row(**overrides: Any) -> dict[str, Any]:
     now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
     row = {
@@ -184,12 +208,11 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
     def test_upload_voice_profile_sample_stores_voicebox_artifact(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
         audit_events = self.patch_common(fake_database)
-        wav = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00"
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
             result = asyncio.run(
                 main.admin_voicebox_sample_artifact_upload(
-                    FakeRawRequest(wav, {"content-type": "audio/wav"}),
+                    FakeRawRequest(WAV_BYTES, {"content-type": "audio/wav"}),
                     x_b1_filename="../narrator.wav",
                 )
             )
@@ -198,10 +221,10 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
             self.assertEqual(result["object"], "voicebox.sample_artifact")
             self.assertTrue(artifact["url"].startswith("/artifacts/voicebox/references/operator_1/sample_"))
             self.assertEqual(artifact["mime_type"], "audio/wav")
-            self.assertEqual(artifact["bytes"], len(wav))
-            self.assertEqual(artifact["sha256"], hashlib.sha256(wav).hexdigest())
+            self.assertEqual(artifact["bytes"], len(WAV_BYTES))
+            self.assertEqual(artifact["sha256"], hashlib.sha256(WAV_BYTES).hexdigest())
             stored = Path(tmp) / artifact["url"].removeprefix("/artifacts/")
-            self.assertEqual(stored.read_bytes(), wav)
+            self.assertEqual(stored.read_bytes(), WAV_BYTES)
 
         self.assertEqual(audit_events[0]["event_type"], "voice_profile.sample_uploaded")
         self.assertEqual(audit_events[0]["target_type"], "voice_profile_sample")
@@ -209,13 +232,12 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
     def test_upload_voice_profile_sample_rejects_non_audio(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
         self.patch_common(fake_database)
-        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(
                     main.admin_voicebox_sample_artifact_upload(
-                        FakeRawRequest(png, {"content-type": "image/png"}),
+                        FakeRawRequest(PNG_BYTES, {"content-type": "image/png"}),
                         x_b1_filename="reference.png",
                     )
                 )
