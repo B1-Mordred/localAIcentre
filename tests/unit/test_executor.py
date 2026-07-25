@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -2077,6 +2078,103 @@ class ExecutorTests(unittest.TestCase):
                 asyncio.run(runner.download_file("modeldl_rebind", file_plan, 0, "file_1"))
 
             self.assertEqual(FakeAsyncClient.calls, [])
+
+    @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink parent refusal is POSIX-specific")
+    def test_model_download_runner_rejects_symlinked_blob_parent_before_mkdir(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"parent link"
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_parent_link",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (root / "models").symlink_to(outside, target_is_directory=True)
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(root / "models" / "blobs" / digest),
+                "partial_path": str(root / "models" / "blobs" / ".partial" / f"{digest}.partial"),
+            }
+
+            with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "target blob path contains a symlink"):
+                asyncio.run(runner.download_file("modeldl_parent_link", file_plan, 0, "file_1"))
+
+            self.assertFalse((outside / "blobs").exists())
+
+    def test_model_download_runner_rejects_non_regular_target_blob(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"target dir"
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_target_dir",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_path = root / "models" / "blobs" / digest
+            target_path.mkdir(parents=True)
+            partial_path = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(target_path),
+                "partial_path": str(partial_path),
+            }
+
+            with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "target blob path is not a regular file"):
+                asyncio.run(runner.download_file("modeldl_target_dir", file_plan, 0, "file_1"))
+
+    def test_model_download_runner_rejects_non_regular_partial_blob(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"partial dir"
+        digest = hashlib.sha256(payload).hexdigest()
+        fake.model_download = {
+            "id": "modeldl_partial_dir",
+            "status": "running",
+            "stage": "downloading",
+            "manifest": {},
+            "bytes_downloaded": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial_path = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+            partial_path.mkdir(parents=True)
+            target_path = root / "models" / "blobs" / digest
+            runner = executor.ModelDownloadRunner(root)
+            file_plan = {
+                "source_type": "direct-url",
+                "source_url": "https://downloads.example.org/model.gguf",
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "target_path": str(target_path),
+                "partial_path": str(partial_path),
+            }
+
+            with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "partial blob path is not a regular file"):
+                asyncio.run(runner.download_file("modeldl_partial_dir", file_plan, 0, "file_1"))
 
     def test_model_download_runner_validates_resumed_content_range(self) -> None:
         fake = FakeDatabase()

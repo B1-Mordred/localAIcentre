@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import errno
 import json
+import os
 import re
+import stat
 from contextlib import suppress
 from datetime import UTC, datetime
 from inspect import isawaitable
@@ -1604,6 +1607,93 @@ class ModelDownloadRunner:
         self._stopped = asyncio.Event()
         self.startup_reconciliation = pending_startup_reconciliation(MODEL_DOWNLOAD_RUNTIMES)
 
+    def _download_path_parent_parts(self, path: Path, description: str, *, partial: bool) -> tuple[Path, tuple[str, ...]]:
+        candidate = path.absolute()
+        blob_root = (self.data_root / "models" / "blobs").absolute()
+        expected_parent = blob_root / ".partial" if partial else blob_root
+        if candidate.parent != expected_parent:
+            raise model_lifecycle.ModelLifecycleError(f"{description} is outside the model blob library")
+        try:
+            parent_parts = candidate.parent.relative_to(self.data_root.absolute()).parts
+        except ValueError as exc:
+            raise model_lifecycle.ModelLifecycleError(f"{description} is outside the configured data root") from exc
+        return candidate, parent_parts
+
+    def ensure_download_parent_tree(self, path: Path, description: str, *, partial: bool, allow_missing: bool) -> None:
+        _, parent_parts = self._download_path_parent_parts(path, description, partial=partial)
+        current = self.data_root.absolute()
+        for segment in parent_parts:
+            current = current / segment
+            try:
+                file_stat = current.lstat()
+            except FileNotFoundError as exc:
+                if allow_missing:
+                    return
+                raise model_lifecycle.ModelLifecycleError(f"{description} parent directory is missing") from exc
+            if stat.S_ISLNK(file_stat.st_mode):
+                raise model_lifecycle.ModelLifecycleError(f"{description} contains a symlink")
+            if not stat.S_ISDIR(file_stat.st_mode):
+                raise model_lifecycle.ModelLifecycleError(f"{description} parent is not a directory")
+
+    @staticmethod
+    def regular_file_stat(path: Path, description: str, *, missing_ok: bool = False) -> os.stat_result | None:
+        try:
+            file_stat = path.lstat()
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise model_lifecycle.ModelLifecycleError(f"{description} is missing")
+        if stat.S_ISLNK(file_stat.st_mode):
+            raise model_lifecycle.ModelLifecycleError(f"{description} is a symlink")
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise model_lifecycle.ModelLifecycleError(f"{description} is not a regular file")
+        return file_stat
+
+    def existing_regular_file_size(self, path: Path, description: str) -> int:
+        file_stat = self.regular_file_stat(path, description, missing_ok=True)
+        return int(file_stat.st_size) if file_stat is not None else 0
+
+    @staticmethod
+    def open_partial_file(path: Path, mode: str) -> Any:
+        if mode not in {"ab", "wb"}:
+            raise model_lifecycle.ModelLifecycleError("partial blob file mode is invalid")
+        flags = os.O_WRONLY | os.O_CREAT
+        flags |= os.O_APPEND if mode == "ab" else os.O_TRUNC
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = -1
+        try:
+            fd = os.open(path, flags, 0o600)
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise model_lifecycle.ModelLifecycleError("partial blob path is not a regular file")
+            handle = os.fdopen(fd, mode)
+            fd = -1
+            return handle
+        except IsADirectoryError as exc:
+            raise model_lifecycle.ModelLifecycleError("partial blob path is not a regular file") from exc
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise model_lifecycle.ModelLifecycleError("partial blob path is a symlink") from exc
+            raise
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    def publish_verified_partial(self, partial: Path, target: Path, *, expected_size: int, expected_sha256: str) -> None:
+        self.regular_file_stat(partial, "partial blob path")
+        target_stat = self.regular_file_stat(target, "target blob path", missing_ok=True)
+        if target_stat is not None:
+            if target_stat.st_size == expected_size and model_lifecycle.sha256_file(target) == expected_sha256:
+                partial.unlink(missing_ok=True)
+                target.chmod(0o644)
+                return
+            raise model_lifecycle.ModelLifecycleError("target blob exists but does not verify")
+        partial.replace(target)
+        target.chmod(0o644)
+
     async def reconcile_startup(self) -> dict[str, int]:
         return await database.reconcile_interrupted_model_downloads()
 
@@ -1748,32 +1838,41 @@ class ModelDownloadRunner:
             return False
         target = Path(file_plan["target_path"])
         partial = Path(file_plan["partial_path"])
+        expected_size = int(file_plan["target_size_bytes"])
+        expected_sha256 = str(file_plan["target_sha256"])
+        self.ensure_download_parent_tree(target, "target blob path", partial=False, allow_missing=True)
+        self.ensure_download_parent_tree(partial, "partial blob path", partial=True, allow_missing=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         partial.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink() or partial.is_symlink():
-            raise model_lifecycle.ModelLifecycleError("target or partial path is a symlink")
-        if target.exists():
-            if target.is_file() and target.stat().st_size == file_plan["target_size_bytes"] and model_lifecycle.sha256_file(target) == file_plan["target_sha256"]:
+        self.ensure_download_parent_tree(target, "target blob path", partial=False, allow_missing=False)
+        self.ensure_download_parent_tree(partial, "partial blob path", partial=True, allow_missing=False)
+        target_stat = self.regular_file_stat(target, "target blob path", missing_ok=True)
+        if target_stat is not None:
+            if target_stat.st_size == expected_size and model_lifecycle.sha256_file(target) == expected_sha256:
                 await database.update_model_download(
                     download_id,
                     stage=f"{stage_prefix}_already_available",
-                    bytes_downloaded=completed_before + int(file_plan["target_size_bytes"]),
+                    bytes_downloaded=completed_before + expected_size,
                     error_category=None,
                     error_message=None,
                 )
                 return True
             raise model_lifecycle.ModelLifecycleError("target blob exists but does not verify")
-        existing = partial.stat().st_size if partial.exists() else 0
-        if existing > file_plan["target_size_bytes"]:
+        existing = self.existing_regular_file_size(partial, "partial blob path")
+        if existing > expected_size:
             raise model_lifecycle.ModelLifecycleError("partial download is larger than expected")
-        if existing == file_plan["target_size_bytes"]:
-            if model_lifecycle.sha256_file(partial) == file_plan["target_sha256"]:
-                partial.replace(target)
-                target.chmod(0o644)
+        if existing == expected_size:
+            if model_lifecycle.sha256_file(partial) == expected_sha256:
+                self.publish_verified_partial(
+                    partial,
+                    target,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
                 await database.update_model_download(
                     download_id,
                     stage=f"{stage_prefix}_verified",
-                    bytes_downloaded=completed_before + int(file_plan["target_size_bytes"]),
+                    bytes_downloaded=completed_before + expected_size,
                     error_category=None,
                     error_message=None,
                 )
@@ -1820,30 +1919,34 @@ class ModelDownloadRunner:
                     self.validate_download_response_headers(file_plan, response.status_code, getattr(response, "headers", {}), existing)
                     downloaded = existing
                     await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
-                    with partial.open(mode) as handle:
+                    with self.open_partial_file(partial, mode) as handle:
                         async for chunk in response.aiter_bytes(self.chunk_size):
                             if not chunk:
                                 continue
                             if await self.stop_if_requested(download_id):
                                 return False
                             downloaded += len(chunk)
-                            if downloaded > file_plan["target_size_bytes"]:
+                            if downloaded > expected_size:
                                 raise model_lifecycle.ModelLifecycleError("download exceeded expected size")
                             handle.write(chunk)
                             await database.update_model_download(download_id, stage=f"{stage_prefix}_downloading", bytes_downloaded=completed_before + downloaded)
                     break
-        actual_size = partial.stat().st_size
-        if actual_size != file_plan["target_size_bytes"]:
-            raise model_lifecycle.ModelLifecycleError(f"downloaded size {actual_size} does not match expected {file_plan['target_size_bytes']}")
+        actual_size = self.existing_regular_file_size(partial, "partial blob path")
+        if actual_size != expected_size:
+            raise model_lifecycle.ModelLifecycleError(f"downloaded size {actual_size} does not match expected {expected_size}")
         actual_sha = model_lifecycle.sha256_file(partial)
-        if actual_sha != file_plan["target_sha256"]:
+        if actual_sha != expected_sha256:
             raise model_lifecycle.ModelLifecycleError("downloaded SHA-256 does not match manifest")
-        partial.replace(target)
-        target.chmod(0o644)
+        self.publish_verified_partial(
+            partial,
+            target,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
         await database.update_model_download(
             download_id,
             stage=f"{stage_prefix}_verified",
-            bytes_downloaded=completed_before + int(file_plan["target_size_bytes"]),
+            bytes_downloaded=completed_before + expected_size,
             error_category=None,
             error_message=None,
         )
