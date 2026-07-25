@@ -76,6 +76,17 @@ class MediaUploadApiTests(unittest.TestCase):
 
             self.assertEqual(caught.exception.status_code, 413)
 
+    def test_raw_upload_rejects_declared_image_mime_for_unknown_bytes(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
+            request = FakeRequest(body=b"not a valid image", headers={"content-type": "image/png", "X-B1-Filename": "input.png"})
+
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(main.image_edit_input_from_request(request, auth))
+
+            self.assertEqual(caught.exception.status_code, 415)
+
     def test_json_image_edit_body_is_preserved_for_data_url_or_references(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
         request = FakeRequest(

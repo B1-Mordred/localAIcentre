@@ -72,7 +72,7 @@ def normalize_mime_type(value: str | None) -> str:
 
 
 def sniff_media_mime_type(content: bytes, declared_mime_type: str | None = None) -> str:
-    declared = normalize_mime_type(declared_mime_type)
+    del declared_mime_type
     if content.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if content.startswith(b"\xff\xd8\xff"):
@@ -91,8 +91,6 @@ def sniff_media_mime_type(content: bytes, declared_mime_type: str | None = None)
         return "video/mp4"
     if content.startswith(b"\x1a\x45\xdf\xa3"):
         return "video/webm"
-    if declared in ALLOWED_INPUT_MIME_TYPES:
-        return declared
     return "application/octet-stream"
 
 

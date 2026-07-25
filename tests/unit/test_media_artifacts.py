@@ -61,6 +61,30 @@ class MediaArtifactTests(unittest.TestCase):
                     max_size_bytes=len(WAV_BYTES) - 1,
                 )
 
+    def test_staged_input_does_not_trust_declared_allowed_mime_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "unsupported media input type"):
+                media_artifacts.write_staged_input_bytes(
+                    root,
+                    owner_id="client",
+                    field_name="image",
+                    content=b"not really a png",
+                    declared_mime_type="image/png",
+                    filename="claimed.png",
+                )
+
+            reference = media_artifacts.write_staged_input_bytes(
+                root,
+                owner_id="client",
+                field_name="image",
+                content=PNG_BYTES,
+                declared_mime_type="image/jpeg",
+                filename="declared.jpg",
+            )
+            self.assertEqual(reference["mime_type"], "image/png")
+            self.assertEqual(reference["filename"], "declared.jpg.png")
+
     def test_read_staged_input_rejects_non_input_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
