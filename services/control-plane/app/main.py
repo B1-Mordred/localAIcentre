@@ -3272,6 +3272,38 @@ def openai_image_job_response(job: dict[str, Any]) -> dict[str, Any]:
     return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
 
 
+def comfyui_native_job_payload(client_id: str | None, native_prompt_hash: str, prompt_summary: dict[str, Any]) -> MediaJobCreate:
+    return MediaJobCreate(
+        modality="workflow",
+        operation="comfyui-prompt",
+        model="comfyui-native",
+        input={"client_id": client_id, "native_prompt_hash": native_prompt_hash, "prompt_summary": prompt_summary},
+        priority="single_image",
+        runtime_policy="comfyui_native",
+    )
+
+
+def comfyui_idempotent_prompt_response(job: dict[str, Any]) -> Response:
+    prompt_id = job.get("native_prompt_id")
+    if isinstance(prompt_id, str) and prompt_id:
+        return Response(
+            content=json.dumps({"prompt_id": prompt_id, "node_errors": {}}, separators=(",", ":")),
+            media_type="application/json",
+            headers={"X-B1-Idempotent-Replay": "true", "X-B1-Job-Id": str(job.get("id") or "")},
+        )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "comfyui_prompt_replay_pending",
+            "message": "Idempotency-Key matches a ComfyUI prompt that has not returned a native prompt_id yet",
+            "job_id": job.get("id"),
+            "state": job.get("state"),
+            "stage": job.get("stage"),
+        },
+        headers={"Retry-After": "1"},
+    )
+
+
 def media_job_string_extension(payload: dict[str, Any], key: str, default: str) -> str:
     value = payload.get(key)
     if isinstance(value, str) and value.strip():
@@ -8728,7 +8760,7 @@ async def modelhub_client_delete(client_id: str = ApiPath(alias="id"), authoriza
 
 
 @app.post("/prompt")
-async def comfy_prompt(request: Request) -> Response:
+async def comfy_prompt(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> Response:
     compatibility = compatibility_header_value(request.headers)
     if not compatibility.startswith("comfyui"):
         raise HTTPException(status_code=404, detail="route not found")
@@ -8742,16 +8774,17 @@ async def comfy_prompt(request: Request) -> Response:
     prompt_summary = comfyui_native_prompt_audit_summary(body)
     native_prompt_hash = hashlib.sha256(body_bytes).hexdigest()
     owner = auth.subject_id if auth is not None else (f"comfy-client:{client_id[:80]}" if client_id else "comfy-client")
+    job_payload = comfyui_native_job_payload(client_id, native_prompt_hash, prompt_summary)
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(owner, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, job_payload, native_comfyui_resolution())
+            return comfyui_idempotent_prompt_response(existing)
     job = await create_job_record(
         owner,
-        MediaJobCreate(
-            modality="workflow",
-            operation="comfyui-prompt",
-            model="comfyui-native",
-            input={"client_id": client_id, "native_prompt_hash": native_prompt_hash, "prompt_summary": prompt_summary},
-            priority="single_image",
-            runtime_policy="comfyui_native",
-        ),
+        job_payload,
+        idempotency_key=normalized_idempotency_key,
         resolution=native_comfyui_resolution(),
     )
     job_id = job["id"]

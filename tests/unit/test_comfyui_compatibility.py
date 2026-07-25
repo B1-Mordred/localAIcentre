@@ -233,6 +233,9 @@ class FakeDatabase:
         self.releases: list[str] = []
 
     async def get_job_by_idempotency_key(self, owner: str, idempotency_key: str) -> dict[str, Any] | None:
+        for row in self.jobs.values():
+            if row.get("owner_id") == owner and row.get("idempotency_key") == idempotency_key:
+                return dict(row)
         return None
 
     async def count_jobs(
@@ -450,6 +453,113 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             ],
         )
         self.assertEqual(scheduled[0]["prompt_id"], "prompt_native_1")
+
+    def test_prompt_idempotency_replay_returns_existing_native_prompt_without_forwarding(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "KSampler", "inputs": {"seed": 1}}}})
+        body = awaitable_body(request)
+        payload = main.comfyui_native_job_payload("client-1", hashlib.sha256(body).hexdigest(), main.comfyui_native_prompt_audit_summary(json.loads(body)))
+        fake.jobs["job_existing"] = {
+            "id": "job_existing",
+            "owner_id": "client_1",
+            "idempotency_key": "prompt_1",
+            "modality": "workflow",
+            "operation": "comfyui-prompt",
+            "model_alias": "comfyui-native",
+            "priority": "single_image",
+            "runtime": "comfyui",
+            "resolved_model_version": "comfyui-native-workflow@native",
+            "request_params": payload.model_dump(),
+            "native_prompt_id": "prompt_native_1",
+            "state": "running",
+            "stage": "comfyui_prompt_submitted",
+            "progress": 70,
+        }
+
+        async def fail_proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("idempotent prompt replay must not forward to ComfyUI")
+
+        main.proxy_http_bytes = fail_proxy  # type: ignore[assignment]
+        response = asyncio.run(main.comfy_prompt(request, idempotency_key="prompt_1"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-b1-idempotent-replay"], "true")
+        self.assertEqual(response.headers["x-b1-job-id"], "job_existing")
+        self.assertEqual(json.loads(response.body), {"prompt_id": "prompt_native_1", "node_errors": {}})
+        self.assertEqual(fake.leases, [])
+        self.assertEqual(len(fake.jobs), 1)
+
+    def test_prompt_idempotency_replay_rejects_different_native_body_without_forwarding(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        original_request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "KSampler", "inputs": {"seed": 1}}}})
+        original_body = awaitable_body(original_request)
+        payload = main.comfyui_native_job_payload(
+            "client-1",
+            hashlib.sha256(original_body).hexdigest(),
+            main.comfyui_native_prompt_audit_summary(json.loads(original_body)),
+        )
+        fake.jobs["job_existing"] = {
+            "id": "job_existing",
+            "owner_id": "client_1",
+            "idempotency_key": "prompt_1",
+            "modality": "workflow",
+            "operation": "comfyui-prompt",
+            "model_alias": "comfyui-native",
+            "priority": "single_image",
+            "runtime": "comfyui",
+            "resolved_model_version": "comfyui-native-workflow@native",
+            "request_params": payload.model_dump(),
+            "native_prompt_id": "prompt_native_1",
+            "state": "running",
+            "stage": "comfyui_prompt_submitted",
+            "progress": 70,
+        }
+
+        async def fail_proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("idempotency conflict must not forward to ComfyUI")
+
+        main.proxy_http_bytes = fail_proxy  # type: ignore[assignment]
+        replay_request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "KSampler", "inputs": {"seed": 2}}}})
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.comfy_prompt(replay_request, idempotency_key="prompt_1"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["code"], "idempotency_key_conflict")
+        self.assertIn("request_params", caught.exception.detail["mismatched_fields"])
+        self.assertEqual(fake.leases, [])
+
+    def test_prompt_idempotency_replay_pending_native_prompt_fails_closed(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "KSampler", "inputs": {"seed": 1}}}})
+        body = awaitable_body(request)
+        payload = main.comfyui_native_job_payload("client-1", hashlib.sha256(body).hexdigest(), main.comfyui_native_prompt_audit_summary(json.loads(body)))
+        fake.jobs["job_existing"] = {
+            "id": "job_existing",
+            "owner_id": "client_1",
+            "idempotency_key": "prompt_1",
+            "modality": "workflow",
+            "operation": "comfyui-prompt",
+            "model_alias": "comfyui-native",
+            "priority": "single_image",
+            "runtime": "comfyui",
+            "resolved_model_version": "comfyui-native-workflow@native",
+            "request_params": payload.model_dump(),
+            "native_prompt_id": None,
+            "state": "waiting_for_gpu",
+            "stage": "waiting_for_gpu",
+            "progress": 20,
+        }
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.comfy_prompt(request, idempotency_key="prompt_1"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["code"], "comfyui_prompt_replay_pending")
+        self.assertEqual(caught.exception.headers["Retry-After"], "1")
+        self.assertEqual(fake.leases, [])
 
     def test_prompt_requires_gateway_compatibility_header_before_job_creation(self) -> None:
         fake = FakeDatabase()
