@@ -156,8 +156,11 @@ export const B1_API_ROUTES = {
   "GET /workflows/v1/published": { method: "GET", path: "/workflows/v1/published", operationId: "workflows_published_workflows_v1_published_get" },
   "POST /workflows/v1/published": { method: "POST", path: "/workflows/v1/published", operationId: "workflow_publish_workflows_v1_published_post" },
   "GET /workflows/v1/published/{workflow_id}": { method: "GET", path: "/workflows/v1/published/{workflow_id}", operationId: "workflow_published_get_workflows_v1_published__workflow_id__get" },
+  "GET /workflows/v1/published/{workflow_id}/versions": { method: "GET", path: "/workflows/v1/published/{workflow_id}/versions", operationId: "workflow_published_versions_workflows_v1_published__workflow_id__versions_get" },
   "DELETE /workflows/v1/published/{workflow_id}/versions/{version}": { method: "DELETE", path: "/workflows/v1/published/{workflow_id}/versions/{version}", operationId: "workflow_unpublish_workflows_v1_published__workflow_id__versions__version__delete" },
   "GET /workflows/v1/published/{workflow_id}/versions/{version}": { method: "GET", path: "/workflows/v1/published/{workflow_id}/versions/{version}", operationId: "workflow_published_version_get_workflows_v1_published__workflow_id__versions__version__get" },
+  "POST /workflows/v1/published/{workflow_id}/versions/{version}/restore": { method: "POST", path: "/workflows/v1/published/{workflow_id}/versions/{version}/restore", operationId: "workflow_restore_workflows_v1_published__workflow_id__versions__version__restore_post" },
+  "POST /workflows/v1/test": { method: "POST", path: "/workflows/v1/test", operationId: "workflow_test_workflows_v1_test_post" },
   "POST /workflows/v1/validate": { method: "POST", path: "/workflows/v1/validate", operationId: "workflow_validate_workflows_v1_validate_post" },
 } as const;
 
@@ -280,7 +283,10 @@ export const B1_API_PATHS = [
   "/v1/runtime-reservations/{id}",
   "/workflows/v1/published",
   "/workflows/v1/published/{workflow_id}",
+  "/workflows/v1/published/{workflow_id}/versions",
   "/workflows/v1/published/{workflow_id}/versions/{version}",
+  "/workflows/v1/published/{workflow_id}/versions/{version}/restore",
+  "/workflows/v1/test",
   "/workflows/v1/validate",
 ] as const;
 

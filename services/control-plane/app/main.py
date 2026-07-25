@@ -440,6 +440,20 @@ class WorkflowPublishRequest(BaseModel):
     workflow: dict[str, Any]
 
 
+class WorkflowTestRequest(BaseModel):
+    workflow: dict[str, Any] | None = None
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=128)
+    workflow_version: str | None = Field(default=None, min_length=1, max_length=128)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    runtime_policy: str | None = Field(default=None, min_length=1, max_length=64)
+    priority: str = Field(default="single_image", min_length=1, max_length=64)
+
+
+class WorkflowRestoreRequest(BaseModel):
+    confirm: bool = False
+    reason: str | None = Field(default=None, max_length=512)
+
+
 class ComfyUiNodePinCreate(BaseModel):
     id: str = Field(min_length=2, max_length=128)
     commit: str = Field(min_length=40, max_length=40)
@@ -2358,6 +2372,49 @@ def db_workflow_payload(record: dict[str, Any]) -> dict[str, Any]:
         "visibility_roles": record.get("visibility_roles", ["admin"]),
         "manifest": {key: value for key, value in record.items() if key not in {"status", "dependency_status", "publishable"}},
         "dependency_status": record["dependency_status"],
+    }
+
+
+def workflow_test_media_job_payload(workflow: dict[str, Any], payload: WorkflowTestRequest) -> dict[str, Any]:
+    return {
+        "modality": workflow.get("modality"),
+        "operation": workflow.get("operation"),
+        "model": workflow.get("model_alias"),
+        "runtime_policy": payload.runtime_policy or workflow.get("runtime_policy", "any"),
+        "priority": payload.priority,
+        "input": {
+            "workflow_id": workflow.get("id"),
+            "workflow_version": workflow.get("version"),
+            "parameters": payload.parameters,
+        },
+    }
+
+
+def workflow_test_result(workflow: dict[str, Any], payload: WorkflowTestRequest) -> dict[str, Any]:
+    request_payload = workflow_test_media_job_payload(workflow, payload)
+    try:
+        validate_workflow_job_request(workflow, request_payload, max_staged_media_bytes=settings.upload_max_bytes)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    dependency_ready = bool((workflow.get("dependency_status") or {}).get("ready"))
+    return {
+        "status": "ready" if dependency_ready else "needs_dependencies",
+        "can_submit": dependency_ready,
+        "workflow": workflow,
+        "request": {
+            "modality": request_payload["modality"],
+            "operation": request_payload["operation"],
+            "model": request_payload["model"],
+            "runtime_policy": request_payload["runtime_policy"],
+            "priority": request_payload["priority"],
+            "input": {
+                "workflow_id": request_payload["input"]["workflow_id"],
+                "workflow_version": request_payload["input"]["workflow_version"],
+                "parameter_names": sorted(payload.parameters),
+                "parameter_count": len(payload.parameters),
+            },
+        },
+        "dependency_status": workflow.get("dependency_status") or {},
     }
 
 
@@ -8062,6 +8119,17 @@ async def workflow_published_get(workflow_id: str, authorization: str | None = H
     return public
 
 
+@app.get("/workflows/v1/published/{workflow_id}/versions")
+async def workflow_published_versions(workflow_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:read")
+    require_workflow_governance_reader(auth)
+    rows = [row for row in await database.list_workflows(include_unpublished=True) if row.get("id") == workflow_id]
+    if not rows:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return {"object": "list", "data": [public_workflow(row) for row in rows]}
+
+
 @app.get("/workflows/v1/published/{workflow_id}/versions/{version}")
 async def workflow_published_version_get(workflow_id: str, version: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -8151,6 +8219,45 @@ async def workflow_validate(payload: WorkflowPublishRequest, authorization: str 
     return jsonable_encoder(workflow_record_from_payload(payload.workflow))
 
 
+@app.post("/workflows/v1/test")
+async def workflow_test(payload: WorkflowTestRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:write")
+    if payload.workflow is not None and (payload.workflow_id or payload.workflow_version):
+        raise HTTPException(status_code=422, detail="workflow test accepts either workflow or workflow_id/workflow_version, not both")
+    if payload.workflow is None:
+        if not payload.workflow_id or not payload.workflow_version:
+            raise HTTPException(status_code=422, detail="workflow test requires workflow or workflow_id/workflow_version")
+        row = await database.get_workflow(payload.workflow_id, payload.workflow_version)
+        if row is None:
+            raise HTTPException(status_code=404, detail="published workflow not found")
+        workflow = public_workflow(row)
+        if not visible_to_role(workflow, auth.role.value, auth.scopes):
+            raise HTTPException(status_code=403, detail="workflow is not visible to this role")
+        draft = False
+    else:
+        await refresh_node_pin_registry()
+        workflow = jsonable_encoder(workflow_record_from_payload(payload.workflow))
+        draft = True
+    result = workflow_test_result(workflow, payload)
+    await record_audit_event(
+        auth,
+        "workflow.tested",
+        target_type="workflow",
+        target_id=f"{workflow['id']}@{workflow['version']}",
+        summary=f"Tested workflow {workflow['id']}@{workflow['version']}",
+        metadata={
+            "workflow_id": workflow["id"],
+            "version": workflow["version"],
+            "status": result["status"],
+            "can_submit": result["can_submit"],
+            "draft": draft,
+            "parameter_names": result["request"]["input"]["parameter_names"],
+        },
+    )
+    return result
+
+
 @app.post("/workflows/v1/published")
 async def workflow_publish(payload: WorkflowPublishRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -8168,6 +8275,43 @@ async def workflow_publish(payload: WorkflowPublishRequest, authorization: str |
         metadata={"workflow_id": row["id"], "version": row["version"], "status": row["status"], "dependency_ready": row["dependency_status"].get("ready")},
     )
     return public_workflow(row)
+
+
+@app.post("/workflows/v1/published/{workflow_id}/versions/{version}/restore")
+async def workflow_restore(
+    workflow_id: str,
+    version: str,
+    payload: WorkflowRestoreRequest = Body(...),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "workflows:write")
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required before restoring a workflow version")
+    row = await database.get_workflow(workflow_id, version, include_unpublished=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    await refresh_node_pin_registry()
+    record = workflow_record_from_payload(row["manifest"])
+    restored = await database.restore_workflow(db_workflow_payload(record))
+    if restored is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    log_event("workflow_restored", workflow_id=workflow_id, version=version, status=restored["status"])
+    await record_audit_event(
+        auth,
+        "workflow.restored",
+        target_type="workflow",
+        target_id=f"{workflow_id}@{version}",
+        summary=f"Restored workflow {workflow_id}@{version}",
+        metadata={
+            "workflow_id": workflow_id,
+            "version": version,
+            "status": restored["status"],
+            "dependency_ready": restored["dependency_status"].get("ready"),
+            "reason_provided": bool(payload.reason),
+        },
+    )
+    return public_workflow(restored)
 
 
 @app.delete("/workflows/v1/published/{workflow_id}/versions/{version}")

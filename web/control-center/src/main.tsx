@@ -1192,6 +1192,32 @@ type PublishedWorkflow = {
   presets?: WorkflowPreset[];
   comfyui_parameter_mappings?: Array<Record<string, unknown>>;
   runtime_parameter_mappings?: Array<Record<string, unknown>>;
+  created_at?: string;
+  updated_at?: string;
+  unpublished_at?: string | null;
+};
+
+type WorkflowTestResult = {
+  status: string;
+  can_submit: boolean;
+  workflow: PublishedWorkflow;
+  request: {
+    modality: string;
+    operation: string;
+    model: string;
+    runtime_policy: string;
+    priority: string;
+    input: {
+      workflow_id: string;
+      workflow_version: string;
+      parameter_names: string[];
+      parameter_count: number;
+    };
+  };
+  dependency_status?: {
+    ready?: boolean;
+    dependencies?: WorkflowDependency[];
+  };
 };
 
 const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
@@ -5317,12 +5343,53 @@ const WORKFLOW_TEMPLATE = JSON.stringify(
   2
 );
 
+function defaultWorkflowTestParameters(workflow: PublishedWorkflow | Record<string, unknown>): string {
+  const presets = Array.isArray(workflow.presets) ? workflow.presets : [];
+  const firstPreset = presets.find((preset) => preset && typeof preset === "object" && "values" in preset);
+  if (firstPreset && typeof firstPreset === "object" && firstPreset.values && typeof firstPreset.values === "object") {
+    return JSON.stringify(firstPreset.values, null, 2);
+  }
+  return "{}";
+}
+
+function workflowDraftPayload(workflow: PublishedWorkflow): Record<string, unknown> {
+  return {
+    id: workflow.id,
+    version: workflow.version,
+    display_name: workflow.display_name,
+    description: workflow.description,
+    modality: workflow.modality,
+    operation: workflow.operation,
+    model_alias: workflow.model_alias,
+    backend_policy: workflow.backend_policy,
+    runtime_policy: workflow.runtime_policy,
+    output_mime_types: workflow.output_mime_types,
+    workflow_json: workflow.workflow_json,
+    input_schema: workflow.input_schema,
+    presets: workflow.presets ?? [],
+    output_schema: workflow.output_schema,
+    resource_class: workflow.resource_class,
+    dependencies: workflow.dependencies.map((dependency) => ({
+      type: dependency.type,
+      id: dependency.id,
+      ...(dependency.version ? { version: dependency.version } : {})
+    })),
+    limits: workflow.limits,
+    comfyui_parameter_mappings: workflow.comfyui_parameter_mappings ?? [],
+    runtime_parameter_mappings: workflow.runtime_parameter_mappings ?? [],
+    visibility_roles: workflow.visibility_roles
+  };
+}
+
 function Workflows() {
   const [workflows, setWorkflows] = useState<PublishedWorkflow[]>([]);
+  const [workflowVersions, setWorkflowVersions] = useState<PublishedWorkflow[]>([]);
   const [nodePins, setNodePins] = useState<ComfyUiNodePin[]>([]);
   const [selected, setSelected] = useState<PublishedWorkflow | null>(null);
   const [selectedNodePin, setSelectedNodePin] = useState<ComfyUiNodePin | null>(null);
   const [draft, setDraft] = useState(WORKFLOW_TEMPLATE);
+  const [testParameters, setTestParameters] = useState(defaultWorkflowTestParameters(JSON.parse(WORKFLOW_TEMPLATE)));
+  const [workflowTest, setWorkflowTest] = useState<WorkflowTestResult | null>(null);
   const [nodePinForm, setNodePinForm] = useState({
     id: "",
     commit: "",
@@ -5374,6 +5441,16 @@ function Workflows() {
     }
   };
 
+  const parseTestParameters = () => {
+    try {
+      const parsed = testParameters.trim() ? JSON.parse(testParameters) : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("parameters must be a JSON object");
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(error instanceof Error ? `invalid test parameters: ${error.message}` : "invalid test parameters");
+    }
+  };
+
   const validateDraft = () => {
     setBusy(true);
     setMessage("validating");
@@ -5394,6 +5471,41 @@ function Workflows() {
       .then((payload) => {
         setValidation(payload);
         setMessage(`${payload.id}@${payload.version} ${payload.status}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const testWorkflow = (workflow?: PublishedWorkflow) => {
+    setBusy(true);
+    setMessage(workflow ? `testing ${workflow.id}@${workflow.version}` : "testing draft");
+    let parameters: Record<string, unknown>;
+    let draftWorkflow: unknown;
+    try {
+      parameters = parseTestParameters();
+      draftWorkflow = workflow ? null : parseDraft();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "invalid workflow test input");
+      setBusy(false);
+      return;
+    }
+    apiFetch(`/workflows/v1/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(workflow ? {
+        workflow_id: workflow.id,
+        workflow_version: workflow.version,
+        parameters
+      } : {
+        workflow: draftWorkflow,
+        parameters
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: WorkflowTestResult) => {
+        setWorkflowTest(payload);
+        setValidation(payload.workflow);
+        setMessage(`${payload.workflow.id}@${payload.workflow.version} test ${payload.status}`);
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -5426,6 +5538,49 @@ function Workflows() {
       .finally(() => setBusy(false));
   };
 
+  const loadWorkflowVersions = (workflow: PublishedWorkflow, options: { silent?: boolean } = {}) => {
+    if (!options.silent) {
+      setBusy(true);
+      setMessage(`loading versions ${workflow.id}`);
+    }
+    return apiFetch(`/workflows/v1/published/${encodeURIComponent(workflow.id)}/versions`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setWorkflowVersions(payload.data ?? []);
+        setSelected(workflow);
+        if (!options.silent) {
+          setMessage(`loaded ${(payload.data ?? []).length} version records`);
+        }
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => {
+        if (!options.silent) {
+          setBusy(false);
+        }
+      });
+  };
+
+  const restoreWorkflowVersion = (workflow: PublishedWorkflow) => {
+    setBusy(true);
+    setMessage(`restoring ${workflow.id}@${workflow.version}`);
+    apiFetch(`/workflows/v1/published/${encodeURIComponent(workflow.id)}/versions/${encodeURIComponent(workflow.version)}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, reason: "Control Center workflow rollback" })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload: PublishedWorkflow) => {
+        setSelected(payload);
+        setDraft(JSON.stringify(workflowDraftPayload(payload), null, 2));
+        setTestParameters(defaultWorkflowTestParameters(payload));
+        setMessage(`restored ${payload.id}@${payload.version}`);
+        loadWorkflows();
+        void loadWorkflowVersions(payload, { silent: true });
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const unpublishWorkflow = (workflow: PublishedWorkflow) => {
     setBusy(true);
     setMessage("unpublishing");
@@ -5442,36 +5597,9 @@ function Workflows() {
 
   const editWorkflow = (workflow: PublishedWorkflow) => {
     setSelected(workflow);
-    setDraft(JSON.stringify(
-      {
-        id: workflow.id,
-        version: workflow.version,
-        display_name: workflow.display_name,
-        description: workflow.description,
-        modality: workflow.modality,
-        operation: workflow.operation,
-        model_alias: workflow.model_alias,
-        backend_policy: workflow.backend_policy,
-        runtime_policy: workflow.runtime_policy,
-        output_mime_types: workflow.output_mime_types,
-        workflow_json: workflow.workflow_json,
-        input_schema: workflow.input_schema,
-        presets: workflow.presets ?? [],
-        output_schema: workflow.output_schema,
-        resource_class: workflow.resource_class,
-        dependencies: workflow.dependencies.map((dependency) => ({
-          type: dependency.type,
-          id: dependency.id,
-          ...(dependency.version ? { version: dependency.version } : {})
-        })),
-        limits: workflow.limits,
-        comfyui_parameter_mappings: workflow.comfyui_parameter_mappings ?? [],
-        runtime_parameter_mappings: workflow.runtime_parameter_mappings ?? [],
-        visibility_roles: workflow.visibility_roles
-      },
-      null,
-      2
-    ));
+    setTestParameters(defaultWorkflowTestParameters(workflow));
+    setWorkflowTest(null);
+    setDraft(JSON.stringify(workflowDraftPayload(workflow), null, 2));
     setValidation(null);
   };
 
@@ -5481,7 +5609,13 @@ function Workflows() {
     file.text()
       .then((text) => {
         setDraft(text);
+        try {
+          setTestParameters(defaultWorkflowTestParameters(JSON.parse(text)));
+        } catch {
+          setTestParameters("{}");
+        }
         setValidation(null);
+        setWorkflowTest(null);
         setMessage(`loaded ${file.name}`);
       })
       .catch((err: Error) => setMessage(err.message));
@@ -5568,6 +5702,7 @@ function Workflows() {
       <div className="toolbar">
         <button title="Refresh workflows and node pins" onClick={refreshWorkflowAdmin} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <button title="Validate draft" onClick={validateDraft} disabled={busy}><ListChecks size={16} />Validate</button>
+        <button title="Test draft parameters" onClick={() => testWorkflow()} disabled={busy}><PlayCircle size={16} />Test</button>
         <button title="Publish draft" onClick={publishDraft} disabled={busy}><Archive size={16} />Publish</button>
         <label className="file-button">
           <Upload size={16} />Import JSON
@@ -5584,6 +5719,14 @@ function Workflows() {
         </div>
       )}
 
+      {workflowTest && (
+        <div className="one-time-key">
+          <strong>{workflowTest.workflow.id}@{workflowTest.workflow.version} test {workflowTest.status}</strong>
+          <span>{workflowTest.can_submit ? "ready to submit" : "blocked by dependencies"} / {workflowTest.request.model} / {workflowTest.request.runtime_policy}</span>
+          <small>{workflowTest.request.input.parameter_count} parameter{workflowTest.request.input.parameter_count === 1 ? "" : "s"} checked: {workflowTest.request.input.parameter_names.join(", ") || "none"}</small>
+        </div>
+      )}
+
       <div className="split workflow-admin">
         <div className="stack">
           <h3>Published Workflows</h3>
@@ -5597,6 +5740,8 @@ function Workflows() {
                   <td>{workflow.backend_policy}<small>{workflow.modality} / {workflow.model_alias}</small></td>
                   <td>
                     <div className="table-actions">
+                      <button title={`Test ${workflow.id}`} onClick={() => testWorkflow(workflow)} disabled={busy}><PlayCircle size={16} /></button>
+                      <button title={`Show versions for ${workflow.id}`} onClick={() => loadWorkflowVersions(workflow)} disabled={busy}><Eye size={16} /></button>
                       <button title={`Edit ${workflow.id}`} onClick={() => editWorkflow(workflow)} disabled={busy}><Workflow size={16} /></button>
                       <button title={`Unpublish ${workflow.id}`} onClick={() => unpublishWorkflow(workflow)} disabled={busy}><Trash2 size={16} /></button>
                     </div>
@@ -5606,6 +5751,32 @@ function Workflows() {
               {!workflows.length && <tr><td colSpan={4}>No published workflows recorded</td></tr>}
             </tbody>
           </table>
+          {Boolean(workflowVersions.length) && (
+            <>
+              <div className="subsection-title">
+                <RotateCcw size={16} />
+                <h3>Workflow Versions</h3>
+              </div>
+              <table>
+                <thead><tr><th>Version</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {workflowVersions.map((workflow) => (
+                    <tr key={`version-${workflow.id}@${workflow.version}`}>
+                      <td><code>{workflow.id}@{workflow.version}</code><small>{workflow.display_name}</small></td>
+                      <td><span className={`status-pill ${workflow.unpublished_at ? "warning" : "ok"}`}>{workflow.status}</span><small>{workflow.publishable ? "ready" : "needs dependencies"}</small></td>
+                      <td>{workflow.updated_at ? formatDateTime(workflow.updated_at) : "unknown"}</td>
+                      <td>
+                        <div className="table-actions">
+                          <button title={`Edit ${workflow.id}@${workflow.version}`} onClick={() => editWorkflow(workflow)} disabled={busy}><Workflow size={16} /></button>
+                          <button title={`Restore ${workflow.id}@${workflow.version}`} onClick={() => restoreWorkflowVersion(workflow)} disabled={busy || !workflow.unpublished_at}><RotateCcw size={16} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
           <div className="subsection-title">
             <ShieldCheck size={16} />
             <h3>ComfyUI Node Pins</h3>
@@ -5670,6 +5841,8 @@ function Workflows() {
           </div>
           <h3>Workflow Draft JSON</h3>
           <textarea className="json-editor" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} />
+          <h3>Workflow Test Parameters</h3>
+          <textarea className="json-editor compact" value={testParameters} onChange={(event) => setTestParameters(event.target.value)} spellCheck={false} />
         </div>
       </div>
     </section>

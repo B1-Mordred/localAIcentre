@@ -2361,16 +2361,44 @@ async def list_workflows(include_unpublished: bool = False) -> list[dict[str, An
     return [dict(row) for row in rows]
 
 
-async def get_workflow(workflow_id: str, version: str | None = None) -> dict[str, Any] | None:
+async def get_workflow(workflow_id: str, version: str | None = None, include_unpublished: bool = False) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")
     async with engine.connect() as conn:
-        query = select(workflows).where(and_(workflows.c.id == workflow_id, workflows.c.unpublished_at.is_(None)))
+        query = select(workflows).where(workflows.c.id == workflow_id)
+        if not include_unpublished:
+            query = query.where(workflows.c.unpublished_at.is_(None))
         if version is not None:
             query = query.where(workflows.c.version == version)
         result = await conn.execute(query.order_by(workflows.c.version.desc()).limit(1))
         row = result.mappings().first()
     return dict(row) if row else None
+
+
+async def restore_workflow(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    update_values = {
+        "display_name": payload["display_name"],
+        "backend_policy": payload["backend_policy"],
+        "resource_class": payload["resource_class"],
+        "status": payload["status"],
+        "visibility_roles": payload.get("visibility_roles", ["admin"]),
+        "manifest": payload["manifest"],
+        "dependency_status": payload["dependency_status"],
+        "updated_at": now,
+        "unpublished_at": None,
+    }
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            update(workflows)
+            .where(and_(workflows.c.id == payload["id"], workflows.c.version == payload["version"]))
+            .values(**update_values)
+        )
+    if (result.rowcount or 0) == 0:
+        return None
+    return await get_workflow(payload["id"], payload["version"])
 
 
 async def unpublish_workflow(workflow_id: str, version: str) -> dict[str, Any] | None:

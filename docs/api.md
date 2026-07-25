@@ -93,9 +93,12 @@ POST /admin/comfyui/node-pins
 PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}
 GET  /workflows/v1/published
 GET  /workflows/v1/published/{id}
+GET  /workflows/v1/published/{id}/versions
 GET  /workflows/v1/published/{id}/versions/{version}
 POST /workflows/v1/validate
+POST /workflows/v1/test
 POST /workflows/v1/published
+POST /workflows/v1/published/{id}/versions/{version}/restore
 DELETE /workflows/v1/published/{id}/versions/{version}
 GET  /v1/models
 POST /v1/chat/completions
@@ -560,7 +563,7 @@ Custom ComfyUI node dependencies must use `{"type":"node","id":"...","version":"
 
 `GET /admin/comfyui/node-pins` requires `workflows:read` and an administrator, operator, or creator role. It returns the merged seed/database registry with a `source` field for each pin. `POST /admin/comfyui/node-pins` requires administrator `workflows:write`, validates the exact node id, lowercase 40-character commit, credential-free HTTPS repository URL, optional SHA-256 dependency lock, and safe relative route prefixes, then writes the approval to PostgreSQL, refreshes workflow dependency status, and audits the mutation. An approved pin that exposes any `allowed_route_prefixes` must include `dependency_lock_sha256` so mutating custom-node APIs cannot be enabled without dependency-review evidence. `PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}` has the same administrator requirement and writes a PostgreSQL overlay for an existing seed or database pin. Logical backups include `b1_comfyui_node_pins`; restore-import preserves the approvals along with published workflows.
 
-Read endpoints require `workflows:read` and filter records by `visibility_roles` unless the caller has administrative wildcard scope. `POST /workflows/v1/validate` and `POST /workflows/v1/published` require `workflows:write`. Publication records are allowed to persist with `status: needs_dependencies`; this keeps placeholder workflows visible while making uninstalled models, missing runtimes, or unapproved custom nodes explicit through `dependency_status`. Control Center exposes the same operations as JSON import/edit, validate, publish, dependency inspection, and unpublish actions.
+Read endpoints require `workflows:read` and filter records by `visibility_roles` unless the caller has administrative wildcard scope. Governance readers with admin, operator, or creator role can call `GET /workflows/v1/published/{id}/versions` to inspect all stored versions, including unpublished rows retained for rollback. `POST /workflows/v1/validate`, `POST /workflows/v1/test`, `POST /workflows/v1/published`, restore, and unpublish operations require `workflows:write`. Publication records are allowed to persist with `status: needs_dependencies`; this keeps placeholder workflows visible while making uninstalled models, missing runtimes, or unapproved custom nodes explicit through `dependency_status`. `POST /workflows/v1/test` accepts either draft workflow JSON or a published `workflow_id`/`workflow_version` plus `parameters`, validates the same media-job schema/resource constraints without creating a job, and returns only parameter names/counts so prompt or media values are not echoed. Restore revalidates the stored manifest, clears `unpublished_at`, audits `reason_provided`, and does not delete newer versions. Control Center exposes the same operations as JSON import/edit, validate, test, publish, dependency inspection, version history, restore, and unpublish actions.
 
 The repository seeds starter placeholder workflows for text-to-image, image-to-image, inpainting/outpainting, background removal, upscaling, text-to-video, image-to-video, frame interpolation, TTS, and transcription. These seed files include bounded safe parameter presets for Media Studio, but do not bundle weights or sample media; dependency readiness points operators to the required runtime/model aliases before execution. Presets are validated against the workflow input schema and resource limits at publication time, and may not include inline base64 media or staged-upload fields.
 
