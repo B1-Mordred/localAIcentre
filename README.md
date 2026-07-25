@@ -24,6 +24,7 @@ This repository currently contains the first runnable project slice:
 - runtime-agent CPU/memory/disk/GPU metrics and Control Center system self-test with TLS route, tiny inference, dry-run unload, and artifact delivery probes
 - durable Control Center acceptance reports under `$B1_BACKUP_ROOT/acceptance/`, capturing self-test, metrics, resource policy, scheduler state, runtime reservations, runtime-agent service/image inventory, recent update image refs, source commit metadata, structured operator evidence for live tests/backups/migration/restart reconciliation/rollback/security, machine-readable RTX GPU, LocalAI streaming/unload, installed workflow, native ComfyUI REST/WebSocket compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote/server, deployed security including artifact authorization, restart reconciliation, web-managed backup/migration/rollback evidence, preserved old resources from the reviewed cutover plan, Markdown handoff output, and checksums for cutover review
 - lightweight Control Center observability backed by `GET /admin/metrics`, showing queue waits, recent job timing/resource summaries, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring Prometheus or Grafana for the base appliance
+- optional `compose.monitoring.yaml` profile with pinned Prometheus and Grafana images, a metrics-only generated scrape token, internal-only backend services, and the gateway-routed `https://monitoring.ai.b1.germering/` Grafana host
 - PostgreSQL-backed audit log for administrative changes with recursive metadata redaction and Control Center visibility
 - AES-GCM encrypted configuration-secret storage for provider credentials, download tokens, runtime credentials, and integrations, backed by the generated master key outside Git and exposed through redacted admin UI/API controls
 - persisted Control Center configuration for optional external runtimes, with remote-provider secret references, explicit external-data acknowledgement, SSRF-resistant URL validation, and fail-closed alias resolution
@@ -119,6 +120,12 @@ Run source hygiene gates locally when touching dependencies, images, or security
 make secret-scan
 make sbom
 make voicebox-audit-inventory
+```
+
+Enable optional Prometheus/Grafana monitoring only when needed. Bootstrap generates `$B1_DATA_ROOT/secrets/prometheus_scrape_token` and `$B1_DATA_ROOT/secrets/grafana_admin_password`; Grafana is then reachable only through the gateway host configured by `B1_HOST_MONITORING`:
+
+```bash
+COMPOSE_PROFILES=monitoring docker compose -f compose.yaml -f compose.monitoring.yaml up -d
 ```
 
 Run opt-in live smoke checks against a deployed stack:

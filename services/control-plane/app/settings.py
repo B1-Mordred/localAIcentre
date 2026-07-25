@@ -65,6 +65,7 @@ class Settings:
     runtime_agent_tls_client_cert_file: str
     runtime_agent_tls_client_key_file: str
     runtime_agent_tls_verify: bool
+    prometheus_scrape_token: str
     openai_compatible_base_url: str
     openai_compatible_api_key: str
     generic_http_base_url: str
@@ -189,6 +190,7 @@ def load_settings() -> Settings:
         runtime_agent_tls_client_cert_file=os.getenv("B1_RUNTIME_AGENT_TLS_CLIENT_CERT_FILE", "/run/secrets/runtime_agent_client.crt"),
         runtime_agent_tls_client_key_file=os.getenv("B1_RUNTIME_AGENT_TLS_CLIENT_KEY_FILE", "/run/secrets/runtime_agent_client.key"),
         runtime_agent_tls_verify=_bool("B1_RUNTIME_AGENT_TLS_VERIFY", True),
+        prometheus_scrape_token=_read_secret(os.getenv("B1_PROMETHEUS_SCRAPE_TOKEN_FILE"), os.getenv("B1_PROMETHEUS_SCRAPE_TOKEN", "")),
         openai_compatible_base_url=os.getenv("B1_OPENAI_COMPATIBLE_BASE_URL", ""),
         openai_compatible_api_key=_read_secret(os.getenv("B1_OPENAI_COMPATIBLE_API_KEY_FILE"), os.getenv("B1_OPENAI_COMPATIBLE_API_KEY", "")),
         generic_http_base_url=os.getenv("B1_GENERIC_HTTP_BASE_URL", ""),

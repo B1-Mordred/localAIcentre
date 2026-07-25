@@ -39,7 +39,7 @@ The production template sets `COMPOSE_FILE=compose.yaml:compose.production-local
 
 The base Compose services and B1-owned Dockerfiles use explicit version tags plus immutable manifest-list digests for third-party images. The current non-runtime base pins are `python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7`, `caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d`, `postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3`, `redis:7.4.5-bookworm@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb`, `node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e`, and `nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8`. Runtime-specific upstream base pins are listed in the sections below. Dockerfiles avoid broad `apt-get upgrade`, `apk upgrade`, and unpinned `pip --upgrade pip` steps so rebuilds stay tied to the reviewed base image digests and locked dependency files.
 
-The Compose `bootstrap` service creates external data directories and generated secrets under `/srv/b1-ai-hub` by default before the stateful services start. It does not delete or overwrite existing stack data. The generated secrets include the runtime-agent bearer token plus a private runtime-agent mTLS CA, server certificate, and control-plane client certificate used for the internal `https://runtime-agent:8443` API.
+The Compose `bootstrap` service creates external data directories and generated secrets under `/srv/b1-ai-hub` by default before the stateful services start. It does not delete or overwrite existing stack data. The generated secrets include the runtime-agent bearer token plus a private runtime-agent mTLS CA, server certificate, and control-plane client certificate used for the internal `https://runtime-agent:8443` API. Bootstrap also creates optional monitoring credentials: `$B1_DATA_ROOT/secrets/prometheus_scrape_token` for the metrics-only Prometheus scrape path and `$B1_DATA_ROOT/secrets/grafana_admin_password` for the disabled-by-default Grafana admin account.
 
 Optional preflight:
 
@@ -87,6 +87,25 @@ make gpu-acceptance
 ```
 
 The test uses the configured aliases `B1_GPU_ACCEPTANCE_CHAT_MODEL`, `B1_GPU_ACCEPTANCE_COMFY_MODEL`, and `B1_GPU_ACCEPTANCE_VOICEBOX_MODEL`, defaulting to `chat-default`, `image-default`, and `tts-quality`. It verifies production readiness, runtime-agent GPU metrics, LocalAI -> ComfyUI -> Voicebox switching, one reported GPU-resident pipeline at a time, and sampled VRAM within the configured reserve. Leave `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION=true` for cutover evidence; disable it only for an explicitly labelled dry run.
+
+## Optional Monitoring Profile
+
+The default 32 GB deployment does not require Prometheus or Grafana. Control Center uses the in-app metrics endpoints described in [administration.md](./administration.md), and that remains the recommended first-boot path.
+
+When an operator wants scraper-backed history, add `compose.monitoring.yaml` and the `monitoring` profile:
+
+```bash
+COMPOSE_PROFILES=monitoring docker compose -f compose.yaml -f compose.monitoring.yaml up -d
+```
+
+For the production `.env` flow, add the monitoring file to `COMPOSE_FILE` and append `monitoring` to `COMPOSE_PROFILES`:
+
+```text
+COMPOSE_FILE=compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml:compose.monitoring.yaml
+COMPOSE_PROFILES=voicebox,monitoring
+```
+
+Prometheus scrapes `http://control-plane:8000/admin/metrics.prometheus?limit=500` on the internal application network with the generated `$B1_DATA_ROOT/secrets/prometheus_scrape_token`. That token is accepted only by the Prometheus text endpoint; the JSON admin metrics endpoint still requires normal administrator API/session access. Grafana reads `$B1_DATA_ROOT/secrets/grafana_admin_password` and is reachable through `https://monitoring.ai.b1.germering/` or the value of `B1_HOST_MONITORING`. Prometheus and Grafana publish no host ports, and the Grafana profile disables analytics reporting, update checks, plugin preinstall/download behaviour, plugin public-key retrieval, the news feed, and external avatars.
 
 Model storage under `$B1_DATA_ROOT/models` has three distinct responsibilities:
 

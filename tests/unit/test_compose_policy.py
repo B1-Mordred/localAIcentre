@@ -84,10 +84,15 @@ class ComposePolicyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.compose = yaml.load((ROOT / "compose.yaml").read_text(encoding="utf-8"), Loader=ComposePolicyLoader)
         cls.legacy_compose = yaml.load((ROOT / "compose.legacy-comfy.yaml").read_text(encoding="utf-8"), Loader=ComposePolicyLoader)
+        cls.monitoring_text = (ROOT / "compose.monitoring.yaml").read_text(encoding="utf-8")
         cls.production_localai_text = (ROOT / "compose.production-localai.yaml").read_text(encoding="utf-8")
         cls.production_comfyui_text = (ROOT / "compose.production-comfyui.yaml").read_text(encoding="utf-8")
         cls.production_voicebox_text = (ROOT / "compose.production-voicebox.yaml").read_text(encoding="utf-8")
         cls.production_env = _read_env(ROOT / ".env.production.example")
+        cls.monitoring_compose = yaml.load(
+            cls.monitoring_text,
+            Loader=ComposePolicyLoader,
+        )
         cls.production_localai_compose = yaml.load(
             cls.production_localai_text,
             Loader=ComposePolicyLoader,
@@ -146,6 +151,11 @@ class ComposePolicyTests(unittest.TestCase):
             if not image:
                 continue
             self.assertNotIn(":latest", image, name)
+        for name, service in self.monitoring_compose["services"].items():
+            image = service.get("image")
+            if not image:
+                continue
+            self.assertNotIn(":latest", image, name)
 
     def test_explicit_third_party_compose_images_are_digest_pinned(self) -> None:
         for name, service in self.compose["services"].items():
@@ -153,6 +163,11 @@ class ComposePolicyTests(unittest.TestCase):
             if not image:
                 continue
             self.assertRegex(image, SHA256_REF_RE, f"{name} image must be pinned by immutable digest")
+        for name, service in self.monitoring_compose["services"].items():
+            image = service.get("image")
+            if not image:
+                continue
+            self.assertRegex(image, SHA256_REF_RE, f"{name} monitoring image must be pinned by immutable digest")
 
     def test_dockerfile_base_images_are_digest_pinned(self) -> None:
         for dockerfile in DOCKERFILES_REQUIRING_PINNED_BASES:
@@ -173,6 +188,8 @@ class ComposePolicyTests(unittest.TestCase):
             if name == "gateway":
                 continue
             self.assertNotIn("ports", service, name)
+        for name, service in self.monitoring_compose["services"].items():
+            self.assertNotIn("ports", service, name)
 
     def test_internal_networks_exist(self) -> None:
         networks = self.compose["networks"]
@@ -188,6 +205,8 @@ class ComposePolicyTests(unittest.TestCase):
         healthcheck = "\n".join(str(item) for item in self.compose["services"]["bootstrap"]["healthcheck"]["test"])
         for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
             self.assertIn(f"models/runtime-views/{runtime}", healthcheck)
+        self.assertIn("data/prometheus", healthcheck)
+        self.assertIn("data/grafana", healthcheck)
 
     def test_control_plane_mounts_generated_secrets_read_only(self) -> None:
         volumes = self.compose["services"]["control-plane"].get("volumes", [])
@@ -199,6 +218,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_CLIENT_CERT_FILE"], "/run/secrets/runtime_agent_client.crt")
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_CLIENT_KEY_FILE"], "/run/secrets/runtime_agent_client.key")
         self.assertEqual(environment["B1_RUNTIME_AGENT_TLS_VERIFY"], "${B1_RUNTIME_AGENT_TLS_VERIFY:-true}")
+        self.assertEqual(environment["B1_PROMETHEUS_SCRAPE_TOKEN_FILE"], "/run/secrets/prometheus_scrape_token")
         self.assertEqual(environment["B1_ARTIFACT_SERVER_TOKEN_FILE"], "/run/secrets/artifact_server_token")
         self.assertEqual(environment["B1_RUNTIME_CONTROL_TOKEN_FILE"], "/run/secrets/runtime_control_token")
         self.assertEqual(environment["B1_DEV_AUTH_BYPASS"], "${B1_DEV_AUTH_BYPASS:-false}")
@@ -229,6 +249,7 @@ class ComposePolicyTests(unittest.TestCase):
             "B1_HOST_MODELS",
             "B1_HOST_COMFY",
             "B1_HOST_VOICE",
+            "B1_HOST_MONITORING",
         ):
             block_start = caddyfile.index("{$" + host_var)
             block_end = caddyfile.find("\n}\n", block_start)
@@ -259,6 +280,11 @@ class ComposePolicyTests(unittest.TestCase):
             block = caddyfile[block_start:block_end]
             self.assertIn("import security_headers", block, host_var)
             self.assertNotIn("import media_capture_security_headers", block, host_var)
+        monitoring_block_start = caddyfile.index("{$B1_HOST_MONITORING")
+        monitoring_block_end = caddyfile.find("\n}\n", monitoring_block_start)
+        monitoring_block = caddyfile[monitoring_block_start:monitoring_block_end]
+        self.assertIn("import security_headers", monitoring_block)
+        self.assertIn("reverse_proxy grafana:3000", monitoring_block)
 
     def test_gateway_applies_configurable_request_body_limit_to_all_entrypoints(self) -> None:
         gateway = self.compose["services"]["gateway"]
@@ -276,11 +302,56 @@ class ComposePolicyTests(unittest.TestCase):
             "B1_HOST_MODELS",
             "B1_HOST_COMFY",
             "B1_HOST_VOICE",
+            "B1_HOST_MONITORING",
         ):
             block_start = caddyfile.index("{$" + host_var)
             block_end = caddyfile.find("\n}\n", block_start)
             self.assertIn("import request_limits", caddyfile[block_start:block_end], host_var)
         self.assertIn("import request_limits", legacy_caddyfile)
+
+    def test_optional_monitoring_profile_is_internal_and_scrapes_metrics_only_endpoint(self) -> None:
+        services = self.monitoring_compose["services"]
+        prometheus = services["prometheus"]
+        grafana = services["grafana"]
+        prometheus_config = (ROOT / "deploy" / "monitoring" / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+        datasource = (
+            ROOT / "deploy" / "monitoring" / "grafana" / "provisioning" / "datasources" / "prometheus.yaml"
+        ).read_text(encoding="utf-8")
+        dashboard = (ROOT / "deploy" / "monitoring" / "grafana" / "dashboards" / "b1-ai-hub-overview.json").read_text(encoding="utf-8")
+
+        for service_name, service in services.items():
+            self.assertEqual(service["profiles"], ["monitoring"], service_name)
+            self.assertIn("app", service["networks"], service_name)
+            self.assertNotIn("ports", service, service_name)
+            self.assertIn("no-new-privileges:true", service["security_opt"], service_name)
+            self.assertEqual(service["cap_drop"], ["ALL"], service_name)
+            self.assertIn("healthcheck", service, service_name)
+
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/prometheus_scrape_token:/run/secrets/prometheus_scrape_token:ro", prometheus["volumes"])
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/grafana_admin_password:/run/secrets/grafana_admin_password:ro", grafana["volumes"])
+        for key in (
+            "GF_ANALYTICS_REPORTING_ENABLED",
+            "GF_ANALYTICS_CHECK_FOR_UPDATES",
+            "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES",
+            "GF_NEWS_NEWS_FEED_ENABLED",
+        ):
+            self.assertEqual(grafana["environment"][key], "false", key)
+        for key in (
+            "GF_PLUGINS_PREINSTALL_DISABLED",
+            "GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED",
+            "GF_SECURITY_DISABLE_GRAVATAR",
+        ):
+            self.assertEqual(grafana["environment"][key], "true", key)
+        self.assertIn("credentials_file: /run/secrets/prometheus_scrape_token", prometheus_config)
+        self.assertIn("metrics_path: /admin/metrics.prometheus", prometheus_config)
+        self.assertIn("control-plane:8000", prometheus_config)
+        self.assertNotIn("admin_bootstrap_key", prometheus_config)
+        self.assertNotIn("master_encryption_key", prometheus_config)
+        self.assertIn("url: http://prometheus:9090", datasource)
+        self.assertIn("b1_ai_hub_queue_depth_total", dashboard)
+        self.assertIn("b1_ai_hub_gpu_memory_used_mib", dashboard)
+        self.assertNotIn("resolved_model_version", dashboard)
+        self.assertNotIn("owner", dashboard)
 
     def test_control_plane_mounts_artifacts_for_job_runner(self) -> None:
         service = self.compose["services"]["control-plane"]

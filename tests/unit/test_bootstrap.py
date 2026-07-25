@@ -22,6 +22,8 @@ class BootstrapTests(unittest.TestCase):
         "data/redis",
         "data/open-webui",
         "data/control-plane",
+        "data/prometheus",
+        "data/grafana",
         "data/voicebox",
         "models/llm",
         "models/vision",
@@ -72,6 +74,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn("runtime_control_token", first["created_secrets"])
             self.assertIn("artifact_server_token", first["created_secrets"])
             self.assertIn("open_webui_api_key", first["created_secrets"])
+            self.assertIn("prometheus_scrape_token", first["created_secrets"])
+            self.assertIn("grafana_admin_password", first["created_secrets"])
             self.assertIn("runtime_agent_mtls_ca.crt", first["created_secrets"])
             self.assertIn("runtime_agent_server.crt", first["created_secrets"])
             self.assertIn("runtime_agent_client.crt", first["created_secrets"])
@@ -79,10 +83,14 @@ class BootstrapTests(unittest.TestCase):
             self.assertNotIn("runtime_control_token", second["created_secrets"])
             self.assertNotIn("artifact_server_token", second["created_secrets"])
             self.assertNotIn("open_webui_api_key", second["created_secrets"])
+            self.assertNotIn("prometheus_scrape_token", second["created_secrets"])
+            self.assertNotIn("grafana_admin_password", second["created_secrets"])
             self.assertNotIn("runtime_agent_mtls_ca.crt", second["created_secrets"])
             self.assertTrue(token_path.read_text(encoding="utf-8").startswith("b1rt_"))
             self.assertTrue(runtime_control_token_path.read_text(encoding="utf-8").startswith("b1rctl_"))
             self.assertTrue(artifact_token_path.read_text(encoding="utf-8").startswith("b1art_"))
+            self.assertTrue((root / "secrets" / "prometheus_scrape_token").read_text(encoding="utf-8").startswith("b1prom_"))
+            self.assertGreaterEqual(len((root / "secrets" / "grafana_admin_password").read_text(encoding="utf-8").strip()), 32)
             open_webui_key = open_webui_key_path.read_text(encoding="utf-8").strip()
             self.assertTrue(open_webui_key.startswith("b1k_"))
             self.assertEqual(token_path.stat().st_mode & 0o777, 0o640)
@@ -116,6 +124,10 @@ class BootstrapTests(unittest.TestCase):
             for runtime_cache in ("localai", "comfyui", "voicebox"):
                 path = root / "cache" / runtime_cache
                 self.assertTrue(path.is_dir(), runtime_cache)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o775)
+            for monitoring_data_dir in ("prometheus", "grafana"):
+                path = root / "data" / monitoring_data_dir
+                self.assertTrue(path.is_dir(), monitoring_data_dir)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o775)
             for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
                 self.assertTrue((root / "models" / "runtime-views" / runtime).is_dir())

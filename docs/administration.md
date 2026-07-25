@@ -19,6 +19,8 @@ The UI must not expose arbitrary shell, Docker, host path, or download destinati
 
 The Dashboard reads `GET /admin/status` for configuration and `GET /admin/metrics` for live operational summaries. The metrics endpoint intentionally stays lightweight for the 32 GB target: it aggregates recent durable job rows in PostgreSQL, scheduler ownership, runtime states, and runtime-agent telemetry instead of requiring Prometheus or Grafana for first boot. Administrators who want scraper-friendly metrics can use the same authenticated snapshot at `GET /admin/metrics.prometheus`, which returns Prometheus text exposition without prompt, owner, job, artifact, path, credential, or model-identifier labels.
 
+The optional `compose.monitoring.yaml` profile adds Prometheus and Grafana with pinned images. Prometheus uses the bootstrap-generated `$B1_DATA_ROOT/secrets/prometheus_scrape_token`, which is accepted only by `GET /admin/metrics.prometheus`; it is not a general API key and cannot access JSON admin routes. Grafana is routed only through Caddy at `https://monitoring.ai.b1.germering/` or the configured `B1_HOST_MONITORING` value, and backend Prometheus/Grafana ports remain unpublished.
+
 Operators can see queue depth, active jobs, oldest wait, recent run-time p95, completed/failed/cancelled jobs in the last hour, model switches per hour, peak RAM/VRAM recorded on jobs, host memory/swap, and normalized GPU memory/utilization/temperature. If runtime-agent telemetry is unavailable, the Dashboard shows the error and continues to display database-backed queue and job information.
 
 ## Browser Sign-In

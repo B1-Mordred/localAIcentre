@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = [
     ROOT / "compose.yaml",
     ROOT / "compose.legacy-comfy.yaml",
+    ROOT / "compose.monitoring.yaml",
     ROOT / "compose.production-localai.yaml",
     ROOT / "compose.production-comfyui.yaml",
     ROOT / "compose.production-voicebox.yaml",
@@ -26,6 +27,8 @@ BACKEND_SERVICES = {
     "voicebox",
     "audio-cpu",
     "artifact-server",
+    "prometheus",
+    "grafana",
     "postgres",
     "redis",
 }

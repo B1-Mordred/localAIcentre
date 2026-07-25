@@ -12,6 +12,7 @@ Controls implemented or planned:
 - API keys stored as salted PBKDF2 hashes with one-time display of the full key
 - bootstrap administrator key generated outside Git under `$B1_DATA_ROOT/secrets`
 - AES-GCM encrypted configuration-secret storage backed by `$B1_DATA_ROOT/secrets/master_encryption_key`
+- metrics-only Prometheus scrape token generated outside Git and accepted only by `GET /admin/metrics.prometheus`
 - SSRF protection for model imports and generic runtime URLs
 - archive traversal, symlink/device-node refusal, denied executable/code file types, and zip-bomb limits
 - path canonicalization for artifacts and blobs
@@ -22,6 +23,8 @@ Controls implemented or planned:
 Caddy applies deny-by-default browser capture policy to Control Center, the unified API, Model Hub, and native ComfyUI compatibility. Open WebUI, Media Studio, and the Voicebox compatibility host use a narrower media-capture header that allows camera and microphone only for the same origin, so browser voice/image workflows can work without granting capture permissions to administrative or machine API surfaces. Geolocation remains disabled on every host.
 
 Caddy's admin API is bound to `127.0.0.1:2019` inside the gateway container and is used only by the gateway health check. It is not published to the host or exposed on the internal application network.
+
+The optional monitoring profile keeps Prometheus and Grafana on the internal application network with no published backend ports. Caddy is the only route to Grafana through `B1_HOST_MONITORING`. Prometheus mounts only `$B1_DATA_ROOT/secrets/prometheus_scrape_token`, not the whole secrets directory, and that token is scoped in code to the Prometheus text metrics endpoint. Grafana mounts only its generated admin password plus provisioning files, and the profile disables Grafana analytics reporting, update checks, plugin preinstall/download behaviour, plugin public-key retrieval, the news feed, and external Gravatar images.
 
 Caddy also applies `B1_CADDY_REQUEST_BODY_LIMIT` to every normal virtual host and to the optional legacy ComfyUI listener. The default is `268435456` bytes, aligned with the control plane's default `B1_UPLOAD_MAX_BYTES`, so oversized uploads are rejected at the gateway before they can reach Open WebUI, Control Center, Media Studio, Model Hub, native compatibility proxies, or the unified API. Keep the gateway value greater than or equal to the largest intended control-plane upload limit and lower it for constrained LAN clients.
 

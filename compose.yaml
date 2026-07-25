@@ -44,6 +44,8 @@ services:
               "data/redis",
               "data/open-webui",
               "data/control-plane",
+              "data/prometheus",
+              "data/grafana",
               "models/blobs",
               "models/runtime-views/localai",
               "models/runtime-views/comfyui",
@@ -89,6 +91,7 @@ services:
       B1_HOST_VOICE: ${B1_HOST_VOICE:-voice.ai.b1.germering}
       B1_HOST_MODELS: ${B1_HOST_MODELS:-models.ai.b1.germering}
       B1_HOST_API: ${B1_HOST_API:-api.ai.b1.germering}
+      B1_HOST_MONITORING: ${B1_HOST_MONITORING:-monitoring.ai.b1.germering}
       B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
       B1_CADDY_REQUEST_BODY_LIMIT: ${B1_CADDY_REQUEST_BODY_LIMIT:-268435456}
     volumes:
@@ -167,6 +170,7 @@ services:
       B1_RUNTIME_AGENT_TLS_CLIENT_CERT_FILE: /run/secrets/runtime_agent_client.crt
       B1_RUNTIME_AGENT_TLS_CLIENT_KEY_FILE: /run/secrets/runtime_agent_client.key
       B1_RUNTIME_AGENT_TLS_VERIFY: ${B1_RUNTIME_AGENT_TLS_VERIFY:-true}
+      B1_PROMETHEUS_SCRAPE_TOKEN_FILE: /run/secrets/prometheus_scrape_token
       B1_DATA_ROOT: /srv/b1-ai-hub
       B1_BACKUP_ROOT: /srv/b1-ai-hub/backups
       B1_RESTORE_TEST_ROOT: /srv/b1-ai-hub/restore-tests

@@ -1010,6 +1010,15 @@ def require_scope(auth: AuthContext, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"missing required scope: {scope}")
 
 
+def prometheus_scrape_token_allowed(authorization: str | None) -> bool:
+    if not settings.prometheus_scrape_token or not isinstance(authorization, str):
+        return False
+    if not authorization.startswith("Bearer "):
+        return False
+    token = authorization.removeprefix("Bearer ").strip()
+    return bool(token) and hmac.compare_digest(token, settings.prometheus_scrape_token)
+
+
 def compatibility_header_value(headers: Any) -> str:
     value = headers.get("x-b1-compatibility", "") if headers is not None else ""
     return value.strip().lower() if isinstance(value, str) else ""
@@ -3678,8 +3687,9 @@ async def admin_metrics_prometheus(
     authorization: str | None = Header(default=None),
     limit: int = Query(default=500, ge=1, le=500),
 ) -> Response:
-    auth = await authenticate(authorization)
-    require_scope(auth, "admin:read")
+    if not prometheus_scrape_token_allowed(authorization):
+        auth = await authenticate(authorization)
+        require_scope(auth, "admin:read")
     payload = await build_admin_metrics_payload(limit=limit)
     return Response(
         content=observability_report_to_prometheus(payload),

@@ -81,6 +81,17 @@ class AdminMetricsApiTests(unittest.TestCase):
 
         self.patch_attr("authenticate", authenticate)
 
+    def patch_prometheus_scrape_token(self, token: str) -> None:
+        current = main.settings
+
+        class FakeSettings:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(current, name)
+
+        fake = FakeSettings()
+        fake.prometheus_scrape_token = token
+        self.patch_attr("settings", fake)
+
     def test_admin_metrics_returns_database_and_runtime_agent_observability(self) -> None:
         self.patch_auth(AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"admin:read"})))
         self.patch_attr("database", FakeMetricsDatabase())
@@ -140,6 +151,26 @@ class AdminMetricsApiTests(unittest.TestCase):
         self.assertIn("# TYPE b1_ai_hub_queue_depth_total gauge", body)
         self.assertIn('b1_ai_hub_jobs_last_hour_total{status="completed"} 1', body)
         self.assertIn("b1_ai_hub_gpu_available 0", body)
+
+    def test_admin_metrics_prometheus_accepts_metrics_only_scrape_token(self) -> None:
+        self.patch_prometheus_scrape_token("b1prom_test-token")
+
+        async def authenticate(_: str | None = None) -> Any:
+            raise AssertionError("scrape token must not require database API-client lookup")
+
+        self.patch_attr("authenticate", authenticate)
+        self.patch_attr("database", FakeMetricsDatabase())
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return {"gpu": {"available": False, "devices": []}}, None
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+
+        response = asyncio.run(main.admin_metrics_prometheus(authorization="Bearer b1prom_test-token", limit=500))
+        body = response.body.decode("utf-8")
+
+        self.assertIn("b1_ai_hub_queue_depth_total 1", body)
 
     def test_admin_metrics_requires_admin_read_scope(self) -> None:
         self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:read"})))
