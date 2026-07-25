@@ -628,12 +628,40 @@ def claim_queue_item_for_row(row: dict[str, Any]) -> QueueItem:
         priority=priority_class_from_value(row.get("priority")),
         queued_at=queued_at,
         model_alias=str(row.get("model_alias") or ""),
+        runtime=str(row.get("runtime") or ""),
+        resolved_model_version=str(row.get("resolved_model_version") or ""),
     )
 
 
-def select_claim_candidate(rows: list[dict[str, Any]], now: datetime | None = None) -> dict[str, Any] | None:
+def runtime_state_can_group_queued_work(row: dict[str, Any]) -> bool:
+    status = str(row.get("status") or "").lower()
+    stage = str(row.get("stage") or "").lower()
+    return status == "idle" or stage == "idle"
+
+
+def runtime_state_model_refs(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    refs: set[tuple[str, str]] = set()
+    for row in rows:
+        if not runtime_state_can_group_queued_work(row):
+            continue
+        runtime = str(row.get("runtime") or "")
+        resolved = str(row.get("resolved_model_version") or "")
+        if runtime and resolved:
+            refs.add((runtime, resolved))
+    return refs
+
+
+def select_claim_candidate(
+    rows: list[dict[str, Any]],
+    now: datetime | None = None,
+    active_runtime_model_refs: set[tuple[str, str]] | None = None,
+) -> dict[str, Any] | None:
     by_id = {str(row["id"]): row for row in rows}
-    selected = select_next_job((claim_queue_item_for_row(row) for row in rows), now=now)
+    selected = select_next_job(
+        (claim_queue_item_for_row(row) for row in rows),
+        now=now,
+        active_runtime_model_refs=active_runtime_model_refs,
+    )
     return by_id.get(selected.job_id) if selected else None
 
 
@@ -2111,7 +2139,13 @@ async def claim_next_job(
             .with_for_update(skip_locked=True)
         )
         candidates = [dict(row) for row in result.mappings().all()]
-        row = select_claim_candidate(candidates, now=now)
+        if not candidates:
+            return None
+        runtime_state_result = await conn.execute(
+            select(runtime_state).where(runtime_state.c.runtime.in_(runtime_names))
+        )
+        active_refs = runtime_state_model_refs([dict(row) for row in runtime_state_result.mappings().all()])
+        row = select_claim_candidate(candidates, now=now, active_runtime_model_refs=active_refs)
         if row is None:
             return None
         values = {"state": claimed_state, "stage": claimed_stage, "progress": claimed_progress, "updated_at": now}

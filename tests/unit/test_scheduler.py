@@ -20,6 +20,13 @@ from app.scheduler import (  # noqa: E402
     validate_transition,
 )
 
+try:
+    from app import database  # noqa: E402
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
+    if exc.name != "sqlalchemy":
+        raise
+    database = None
+
 
 class SchedulerTests(unittest.TestCase):
     def test_job_state_transitions_include_required_path(self) -> None:
@@ -65,6 +72,146 @@ class SchedulerTests(unittest.TestCase):
         old_batch = QueueItem("batch", PriorityClass.BATCH, now - timedelta(hours=5), "video-text")
         new_chat = QueueItem("chat", PriorityClass.CHAT, now, "chat-default")
         self.assertEqual(select_next_job([old_batch, new_chat], now), old_batch)
+
+    def test_same_model_grouping_prefers_loaded_model_within_fairness_window(self) -> None:
+        now = datetime.now(tz=UTC)
+        slightly_older_image = QueueItem(
+            "image-different",
+            PriorityClass.SINGLE_IMAGE,
+            now - timedelta(minutes=5),
+            "image-edit",
+            runtime="comfyui",
+            resolved_model_version="sdxl-edit@1",
+        )
+        loaded_model_image = QueueItem(
+            "image-loaded",
+            PriorityClass.SINGLE_IMAGE,
+            now,
+            "image-default",
+            runtime="comfyui",
+            resolved_model_version="sdxl-default@1",
+        )
+
+        selected = select_next_job(
+            [slightly_older_image, loaded_model_image],
+            now,
+            active_runtime_model_refs={("comfyui", "sdxl-default@1")},
+        )
+
+        self.assertEqual(selected, loaded_model_image)
+
+    def test_same_model_grouping_does_not_override_interactive_priority(self) -> None:
+        now = datetime.now(tz=UTC)
+        loaded_model_batch = QueueItem(
+            "batch-loaded",
+            PriorityClass.BATCH,
+            now,
+            "image-default",
+            runtime="comfyui",
+            resolved_model_version="sdxl-default@1",
+        )
+        chat = QueueItem(
+            "chat",
+            PriorityClass.CHAT,
+            now,
+            "chat-default",
+            runtime="localai",
+            resolved_model_version="llm@1",
+        )
+
+        selected = select_next_job(
+            [loaded_model_batch, chat],
+            now,
+            active_runtime_model_refs={("comfyui", "sdxl-default@1")},
+        )
+
+        self.assertEqual(selected, chat)
+
+    def test_same_model_grouping_respects_priority_aging(self) -> None:
+        now = datetime.now(tz=UTC)
+        much_older_image = QueueItem(
+            "image-different",
+            PriorityClass.SINGLE_IMAGE,
+            now - timedelta(minutes=40),
+            "image-edit",
+            runtime="comfyui",
+            resolved_model_version="sdxl-edit@1",
+        )
+        loaded_model_image = QueueItem(
+            "image-loaded",
+            PriorityClass.SINGLE_IMAGE,
+            now,
+            "image-default",
+            runtime="comfyui",
+            resolved_model_version="sdxl-default@1",
+        )
+
+        selected = select_next_job(
+            [much_older_image, loaded_model_image],
+            now,
+            active_runtime_model_refs={("comfyui", "sdxl-default@1")},
+        )
+
+        self.assertEqual(selected, much_older_image)
+
+
+@unittest.skipIf(database is None, "SQLAlchemy is not installed in this lightweight test environment")
+class DatabaseQueueClaimTests(unittest.TestCase):
+    def test_runtime_state_model_refs_only_uses_idle_resident_models(self) -> None:
+        refs = database.runtime_state_model_refs(
+            [
+                {
+                    "runtime": "comfyui",
+                    "status": "idle",
+                    "stage": "idle",
+                    "resolved_model_version": "sdxl-default@1",
+                },
+                {
+                    "runtime": "localai",
+                    "status": "load_ok",
+                    "stage": "loading",
+                    "resolved_model_version": "llm@1",
+                },
+                {
+                    "runtime": "voicebox",
+                    "status": "idle",
+                    "stage": "idle",
+                    "resolved_model_version": "",
+                },
+            ]
+        )
+
+        self.assertEqual(refs, {("comfyui", "sdxl-default@1")})
+
+    def test_select_claim_candidate_uses_active_runtime_model_refs(self) -> None:
+        now = datetime.now(tz=UTC)
+        rows = [
+            {
+                "id": "image-different",
+                "priority": "single_image",
+                "created_at": now - timedelta(minutes=5),
+                "model_alias": "image-edit",
+                "runtime": "comfyui",
+                "resolved_model_version": "sdxl-edit@1",
+            },
+            {
+                "id": "image-loaded",
+                "priority": "single_image",
+                "created_at": now,
+                "model_alias": "image-default",
+                "runtime": "comfyui",
+                "resolved_model_version": "sdxl-default@1",
+            },
+        ]
+
+        selected = database.select_claim_candidate(
+            rows,
+            now=now,
+            active_runtime_model_refs={("comfyui", "sdxl-default@1")},
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["id"], "image-loaded")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ PRIORITY_BASE_SCORE = {
     PriorityClass.VIDEO: 40,
     PriorityClass.BATCH: 50,
 }
+SAME_MODEL_GROUPING_SCORE_WINDOW = 3.0
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,8 @@ class QueueItem:
     priority: PriorityClass
     queued_at: datetime
     model_alias: str
+    runtime: str = ""
+    resolved_model_version: str = ""
 
 
 def validate_transition(current: JobState, target: JobState) -> bool:
@@ -137,6 +140,30 @@ def queue_sort_key(item: QueueItem, now: datetime | None = None) -> tuple[float,
     return (score, item.queued_at, item.job_id)
 
 
-def select_next_job(items: Iterable[QueueItem], now: datetime | None = None) -> QueueItem | None:
-    sorted_items = sorted(items, key=lambda item: queue_sort_key(item, now))
-    return sorted_items[0] if sorted_items else None
+def queue_item_matches_active_model(item: QueueItem, active_runtime_model_refs: set[tuple[str, str]]) -> bool:
+    return bool(item.runtime and item.resolved_model_version and (item.runtime, item.resolved_model_version) in active_runtime_model_refs)
+
+
+def select_next_job(
+    items: Iterable[QueueItem],
+    now: datetime | None = None,
+    active_runtime_model_refs: set[tuple[str, str]] | None = None,
+    same_model_score_window: float = SAME_MODEL_GROUPING_SCORE_WINDOW,
+) -> QueueItem | None:
+    candidates = list(items)
+    sorted_items = sorted(candidates, key=lambda item: queue_sort_key(item, now))
+    if not sorted_items:
+        return None
+    selected = sorted_items[0]
+    active_refs = active_runtime_model_refs or set()
+    if not active_refs:
+        return selected
+    same_model_candidates = [item for item in sorted_items if queue_item_matches_active_model(item, active_refs)]
+    if not same_model_candidates:
+        return selected
+    same_model_selected = same_model_candidates[0]
+    selected_score = queue_sort_key(selected, now)[0]
+    same_model_score = queue_sort_key(same_model_selected, now)[0]
+    if same_model_score <= selected_score + max(0.0, same_model_score_window):
+        return same_model_selected
+    return selected
