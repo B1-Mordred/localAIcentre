@@ -34,6 +34,7 @@ LIVE_FLAGS = {
     "B1_RESTART_RECONCILIATION_LIVE_TEST": "1",
 }
 EVIDENCE_FILES = {
+    "B1_PREFLIGHT_EVIDENCE": "operator-preflight.json",
     "B1_SMOKE_EVIDENCE": "live-smoke.json",
     "B1_WORKFLOWS_EVIDENCE": "installed-workflows.json",
     "B1_LOCALAI_ACCEPTANCE_EVIDENCE": "localai-runtime.json",
@@ -224,7 +225,8 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append("# 1. export B1_ACCEPTANCE_API_KEY=... or edit the key lines above.")
     lines.append("# 2. Fill B1_RESTART_RECONCILIATION_STARTED_AFTER after preparing and restarting the drill state.")
     lines.append("# 3. Fill B1_MODELHUB_SYNC_MODEL and B1_MODELHUB_INFERENCE_ONLY_MODEL after reviewing Model Hub permissions.")
-    lines.append("# 4. Source this file, then run: make operator-live-acceptance")
+    lines.append("# 4. Source this file, then run: make acceptance-preflight")
+    lines.append("# 5. When preflight passes, run: make operator-live-acceptance")
     return "\n".join(lines) + "\n"
 
 

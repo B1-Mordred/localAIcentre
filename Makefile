@@ -11,6 +11,7 @@ B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
 B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
+B1_PREFLIGHT_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/operator-preflight.json
 B1_SMOKE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/live-smoke.json
 B1_WORKFLOWS_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/installed-workflows.json
 B1_LOCALAI_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/localai-runtime.json
@@ -42,7 +43,7 @@ acceptance-env:
 	python3 deploy/scripts/acceptance_env.py --data-root "$(B1_DATA_ROOT)" --output "$(B1_ACCEPTANCE_ENV)"
 
 acceptance-preflight:
-	python3 deploy/scripts/acceptance_preflight.py --data-root "$(B1_DATA_ROOT)" --env-file "$(B1_ACCEPTANCE_ENV)"
+	python3 deploy/scripts/acceptance_preflight.py --data-root "$(B1_DATA_ROOT)" --env-file "$(B1_ACCEPTANCE_ENV)" --output "$(B1_PREFLIGHT_EVIDENCE)"
 
 validate: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check openapi-client-check unit compatibility security
 
@@ -156,7 +157,7 @@ external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non
 
 # Requires the target host acceptance window, installed real models, workflow job files,
 # scoped API keys, and the restart-reconciliation drill state documented in tests/.
-operator-live-acceptance: live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
+operator-live-acceptance: acceptance-preflight live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
 
 security:
 	python3 -m unittest discover -s tests/security -v

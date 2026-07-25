@@ -82,6 +82,17 @@ def ok_checks(names: tuple[str, ...]) -> dict[str, dict[str, str]]:
     return {name: {"status": "ok"} for name in names}
 
 
+def sample_preflight_checks() -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "name": name,
+            "status": "ok",
+            "detail": f"{name} validated",
+        }
+        for name in acceptance.PREFLIGHT_REQUIRED_CHECKS
+    }
+
+
 def sample_security_checks() -> dict[str, dict[str, Any]]:
     return {
         "unauthenticated_requests_rejected": {
@@ -524,6 +535,25 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
         "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
     }
     payload = {
+        "operator_preflight": {
+            "available": True,
+            "format": "b1-ai-hub-operator-live-acceptance-preflight/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/operator-preflight.json",
+            "generated_at": "2026-07-24T12:15:00+00:00",
+            "base_url": "",
+            "status": "ok",
+            "required_checks": list(acceptance.PREFLIGHT_REQUIRED_CHECKS),
+            "missing_checks": [],
+            "checks": sample_preflight_checks(),
+            "sample_count": 0,
+            "sample_labels": [],
+            "preflight_ok_count": len(acceptance.PREFLIGHT_REQUIRED_CHECKS),
+            "preflight_warning_count": 0,
+            "preflight_fail_count": 0,
+            "warning_checks": [],
+            "failed_checks": [],
+            "missing_preflight_evidence": [],
+        },
         "live_stack_smoke": {
             "available": True,
             "format": "b1-ai-hub-live-smoke/v1",
@@ -2127,6 +2157,65 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("RTX 3060 GPU acceptance evidence is unavailable", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_without_operator_preflight_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["operator_preflight"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["operator_preflight_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("operator live-acceptance preflight evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_operator_preflight_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["operator_preflight"] = {
+            **live_evidence["operator_preflight"],
+            "status": "fail",
+            "missing_checks": ["api_keys"],
+            "failed_checks": ["api_keys"],
+            "missing_preflight_evidence": ["summary.fail", "failed_check.api_keys"],
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["operator_preflight_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("operator live-acceptance preflight evidence status is fail", report["acceptance_blockers"])
+        self.assertIn(
+            "operator live-acceptance preflight evidence is missing required checks: api_keys",
+            report["acceptance_blockers"],
+        )
+
+    def test_operator_preflight_snapshot_accepts_warnings_without_blocking_handoff(self) -> None:
+        checks = [
+            {"name": name, "status": "ok", "detail": "validated"}
+            for name in acceptance.PREFLIGHT_REQUIRED_CHECKS
+        ]
+        checks[-1] = {"name": checks[-1]["name"], "status": "warning", "detail": "operator reviewed limitation"}
+        snapshot = acceptance.preflight_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-operator-live-acceptance-preflight/v1",
+                "generated_at": "2026-07-24T12:15:00+00:00",
+                "status": "warning",
+                "summary": {"ok": len(checks) - 1, "warning": 1, "fail": 0},
+                "checks": checks,
+            }
+        )
+        live_evidence = sample_live_evidence(operator_preflight=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertEqual(snapshot["preflight_warning_count"], 1)
+        self.assertEqual(snapshot["missing_preflight_evidence"], [])
+        self.assertTrue(summary["operator_preflight_evidence_ready"])
+        self.assertTrue(summary["live_evidence_ready"])
+        self.assertTrue(report["operator_handoff_ready"])
+
     def test_report_blocks_handoff_without_smoke_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["live_stack_smoke"] = {"available": False, "reason": "missing"}
@@ -3593,6 +3682,10 @@ class AcceptanceReportTests(unittest.TestCase):
             }
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+            preflight = evidence_root / "operator-preflight.json"
+            preflight_payload = sample_live_evidence()["operator_preflight"]
+            preflight_payload["checks"] = list(preflight_payload["checks"].values())
+            preflight.write_text(json.dumps(preflight_payload), encoding="utf-8")
             smoke = evidence_root / "live-smoke.json"
             smoke_payload = sample_live_evidence()["live_stack_smoke"]
             smoke_payload["samples"] = [{"label": label} for label in smoke_payload["sample_labels"]]
@@ -3946,6 +4039,14 @@ class AcceptanceReportTests(unittest.TestCase):
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
+        preflight_snapshot = snapshot["operator_preflight"]
+        self.assertTrue(preflight_snapshot["available"])
+        self.assertEqual(preflight_snapshot["source_path"], str(preflight.resolve()))
+        self.assertEqual(preflight_snapshot["status"], "ok")
+        self.assertEqual(preflight_snapshot["missing_checks"], [])
+        self.assertEqual(preflight_snapshot["missing_preflight_evidence"], [])
+        self.assertEqual(preflight_snapshot["preflight_fail_count"], 0)
+        self.assertEqual(preflight_snapshot["checks"]["api_keys"]["status"], "ok")
         smoke_snapshot = snapshot["live_stack_smoke"]
         self.assertTrue(smoke_snapshot["available"])
         self.assertEqual(smoke_snapshot["source_path"], str(smoke.resolve()))

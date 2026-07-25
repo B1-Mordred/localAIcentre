@@ -245,6 +245,21 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
         },
     ],
 }
+PREFLIGHT_EVIDENCE_FORMAT = "b1-ai-hub-operator-live-acceptance-preflight/v1"
+PREFLIGHT_REQUIRED_CHECKS = (
+    "acceptance_env_file",
+    "live_flags",
+    "api_keys",
+    "urls",
+    "tls_ca_file",
+    "evidence_outputs",
+    "workflow_inputs",
+    "handoff_safety_gates",
+    "modelhub_license_review",
+    "operator_final_values",
+    "security_browser_auth",
+    "voicebox_limitations",
+)
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "resource_policy_and_runtime_readiness",
@@ -394,6 +409,7 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )
 LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("operator_preflight", "operator live-acceptance preflight"),
     ("live_stack_smoke", "live stack smoke"),
     ("gpu_acceptance", "RTX 3060 GPU acceptance"),
     ("localai_runtime", "LocalAI runtime acceptance"),
@@ -2044,6 +2060,84 @@ def _live_evidence_snapshot(
     return snapshot
 
 
+def _preflight_checks_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_checks = payload.get("checks")
+    checks: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_checks, dict):
+        items = raw_checks.items()
+    elif isinstance(raw_checks, list):
+        items = (
+            (str(item.get("name") or ""), item)
+            for item in raw_checks
+            if isinstance(item, dict)
+        )
+    else:
+        return checks
+    for raw_name, raw_check in items:
+        name = str(raw_name).strip()
+        if not name or not isinstance(raw_check, dict):
+            continue
+        normalized = dict(raw_check)
+        normalized.setdefault("name", name)
+        checks[name] = normalized
+    return checks
+
+
+def preflight_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    if payload.get("format") != PREFLIGHT_EVIDENCE_FORMAT:
+        return {"available": False, "reason": "unsupported operator preflight evidence format"}
+    checks = _preflight_checks_by_name(payload)
+    missing_checks = []
+    failed_checks = []
+    warning_checks = []
+    unknown_status_checks = []
+    for name, check in sorted(checks.items()):
+        status = str(check.get("status") or "unknown")
+        if status == "fail":
+            failed_checks.append(name)
+        elif status == "warning":
+            warning_checks.append(name)
+        elif status != "ok":
+            unknown_status_checks.append(name)
+    for name in PREFLIGHT_REQUIRED_CHECKS:
+        check = checks.get(name)
+        if not check or str(check.get("status") or "unknown") not in {"ok", "warning"}:
+            missing_checks.append(name)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    fail_count = _integer_value(summary.get("fail"))
+    warning_count = _integer_value(summary.get("warning"))
+    ok_count = _integer_value(summary.get("ok"))
+    missing_detail = []
+    status = str(payload.get("status") or "unknown")
+    if status not in {"ok", "warning"}:
+        missing_detail.append("status")
+    if fail_count not in (None, 0):
+        missing_detail.append("summary.fail")
+    if not checks:
+        missing_detail.append("checks")
+    missing_detail.extend(f"failed_check.{name}" for name in failed_checks)
+    missing_detail.extend(f"unknown_check_status.{name}" for name in unknown_status_checks)
+    return {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": status,
+        "required_checks": list(PREFLIGHT_REQUIRED_CHECKS),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": 0,
+        "sample_labels": [],
+        "preflight_ok_count": ok_count if ok_count is not None else 0,
+        "preflight_warning_count": warning_count if warning_count is not None else len(warning_checks),
+        "preflight_fail_count": fail_count if fail_count is not None else len(failed_checks),
+        "warning_checks": warning_checks,
+        "failed_checks": failed_checks,
+        "missing_preflight_evidence": missing_detail,
+    }
+
+
 def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     if plan.get("format") != CUTOVER_PLAN_FORMAT:
         return {"available": False, "reason": "unsupported cutover plan format"}
@@ -2263,6 +2357,7 @@ def backup_migration_rollback_evidence_snapshot(payload: dict[str, Any], source_
 
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
+        "operator_preflight": {"available": False, "reason": reason, "root": str(root)},
         "live_stack_smoke": {"available": False, "reason": reason, "root": str(root)},
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
         "localai_runtime": {"available": False, "reason": reason, "root": str(root)},
@@ -2309,7 +2404,10 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             continue
         if not isinstance(payload, dict):
             continue
-        if payload.get("format") == SMOKE_EVIDENCE_FORMAT and "live_stack_smoke" not in found:
+        if payload.get("format") == PREFLIGHT_EVIDENCE_FORMAT and "operator_preflight" not in found:
+            snapshots["operator_preflight"] = preflight_evidence_snapshot(payload, path.resolve())
+            found.add("operator_preflight")
+        elif payload.get("format") == SMOKE_EVIDENCE_FORMAT and "live_stack_smoke" not in found:
             snapshots["live_stack_smoke"] = smoke_evidence_snapshot(payload, path.resolve())
             found.add("live_stack_smoke")
         elif payload.get("format") == GPU_ACCEPTANCE_EVIDENCE_FORMAT and "gpu_acceptance" not in found:
@@ -2345,20 +2443,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT and "backup_migration_rollback" not in found:
             snapshots["backup_migration_rollback"] = backup_migration_rollback_evidence_snapshot(payload, path.resolve())
             found.add("backup_migration_rollback")
-        if found == {
-            "live_stack_smoke",
-            "gpu_acceptance",
-            "localai_runtime",
-            "installed_workflows",
-            "native_comfyui_compatibility",
-            "legacy_comfyui_listener",
-            "remote_nodes_non_comfy",
-            "modelhub_client_sync",
-            "voicebox_remote",
-            "security_acceptance",
-            "restart_reconciliation",
-            "backup_migration_rollback",
-        }:
+        if found == {key for key, _ in LIVE_EVIDENCE_LABELS}:
             break
     return snapshots
 
@@ -2788,6 +2873,26 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
     blockers.extend(_live_evidence_freshness_failures(report).values())
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
+    if preflight_evidence.get("available") is not True:
+        blockers.append("operator live-acceptance preflight evidence is unavailable")
+    else:
+        if preflight_evidence.get("status") not in {"ok", "warning"}:
+            blockers.append(f"operator live-acceptance preflight evidence status is {preflight_evidence.get('status', 'unknown')}")
+        missing_checks = preflight_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append(
+                "operator live-acceptance preflight evidence is missing required checks: "
+                + ", ".join(str(item) for item in missing_checks)
+            )
+        missing_preflight = preflight_evidence.get("missing_preflight_evidence")
+        if not isinstance(missing_preflight, list):
+            blockers.append("operator live-acceptance preflight evidence lacks detailed preflight summary")
+        elif missing_preflight:
+            blockers.append(
+                "operator live-acceptance preflight evidence is missing detailed proof: "
+                + ", ".join(str(item) for item in missing_preflight)
+            )
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     if smoke_evidence.get("available") is not True:
         blockers.append("live stack smoke evidence is unavailable")
@@ -3188,6 +3293,7 @@ def build_report(
         "handoff": _normalize_handoff_context(handoff),
         "live_evidence": live_evidence
         or {
+            "operator_preflight": {"available": False, "reason": "not supplied"},
             "live_stack_smoke": {"available": False, "reason": "not supplied"},
             "gpu_acceptance": {"available": False, "reason": "not supplied"},
             "localai_runtime": {"available": False, "reason": "not supplied"},
@@ -3269,6 +3375,15 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_backup = evidence.get("missing_backup_migration_rollback_evidence")
     if isinstance(missing_backup, list) and missing_backup:
         summary_rows.append(["missing_backup_migration_rollback_evidence", ", ".join(str(item) for item in missing_backup)])
+    missing_preflight = evidence.get("missing_preflight_evidence")
+    if isinstance(missing_preflight, list) and missing_preflight:
+        summary_rows.append(["missing_preflight_evidence", ", ".join(str(item) for item in missing_preflight)])
+    failed_checks = evidence.get("failed_checks")
+    if isinstance(failed_checks, list) and failed_checks:
+        summary_rows.append(["failed_checks", ", ".join(str(item) for item in failed_checks)])
+    warning_checks = evidence.get("warning_checks")
+    if isinstance(warning_checks, list) and warning_checks:
+        summary_rows.append(["warning_checks", ", ".join(str(item) for item in warning_checks)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -3440,6 +3555,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             preservation_summary_rows.append([f"open_webui.{key}", _format_value(open_webui_readiness.get(key))])
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
@@ -3633,6 +3749,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
             "## Live Acceptance Evidence\n\n"
+            + _live_evidence_markdown(
+                "Operator live-acceptance preflight",
+                preflight_evidence,
+                "No operator preflight checks recorded.",
+            )
+            + "\n\n"
             + _live_evidence_markdown("Live stack smoke", smoke_evidence, "No live stack smoke checks recorded.")
             + "\n\n"
             + _live_evidence_markdown("GPU acceptance", gpu_evidence, "No live GPU acceptance checks recorded.")
@@ -3762,6 +3884,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not _as_string_list(gpu_runtime_readiness.get("warnings"))
     )
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
@@ -3788,6 +3911,13 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
     deployment_pins_ready = deployment_pins.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
+    preflight_evidence_ready = (
+        preflight_evidence.get("available") is True
+        and preflight_evidence.get("status") in {"ok", "warning"}
+        and not preflight_evidence.get("missing_checks")
+        and preflight_evidence.get("missing_preflight_evidence") == []
+        and "operator_preflight" not in freshness_failures
+    )
     smoke_evidence_ready = (
         smoke_evidence.get("available") is True
         and smoke_evidence.get("status") == "ok"
@@ -3906,6 +4036,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "gpu_runtime_ready": gpu_runtime_ready,
         "runtime_agent_socket_ready": runtime_agent_socket_ready,
         "open_webui_preservation_ready": open_webui_preservation_ready,
+        "operator_preflight_evidence_ready": preflight_evidence_ready,
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
         "localai_evidence_ready": localai_evidence_ready,
@@ -3921,6 +4052,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "live_evidence_freshness_ready": not freshness_failures,
         "live_evidence_ready": (
             not freshness_failures
+            and preflight_evidence_ready
             and smoke_evidence_ready
             and gpu_evidence_ready
             and localai_evidence_ready

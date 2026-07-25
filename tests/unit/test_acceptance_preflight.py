@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -191,6 +192,39 @@ class AcceptancePreflightTests(unittest.TestCase):
         text = acceptance_preflight.human_report(report)
         self.assertNotIn("b1k_acceptance.secret", text)
         self.assertNotIn("correct horse battery staple", text)
+
+    def test_json_output_is_private_and_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = {
+                "format": acceptance_preflight.PREFLIGHT_FORMAT,
+                "generated_at": "2026-07-24T12:00:00+00:00",
+                "status": "ok",
+                "summary": {"ok": 1, "warning": 0, "fail": 0},
+                "checks": [],
+            }
+            output = root / "backups" / "acceptance" / "operator-preflight.json"
+            written = acceptance_preflight.write_json_report(output, report)
+
+            self.assertEqual(written, str(output))
+            self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["format"], acceptance_preflight.PREFLIGHT_FORMAT)
+
+    def test_json_output_refuses_symlink_target(self) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlink creation is unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "real.json"
+            real.write_text("{}\n", encoding="utf-8")
+            output = root / "operator-preflight.json"
+            try:
+                output.symlink_to(real)
+            except OSError as exc:
+                self.skipTest(f"cannot create symlink: {exc}")
+
+            with self.assertRaises(acceptance_preflight.AcceptancePreflightError):
+                acceptance_preflight.write_json_report(output, {"format": acceptance_preflight.PREFLIGHT_FORMAT})
 
     def test_preflight_fails_for_unedited_acceptance_templates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
