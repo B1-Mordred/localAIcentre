@@ -83,7 +83,7 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
         result = asyncio.run(
             main.admin_runtime_unload(
                 "localai",
-                main.RuntimeActionRequest(reason="operator unload", timeout_seconds=12),
+                main.RuntimeActionRequest(reason="operator unload with pasted prompt secret", timeout_seconds=12),
                 authorization="Bearer test",
             )
         )
@@ -91,7 +91,8 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
         self.assertEqual(result["runtime"], "localai")
         self.assertEqual(result["runtime_agent"]["status"], "ok")
         self.assertEqual(agent_calls[0]["path"], "/v1/runtime-actions/localai/unload")
-        self.assertEqual(agent_calls[0]["payload"]["reason"], "operator unload")
+        self.assertEqual(agent_calls[0]["payload"]["reason"], "runtime unload localai (operator reason provided)")
+        self.assertNotIn("pasted prompt secret", str(agent_calls))
         self.assertEqual(runtime_states, [
             {
                 "runtime": "localai",
@@ -104,7 +105,7 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
                 "details": {
                     "source": "admin_runtime_action",
                     "requested_by": "admin_1",
-                    "reason": "operator unload",
+                    "reason_provided": True,
                     "hook": {
                         "status": "ok",
                         "service": "localai",
@@ -115,6 +116,8 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
             }
         ])
         self.assertEqual(audit_events[0]["event_type"], "runtime.unload_requested")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", audit_events[0]["metadata"])
 
     def test_confirmed_graceful_unload_skips_runtime_agent_fallback(self) -> None:
         runtime_states, audit_events, agent_calls = self.patch_common(
@@ -135,7 +138,9 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
         self.assertEqual(result["graceful_runtime"]["status"], "ok")
         self.assertEqual(runtime_states[0]["status"], "unload_ok")
         self.assertEqual(runtime_states[0]["details"]["hook"]["strategy"], "backend_shutdown")
+        self.assertTrue(runtime_states[0]["details"]["reason_provided"])
         self.assertEqual(audit_events[0]["metadata"]["graceful_runtime_status"], "ok")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
 
     def test_unconfirmed_unload_leaves_runtime_state_visible(self) -> None:
         runtime_states, audit_events, _ = self.patch_common({"status": "unsupported", "service": "localai", "action": "unload"})

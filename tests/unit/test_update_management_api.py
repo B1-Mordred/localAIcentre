@@ -167,7 +167,13 @@ class UpdateManagementApiTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_attr("settings", replace(main.settings, data_root=tmp))
-            staged = asyncio.run(main.admin_update_stage(created["id"], main.UpdateActionRequest(reason="stage"), authorization="Bearer key"))
+            staged = asyncio.run(
+                main.admin_update_stage(
+                    created["id"],
+                    main.UpdateActionRequest(reason="stage pasted prompt secret"),
+                    authorization="Bearer key",
+                )
+            )
             override_path = Path(staged["compose_override"]["path"])
             override_content = override_path.read_text(encoding="utf-8")
 
@@ -182,6 +188,10 @@ class UpdateManagementApiTests(unittest.TestCase):
         self.assertEqual(staged["compose_override"]["not_pulled_services"], ["control-plane"])
         self.assertIn("build: null", override_content)
         self.assertIn(f"@sha256:{GOOD_DIGEST}", override_content)
+        self.assertEqual(image_stage_calls[0]["payload"]["reason"], f"stage update {created['id']} (operator reason provided)")
+        self.assertNotIn("pasted prompt secret", str(image_stage_calls))
+        self.assertTrue(fake.audit_events[-1]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", fake.audit_events[-1]["metadata"])
 
     def test_health_check_and_rollback_use_existing_control_plane_surfaces(self) -> None:
         fake = FakeUpdateDatabase()
@@ -204,13 +214,31 @@ class UpdateManagementApiTests(unittest.TestCase):
         self.patch_attr("build_self_test_report", self_test)
         self.patch_attr("runtime_agent_post", runtime_agent_post)
 
-        checked = asyncio.run(main.admin_update_health_check(created["id"], main.UpdateActionRequest(reason="check"), authorization="Bearer key"))
+        checked = asyncio.run(
+            main.admin_update_health_check(
+                created["id"],
+                main.UpdateActionRequest(reason="check pasted prompt secret"),
+                authorization="Bearer key",
+            )
+        )
         self.assertEqual(checked["status"], "validated")
-        rolled_back = asyncio.run(main.admin_update_rollback(created["id"], main.UpdateActionRequest(reason="rollback", timeout_seconds=7), authorization="Bearer key"))
+        rolled_back = asyncio.run(
+            main.admin_update_rollback(
+                created["id"],
+                main.UpdateActionRequest(reason="rollback pasted prompt secret", timeout_seconds=7),
+                authorization="Bearer key",
+            )
+        )
 
         self.assertEqual(rolled_back["status"], "rollback_dry_run")
         self.assertEqual(rollback_calls[0]["path"], "/v1/rollback")
         self.assertEqual(rollback_calls[0]["payload"]["timeout_seconds"], 7)
+        self.assertEqual(rollback_calls[0]["payload"]["reason"], f"rollback update {created['id']} (operator reason provided)")
+        self.assertNotIn("pasted prompt secret", str(rollback_calls))
+        self.assertTrue(fake.audit_events[-2]["metadata"]["reason_provided"])
+        self.assertTrue(fake.audit_events[-1]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", fake.audit_events[-2]["metadata"])
+        self.assertNotIn("reason", fake.audit_events[-1]["metadata"])
 
     def test_promote_requires_validated_ready_override_and_inspects_images(self) -> None:
         fake = FakeUpdateDatabase()
@@ -252,16 +280,28 @@ class UpdateManagementApiTests(unittest.TestCase):
                 }
             )
 
-            promoted = asyncio.run(main.admin_update_promote(created["id"], main.UpdateActionRequest(reason="promote"), authorization="Bearer key"))
+            promoted = asyncio.run(
+                main.admin_update_promote(
+                    created["id"],
+                    main.UpdateActionRequest(reason="promote pasted prompt secret"),
+                    authorization="Bearer key",
+                )
+            )
 
         self.assertEqual(promoted["status"], "promotion_ready")
         self.assertEqual(promoted["stage"], "promotion_handoff_ready")
         self.assertEqual(promoted["promotion_result"]["format"], "b1-ai-hub-update-promotion/v1")
         self.assertEqual(promoted["promotion_result"]["status"], "operator_action_required")
+        self.assertEqual(promoted["promotion_result"]["reason"], f"promote update {created['id']} (operator reason provided)")
+        self.assertNotIn("pasted prompt secret", str(promoted["promotion_result"]))
         self.assertIn("compose.images.yaml", promoted["promotion_result"]["promotion_command"]["shell"])
         self.assertEqual(promoted["promotion_result"]["image_inspect"][0]["status"], "ok")
         self.assertEqual(inspect_calls[0]["path"], "/v1/images/control-plane/inspect")
+        self.assertEqual(inspect_calls[0]["payload"]["reason"], f"promote update {created['id']} (operator reason provided)")
+        self.assertNotIn("pasted prompt secret", str(inspect_calls))
         self.assertEqual(fake.audit_events[-1]["event_type"], "update.promotion_ready")
+        self.assertTrue(fake.audit_events[-1]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", fake.audit_events[-1]["metadata"])
 
 
 if __name__ == "__main__":

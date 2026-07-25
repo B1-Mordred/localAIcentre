@@ -5117,6 +5117,17 @@ def update_plan_conflict(message: str, row: dict[str, Any] | None = None) -> HTT
     return HTTPException(status_code=409, detail=detail)
 
 
+def freeform_reason_metadata(reason: str | None) -> dict[str, bool]:
+    return audit_policy.freeform_audit_field_summary("reason", reason)
+
+
+def operational_reason_label(action: str, freeform_reason: str | None) -> str:
+    normalized_action = " ".join(action.split()) or "administrative action"
+    if (freeform_reason or "").strip():
+        return f"{normalized_action} (operator reason provided)"
+    return normalized_action
+
+
 async def stage_update_images(row: dict[str, Any], payload: UpdateActionRequest) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for image_ref in row.get("image_refs") or []:
@@ -5124,7 +5135,7 @@ async def stage_update_images(row: dict[str, Any], payload: UpdateActionRequest)
         image = str(image_ref.get("image") or "")
         agent_payload = {
             "image": image,
-            "reason": payload.reason or f"stage update {row['id']}",
+            "reason": operational_reason_label(f"stage update {row['id']}", payload.reason),
         }
         result, error = await runtime_agent_post(
             f"/v1/images/{service}/pull",
@@ -5152,7 +5163,7 @@ async def inspect_update_images_for_promotion(row: dict[str, Any], payload: Upda
         image = str(image_ref.get("image") or "")
         agent_payload = {
             "image": image,
-            "reason": payload.reason or f"promote update {row['id']}",
+            "reason": operational_reason_label(f"promote update {row['id']}", payload.reason),
         }
         result, error = await runtime_agent_post(
             f"/v1/images/{service}/inspect",
@@ -5831,7 +5842,7 @@ async def record_confirmed_runtime_unload(runtime: str, result: dict[str, Any] |
             "details": {
                 "source": "admin_runtime_action",
                 "requested_by": auth.subject_id,
-                "reason": reason,
+                **freeform_reason_metadata(reason),
                 "hook": compact_runtime_action_result(result),
             },
         }
@@ -5859,7 +5870,7 @@ async def admin_runtime_action(
     else:
         agent_result, agent_error = await runtime_agent_post(
             f"/v1/runtime-actions/{runtime}/{action}",
-            {"reason": payload.reason, "timeout_seconds": payload.timeout_seconds},
+            {"reason": operational_reason_label(f"runtime {action} {runtime}", payload.reason), "timeout_seconds": payload.timeout_seconds},
             timeout_seconds=max(30.0, float(payload.timeout_seconds + 5)),
         )
         if agent_error is not None:
@@ -5875,11 +5886,11 @@ async def admin_runtime_action(
         metadata={
             "runtime": runtime,
             "action": action,
-            "reason": payload.reason,
             "timeout_seconds": payload.timeout_seconds,
             "runtime_agent_status": (agent_result or {}).get("status"),
             "strategy": (agent_result or {}).get("strategy"),
             "graceful_runtime_status": (graceful_result or {}).get("status") if graceful_result is not None else None,
+            **freeform_reason_metadata(payload.reason),
         },
     )
     response = {"runtime": runtime, "action": action, "runtime_agent": agent_result}
@@ -6632,7 +6643,7 @@ async def admin_update_stage(update_id: str, payload: UpdateActionRequest, autho
             "compose_override_path": compose_override.get("path"),
             "compose_override_ready_for_promotion": compose_override.get("ready_for_promotion"),
             "self_test_status": self_test["status"],
-            "reason": payload.reason,
+            **freeform_reason_metadata(payload.reason),
         },
     )
     return public_update_plan(updated or row)
@@ -6665,7 +6676,7 @@ async def admin_update_health_check(update_id: str, payload: UpdateActionRequest
         target_type="update",
         target_id=update_id,
         summary=f"Ran update health-check for {update_id}",
-        metadata={"status": status, "self_test_status": self_test["status"], "reason": payload.reason},
+        metadata={"status": status, "self_test_status": self_test["status"], **freeform_reason_metadata(payload.reason)},
     )
     return public_update_plan(updated or row)
 
@@ -6699,7 +6710,7 @@ async def admin_update_promote(update_id: str, payload: UpdateActionRequest, aut
             update_id=update_id,
             target_version=str(row["target_version"]),
             compose_override=verified_override,
-            reason=payload.reason or f"promote update {update_id}",
+            reason=operational_reason_label(f"promote update {update_id}", payload.reason),
             requested_by=auth.subject_id,
         )
         promotion_result["image_inspect"] = image_inspect_results
@@ -6722,7 +6733,7 @@ async def admin_update_promote(update_id: str, payload: UpdateActionRequest, aut
             target_type="update",
             target_id=update_id,
             summary=f"Update promotion preflight failed for {update_id}",
-            metadata={"error": str(exc)[:500], "reason": payload.reason},
+            metadata={"error": str(exc)[:500], **freeform_reason_metadata(payload.reason)},
         )
         raise HTTPException(status_code=409, detail={"message": str(exc), "update": public_update_plan(updated or row)}) from exc
     except Exception as exc:
@@ -6744,7 +6755,7 @@ async def admin_update_promote(update_id: str, payload: UpdateActionRequest, aut
             target_type="update",
             target_id=update_id,
             summary=f"Update promotion preflight failed for {update_id}",
-            metadata={"error": exc.__class__.__name__, "reason": payload.reason},
+            metadata={"error": exc.__class__.__name__, **freeform_reason_metadata(payload.reason)},
         )
         raise HTTPException(status_code=502, detail={"message": "update promotion preflight failed", "update": public_update_plan(updated or row)}) from exc
 
@@ -6766,7 +6777,7 @@ async def admin_update_promote(update_id: str, payload: UpdateActionRequest, aut
             "target_version": row["target_version"],
             "services": promotion_result["compose_override"]["services"],
             "compose_override_sha256": promotion_result["compose_override"]["sha256"],
-            "reason": payload.reason,
+            **freeform_reason_metadata(payload.reason),
         },
     )
     return public_update_plan(updated or row)
@@ -6783,7 +6794,7 @@ async def admin_update_rollback(update_id: str, payload: UpdateActionRequest, au
         raise HTTPException(status_code=404, detail="update plan not found")
     agent_result, agent_error = await runtime_agent_post(
         "/v1/rollback",
-        {"reason": payload.reason or f"rollback update {update_id}", "timeout_seconds": payload.timeout_seconds},
+        {"reason": operational_reason_label(f"rollback update {update_id}", payload.reason), "timeout_seconds": payload.timeout_seconds},
         timeout_seconds=max(30.0, float(payload.timeout_seconds + 5)),
     )
     if agent_error is not None:
@@ -6799,7 +6810,7 @@ async def admin_update_rollback(update_id: str, payload: UpdateActionRequest, au
             target_type="update",
             target_id=update_id,
             summary=f"Update rollback failed for {update_id}",
-            metadata={"error": agent_error[:500], "reason": payload.reason},
+            metadata={"error": agent_error[:500], **freeform_reason_metadata(payload.reason)},
         )
         raise HTTPException(status_code=502, detail={"message": agent_error, "update": public_update_plan(updated or row)})
     agent_status = str((agent_result or {}).get("status") or "unknown")
@@ -6821,8 +6832,8 @@ async def admin_update_rollback(update_id: str, payload: UpdateActionRequest, au
         metadata={
             "runtime_agent_status": agent_status,
             "status": status,
-            "reason": payload.reason,
             "services": (agent_result or {}).get("services"),
+            **freeform_reason_metadata(payload.reason),
         },
     )
     return public_update_plan(updated or row)
@@ -6920,7 +6931,7 @@ async def admin_job_priority_update(
             "state": updated.get("state"),
             "runtime": updated.get("runtime"),
             "model_alias": updated.get("model_alias"),
-            **audit_policy.freeform_audit_field_summary("reason", payload.reason),
+            **freeform_reason_metadata(payload.reason),
         },
         correlation_id=updated.get("correlation_id"),
     )
@@ -6954,7 +6965,7 @@ async def admin_job_cancel(
                 "state": updated.get("state"),
                 "runtime": updated.get("runtime"),
                 "model_alias": updated.get("model_alias"),
-                **audit_policy.freeform_audit_field_summary("reason", payload.reason),
+                **freeform_reason_metadata(payload.reason),
             },
             correlation_id=updated.get("correlation_id"),
         )
@@ -6992,7 +7003,7 @@ async def admin_job_retry(
             "retry_count": updated.get("retry_count"),
             "runtime": updated.get("runtime"),
             "model_alias": updated.get("model_alias"),
-            **audit_policy.freeform_audit_field_summary("reason", payload.reason),
+            **freeform_reason_metadata(payload.reason),
         },
         correlation_id=updated.get("correlation_id"),
     )
@@ -8486,7 +8497,7 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
             "resolved_model_version": row["resolved_model_version"],
             "duration_seconds": payload.duration_seconds,
             "expires_at": row["expires_at"],
-            "reason": payload.reason,
+            **freeform_reason_metadata(payload.reason),
         },
     )
     return public_runtime_reservation(row)

@@ -174,7 +174,12 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         result = asyncio.run(
             main.runtime_reservation_create(
-                main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=600, reason="batch window")
+                main.RuntimeReservationCreate(
+                    runtime="localai",
+                    model="chat-default",
+                    duration_seconds=600,
+                    reason="batch window pasted prompt secret",
+                )
             )
         )
 
@@ -183,7 +188,11 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertEqual(result["resolved_model_version"], "chat-model@1.0.0")
         self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
         self.assertEqual(fake_database.inserted[0]["duration_seconds"], 600)
+        self.assertEqual(fake_database.inserted[0]["reason"], "batch window pasted prompt secret")
         self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.created")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", audit_events[0]["metadata"])
+        self.assertNotIn("pasted prompt secret", str(audit_events[0]["metadata"]))
 
     def test_create_reservation_rejects_conflicting_active_gpu_reservation(self) -> None:
         fake_database = FakeReservationDatabase(reservation_row(owner_id="other_client"))
