@@ -268,6 +268,160 @@ def sample_restart_reconciliation_checks() -> dict[str, dict[str, Any]]:
     }
 
 
+def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
+    b1_archive_sha = "e" * 64
+    old_archive_sha = "f" * 64
+    cutover_plan_sha = "c" * 64
+    open_webui_domains = {
+        "all_readable": {
+            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+            "settings": {"database_count": 1, "tables": ["config"], "known_row_count": 1},
+            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+        },
+        "backed_up_readable": {
+            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+            "settings": {"database_count": 1, "tables": ["config"], "known_row_count": 1},
+            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+        },
+        "content_rows_read": False,
+    }
+    resources = {
+        "containers_to_restart_for_rollback": ["old-open-webui"],
+        "docker_volumes_preserved": ["open-webui-data"],
+        "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
+    }
+    return {
+        "b1_backup_created": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:45:00+00:00",
+            "backup": "/srv/b1-ai-hub/backups/b1-20260724-124500",
+            "created_at": "2026-07-24T12:44:30+00:00",
+            "file_count": 12,
+            "postgres_dump_included": True,
+        },
+        "b1_backup_verified": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:46:00+00:00",
+            "backup": "/srv/b1-ai-hub/backups/b1-20260724-124500",
+            "files_verified": 12,
+            "archive_sha256": b1_archive_sha,
+            "postgres_native_dump_verified": True,
+        },
+        "b1_restore_rehearsed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:47:00+00:00",
+            "restore_report": "/srv/b1-ai-hub/restore-tests/b1-20260724-124500/restore-report.json",
+            "target": "/srv/b1-ai-hub/restore-tests/b1-20260724-124500",
+            "files_verified": 12,
+            "postgres_native_dump_verified": True,
+        },
+        "old_stack_inventory_reviewed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:48:00+00:00",
+            "path": "/srv/b1-ai-hub/backups/inventory-20260724-120000.json",
+            "container_classification_count": 3,
+        },
+        "old_stack_backup_verified": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:49:00+00:00",
+            "backup": "/srv/b1-ai-hub/backups/old-stack-20260724-121500",
+            "files_verified": 4,
+            "archive_sha256": old_archive_sha,
+            "contains_sensitive_data": True,
+        },
+        "open_webui_migration_plan_reviewed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:50:00+00:00",
+            "path": "/srv/b1-ai-hub/backups/open-webui-migration-plan.json",
+            "recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+            "readable_database_count": 1,
+            "data_domains": open_webui_domains,
+        },
+        "cutover_plan_reviewed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:51:00+00:00",
+            "path": "/srv/b1-ai-hub/backups/cutover-plan.json",
+            "resource_count": 3,
+            "resources": resources,
+            "dns_readiness": {
+                "all_hosts_resolve": True,
+                "all_hosts_share_gateway_address": True,
+                "operator_must_review_dns": False,
+                "reference_host": "ai.b1.germering",
+                "common_addresses": ["192.168.2.100"],
+                "missing_hosts": [],
+                "divergent_hosts": [],
+                "optional_missing_hosts": ["monitoring.ai.b1.germering"],
+                "optional_divergent_hosts": [],
+            },
+            "hardware_readiness": {
+                "available": True,
+                "accepted": True,
+                "operator_must_review_hardware": False,
+                "profile": "rtx3060-32gb-initial",
+                "largest_gpu_vram_mib": 12288,
+                "minimum_gpu_vram_mib": 12288,
+                "host_total_ram_mib": 32168,
+                "minimum_host_ram_mib": 32000,
+                "warnings": [],
+            },
+            "gpu_runtime_readiness": {
+                "available": True,
+                "accepted": True,
+                "operator_must_review_gpu_runtime": False,
+                "nvidia_smi_available": True,
+                "detected_gpu_count": 1,
+                "docker_nvidia_runtime_available": True,
+                "nvidia_container_toolkit_available": True,
+                "nvidia_container_toolkit_returncode": 0,
+                "nvidia_container_toolkit_version": "NVIDIA Container Toolkit CLI version 1.17.8",
+                "warnings": [],
+            },
+            "runtime_agent_socket_readiness": {
+                "available": True,
+                "runtime_agent_group_access_ready": True,
+                "operator_must_review_runtime_agent_socket": False,
+                "path": "/var/run/docker.sock",
+                "gid": 998,
+                "configured_gid": "998",
+                "configured_gid_matches": True,
+                "mode_octal": "0660",
+                "warnings": [],
+            },
+            "open_webui_preservation": {
+                "plan_supplied": True,
+                "operator_must_review_open_webui": False,
+                "recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+                "compatibility_status": "source-version-recorded-temporary-validation-required",
+                "requires_temporary_instance_validation": True,
+                "data_domains": open_webui_domains,
+                "plan_warnings": [],
+            },
+            "reviewed_by": "operator",
+        },
+        "rollback_rehearsed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:55:00+00:00",
+            "report": "/srv/b1-ai-hub/backups/rollback-rehearsal.json",
+            "rehearsed_by": "operator",
+            "generated_at": "2026-07-24T12:54:00+00:00",
+            "cutover_plan_sha256": cutover_plan_sha,
+            "command_count": 1,
+            "operator_action_count": 2,
+        },
+        "old_resources_preserved": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:56:00+00:00",
+            "report": "/srv/b1-ai-hub/backups/rollback-rehearsal.json",
+            "resource_count": 3,
+            "rehearsal_resource_count": 3,
+            "resources": resources,
+        },
+    }
+
+
 def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
@@ -990,17 +1144,16 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "old_resources_preserved",
             ],
             "missing_checks": [],
-            "checks": {
-                "b1_backup_created": {"status": "ok", "recorded_at": "2026-07-24T12:45:00+00:00"},
-                "b1_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
-                "b1_restore_rehearsed": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
-                "old_stack_inventory_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
-                "old_stack_backup_verified": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
-                "open_webui_migration_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
-                "cutover_plan_reviewed": {"status": "ok", "recorded_at": "2026-07-24T12:51:00+00:00"},
-                "rollback_rehearsed": {"status": "ok", "recorded_at": "2026-07-24T12:55:00+00:00"},
-                "old_resources_preserved": {"status": "ok", "recorded_at": "2026-07-24T12:56:00+00:00"},
-            },
+            "missing_backup_migration_rollback_evidence": [],
+            "backup_b1_files_verified": 12,
+            "backup_restore_files_verified": 12,
+            "backup_old_stack_files_verified": 4,
+            "backup_preserved_resource_count": 3,
+            "backup_b1_archive_sha256": "e" * 64,
+            "backup_old_stack_archive_sha256": "f" * 64,
+            "backup_rollback_cutover_plan_sha256": "c" * 64,
+            "backup_open_webui_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+            "checks": sample_backup_migration_rollback_checks(),
             "sample_count": 4,
             "sample_labels": ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"],
         },
@@ -2803,6 +2956,54 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_backup_migration_rollback_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["backup_migration_rollback"].pop("missing_backup_migration_rollback_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["backup_migration_rollback_evidence_ready"])
+        self.assertIn(
+            "backup, migration, and rollback evidence lacks detailed backup/migration/rollback summary",
+            report["acceptance_blockers"],
+        )
+
+    def test_backup_migration_rollback_snapshot_requires_detailed_proof(self) -> None:
+        snapshot = acceptance.backup_migration_rollback_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-backup-migration-rollback-acceptance/v1",
+                "generated_at": "2026-07-24T12:56:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS),
+                "samples": [{"label": "shallow-backup-proof"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("b1_backup_created.backup", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("b1_backup_verified.archive_sha256", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("b1_restore_rehearsed.restore_report", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_stack_backup_verified.archive_sha256", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn(
+            "open_webui_migration_plan_reviewed.backed_up_readable.accounts.database_count",
+            snapshot["missing_backup_migration_rollback_evidence"],
+        )
+        self.assertIn("cutover_plan_reviewed.dns_readiness.common_addresses", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("rollback_rehearsed.cutover_plan_sha256", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_resources_preserved.resources", snapshot["missing_backup_migration_rollback_evidence"])
+
+        live_evidence = sample_live_evidence(backup_migration_rollback=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["backup_migration_rollback_evidence_ready"])
+        self.assertIn(
+            "backup, migration, and rollback evidence is missing detailed proof:",
+            "\n".join(report["acceptance_blockers"]),
+        )
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -3450,17 +3651,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "generated_at": "2026-07-24T12:56:00+00:00",
                         "base_url": "https://api.ai.b1.germering",
                         "status": "ok",
-                        "checks": {
-                            "b1_backup_created": {"status": "ok"},
-                            "b1_backup_verified": {"status": "ok"},
-                            "b1_restore_rehearsed": {"status": "ok"},
-                            "old_stack_inventory_reviewed": {"status": "ok"},
-                            "old_stack_backup_verified": {"status": "ok"},
-                            "open_webui_migration_plan_reviewed": {"status": "ok"},
-                            "cutover_plan_reviewed": {"status": "ok"},
-                            "rollback_rehearsed": {"status": "ok"},
-                            "old_resources_preserved": {"status": "ok"},
-                        },
+                        "checks": sample_backup_migration_rollback_checks(),
                         "samples": [
                             {"label": "b1-backup"},
                             {"label": "restore-test"},
@@ -3571,6 +3762,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(backup["source_path"], str(backup_rollback.resolve()))
         self.assertEqual(backup["status"], "ok")
         self.assertEqual(backup["missing_checks"], [])
+        self.assertEqual(backup["missing_backup_migration_rollback_evidence"], [])
+        self.assertEqual(backup["backup_b1_files_verified"], 12)
+        self.assertEqual(backup["backup_restore_files_verified"], 12)
+        self.assertEqual(backup["backup_old_stack_files_verified"], 4)
+        self.assertEqual(backup["backup_preserved_resource_count"], 3)
+        self.assertEqual(backup["backup_rollback_cutover_plan_sha256"], "c" * 64)
         self.assertEqual(backup["sample_count"], 4)
 
     def test_report_id_rejects_traversal(self) -> None:

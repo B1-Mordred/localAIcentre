@@ -1382,6 +1382,210 @@ def _restart_reconciliation_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    created = _check_record(checks, "b1_backup_created")
+    b1_backup = _nonempty_text(created.get("backup"))
+    b1_file_count = _positive_int(created.get("file_count"))
+    if not b1_backup:
+        missing.append("b1_backup_created.backup")
+    if _parse_utc_datetime(created.get("created_at")) is None:
+        missing.append("b1_backup_created.created_at")
+    if b1_file_count < 1:
+        missing.append("b1_backup_created.file_count")
+    if created.get("postgres_dump_included") is not True:
+        missing.append("b1_backup_created.postgres_dump_included")
+
+    verified = _check_record(checks, "b1_backup_verified")
+    b1_files_verified = _positive_int(verified.get("files_verified"))
+    b1_archive_sha256 = _normalized_sha256(verified.get("archive_sha256"))
+    if not b1_archive_sha256:
+        missing.append("b1_backup_verified.archive_sha256")
+    if b1_files_verified < b1_file_count:
+        missing.append("b1_backup_verified.files_verified")
+    if verified.get("postgres_native_dump_verified") is not True:
+        missing.append("b1_backup_verified.postgres_native_dump_verified")
+
+    restore = _check_record(checks, "b1_restore_rehearsed")
+    restore_files_verified = _positive_int(restore.get("files_verified"))
+    if not _nonempty_text(restore.get("restore_report")):
+        missing.append("b1_restore_rehearsed.restore_report")
+    if not _nonempty_text(restore.get("target")):
+        missing.append("b1_restore_rehearsed.target")
+    if restore_files_verified < b1_file_count:
+        missing.append("b1_restore_rehearsed.files_verified")
+    if restore.get("postgres_native_dump_verified") is not True:
+        missing.append("b1_restore_rehearsed.postgres_native_dump_verified")
+
+    inventory = _check_record(checks, "old_stack_inventory_reviewed")
+    if not _nonempty_text(inventory.get("path")):
+        missing.append("old_stack_inventory_reviewed.path")
+    inventory_count = _integer_value(inventory.get("container_classification_count"))
+    if inventory_count is None or inventory_count < 0:
+        missing.append("old_stack_inventory_reviewed.container_classification_count")
+
+    old_backup = _check_record(checks, "old_stack_backup_verified")
+    old_stack_files_verified = _positive_int(old_backup.get("files_verified"))
+    old_stack_archive_sha256 = _normalized_sha256(old_backup.get("archive_sha256"))
+    if not _nonempty_text(old_backup.get("backup")):
+        missing.append("old_stack_backup_verified.backup")
+    if old_stack_files_verified < 1:
+        missing.append("old_stack_backup_verified.files_verified")
+    if not old_stack_archive_sha256:
+        missing.append("old_stack_backup_verified.archive_sha256")
+    if not isinstance(old_backup.get("contains_sensitive_data"), bool):
+        missing.append("old_stack_backup_verified.contains_sensitive_data")
+
+    open_webui = _check_record(checks, "open_webui_migration_plan_reviewed")
+    open_webui_strategy = _nonempty_text(open_webui.get("recommended_strategy"))
+    if not _nonempty_text(open_webui.get("path")):
+        missing.append("open_webui_migration_plan_reviewed.path")
+    if not open_webui_strategy:
+        missing.append("open_webui_migration_plan_reviewed.recommended_strategy")
+    if _positive_int(open_webui.get("readable_database_count")) < 1:
+        missing.append("open_webui_migration_plan_reviewed.readable_database_count")
+    open_webui_domains = open_webui.get("data_domains") if isinstance(open_webui.get("data_domains"), dict) else {}
+    backed_up = open_webui_domains.get("backed_up_readable") if isinstance(open_webui_domains.get("backed_up_readable"), dict) else {}
+    for domain in ("accounts", "chats", "settings", "documents_rag"):
+        detail = backed_up.get(domain) if isinstance(backed_up.get(domain), dict) else {}
+        if _positive_int(detail.get("database_count")) < 1:
+            missing.append(f"open_webui_migration_plan_reviewed.backed_up_readable.{domain}.database_count")
+        if not _as_string_list(detail.get("tables")):
+            missing.append(f"open_webui_migration_plan_reviewed.backed_up_readable.{domain}.tables")
+
+    cutover = _check_record(checks, "cutover_plan_reviewed")
+    cutover_resource_count = _positive_int(cutover.get("resource_count"))
+    if not _nonempty_text(cutover.get("path")):
+        missing.append("cutover_plan_reviewed.path")
+    if cutover_resource_count < 1:
+        missing.append("cutover_plan_reviewed.resource_count")
+    resources = cutover.get("resources") if isinstance(cutover.get("resources"), dict) else {}
+    resource_lists = [
+        _as_string_list(resources.get("containers_to_restart_for_rollback")),
+        _as_string_list(resources.get("docker_volumes_preserved")),
+        _as_string_list(resources.get("host_paths_preserved")),
+    ]
+    if sum(len(items) for items in resource_lists) < 1:
+        missing.append("cutover_plan_reviewed.resources")
+
+    dns = cutover.get("dns_readiness") if isinstance(cutover.get("dns_readiness"), dict) else {}
+    if dns.get("all_hosts_resolve") is not True:
+        missing.append("cutover_plan_reviewed.dns_readiness.all_hosts_resolve")
+    if dns.get("all_hosts_share_gateway_address") is not True:
+        missing.append("cutover_plan_reviewed.dns_readiness.all_hosts_share_gateway_address")
+    if dns.get("operator_must_review_dns") is not False:
+        missing.append("cutover_plan_reviewed.dns_readiness.operator_must_review_dns_false")
+    if not _as_string_list(dns.get("common_addresses")):
+        missing.append("cutover_plan_reviewed.dns_readiness.common_addresses")
+
+    hardware = cutover.get("hardware_readiness") if isinstance(cutover.get("hardware_readiness"), dict) else {}
+    if hardware.get("available") is not True or hardware.get("accepted") is not True:
+        missing.append("cutover_plan_reviewed.hardware_readiness.accepted")
+    if hardware.get("operator_must_review_hardware") is not False:
+        missing.append("cutover_plan_reviewed.hardware_readiness.operator_must_review_hardware_false")
+    gpu_vram = _positive_int(hardware.get("largest_gpu_vram_mib"))
+    min_gpu_vram = _positive_int(hardware.get("minimum_gpu_vram_mib"))
+    host_ram = _positive_int(hardware.get("host_total_ram_mib"))
+    min_host_ram = _positive_int(hardware.get("minimum_host_ram_mib"))
+    if gpu_vram < max(1, min_gpu_vram):
+        missing.append("cutover_plan_reviewed.hardware_readiness.largest_gpu_vram_mib")
+    if host_ram < max(1, min_host_ram):
+        missing.append("cutover_plan_reviewed.hardware_readiness.host_total_ram_mib")
+
+    gpu_runtime = cutover.get("gpu_runtime_readiness") if isinstance(cutover.get("gpu_runtime_readiness"), dict) else {}
+    if gpu_runtime.get("available") is not True or gpu_runtime.get("accepted") is not True:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.accepted")
+    if gpu_runtime.get("operator_must_review_gpu_runtime") is not False:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.operator_must_review_gpu_runtime_false")
+    if gpu_runtime.get("nvidia_smi_available") is not True:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.nvidia_smi_available")
+    if _positive_int(gpu_runtime.get("detected_gpu_count")) < 1:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.detected_gpu_count")
+    if gpu_runtime.get("docker_nvidia_runtime_available") is not True:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.docker_nvidia_runtime_available")
+    if gpu_runtime.get("nvidia_container_toolkit_available") is not True:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.nvidia_container_toolkit_available")
+    if _integer_value(gpu_runtime.get("nvidia_container_toolkit_returncode")) != 0:
+        missing.append("cutover_plan_reviewed.gpu_runtime_readiness.nvidia_container_toolkit_returncode")
+
+    runtime_socket = (
+        cutover.get("runtime_agent_socket_readiness")
+        if isinstance(cutover.get("runtime_agent_socket_readiness"), dict)
+        else {}
+    )
+    if runtime_socket.get("available") is not True or runtime_socket.get("runtime_agent_group_access_ready") is not True:
+        missing.append("cutover_plan_reviewed.runtime_agent_socket_readiness.ready")
+    if runtime_socket.get("operator_must_review_runtime_agent_socket") is not False:
+        missing.append("cutover_plan_reviewed.runtime_agent_socket_readiness.operator_must_review_runtime_agent_socket_false")
+    if not _nonempty_text(runtime_socket.get("path")):
+        missing.append("cutover_plan_reviewed.runtime_agent_socket_readiness.path")
+    if runtime_socket.get("configured_gid_matches") is not True:
+        missing.append("cutover_plan_reviewed.runtime_agent_socket_readiness.configured_gid_matches")
+
+    cutover_open_webui = cutover.get("open_webui_preservation") if isinstance(cutover.get("open_webui_preservation"), dict) else {}
+    if cutover_open_webui.get("plan_supplied") is not True:
+        missing.append("cutover_plan_reviewed.open_webui_preservation.plan_supplied")
+    if cutover_open_webui.get("operator_must_review_open_webui") is not False:
+        missing.append("cutover_plan_reviewed.open_webui_preservation.operator_must_review_open_webui_false")
+    if not _nonempty_text(cutover_open_webui.get("recommended_strategy")):
+        missing.append("cutover_plan_reviewed.open_webui_preservation.recommended_strategy")
+
+    rollback = _check_record(checks, "rollback_rehearsed")
+    rollback_sha256 = _normalized_sha256(rollback.get("cutover_plan_sha256"))
+    command_count = _integer_value(rollback.get("command_count"))
+    operator_action_count = _integer_value(rollback.get("operator_action_count"))
+    if not _nonempty_text(rollback.get("report")):
+        missing.append("rollback_rehearsed.report")
+    if not _nonempty_text(rollback.get("rehearsed_by")):
+        missing.append("rollback_rehearsed.rehearsed_by")
+    if _parse_utc_datetime(rollback.get("generated_at")) is None:
+        missing.append("rollback_rehearsed.generated_at")
+    if not rollback_sha256:
+        missing.append("rollback_rehearsed.cutover_plan_sha256")
+    if command_count is None or command_count < 0:
+        missing.append("rollback_rehearsed.command_count")
+        command_count = 0
+    if operator_action_count is None or operator_action_count < 0:
+        missing.append("rollback_rehearsed.operator_action_count")
+        operator_action_count = 0
+    if command_count + operator_action_count < 1:
+        missing.append("rollback_rehearsed.rollback_actions")
+
+    preserved = _check_record(checks, "old_resources_preserved")
+    preserved_resource_count = _positive_int(preserved.get("resource_count"))
+    rehearsal_resource_count = _positive_int(preserved.get("rehearsal_resource_count"))
+    if not _nonempty_text(preserved.get("report")):
+        missing.append("old_resources_preserved.report")
+    if preserved_resource_count < 1:
+        missing.append("old_resources_preserved.resource_count")
+    if rehearsal_resource_count < 1:
+        missing.append("old_resources_preserved.rehearsal_resource_count")
+    elif preserved_resource_count and rehearsal_resource_count != preserved_resource_count:
+        missing.append("old_resources_preserved.rehearsal_resource_count_matches_cutover")
+    preserved_resources = preserved.get("resources") if isinstance(preserved.get("resources"), dict) else {}
+    preserved_lists = [
+        _as_string_list(preserved_resources.get("containers_to_restart_for_rollback")),
+        _as_string_list(preserved_resources.get("docker_volumes_preserved")),
+        _as_string_list(preserved_resources.get("host_paths_preserved")),
+    ]
+    if sum(len(items) for items in preserved_lists) < 1:
+        missing.append("old_resources_preserved.resources")
+
+    return {
+        "backup_b1_files_verified": b1_files_verified,
+        "backup_restore_files_verified": restore_files_verified,
+        "backup_old_stack_files_verified": old_stack_files_verified,
+        "backup_preserved_resource_count": preserved_resource_count,
+        "backup_b1_archive_sha256": b1_archive_sha256,
+        "backup_old_stack_archive_sha256": old_stack_archive_sha256,
+        "backup_rollback_cutover_plan_sha256": rollback_sha256,
+        "backup_open_webui_strategy": open_webui_strategy,
+        "missing_backup_migration_rollback_evidence": missing,
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -1628,6 +1832,7 @@ def backup_migration_rollback_evidence_snapshot(payload: dict[str, Any], source_
         expected_format=BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT,
         unsupported_reason="unsupported backup/migration/rollback acceptance evidence format",
         required_checks=BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS,
+        extra_fields=_backup_migration_rollback_summary(payload),
     )
 
 
@@ -2321,6 +2526,14 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
                 "backup, migration, and rollback evidence is missing required checks: "
                 + ", ".join(str(item) for item in missing_checks)
             )
+        missing_backup = backup_evidence.get("missing_backup_migration_rollback_evidence")
+        if not isinstance(missing_backup, list):
+            blockers.append("backup, migration, and rollback evidence lacks detailed backup/migration/rollback summary")
+        elif missing_backup:
+            blockers.append(
+                "backup, migration, and rollback evidence is missing detailed proof: "
+                + ", ".join(str(item) for item in missing_backup)
+            )
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     if preservation.get("available") is not True:
         blockers.append("cutover preservation plan is unavailable")
@@ -2596,6 +2809,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_reconciliation = evidence.get("missing_reconciliation_evidence")
     if isinstance(missing_reconciliation, list) and missing_reconciliation:
         summary_rows.append(["missing_reconciliation_evidence", ", ".join(str(item) for item in missing_reconciliation)])
+    missing_backup = evidence.get("missing_backup_migration_rollback_evidence")
+    if isinstance(missing_backup, list) and missing_backup:
+        summary_rows.append(["missing_backup_migration_rollback_evidence", ", ".join(str(item) for item in missing_backup)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -3196,6 +3412,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         backup_evidence.get("available") is True
         and backup_evidence.get("status") == "ok"
         and not backup_evidence.get("missing_checks")
+        and backup_evidence.get("missing_backup_migration_rollback_evidence") == []
         and "backup_migration_rollback" not in freshness_failures
     )
     summary = {

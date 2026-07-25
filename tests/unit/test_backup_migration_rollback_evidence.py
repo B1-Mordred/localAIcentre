@@ -238,6 +238,11 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["required_checks"], list(evidence.REQUIRED_CHECKS))
         self.assertTrue(all(payload["checks"][name]["status"] == "ok" for name in evidence.REQUIRED_CHECKS))
+        self.assertEqual(len(payload["checks"]["b1_backup_verified"]["archive_sha256"]), 64)
+        self.assertEqual(len(payload["checks"]["old_stack_backup_verified"]["archive_sha256"]), 64)
+        self.assertEqual(len(payload["checks"]["rollback_rehearsed"]["cutover_plan_sha256"]), 64)
+        self.assertEqual(payload["checks"]["rollback_rehearsed"]["operator_action_count"], 2)
+        self.assertEqual(payload["checks"]["old_resources_preserved"]["rehearsal_resource_count"], 1)
         self.assertEqual(
             payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
             ["monitoring.ai.b1.germering"],

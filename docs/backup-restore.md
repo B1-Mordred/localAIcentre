@@ -273,6 +273,8 @@ Control Center -> System -> Backup/Migration/Rollback Evidence -> Generate
 
 The web action calls `GET /admin/migration/backup-migration-rollback-evidence` for readiness and `POST /admin/migration/backup-migration-rollback-evidence` to write the report after the administrator confirms the artifacts were reviewed. It auto-selects the latest valid direct-child B1 backup, old-stack inventory, old-stack backup, Open WebUI migration plan, cutover plan, and rollback rehearsal report under `$B1_BACKUP_ROOT`; pairs the B1 backup with `$B1_RESTORE_TEST_ROOT/<backup-name>/restore-report.json`; and writes the fixed `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` file. It does not accept arbitrary host paths from the browser.
 
+The acceptance report requires detailed proof inside that JSON, not only successful check names. Handoff-ready evidence must include B1 backup file counts, PostgreSQL dump coverage, B1 archive SHA-256, alternate-restore file counts, old-stack archive SHA-256, Open WebUI backed-up readable account/chat/settings/document domains, cutover DNS/hardware/GPU-runtime/runtime-agent readiness, preserved rollback resources, and the rollback rehearsal's cutover-plan SHA-256 plus rollback command/action counts.
+
 The CLI helper remains available for explicitly selected artifacts:
 
 ```bash

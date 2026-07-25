@@ -195,6 +195,7 @@ def verify_old_stack_backup(backup_dir: Path) -> dict[str, Any]:
         "status": "verified",
         "backup": str(backup_dir),
         "files_verified": len(seen),
+        "archive_sha256": actual_archive_digest,
         "contains_sensitive_data": bool(manifest.get("contains_sensitive_data")),
     }
 
@@ -456,6 +457,7 @@ def build_evidence(
     checks["old_stack_backup_verified"] = record_check(
         backup=str(old_stack_backup_path.resolve()),
         files_verified=old_stack.get("files_verified"),
+        archive_sha256=old_stack.get("archive_sha256"),
         contains_sensitive_data=old_stack.get("contains_sensitive_data"),
     )
     samples.append({"label": "old-stack-backup", "backup": str(old_stack_backup_path.resolve()), "files_verified": old_stack.get("files_verified")})
@@ -467,14 +469,21 @@ def build_evidence(
     checks["cutover_plan_reviewed"] = record_check(**cutover)
 
     rollback = verify_rollback_rehearsal(rollback_report, cutover_plan)
+    rollback_checks = rollback.get("checks") if isinstance(rollback.get("checks"), dict) else {}
+    rollback_commands = rollback_checks.get("rollback_commands_tested") if isinstance(rollback_checks.get("rollback_commands_tested"), dict) else {}
+    rollback_preserved = rollback_checks.get("old_resources_preserved") if isinstance(rollback_checks.get("old_resources_preserved"), dict) else {}
     checks["rollback_rehearsed"] = record_check(
         report=str(rollback_report.resolve()),
         rehearsed_by=rollback.get("rehearsed_by"),
         generated_at=rollback.get("generated_at"),
+        cutover_plan_sha256=rollback.get("cutover_plan_sha256"),
+        command_count=rollback_commands.get("command_count"),
+        operator_action_count=rollback_commands.get("operator_action_count"),
     )
     checks["old_resources_preserved"] = record_check(
         report=str(rollback_report.resolve()),
         resource_count=cutover["resource_count"],
+        rehearsal_resource_count=rollback_preserved.get("resource_count"),
         resources=cutover["resources"],
     )
     samples.append({"label": "rollback-runbook", "report": str(rollback_report.resolve()), "resource_count": cutover["resource_count"]})
