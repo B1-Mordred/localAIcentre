@@ -162,6 +162,19 @@ class AdminJobsApiTests(unittest.TestCase):
             {"limit": 25, "owner_id": "client_1", "state": "queued", "runtime": "comfyui", "modality": "image"},
         )
 
+    def test_public_media_job_listing_filters_owner_scoped_native_prompt_id(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(native_prompt_id="prompt_native_1", operation="comfyui-prompt", model_alias="comfyui-native"))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        rows = asyncio.run(main.media_jobs(limit=10, runtime="comfyui", native_prompt_id="prompt_native_1"))
+
+        self.assertEqual(rows[0]["native_prompt_id"], "prompt_native_1")
+        self.assertEqual(
+            fake_database.list_kwargs,
+            {"limit": 10, "owner_id": "client_1", "state": None, "runtime": "comfyui", "modality": None, "native_prompt_id": "prompt_native_1"},
+        )
+
     def test_public_media_job_listing_allows_wildcard_admin_to_read_all(self) -> None:
         fake_database = FakeJobsDatabase()
         self.patch_attr("database", fake_database)
@@ -262,6 +275,19 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertEqual(
             fake_database.list_kwargs,
             {"limit": 10, "owner_id": "client_1", "state": "queued", "runtime": "comfyui", "modality": "image"},
+        )
+
+    def test_operator_admin_job_listing_filters_native_prompt_id(self) -> None:
+        fake_database = FakeJobsDatabase(job_row(native_prompt_id="prompt_native_1", operation="comfyui-prompt", model_alias="comfyui-native"))
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:read"})))
+
+        result = asyncio.run(main.admin_jobs(limit=10, runtime="comfyui", native_prompt_id="prompt_native_1"))
+
+        self.assertEqual(result["data"][0]["native_prompt_id"], "prompt_native_1")
+        self.assertEqual(
+            fake_database.list_kwargs,
+            {"limit": 10, "owner_id": None, "state": None, "runtime": "comfyui", "modality": None, "native_prompt_id": "prompt_native_1"},
         )
 
     def test_admin_job_get_returns_redacted_job_payload(self) -> None:

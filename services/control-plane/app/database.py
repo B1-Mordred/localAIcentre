@@ -1880,6 +1880,7 @@ async def list_jobs(
     state: str | None = None,
     runtime: str | None = None,
     modality: str | None = None,
+    native_prompt_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if engine is None:
         raise RuntimeError("database engine is not configured")
@@ -1893,6 +1894,8 @@ async def list_jobs(
         filters.append(jobs.c.runtime == runtime)
     if modality:
         filters.append(jobs.c.modality == modality)
+    if native_prompt_id:
+        filters.append(jobs.c.native_prompt_id == native_prompt_id)
     query = select(jobs)
     if filters:
         query = query.where(and_(*filters))

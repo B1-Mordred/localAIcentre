@@ -153,6 +153,45 @@ class LiveAcceptanceClientTests(unittest.TestCase):
         self.assertEqual(seen["headers"]["idempotency-key"], "prompt-1")
         self.assertIn(b'"prompt"', seen["body"])
 
+    def test_native_comfyui_api_requests_use_api_base_and_host_header(self) -> None:
+        module = load_module("tests/compatibility/test_native_comfyui_compatibility.py", "native_comfyui_api_base")
+        cls = module.NativeComfyUiCompatibilityTests
+        cls.base_url = "https://comfy.ai.b1.germering"
+        cls.api_base_url = "https://192.168.2.10"
+        cls.api_key = "b1k_public.secret"
+        cls.host_header = ""
+        cls.api_host_header = "api.ai.b1.germering"
+        cls.timeout_seconds = 1
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(request: Any, timeout: float = 0, context: Any | None = None) -> FakePayloadResponse:
+            seen["url"] = request.full_url
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+            return FakePayloadResponse([{"id": "job_1", "native_prompt_id": "prompt_1"}])
+
+        original_urlopen = module.urllib.request.urlopen
+        original_ssl_context = cls.ssl_context
+        try:
+            module.urllib.request.urlopen = fake_urlopen
+            cls.ssl_context = classmethod(lambda inner_cls: None)
+            payload = cls.request_api_json("GET", "/v1/media/jobs?native_prompt_id=prompt_1")
+        finally:
+            module.urllib.request.urlopen = original_urlopen
+            cls.ssl_context = original_ssl_context
+
+        self.assertEqual(payload, [{"id": "job_1", "native_prompt_id": "prompt_1"}])
+        self.assertEqual(seen["url"], "https://192.168.2.10/v1/media/jobs?native_prompt_id=prompt_1")
+        self.assertEqual(seen["headers"]["authorization"], "Bearer b1k_public.secret")
+        self.assertEqual(seen["headers"]["host"], "api.ai.b1.germering")
+
+    def test_native_comfyui_artifact_url_must_stay_on_api_origin(self) -> None:
+        module = load_module("tests/compatibility/test_native_comfyui_compatibility.py", "native_comfyui_artifact_origin")
+        cls = module.NativeComfyUiCompatibilityTests
+        cls.api_base_url = "https://api.ai.b1.germering"
+
+        with self.assertRaisesRegex(AssertionError, "outside API origin"):
+            cls.api_url("https://evil.example/artifacts/comfyui/prompt_1/output.png")
+
     def test_voicebox_http_api_key_is_rejected_before_network(self) -> None:
         module = load_module("tests/compatibility/test_voicebox_remote.py", "voicebox_transport_guard")
         cls = module.VoiceboxRemoteCompatibilityTests

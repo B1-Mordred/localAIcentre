@@ -328,6 +328,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket_events",
                 "history_listing_accessible",
                 "history_available",
+                "durable_job_observable",
+                "durable_artifacts_observable",
                 "queue_delete_accessible",
                 "interrupt_accessible",
                 "view_artifact_accessible",
@@ -346,6 +348,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "history_listing_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
+                "durable_job_observable": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00", "job_id": "job_native_1"},
+                "durable_artifacts_observable": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00", "artifact_count": 1},
                 "queue_delete_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "interrupt_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "view_artifact_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
@@ -360,6 +364,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "prompt-idempotency-replay",
                 "websocket-completed",
                 "history-listing",
+                "durable-job-artifact",
                 "queue-delete",
                 "targeted-interrupt",
                 "view-artifact",
@@ -1467,6 +1472,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("interrupt_accessible", snapshot["required_checks"])
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
         self.assertIn("prompt_idempotency_replay", snapshot["required_checks"])
+        self.assertIn("durable_job_observable", snapshot["required_checks"])
+        self.assertIn("durable_artifacts_observable", snapshot["required_checks"])
         self.assertEqual(
             snapshot["missing_checks"],
             [
@@ -1475,6 +1482,8 @@ class AcceptanceReportTests(unittest.TestCase):
                 "upload_mask_accessible",
                 "prompt_idempotency_replay",
                 "history_listing_accessible",
+                "durable_job_observable",
+                "durable_artifacts_observable",
                 "queue_delete_accessible",
                 "interrupt_accessible",
                 "view_artifact_accessible",
@@ -2140,6 +2149,8 @@ class AcceptanceReportTests(unittest.TestCase):
                             "websocket_events": {"status": "ok"},
                             "history_listing_accessible": {"status": "ok"},
                             "history_available": {"status": "ok"},
+                            "durable_job_observable": {"status": "ok"},
+                            "durable_artifacts_observable": {"status": "ok"},
                             "queue_delete_accessible": {"status": "ok"},
                             "interrupt_accessible": {"status": "ok"},
                             "view_artifact_accessible": {"status": "ok"},
@@ -2153,6 +2164,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "prompt-idempotency-replay"},
                             {"label": "websocket-completed"},
                             {"label": "history-listing"},
+                            {"label": "durable-job-artifact"},
                             {"label": "queue-delete"},
                             {"label": "targeted-interrupt"},
                             {"label": "view-artifact"},
@@ -2365,7 +2377,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
-        self.assertEqual(native["sample_count"], 11)
+        self.assertEqual(native["sample_count"], 12)
         legacy = snapshot["legacy_comfyui_listener"]
         self.assertTrue(legacy["available"])
         self.assertEqual(legacy["source_path"], str(legacy_comfyui.resolve()))

@@ -30,6 +30,8 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "websocket_events",
     "history_listing_accessible",
     "history_available",
+    "durable_job_observable",
+    "durable_artifacts_observable",
     "queue_delete_accessible",
     "interrupt_accessible",
     "view_artifact_accessible",
@@ -111,8 +113,10 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         cls.checks = {}
         cls.samples = []
         cls.base_url = os.getenv("B1_NATIVE_COMFYUI_BASE", "https://comfy.ai.b1.germering").rstrip("/")
+        cls.api_base_url = os.getenv("B1_NATIVE_COMFYUI_API_BASE", "https://api.ai.b1.germering").rstrip("/")
         cls.api_key = os.getenv("B1_NATIVE_COMFYUI_API_KEY", "").strip()
         cls.host_header = os.getenv("B1_NATIVE_COMFYUI_HOST_HEADER", "").strip()
+        cls.api_host_header = os.getenv("B1_NATIVE_COMFYUI_API_HOST_HEADER", "").strip()
         cls.client_id = os.getenv("B1_NATIVE_COMFYUI_CLIENT_ID", f"b1-native-comfyui-{uuid.uuid4().hex}")
         cls.timeout_seconds = float(os.getenv("B1_NATIVE_COMFYUI_TIMEOUT_SECONDS", "300"))
         cls.prompt_payload = load_prompt_payload()
@@ -131,6 +135,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
                     "format": NATIVE_COMFYUI_EVIDENCE_FORMAT,
                     "generated_at": datetime.now(tz=UTC).isoformat(),
                     "base_url": cls.base_url,
+                    "api_base_url": cls.api_base_url,
                     "status": status,
                     "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
                     "checks": cls.checks,
@@ -165,8 +170,27 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         return headers
 
     @classmethod
+    def api_headers(cls, *, accept: str = "application/json") -> dict[str, str]:
+        headers = {"Accept": accept}
+        if cls.api_key:
+            headers["Authorization"] = f"Bearer {cls.api_key}"
+        if cls.api_host_header:
+            headers["Host"] = cls.api_host_header
+        return headers
+
+    @classmethod
     def url(cls, path: str) -> str:
         return urllib.parse.urljoin(cls.base_url + "/", path.lstrip("/"))
+
+    @classmethod
+    def api_url(cls, path_or_url: str) -> str:
+        parsed = urllib.parse.urlparse(path_or_url)
+        if parsed.scheme:
+            api_origin = urllib.parse.urlparse(cls.api_base_url)
+            if parsed.scheme != api_origin.scheme or parsed.netloc != api_origin.netloc:
+                raise AssertionError(f"refusing to send B1 API credentials to artifact URL outside API origin: {path_or_url}")
+            return path_or_url
+        return urllib.parse.urljoin(cls.api_base_url + "/", path_or_url.lstrip("/"))
 
     @classmethod
     def enforce_token_transport_security(cls, url: str) -> None:
@@ -220,6 +244,40 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         url = cls.url(path)
         cls.enforce_token_transport_security(url)
         request = urllib.request.Request(url, headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
+            body = response.read()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            status = int(getattr(response, "status", 200))
+        return body, response_headers, status
+
+    @classmethod
+    def request_api_json(
+        cls,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any] | list[Any]:
+        data = None
+        headers = cls.api_headers()
+        if payload is not None:
+            data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        url = cls.api_url(path)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
+            body = response.read()
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, (dict, list)):
+            raise AssertionError(f"{path} did not return a JSON object or array")
+        return decoded
+
+    @classmethod
+    def request_api_bytes(cls, method: str, path_or_url: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
+        url = cls.api_url(path_or_url)
+        cls.enforce_token_transport_security(url)
+        request = urllib.request.Request(url, headers=cls.api_headers(accept="*/*"), method=method)
         with urllib.request.urlopen(request, timeout=timeout or cls.timeout_seconds, context=cls.ssl_context()) as response:
             body = response.read()
             response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -526,6 +584,74 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             }
         )
 
+    def wait_for_durable_job(self, prompt_id: str) -> dict[str, Any]:
+        query = urllib.parse.urlencode({"limit": "10", "runtime": "comfyui", "native_prompt_id": prompt_id})
+        deadline = datetime.now(tz=UTC).timestamp() + self.timeout_seconds
+        last_payload: list[Any] | None = None
+        while datetime.now(tz=UTC).timestamp() < deadline:
+            payload = self.request_api_json("GET", f"/v1/media/jobs?{query}", timeout=60)
+            self.assertIsInstance(payload, list)
+            last_payload = payload
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("native_prompt_id") != prompt_id:
+                    continue
+                if item.get("runtime") != "comfyui" or item.get("model_alias") != "comfyui-native":
+                    continue
+                if item.get("operation") != "comfyui-prompt":
+                    continue
+                if item.get("state") in {"completed", "failed", "cancelled", "expired", "recovery_required"}:
+                    return item
+            time.sleep(2)
+        raise AssertionError(f"B1 durable job for native prompt {prompt_id} did not reach a terminal state; last payload: {last_payload}")
+
+    def verify_durable_job_and_artifacts(self, prompt_id: str) -> None:
+        job = self.wait_for_durable_job(prompt_id)
+        job_id = str(job.get("id") or "")
+        self.assertTrue(job_id, f"durable job for native prompt {prompt_id} did not include an id")
+        self.assertEqual(job.get("state"), "completed", f"durable job {job_id} did not complete cleanly: {job}")
+        self.record_check(
+            "durable_job_observable",
+            prompt_id=prompt_id,
+            job_id=job_id,
+            state=job.get("state"),
+            stage=job.get("stage"),
+            progress=job.get("progress"),
+            artifact_count=len(job.get("artifacts") or []) if isinstance(job.get("artifacts"), list) else 0,
+        )
+        artifacts_payload = self.request_api_json("GET", f"/v1/media/jobs/{urllib.parse.quote(job_id, safe='')}/artifacts", timeout=60)
+        self.assertIsInstance(artifacts_payload, dict)
+        artifacts = artifacts_payload.get("artifacts")
+        self.assertIsInstance(artifacts, list)
+        self.assertTrue(artifacts, f"durable job {job_id} did not expose B1 artifact records")
+        artifact = next((item for item in artifacts if isinstance(item, dict) and isinstance(item.get("url"), str)), None)
+        self.assertIsNotNone(artifact, f"durable job {job_id} artifact list did not include a URL: {artifacts}")
+        artifact_url = str(artifact["url"])
+        body, headers, status = self.request_api_bytes("GET", artifact_url, timeout=120)
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0, f"B1 artifact URL for job {job_id} returned an empty body")
+        self.record_check(
+            "durable_artifacts_observable",
+            prompt_id=prompt_id,
+            job_id=job_id,
+            artifact_url_prefix=artifact_url.split("/", 3)[:3],
+            artifact_count=len(artifacts),
+            source=artifact.get("source"),
+            byte_count=len(body),
+            content_type=headers.get("content-type", ""),
+        )
+        self.samples.append(
+            {
+                "label": "durable-job-artifact",
+                "prompt_id": prompt_id,
+                "job_id": job_id,
+                "artifact_count": len(artifacts),
+                "byte_count": len(body),
+                "content_type": headers.get("content-type", ""),
+            }
+        )
+
     def verify_queue_delete(self, prompt_id: str) -> None:
         body, headers, status = self.request_status("POST", "/queue", {"delete": [prompt_id]}, timeout=60)
         self.assertEqual(status, 200)
@@ -578,6 +704,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             history_keys=sorted(str(key) for key in history.keys())[:20],
         )
         self.samples.append({"label": "prompt-submission", "prompt_id": prompt_id, "history_available": True})
+        self.verify_durable_job_and_artifacts(prompt_id)
         self.verify_history_listing()
         self.verify_queue_delete(prompt_id)
         self.verify_targeted_interrupt(prompt_id)

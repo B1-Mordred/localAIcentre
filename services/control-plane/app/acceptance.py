@@ -125,6 +125,8 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "websocket_events",
     "history_listing_accessible",
     "history_available",
+    "durable_job_observable",
+    "durable_artifacts_observable",
     "queue_delete_accessible",
     "interrupt_accessible",
     "view_artifact_accessible",

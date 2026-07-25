@@ -62,6 +62,80 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         self.assertNotIn(b"Authorization", body)
         self.assertNotIn(b"Bearer", body)
 
+    def test_view_artifact_check_uses_native_view_route(self) -> None:
+        harness = native_comfyui_live.NativeComfyUiCompatibilityTests(methodName="test_native_rest_websocket_prompt_history_and_metadata")
+        harness.checks = {}
+        harness.samples = []
+        calls: list[tuple[str, str]] = []
+
+        def fake_request_bytes(method: str, path: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
+            calls.append((method, path))
+            return b"image-bytes", {"content-type": "image/png"}, 200
+
+        harness.request_bytes = fake_request_bytes  # type: ignore[method-assign]
+        history = {
+            "prompt_native_1": {
+                "outputs": {
+                    "7": {
+                        "images": [
+                            {"filename": "output.png", "subfolder": "acceptance", "type": "output"},
+                        ]
+                    }
+                }
+            }
+        }
+
+        harness.verify_view_artifact("prompt_native_1", history)
+
+        self.assertEqual(calls, [("GET", "/view?filename=output.png&subfolder=acceptance&type=output")])
+        self.assertEqual(harness.checks["view_artifact_accessible"]["status"], "ok")
+        self.assertEqual(harness.samples[-1]["label"], "view-artifact")
+
+    def test_durable_job_check_uses_b1_media_job_and_artifact_routes(self) -> None:
+        harness = native_comfyui_live.NativeComfyUiCompatibilityTests(methodName="test_native_rest_websocket_prompt_history_and_metadata")
+        harness.checks = {}
+        harness.samples = []
+        harness.timeout_seconds = 1
+        json_calls: list[tuple[str, str]] = []
+        byte_calls: list[tuple[str, str]] = []
+
+        def fake_request_api_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+            json_calls.append((method, path))
+            if path.startswith("/v1/media/jobs?"):
+                return [
+                    {
+                        "id": "job_native_1",
+                        "native_prompt_id": "prompt_native_1",
+                        "runtime": "comfyui",
+                        "model_alias": "comfyui-native",
+                        "operation": "comfyui-prompt",
+                        "state": "completed",
+                        "stage": "completed",
+                        "progress": 100,
+                        "artifacts": [{"url": "/artifacts/comfyui/prompt_native_1/output.png"}],
+                    }
+                ]
+            if path == "/v1/media/jobs/job_native_1/artifacts":
+                return {"job_id": "job_native_1", "artifacts": [{"url": "/artifacts/comfyui/prompt_native_1/output.png", "source": "artifact_store"}]}
+            raise AssertionError(f"unexpected API JSON path {path}")
+
+        def fake_request_api_bytes(method: str, path_or_url: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
+            byte_calls.append((method, path_or_url))
+            return b"artifact-bytes", {"content-type": "image/png"}, 200
+
+        harness.request_api_json = fake_request_api_json  # type: ignore[method-assign]
+        harness.request_api_bytes = fake_request_api_bytes  # type: ignore[method-assign]
+
+        harness.verify_durable_job_and_artifacts("prompt_native_1")
+
+        self.assertEqual(json_calls[0][0], "GET")
+        self.assertIn("native_prompt_id=prompt_native_1", json_calls[0][1])
+        self.assertEqual(json_calls[1], ("GET", "/v1/media/jobs/job_native_1/artifacts"))
+        self.assertEqual(byte_calls, [("GET", "/artifacts/comfyui/prompt_native_1/output.png")])
+        self.assertEqual(harness.checks["durable_job_observable"]["job_id"], "job_native_1")
+        self.assertEqual(harness.checks["durable_artifacts_observable"]["byte_count"], 14)
+        self.assertEqual(harness.samples[-1]["label"], "durable-job-artifact")
+
 
 class FakeRequest:
     def __init__(

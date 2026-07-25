@@ -7298,17 +7298,26 @@ async def admin_jobs(
     runtime: str | None = Query(default=None, max_length=64),
     modality: str | None = Query(default=None, max_length=64),
     owner_id: str | None = Query(default=None, max_length=128),
+    native_prompt_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
     require_queue_admin(auth)
-    rows = await database.list_jobs(
-        limit=limit,
-        owner_id=owner_id,
-        state=state.value if state else None,
-        runtime=runtime,
-        modality=modality,
-    )
+    state = optional_query_value(state)
+    runtime = optional_query_value(runtime)
+    modality = optional_query_value(modality)
+    owner_id = optional_query_value(owner_id)
+    native_prompt_id = optional_query_value(native_prompt_id)
+    filters: dict[str, Any] = {
+        "limit": limit,
+        "owner_id": owner_id,
+        "state": state.value if state else None,
+        "runtime": runtime,
+        "modality": modality,
+    }
+    if native_prompt_id:
+        filters["native_prompt_id"] = native_prompt_id
+    rows = await database.list_jobs(**filters)
     return {"object": "list", "data": public_jobs(rows)}
 
 
@@ -8741,6 +8750,7 @@ async def media_jobs(
     state: JobState | None = Query(default=None),
     runtime: str | None = Query(default=None, max_length=64),
     modality: str | None = Query(default=None, max_length=64),
+    native_prompt_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> list[dict[str, Any]]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
@@ -8748,15 +8758,17 @@ async def media_jobs(
     state = optional_query_value(state)
     runtime = optional_query_value(runtime)
     modality = optional_query_value(modality)
-    return public_jobs(
-        await database.list_jobs(
-            limit=limit,
-            owner_id=owner_id,
-            state=state.value if state else None,
-            runtime=runtime,
-            modality=modality,
-        )
-    )
+    native_prompt_id = optional_query_value(native_prompt_id)
+    filters: dict[str, Any] = {
+        "limit": limit,
+        "owner_id": owner_id,
+        "state": state.value if state else None,
+        "runtime": runtime,
+        "modality": modality,
+    }
+    if native_prompt_id:
+        filters["native_prompt_id"] = native_prompt_id
+    return public_jobs(await database.list_jobs(**filters))
 
 
 @app.get("/v1/media/jobs/{job_id}")

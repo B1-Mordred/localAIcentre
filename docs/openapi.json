@@ -3951,6 +3951,24 @@
             }
           },
           {
+            "in": "query",
+            "name": "native_prompt_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Native Prompt Id"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -10018,6 +10036,24 @@
                 }
               ],
               "title": "Modality"
+            }
+          },
+          {
+            "in": "query",
+            "name": "native_prompt_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Native Prompt Id"
             }
           },
           {
