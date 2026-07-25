@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ MODELHUB_REQUIRED_CHECKS = (
     "catalog_visible",
     "download_plan_created",
     "head_metadata_validated",
+    "etag_if_none_match_validated",
     "range_resume_downloaded",
     "cache_state_managed",
     "dry_run_prune_safe",
@@ -154,6 +156,46 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
             accept_ranges=accept_ranges,
         )
 
+    def validate_blob_conditional_get(self, action: dict[str, Any]) -> None:
+        blob = str(action["blob"]).lower()
+        expected_etag = client.expected_etag(blob)
+        request = urllib.request.Request(
+            client.modelhub_request_url(self.base_url, f"/modelhub/v1/blobs/{blob}", self.token)
+        )
+        request.add_header("Accept", "application/octet-stream")
+        request.add_header("Authorization", f"Bearer {self.token}")
+        request.add_header("If-None-Match", expected_etag)
+        if self.accept_licenses:
+            accepted_refs = client.accepted_license_refs_for_action(action)
+            if accepted_refs:
+                request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
+        try:
+            with client.modelhub_urlopen(request, timeout=120, ca_file=self.ca_file) as response:
+                status = getattr(response, "status", response.getcode())
+                headers = getattr(response, "headers", {})
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            headers = getattr(exc, "headers", {})
+            body = exc.read()
+            close = getattr(exc, "close", None)
+            if callable(close):
+                close()
+        self.assertEqual(status, 304, "Model Hub blob GET with matching If-None-Match must return HTTP 304")
+        self.assertEqual(body, b"", "Model Hub 304 responses must not include blob bytes")
+        etag = client.header_value(headers, "ETag")
+        checksum = client.header_value(headers, "X-Checksum-SHA256")
+        self.assertEqual(etag, expected_etag)
+        if checksum:
+            self.assertEqual(checksum.lower(), blob)
+        self.record_check(
+            "etag_if_none_match_validated",
+            model=self.sync_model,
+            blob=blob,
+            etag=etag,
+            checksum=checksum,
+        )
+
     def first_download_action(self, cache: Path) -> dict[str, Any]:
         actions = client.planned_actions(self.base_url, self.token, cache, [self.sync_model], ca_file=self.ca_file)
         candidates = [action for action in actions if action.get("action") in {"download", "replace"} and action.get("blob")]
@@ -185,6 +227,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
             cache = Path(tmp)
             action = self.first_download_action(cache)
             self.validate_blob_head_metadata(action)
+            self.validate_blob_conditional_get(action)
             partial_size = self.range_seed_partial(cache, action)
             result = client.sync_once(
                 self.base_url,

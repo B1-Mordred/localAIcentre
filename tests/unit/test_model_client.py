@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import os
 import sys
 import tempfile
@@ -413,6 +414,54 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(check["status"], "ok")
         self.assertEqual(check["blob"], blob)
         self.assertEqual(check["expected_size"], 4)
+
+    def test_modelhub_compatibility_conditional_get_validates_etag_revalidation(self) -> None:
+        harness = load_modelhub_compatibility_module()
+        seen: dict[str, object] = {}
+        blob = "b" * 64
+
+        def fake_modelhub_urlopen(request: object, *, timeout: int, ca_file: str | None = None) -> object:
+            seen["url"] = request.full_url
+            seen["method"] = request.get_method()
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+            seen["timeout"] = timeout
+            seen["ca_file"] = ca_file
+            raise urllib.error.HTTPError(
+                request.full_url,
+                304,
+                "Not Modified",
+                {"ETag": client.expected_etag(blob), "X-Checksum-SHA256": blob},
+                io.BytesIO(b""),
+            )
+
+        original = harness.client.modelhub_urlopen
+        try:
+            harness.client.modelhub_urlopen = fake_modelhub_urlopen
+            test_case = harness.ModelHubClientSyncCompatibilityTests(
+                methodName="test_model_client_downloads_resumes_verifies_and_blocks_inference_only"
+            )
+            test_case.checks = {}
+            test_case.base_url = "https://models.ai.b1.germering"
+            test_case.token = "secret-token"
+            test_case.ca_file = "/tmp/b1-caddy-root.crt"
+            test_case.accept_licenses = False
+            test_case.sync_model = "chat-default"
+            test_case.validate_blob_conditional_get({"blob": blob, "expected_size": 4})
+        finally:
+            harness.client.modelhub_urlopen = original
+
+        self.assertEqual(seen["url"], f"https://models.ai.b1.germering/modelhub/v1/blobs/{blob}")
+        self.assertEqual(seen["method"], "GET")
+        self.assertEqual(seen["timeout"], 120)
+        self.assertEqual(seen["ca_file"], "/tmp/b1-caddy-root.crt")
+        headers = seen["headers"]
+        self.assertIsInstance(headers, dict)
+        self.assertEqual(headers["authorization"], "Bearer secret-token")
+        self.assertEqual(headers["if-none-match"], client.expected_etag(blob))
+        check = test_case.checks["etag_if_none_match_validated"]
+        self.assertEqual(check["status"], "ok")
+        self.assertEqual(check["blob"], blob)
+        self.assertEqual(check["etag"], client.expected_etag(blob))
 
     def test_modelhub_compatibility_range_probe_refuses_plain_http_token(self) -> None:
         harness = load_modelhub_compatibility_module()

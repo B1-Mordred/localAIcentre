@@ -106,6 +106,7 @@ MODELHUB_REQUIRED_CHECKS = (
     "catalog_visible",
     "download_plan_created",
     "head_metadata_validated",
+    "etag_if_none_match_validated",
     "range_resume_downloaded",
     "cache_state_managed",
     "dry_run_prune_safe",
