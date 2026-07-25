@@ -18,7 +18,7 @@ B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
@@ -26,7 +26,7 @@ prepare-production-env:
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
 
-validate: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check unit compatibility security
+validate: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check openapi-client-check unit compatibility security
 
 quality:
 	set -e; \
@@ -50,7 +50,7 @@ quality-local:
 quality-container: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config backend-python-quality-container compatibility security frontend
 
 backend-python-quality-container:
-	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check'
+	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check && python deploy/scripts/generate_openapi_client.py --check'
 
 compose-config:
 	docker compose config --quiet
@@ -124,6 +124,12 @@ openapi:
 
 openapi-check:
 	python3 deploy/scripts/generate_openapi.py --output docs/openapi.json --check
+
+openapi-client:
+	python3 deploy/scripts/generate_openapi_client.py
+
+openapi-client-check:
+	python3 deploy/scripts/generate_openapi_client.py --check
 
 sbom:
 	python3 deploy/scripts/generate_sbom.py --output artifacts/sbom/b1-ai-hub.cdx.json

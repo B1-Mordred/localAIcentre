@@ -28,6 +28,7 @@ import {
   Upload,
   Workflow
 } from "lucide-react";
+import { B1ApiClient, type B1ApiRequestPath } from "./generated/b1-api-client";
 import "./styles.css";
 
 type RuntimeMap = Record<string, string>;
@@ -1149,9 +1150,14 @@ type PublishedWorkflow = {
 
 const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
 const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
+const apiClient = new B1ApiClient({
+  baseUrl: API_BASE,
+  credentials: "include",
+  getCsrfToken: () => window.sessionStorage.getItem(CSRF_STORAGE_KEY)
+});
 
 function apiUrl(path: string): string {
-  return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;
+  return apiClient.url(path as B1ApiRequestPath);
 }
 
 function accessSnippets(): AccessSnippet[] {
@@ -1241,23 +1247,11 @@ function errorMessageFromBody(parsed: any, response: Response): string {
 }
 
 function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  const method = (init.method ?? "GET").toUpperCase();
-  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method) && !headers.has("X-B1-CSRF")) {
-    const csrf = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
-    if (csrf) headers.set("X-B1-CSRF", csrf);
-  }
-  return fetch(apiUrl(path), { ...init, credentials: "include", headers });
+  return apiClient.fetch(path as B1ApiRequestPath, init);
 }
 
 async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await apiFetch(path, init);
-  const body = await response.text();
-  const parsed = body ? JSON.parse(body) : null;
-  if (!response.ok) {
-    throw new Error(errorMessageFromBody(parsed, response));
-  }
-  return parsed as T;
+  return apiClient.json<T>(path as B1ApiRequestPath, init);
 }
 
 function artifactFilename(artifact: JobArtifact, index: number): string {

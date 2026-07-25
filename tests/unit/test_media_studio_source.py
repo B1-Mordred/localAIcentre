@@ -46,8 +46,10 @@ class MediaStudioSourceTests(unittest.TestCase):
 
     def test_artifact_outputs_are_previewed_with_authenticated_fetches(self) -> None:
         self.assertIn("function artifactPreviewSource", self.source)
-        self.assertIn("attachAuthHeaders(headers, \"GET\")", self.source)
-        self.assertIn("fetch(apiUrl(artifact.url)", self.source)
+        self.assertIn("new B1ApiClient", self.source)
+        self.assertIn("getBearerToken: () => API_TOKEN", self.source)
+        self.assertIn("getCsrfToken: () => window.sessionStorage.getItem(CSRF_STORAGE_KEY)", self.source)
+        self.assertIn("apiClient.fetch(artifact.url as B1ApiRequestPath, { method: \"GET\" })", self.source)
         self.assertIn("URL.createObjectURL(blob)", self.source)
         self.assertIn("URL.revokeObjectURL(objectUrl)", self.source)
         self.assertIn("function firstPreviewArtifact", self.source)

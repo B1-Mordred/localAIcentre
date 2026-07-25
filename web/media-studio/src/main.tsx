@@ -17,6 +17,7 @@ import {
   Upload,
   Wand2
 } from "lucide-react";
+import { B1ApiClient, type B1ApiRequestPath } from "./generated/b1-api-client";
 import "./styles.css";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -136,10 +137,12 @@ const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germerin
 const API_TOKEN = import.meta.env.VITE_B1_API_TOKEN ?? "";
 const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
 const TERMINAL_STATES = new Set(["completed", "cancelled", "failed", "expired", "recovery_required"]);
-
-function apiUrl(path: string): string {
-  return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;
-}
+const apiClient = new B1ApiClient({
+  baseUrl: API_BASE,
+  credentials: "include",
+  getBearerToken: () => API_TOKEN,
+  getCsrfToken: () => window.sessionStorage.getItem(CSRF_STORAGE_KEY)
+});
 
 function storeAuthStatus(status: AuthStatus | null): void {
   if (status?.csrf_token) {
@@ -157,32 +160,8 @@ function errorMessageFromBody(parsed: any, response: Response): string {
   return `${response.status} ${response.statusText}`;
 }
 
-function attachAuthHeaders(headers: Headers, method: string): void {
-  if (API_TOKEN) {
-    headers.set("Authorization", `Bearer ${API_TOKEN}`);
-    return;
-  }
-  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method) && !headers.has("X-B1-CSRF")) {
-    const csrf = window.sessionStorage.getItem(CSRF_STORAGE_KEY);
-    if (csrf) headers.set("X-B1-CSRF", csrf);
-  }
-}
-
 async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (init.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  attachAuthHeaders(headers, (init.method ?? "GET").toUpperCase());
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    credentials: "include",
-    headers
-  });
-  const body = await response.text();
-  const parsed = body ? JSON.parse(body) : null;
-  if (!response.ok) {
-    throw new Error(errorMessageFromBody(parsed, response));
-  }
-  return parsed as T;
+  return apiClient.json<T>(path as B1ApiRequestPath, init);
 }
 
 function safeHeaderValue(value: string): string {
@@ -198,10 +177,8 @@ async function uploadMediaInput(file: File, fieldName: string): Promise<StagedUp
   headers.set("Content-Type", file.type || "application/octet-stream");
   headers.set("X-B1-Field", fieldName);
   headers.set("X-B1-Filename", safeHeaderValue(file.name || fieldName));
-  attachAuthHeaders(headers, "POST");
-  const response = await fetch(apiUrl("/v1/media/uploads"), {
+  const response = await apiClient.fetch("/v1/media/uploads", {
     method: "POST",
-    credentials: "include",
     headers,
     body: file
   });
@@ -225,12 +202,7 @@ function artifactFileName(artifact: Artifact): string {
 }
 
 async function downloadArtifact(artifact: Artifact): Promise<string> {
-  const headers = new Headers();
-  attachAuthHeaders(headers, "GET");
-  const response = await fetch(apiUrl(artifact.url), {
-    credentials: "include",
-    headers
-  });
+  const response = await apiClient.fetch(artifact.url as B1ApiRequestPath, { method: "GET" });
   if (!response.ok) {
     const text = await response.text();
     let parsed: any = null;
@@ -255,12 +227,7 @@ async function downloadArtifact(artifact: Artifact): Promise<string> {
 }
 
 async function artifactPreviewSource(artifact: Artifact): Promise<{ src: string; mime: string }> {
-  const headers = new Headers();
-  attachAuthHeaders(headers, "GET");
-  const response = await fetch(apiUrl(artifact.url), {
-    credentials: "include",
-    headers
-  });
+  const response = await apiClient.fetch(artifact.url as B1ApiRequestPath, { method: "GET" });
   if (!response.ok) {
     const text = await response.text();
     let parsed: any = null;
@@ -310,9 +277,7 @@ async function streamJobEvents(
 ): Promise<void> {
   const headers = new Headers();
   headers.set("Accept", "text/event-stream");
-  attachAuthHeaders(headers, "GET");
-  const response = await fetch(apiUrl(jobRoute(job, "events", "/events")), {
-    credentials: "include",
+  const response = await apiClient.fetch(jobRoute(job, "events", "/events") as B1ApiRequestPath, {
     headers,
     signal
   });

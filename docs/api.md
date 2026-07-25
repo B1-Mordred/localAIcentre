@@ -132,6 +132,12 @@ DELETE /modelhub/v1/clients/{id}
 
 ## Self-Test and Metrics
 
+The web UIs use the generated TypeScript client committed at
+`web/control-center/src/generated/b1-api-client.ts` and
+`web/media-studio/src/generated/b1-api-client.ts`. Regenerate it after OpenAPI
+changes with `make openapi-client`; CI and `make validate` run
+`make openapi-client-check` to catch drift.
+
 `GET /admin/self-test` requires `admin:read` and returns an overall `ok`, `degraded`, or `failed` status plus individual checks for PostgreSQL, Redis, storage permissions, runtime health, runtime production-readiness, runtime-agent status, runtime-agent metrics, GPU metric availability, TLS gateway routing and Caddy security headers, a tiny embedding inference, runtime-agent unload capability, and artifact-server Range delivery.
 
 `GET /admin/metrics?limit=500` requires `admin:read` and returns the lightweight in-app observability report used by the Dashboard. It combines durable PostgreSQL job records, scheduler ownership, runtime state rows, and runtime-agent telemetry into queue depth/wait summaries, recent completed/failed/cancelled job counts, load/run-time summaries, peak RAM/VRAM summaries, model-switch counts from started jobs, active runtime status, host memory/storage, and normalized GPU utilization, temperature, power, and memory values. The endpoint remains reachable when runtime-agent metrics are unavailable; the response then sets `runtime_agent.available=false` and includes the error instead of failing the dashboard.
