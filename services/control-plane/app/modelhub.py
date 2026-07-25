@@ -275,8 +275,13 @@ def build_sync_plan(
         if record is None:
             raise CatalogError(f"model not found: {model_id}")
         version_records = catalog.versions_for(model_id)
-        allowed_version_records = [item for item in version_records if record_filter is None or record_filter(model_id, item)]
-        if record_filter is not None and not allowed_version_records:
+        if version_records:
+            allowed_version_records = [item for item in version_records if record_filter is None or record_filter(model_id, item)]
+        else:
+            if record_filter is not None and not record_filter(model_id, record):
+                raise CatalogError(f"model not permitted by Model Hub policy: {model_id}")
+            allowed_version_records = []
+        if record_filter is not None and version_records and not allowed_version_records:
             raise CatalogError(f"model not permitted by Model Hub policy: {model_id}")
         versions = [item for item in allowed_version_records if manifest_is_downloadable(item)]
         if not versions:

@@ -201,6 +201,29 @@ class ModelHubPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not permitted"):
             build_sync_plan(catalog, ["chat-default"], {}, record_filter=lambda model_id, version: False)
 
+    def test_sync_plan_skips_visible_alias_without_versions_under_filter(self) -> None:
+        alias_record = {
+            "id": "chat-quality",
+            "object": "model",
+            "root": "chat-quality",
+            "status": "uninstalled",
+            "downloadable": False,
+            "source": {},
+            "license": {},
+            "execution_modes": [],
+        }
+        catalog = SimpleNamespace(
+            model_or_alias_record=lambda model_id: alias_record if model_id == "chat-quality" else None,
+            versions_for=lambda model_id: [],
+        )
+
+        response = build_sync_plan(catalog, ["chat-quality"], {}, record_filter=lambda model_id, record: True)
+
+        self.assertEqual(response["actions"][0]["model"], "chat-quality")
+        self.assertEqual(response["actions"][0]["action"], "skip")
+        self.assertEqual(response["actions"][0]["reason"], "model is not downloadable")
+        self.assertEqual(response["total_download_bytes"], 0)
+
     def test_sync_plan_redacts_source_metadata_for_external_clients(self) -> None:
         response = build_sync_plan(self.catalog, ["chat-default"], {})
         action = response["actions"][0]

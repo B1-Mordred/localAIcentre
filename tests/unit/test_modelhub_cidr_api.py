@@ -449,6 +449,90 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["actions"][0]["blob"], service_sha)
         self.assertEqual(response["total_download_bytes"], 12)
 
+    async def test_modelhub_sync_plan_skips_visible_uninstalled_alias_without_versions(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}))
+        alias_record = {
+            "id": "chat-quality",
+            "object": "model",
+            "root": "chat-quality",
+            "status": "uninstalled",
+            "downloadable": False,
+            "source": {},
+            "license": {},
+            "execution_modes": [],
+        }
+
+        class FakeCatalog:
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any] | None:
+                return alias_record if model_id == "chat-quality" else None
+
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+
+        response = await main.modelhub_sync_plan(main.ModelHubSyncPlanRequest(models=["chat-quality"]))
+
+        self.assertEqual(response["actions"][0]["model"], "chat-quality")
+        self.assertEqual(response["actions"][0]["action"], "skip")
+        self.assertEqual(response["actions"][0]["reason"], "model is not downloadable")
+        self.assertEqual(response["total_download_bytes"], 0)
+
+    async def test_modelhub_sync_plan_returns_403_when_download_versions_are_not_permitted(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}))
+        admin_only = {
+            "id": "downloadable-llm",
+            "version": "2.0.0",
+            "downloadable": True,
+            "files": [{"path": "admin.gguf", "sha256": "c" * 64, "size_bytes": 20}],
+            "license": {"name": "Admin", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+            "permissions": {"downloadable_by": ["admin"]},
+        }
+
+        class FakeCatalog:
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any] | None:
+                return {"id": "downloadable-llm", "version": "2.0.0"} if model_id == "downloadable-llm" else None
+
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return [admin_only] if model_id == "downloadable-llm" else []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.modelhub_sync_plan(main.ModelHubSyncPlanRequest(models=["downloadable-llm"]))
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertIn("not permitted", str(raised.exception.detail))
+
     async def test_modelhub_sync_plan_rejects_invalid_model_before_client_or_catalog_lookup(self) -> None:
         auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}))
         calls: list[str] = []

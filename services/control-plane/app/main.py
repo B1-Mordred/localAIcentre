@@ -9352,7 +9352,8 @@ async def modelhub_sync_plan(payload: ModelHubSyncPlanRequest, authorization: st
     try:
         return modelhub_policy.build_sync_plan(catalog_snapshot(), models, installed, record_filter=record_allowed)
     except CatalogError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 403 if "not permitted by Model Hub policy" in str(exc) else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.get("/modelhub/v1/clients")
