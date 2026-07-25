@@ -31,7 +31,7 @@ export B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-l
 make legacy-comfyui-compatibility
 ```
 
-The legacy harness intentionally sends no bearer token. It verifies that `/object_info`, `/system_stats`, and `/ws` are reachable through the scheduler-aware Caddy/control-plane path. Control Center acceptance reports ingest this optional evidence when present; missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete or stale evidence is reported. It is not a substitute for the authenticated native ComfyUI compatibility evidence required for handoff.
+The legacy harness intentionally sends no bearer token. The listener strips any client `Authorization`, `Cookie`, or `X-B1-CSRF` headers before forwarding to the scheduler-aware Caddy/control-plane path, then verifies that `/object_info`, `/system_stats`, and `/ws` are reachable. Control Center acceptance reports ingest this optional evidence when present; missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete or stale evidence is reported. It is not a substitute for the authenticated native ComfyUI compatibility evidence required for handoff.
 
 ## Remote Nodes Without Server-Side ComfyUI
 

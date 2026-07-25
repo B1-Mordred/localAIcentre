@@ -56,7 +56,7 @@ Enable the legacy listener only for clients that cannot use `https://comfy.ai.b1
 docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-comfy up -d gateway
 ```
 
-The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend. This listener is the only ComfyUI compatibility path that may omit bearer authentication; use it only for clients that cannot set headers, keep the allowlist narrow, and prefer the authenticated HTTPS virtual host whenever possible.
+The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend. This listener is the only ComfyUI compatibility path that may omit bearer authentication; the gateway strips any client `Authorization`, `Cookie`, or `X-B1-CSRF` headers before forwarding. Use it only for clients that cannot set headers, keep the allowlist narrow, and prefer the authenticated HTTPS virtual host whenever possible.
 
 Validate the listener during the legacy-client compatibility window with:
 

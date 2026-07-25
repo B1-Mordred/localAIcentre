@@ -773,6 +773,9 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(gateway["ports"], ["${B1_LEGACY_COMFY_BIND:-192.168.2.100}:${B1_LEGACY_COMFY_PORT:-8188}:8188"])
         self.assertIn(":8188", legacy_caddyfile)
         self.assertIn("remote_ip {$B1_LEGACY_COMFY_ALLOW_CIDRS", legacy_caddyfile)
+        self.assertIn("header_up -Authorization", legacy_caddyfile)
+        self.assertIn("header_up -Cookie", legacy_caddyfile)
+        self.assertIn("header_up -X-B1-CSRF", legacy_caddyfile)
         self.assertIn("header_up X-B1-Compatibility comfyui-legacy-8188", legacy_caddyfile)
 
     def test_only_runtime_agent_mounts_docker_socket(self) -> None:
