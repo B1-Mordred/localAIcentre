@@ -393,6 +393,10 @@ function formatBytes(bytes?: number): string {
   return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
+function formatDateTime(value?: string | null): string {
+  return value ? new Date(value).toLocaleString() : "pending";
+}
+
 function previewSource(
   workflow: PublishedWorkflow | null,
   values: Record<string, JsonValue>,
@@ -423,6 +427,17 @@ type ReproducibilityEntry = {
   value: string;
 };
 
+type JobTimelineEntry = {
+  key: string;
+  label: string;
+  state: string;
+  stage: string;
+  progress: number;
+  runtime: string;
+  artifactCount: number;
+  at: string;
+};
+
 function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -445,6 +460,43 @@ function summarizeReproducibilityValue(value: JsonValue | undefined): string {
 function addReproducibilityEntry(entries: ReproducibilityEntry[], label: string, value: JsonValue | undefined): void {
   if (value === undefined || value === null || value === "") return;
   entries.push({ label, value: summarizeReproducibilityValue(value) });
+}
+
+function timelineTimestamp(job: MediaJob): string {
+  return job.updated_at ?? job.completed_at ?? job.started_at ?? job.created_at ?? new Date().toISOString();
+}
+
+function jobTimelineEntry(job: MediaJob, label: string): JobTimelineEntry {
+  const stage = job.stage ?? "unknown";
+  const progress = job.progress ?? 0;
+  const at = timelineTimestamp(job);
+  const runtime = job.runtime || "pending";
+  const artifactCount = job.artifacts?.length ?? 0;
+  return {
+    key: `${job.id}:${label}:${job.state}:${stage}:${progress}:${runtime}:${artifactCount}:${at}`,
+    label,
+    state: job.state,
+    stage,
+    progress,
+    runtime,
+    artifactCount,
+    at
+  };
+}
+
+function appendTimelineEntry(entries: JobTimelineEntry[], entry: JobTimelineEntry): JobTimelineEntry[] {
+  const last = entries[entries.length - 1];
+  if (
+    last
+    && last.state === entry.state
+    && last.stage === entry.stage
+    && last.progress === entry.progress
+    && last.runtime === entry.runtime
+    && last.artifactCount === entry.artifactCount
+  ) {
+    return entries;
+  }
+  return [...entries, entry].slice(-12);
 }
 
 function reproducibilityEntries(job: MediaJob | null): ReproducibilityEntry[] {
@@ -534,6 +586,28 @@ function ReproducibilityMetadata({ job }: { job: MediaJob | null }) {
         </dl>
       ) : (
         <span className="toolbar-status">No redacted request metadata recorded</span>
+      )}
+    </section>
+  );
+}
+
+function JobEventTimeline({ entries }: { entries: JobTimelineEntry[] }) {
+  return (
+    <section className="event-timeline" aria-label="Job event timeline">
+      <h3>Events</h3>
+      {entries.length ? (
+        <ol>
+          {entries.map((entry) => (
+            <li key={entry.key}>
+              <span>{entry.label}</span>
+              <strong>{entry.state}</strong>
+              <small>{entry.stage} / {entry.progress}% / {entry.runtime} / {entry.artifactCount} artifacts</small>
+              <time dateTime={entry.at}>{formatDateTime(entry.at)}</time>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <span className="toolbar-status">No events recorded for this job yet</span>
       )}
     </section>
   );
@@ -693,6 +767,7 @@ function JobSummary({
   values,
   uploadPreviews,
   eventStatus,
+  eventTimeline,
   onCancel,
   onDownload
 }: {
@@ -702,6 +777,7 @@ function JobSummary({
   values: Record<string, JsonValue>;
   uploadPreviews: Record<string, UploadPreview>;
   eventStatus: string;
+  eventTimeline: JobTimelineEntry[];
   onCancel: () => void;
   onDownload: (artifact: Artifact) => void;
 }) {
@@ -729,6 +805,7 @@ function JobSummary({
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>
+      <JobEventTimeline entries={eventTimeline} />
       <ReproducibilityMetadata job={job} />
       <div className="artifact-list">
         {artifacts.map((artifact) => (
@@ -753,6 +830,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [message, setMessage] = useState("loading");
   const [eventStatus, setEventStatus] = useState("idle");
+  const [eventTimeline, setEventTimeline] = useState<JobTimelineEntry[]>([]);
   const [busy, setBusy] = useState(false);
 
   const selectedWorkflow = useMemo(
@@ -802,6 +880,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     setUploadStatus({});
     setArtifacts([]);
     setEventStatus("idle");
+    setEventTimeline([]);
   }, [selectedWorkflow?.id, selectedWorkflow?.version]);
 
   useEffect(() => {
@@ -812,6 +891,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
       setCurrentJob(job);
       setArtifacts(job.artifacts ?? []);
       setMessage(`${job.state} ${job.id}`);
+      setEventTimeline((entries) => appendTimelineEntry(entries, jobTimelineEntry(job, "event")));
       if (TERMINAL_STATES.has(job.state)) {
         setEventStatus("complete");
         loadArtifacts(job);
@@ -824,6 +904,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
         .then((job) => {
           setCurrentJob(job);
           setArtifacts(job.artifacts ?? []);
+          setEventTimeline((entries) => appendTimelineEntry(entries, jobTimelineEntry(job, "refresh")));
           if (TERMINAL_STATES.has(job.state)) {
             loadArtifacts(job);
             loadJobs();
@@ -854,6 +935,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     setCurrentJob(null);
     setArtifacts([]);
     setEventStatus("idle");
+    setEventTimeline([]);
   };
 
   const uploadWorkflowFile = (name: string, schema: JsonSchemaProperty, file: File) => {
@@ -920,6 +1002,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
         setCurrentJob(job);
         setArtifacts(job.artifacts ?? []);
         setEventStatus(TERMINAL_STATES.has(job.state) ? "complete" : "streaming");
+        setEventTimeline([jobTimelineEntry(job, "submitted")]);
         setMessage(`${job.state} ${job.id}`);
         loadJobs();
       })
@@ -935,6 +1018,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
         setCurrentJob(job);
         setArtifacts(job.artifacts ?? []);
         setEventStatus(TERMINAL_STATES.has(job.state) ? "complete" : "streaming");
+        setEventTimeline((entries) => appendTimelineEntry(entries, jobTimelineEntry(job, "cancel")));
         setMessage(`${job.state} ${job.id}`);
         loadJobs();
       })
@@ -1016,6 +1100,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
         values={values}
         uploadPreviews={uploadPreviews}
         eventStatus={eventStatus}
+        eventTimeline={eventTimeline}
         onCancel={cancelCurrentJob}
         onDownload={downloadCurrentArtifact}
       />

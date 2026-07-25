@@ -434,6 +434,45 @@ dd {
   text-align: right;
 }
 
+.event-timeline {
+  border-top: 1px solid #e9eef2;
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding-top: 12px;
+}
+
+.event-timeline ol {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.event-timeline li {
+  border-left: 3px solid #0f9f8a;
+  display: grid;
+  gap: 2px;
+  padding-left: 9px;
+}
+
+.event-timeline span,
+.event-timeline time {
+  color: #66727d;
+  font-size: 12px;
+}
+
+.event-timeline strong {
+  color: #1f2328;
+  font-size: 13px;
+}
+
+.event-timeline small {
+  color: #46515b;
+  overflow-wrap: anywhere;
+}
+
 .artifact-list a,
 .artifact-list button {
   align-items: center;

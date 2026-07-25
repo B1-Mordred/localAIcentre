@@ -34,6 +34,21 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn("jobRoute(job, \"artifacts\", \"/artifacts\")", self.source)
         self.assertIn("<History jobs={jobs} onRefresh={loadJobs} onSelect={loadHistoryArtifacts} />", self.source)
 
+    def test_running_jobs_surface_bounded_sse_timeline(self) -> None:
+        self.assertIn("type JobTimelineEntry", self.source)
+        self.assertIn("function jobTimelineEntry(job: MediaJob, label: string): JobTimelineEntry", self.source)
+        self.assertIn("function appendTimelineEntry", self.source)
+        self.assertIn("return [...entries, entry].slice(-12);", self.source)
+        self.assertIn("function JobEventTimeline", self.source)
+        self.assertIn('aria-label="Job event timeline"', self.source)
+        self.assertIn("eventTimeline: JobTimelineEntry[];", self.source)
+        self.assertIn("const [eventTimeline, setEventTimeline] = useState<JobTimelineEntry[]>([]);", self.source)
+        self.assertIn('setEventTimeline([jobTimelineEntry(job, "submitted")]);', self.source)
+        self.assertIn('appendTimelineEntry(entries, jobTimelineEntry(job, "event"))', self.source)
+        self.assertIn('appendTimelineEntry(entries, jobTimelineEntry(job, "refresh"))', self.source)
+        self.assertIn('appendTimelineEntry(entries, jobTimelineEntry(job, "cancel"))', self.source)
+        self.assertIn("<JobEventTimeline entries={eventTimeline} />", self.source)
+
     def test_media_job_links_are_used_for_streams_artifacts_and_cancellation(self) -> None:
         self.assertIn("type MediaJobLinks", self.source)
         self.assertIn("links?: MediaJobLinks;", self.source)
