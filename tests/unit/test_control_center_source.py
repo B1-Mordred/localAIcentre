@@ -161,6 +161,7 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("backup_migration_rollback_evidence_ready?: boolean;", self.source)
         self.assertIn("live_evidence_ready?: boolean;", self.source)
         self.assertIn("ACCEPTANCE_EVIDENCE_ITEMS", self.source)
+        self.assertIn('["backup_migration_rollback", "Backup/migration/rollback"]', self.source)
         self.assertIn("type AcceptanceEvidenceNoteState", self.source)
         self.assertIn("EMPTY_ACCEPTANCE_EVIDENCE_NOTES", self.source)
         self.assertIn("acceptanceEvidenceNotes", self.source)

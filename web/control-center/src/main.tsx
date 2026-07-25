@@ -599,7 +599,8 @@ const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
   ["modelhub_client_sync", "Model Hub sync"],
   ["voicebox_remote", "Voicebox remote"],
   ["security_acceptance", "Security acceptance"],
-  ["restart_reconciliation", "Restart reconciliation"]
+  ["restart_reconciliation", "Restart reconciliation"],
+  ["backup_migration_rollback", "Backup/migration/rollback"]
 ] as const;
 
 const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
