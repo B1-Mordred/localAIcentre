@@ -8,9 +8,11 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LEGACY_COMPOSE = ROOT / "compose.legacy-comfy.yaml"
+LEGACY_CADDYFILE = ROOT / "deploy" / "caddy" / "Caddyfile.legacy-comfy"
 COMPOSE_FILES = [
     ROOT / "compose.yaml",
-    ROOT / "compose.legacy-comfy.yaml",
+    LEGACY_COMPOSE,
     ROOT / "compose.monitoring.yaml",
     ROOT / "compose.production-localai.yaml",
     ROOT / "compose.production-comfyui.yaml",
@@ -61,6 +63,13 @@ def load_compose(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def compose_default(value: str, variable_name: str) -> str:
+    marker = f"${{{variable_name}:-"
+    if marker not in value:
+        raise AssertionError(f"{value!r} does not define {variable_name} with a required default")
+    return value.split(marker, 1)[1].split("}", 1)[0]
+
+
 class ComposeSecurityPolicyTests(unittest.TestCase):
     def test_only_gateway_publishes_host_ports(self) -> None:
         for path in COMPOSE_FILES:
@@ -94,6 +103,45 @@ class ComposeSecurityPolicyTests(unittest.TestCase):
                     expected,
                     f"{path.name}:{service_name} adds unexpected Linux capabilities: {cap_add}",
                 )
+
+    def test_legacy_comfy_listener_is_profile_gated_gateway_override(self) -> None:
+        services = load_compose(LEGACY_COMPOSE).get("services") or {}
+
+        self.assertEqual(set(services), {"gateway"})
+        gateway = services["gateway"]
+        self.assertEqual(gateway["profiles"], ["legacy-comfy"])
+        self.assertIn("/etc/caddy/Caddyfile.legacy-comfy", gateway["command"])
+        self.assertTrue(any("Caddyfile.legacy-comfy" in volume for volume in gateway["volumes"]))
+        self.assertEqual(
+            gateway["ports"],
+            ["${B1_LEGACY_COMFY_BIND:-192.168.2.100}:${B1_LEGACY_COMFY_PORT:-8188}:8188"],
+        )
+
+    def test_legacy_comfy_listener_uses_restricted_bind_and_cidr_defaults(self) -> None:
+        gateway = load_compose(LEGACY_COMPOSE)["services"]["gateway"]
+        port_mapping = gateway["ports"][0]
+        bind_default = compose_default(port_mapping, "B1_LEGACY_COMFY_BIND")
+        port_default = compose_default(port_mapping, "B1_LEGACY_COMFY_PORT")
+
+        self.assertEqual(port_default, "8188")
+        self.assertNotIn(bind_default, {"", "0.0.0.0", "::"})
+
+        allow_cidrs = gateway["environment"]["B1_LEGACY_COMFY_ALLOW_CIDRS"]
+        cidr_defaults = set(compose_default(allow_cidrs, "B1_LEGACY_COMFY_ALLOW_CIDRS").split())
+        self.assertTrue(cidr_defaults)
+        self.assertNotIn("0.0.0.0/0", cidr_defaults)
+        self.assertNotIn("::/0", cidr_defaults)
+
+    def test_legacy_comfy_listener_proxies_only_to_scheduler_compatibility_proxy(self) -> None:
+        caddyfile = LEGACY_CADDYFILE.read_text(encoding="utf-8")
+
+        self.assertIn(":8188", caddyfile)
+        self.assertIn("@denied not remote_ip {$B1_LEGACY_COMFY_ALLOW_CIDRS", caddyfile)
+        self.assertIn('respond @denied "legacy ComfyUI listener denied by B1 AI Hub CIDR policy" 403', caddyfile)
+        self.assertIn("reverse_proxy control-plane:8000", caddyfile)
+        self.assertIn("header_up X-B1-Compatibility comfyui-legacy-8188", caddyfile)
+        self.assertNotIn("reverse_proxy comfyui", caddyfile)
+        self.assertNotIn("comfyui:8188", caddyfile)
 
 
 if __name__ == "__main__":
