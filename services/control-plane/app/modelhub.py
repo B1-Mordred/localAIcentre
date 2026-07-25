@@ -8,10 +8,17 @@ from urllib.parse import urlsplit, urlunsplit
 from .catalog import CatalogError, ModelCatalog
 
 ACCEPTED_LICENSE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,127}@[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
+SHA256_PATTERN = re.compile(r"^[A-Fa-f0-9]{64}$")
 
 
 def manifest_is_downloadable(record: dict[str, Any]) -> bool:
     return bool(record.get("downloadable"))
+
+
+def validate_blob_sha256(value: str) -> str:
+    if not SHA256_PATTERN.fullmatch(value):
+        raise CatalogError("invalid SHA-256")
+    return value.lower()
 
 
 def parse_accepted_license_refs(header_value: str | None) -> set[str]:

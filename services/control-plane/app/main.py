@@ -5133,6 +5133,13 @@ def downloadable_records_for_blob(sha256: str) -> list[dict[str, Any]]:
     return modelhub_policy.downloadable_records_for_blob(catalog_snapshot(), sha256)
 
 
+def validate_modelhub_blob_sha256(sha256: str) -> str:
+    try:
+        return modelhub_policy.validate_blob_sha256(sha256)
+    except CatalogError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def model_allowed_by_client(client: dict[str, Any] | None, model_id: str, record: dict[str, Any] | None = None) -> bool:
     if client is None:
         return True
@@ -5227,7 +5234,8 @@ async def require_modelhub_model_authorized(auth: AuthContext, model_id: str, *,
 
 
 async def require_modelhub_blob_authorized(auth: AuthContext, sha256: str, accepted_license_refs: set[str] | None = None) -> None:
-    records = downloadable_records_for_blob(sha256)
+    digest = validate_modelhub_blob_sha256(sha256)
+    records = downloadable_records_for_blob(digest)
     if not records:
         raise HTTPException(status_code=403, detail="blob is not downloadable by catalog policy")
     client = await modelhub_client_for_auth(auth)
@@ -9007,13 +9015,14 @@ async def modelhub_blob(
 ) -> Response:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:sync")
+    digest = validate_modelhub_blob_sha256(sha256)
     try:
         accepted_license_refs = modelhub_policy.parse_accepted_license_refs(x_b1_accept_license)
     except CatalogError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await require_modelhub_blob_authorized(auth, sha256, accepted_license_refs)
+    await require_modelhub_blob_authorized(auth, digest, accepted_license_refs)
     rate_headers = await enforce_modelhub_blob_rate_limit(auth)
-    response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{sha256}", request, extra_headers=artifact_server_auth_headers())
+    response = await proxy_http(settings.artifact_base_url, f"/modelhub/v1/blobs/{digest}", request, extra_headers=artifact_server_auth_headers())
     for key, value in rate_headers.items():
         response.headers[key] = value
     return response

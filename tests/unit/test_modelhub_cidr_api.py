@@ -464,6 +464,93 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[2]["extra_headers"], {"Authorization": "Bearer artifact-token"})
         self.assertEqual(calls[2]["client_authorization"], "Bearer client-token")
 
+    async def test_modelhub_blob_rejects_invalid_sha_before_policy_rate_or_proxy(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")
+        calls: list[str] = []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        def downloadable_records_for_blob(sha256: str) -> list[dict[str, Any]]:
+            calls.append("policy_lookup")
+            raise AssertionError("invalid digest must not reach Model Hub policy lookup")
+
+        async def enforce_rate_limit(auth_context: AuthContext) -> dict[str, str]:
+            calls.append("rate_limit")
+            raise AssertionError("invalid digest must not consume rate-limit budget")
+
+        async def proxy(base_url: str, path: str, request: Any, extra_headers: dict[str, str] | None = None) -> Any:
+            calls.append("proxy")
+            raise AssertionError("invalid digest must not be proxied to artifact-server")
+
+        original_authenticate = main.authenticate
+        original_records = main.downloadable_records_for_blob
+        original_rate_limit = main.enforce_modelhub_blob_rate_limit
+        original_proxy = main.proxy_http
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.downloadable_records_for_blob = downloadable_records_for_blob
+        main.enforce_modelhub_blob_rate_limit = enforce_rate_limit  # type: ignore[assignment]
+        main.proxy_http = proxy  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "downloadable_records_for_blob", original_records))
+        self.addCleanup(lambda: setattr(main, "enforce_modelhub_blob_rate_limit", original_rate_limit))
+        self.addCleanup(lambda: setattr(main, "proxy_http", original_proxy))
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.modelhub_blob(
+                "g" * 64,
+                request_for("172.18.0.10", {"Authorization": "Bearer client-token"}),
+                authorization="Bearer client-token",
+                x_b1_accept_license=None,
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(raised.exception.detail, "invalid SHA-256")
+        self.assertEqual(calls, [])
+
+    async def test_modelhub_blob_normalizes_uppercase_sha_before_policy_and_proxy(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:sync"}), key_prefix="b1k_test")
+        digest = "a" * 64
+        calls: list[dict[str, Any]] = []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def require_blob_authorized(auth_context: AuthContext, sha256: str, accepted_license_refs: set[str]) -> None:
+            calls.append({"authorized": sha256})
+
+        async def enforce_rate_limit(auth_context: AuthContext) -> dict[str, str]:
+            calls.append({"rate_limit": auth_context.subject_id})
+            return {}
+
+        async def proxy(base_url: str, path: str, request: Any, extra_headers: dict[str, str] | None = None) -> Any:
+            calls.append({"path": path})
+            return main.Response(content=b"blob", status_code=200)
+
+        original_authenticate = main.authenticate
+        original_require = main.require_modelhub_blob_authorized
+        original_rate_limit = main.enforce_modelhub_blob_rate_limit
+        original_proxy = main.proxy_http
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.require_modelhub_blob_authorized = require_blob_authorized  # type: ignore[assignment]
+        main.enforce_modelhub_blob_rate_limit = enforce_rate_limit  # type: ignore[assignment]
+        main.proxy_http = proxy  # type: ignore[assignment]
+        main.settings = replace(main.settings, artifact_server_token="artifact-token")
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "require_modelhub_blob_authorized", original_require))
+        self.addCleanup(lambda: setattr(main, "enforce_modelhub_blob_rate_limit", original_rate_limit))
+        self.addCleanup(lambda: setattr(main, "proxy_http", original_proxy))
+
+        response = await main.modelhub_blob(
+            digest.upper(),
+            request_for("172.18.0.10", {"Authorization": "Bearer client-token"}),
+            authorization="Bearer client-token",
+            x_b1_accept_license=None,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, [{"authorized": digest}, {"rate_limit": "client_1"}, {"path": f"/modelhub/v1/blobs/{digest}"}])
+
     async def test_proxy_http_bytes_replaces_client_authorization_with_internal_header(self) -> None:
         class FakeRequest:
             method = "GET"
