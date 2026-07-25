@@ -35,6 +35,7 @@ COMMANDS = {
     "docker_network_ls": ["docker", "network", "ls", "--format", "json"],
     "docker_info": ["docker", "info", "--format", "{{json .}}"],
     "docker_version": ["docker", "version", "--format", "{{json .}}"],
+    "systemd_services": ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--no-pager"],
     "listening_tcp": ["ss", "-ltnp"],
     "nvidia_smi": [
         "nvidia-smi",
@@ -262,6 +263,105 @@ def classify_compose_project(row: dict[str, Any]) -> dict[str, Any]:
         "config_files": row.get("ConfigFiles"),
         **classify_text(text),
     }
+
+
+def classify_systemd_service(row: dict[str, Any]) -> dict[str, Any]:
+    text = " ".join(str(row.get(key, "")) for key in ("unit", "description", "load_state", "active_state", "sub_state")).lower()
+    return {
+        "service": row.get("unit") or row,
+        "description": row.get("description"),
+        "load_state": row.get("load_state"),
+        "active_state": row.get("active_state"),
+        "sub_state": row.get("sub_state"),
+        **classify_text(text),
+    }
+
+
+def parse_systemd_services(output: str) -> list[dict[str, Any]]:
+    services: list[dict[str, Any]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.endswith("loaded units listed."):
+            continue
+        line = line.lstrip("●* ").strip()
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        description = parts[4] if len(parts) > 4 else ""
+        services.append(
+            {
+                "unit": parts[0],
+                "load_state": parts[1],
+                "active_state": parts[2],
+                "sub_state": parts[3],
+                "description": redact_text(description),
+            }
+        )
+    return services
+
+
+def parse_systemctl_show(output: str) -> dict[str, Any]:
+    allowed = {
+        "Id": "id",
+        "Names": "names",
+        "Description": "description",
+        "LoadState": "load_state",
+        "ActiveState": "active_state",
+        "SubState": "sub_state",
+        "FragmentPath": "fragment_path",
+        "DropInPaths": "drop_in_paths",
+        "ExecStart": "exec_start",
+        "User": "user",
+        "Group": "group",
+    }
+    record: dict[str, Any] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        mapped = allowed.get(key)
+        if mapped is None:
+            continue
+        redacted = redact_text(value.strip())[:1000]
+        if mapped in {"names", "drop_in_paths"}:
+            record[mapped] = [item for item in redacted.split() if item]
+        else:
+            record[mapped] = redacted
+    return record
+
+
+def inspect_systemd_services(rows: list[dict[str, Any]], command_runner: Callable[[list[str]], dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        classified = classify_systemd_service(row)
+        if classified.get("classification") == "unknown-preserve-by-default":
+            continue
+        unit = row.get("unit")
+        if not isinstance(unit, str) or not unit:
+            continue
+        result = command_runner(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--property=Id,Names,Description,LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,User,Group",
+                "--no-pager",
+            ]
+        )
+        record: dict[str, Any] = {
+            "service": unit,
+            "available": bool(result.get("available")),
+            "returncode": result.get("returncode"),
+            "classification": classified.get("classification"),
+            "confidence": classified.get("confidence"),
+            "reasons": classified.get("reasons"),
+        }
+        if result.get("available") and result.get("returncode") == 0:
+            record.update(parse_systemctl_show(str(result.get("stdout") or "")))
+        else:
+            record["error"] = redact_text(str(result.get("stderr") or "systemctl show unavailable"))[:500]
+        records.append(record)
+    return records
 
 
 def parse_listening_tcp(output: str) -> list[dict[str, Any]]:
@@ -1111,15 +1211,24 @@ def build_inventory(
     compose_rows = parse_json_lines(captured["docker_compose_ls"]["stdout"])
     volume_rows = parse_json_lines(captured["docker_volume_ls"]["stdout"])
     network_rows = parse_json_lines(captured["docker_network_ls"]["stdout"])
+    systemd_rows = parse_systemd_services(captured["systemd_services"]["stdout"])
     container_inspects = inspect_docker_containers(docker_rows, command_runner)
     volume_inspects = inspect_docker_volumes(volume_rows, command_runner)
+    systemd_service_inspects = inspect_systemd_services(systemd_rows, command_runner)
     roots = scan_roots if scan_roots is not None else [Path("/srv"), Path("/opt"), Path("/home")]
     created_at = now or datetime.now(tz=UTC)
 
     container_classifications = [classify_container(row) for row in docker_rows]
     compose_classifications = [classify_compose_project(row) for row in compose_rows]
+    systemd_classifications = [classify_systemd_service(row) for row in systemd_rows]
     old_stack_candidates = [item for item in container_classifications if item["classification"] == "candidate-old-ai-stack-review-required"]
+    old_stack_systemd_candidates = [
+        item for item in systemd_classifications if item["classification"] == "candidate-old-ai-stack-review-required"
+    ]
     explicit_preserve = [item for item in container_classifications if item["classification"] in {"preserve-unrelated", "unknown-preserve-by-default"}]
+    explicit_systemd_preserve = [
+        item for item in systemd_classifications if item["classification"] in {"preserve-unrelated", "unknown-preserve-by-default"}
+    ]
     listening_tcp = parse_listening_tcp(captured["listening_tcp"]["stdout"])
     model_path_candidates = unique_paths(default_model_path_candidates(b1_root) + docker_model_path_candidates(container_inspects, volume_inspects))
     open_webui_path_candidates = unique_paths(default_open_webui_candidates(b1_root) + docker_open_webui_path_candidates(container_inspects, volume_inspects))
@@ -1161,6 +1270,8 @@ def build_inventory(
             "socket": docker_socket,
         },
         "host": {
+            "systemd_services": systemd_rows,
+            "systemd_service_inspects": systemd_service_inspects,
             "listening_tcp": listening_tcp,
             "gpu": {
                 "devices": gpu_devices,
@@ -1209,7 +1320,10 @@ def build_inventory(
             "containers": container_classifications,
             "compose_projects": compose_classifications,
             "old_ai_stack_candidates": old_stack_candidates,
+            "systemd_services": systemd_classifications,
+            "systemd_old_ai_stack_candidates": old_stack_systemd_candidates,
             "preserve_by_default": explicit_preserve,
+            "systemd_preserve_by_default": explicit_systemd_preserve,
             "volumes_with_ai_hints": [row for row in volume_rows if classify_text(json.dumps(row, sort_keys=True))["classification"] == "candidate-old-ai-stack-review-required"],
             "networks_with_ai_hints": [row for row in network_rows if classify_text(json.dumps(row, sort_keys=True))["classification"] == "candidate-old-ai-stack-review-required"],
         },

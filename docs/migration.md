@@ -9,6 +9,7 @@ make inventory
 The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_DATA_ROOT/backups/`, and is read-only. Newly created inventory output directories are owner-only on POSIX systems, the report file is written mode `0600`, and an existing output symlink is refused where the platform supports no-follow opens; still treat the file as sensitive host migration evidence because it contains paths, Docker metadata, ports, DNS, mount, and storage summaries. It captures:
 
 - all Docker containers, Compose projects, volumes, networks, Docker version/info, and NVIDIA runtime availability
+- systemd service units relevant to AI, B1 AI Hub, or explicitly preserved local services, including redacted unit metadata and unit/drop-in paths for review
 - listening TCP sockets and processes
 - `nvidia-smi` GPU driver/VRAM/utilization data and NVIDIA Container Toolkit version when available
 - hardware-profile readiness against the initial 12 GB VRAM / 32 GB RAM baseline
@@ -17,7 +18,7 @@ The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_
 - bounded model-directory storage summaries, including model-like file counts, sizes, suffix counts, and sample relative model filenames
 - read-only Open WebUI SQLite metadata, including table names and aggregate counts for known tables such as users and chats; row contents are not read
 - port-review evidence for production gateway ports, common old AI service ports, Ollama, Open WebUI, and optional legacy ComfyUI listeners
-- container and Compose classifications: `candidate-old-ai-stack-review-required`, `preserve-unrelated`, `b1-ai-hub-current-preserve`, or `unknown-preserve-by-default`
+- container, Compose, and systemd-service classifications: `candidate-old-ai-stack-review-required`, `preserve-unrelated`, `b1-ai-hub-current-preserve`, or `unknown-preserve-by-default`
 
 Review the generated inventory and classify old-stack services explicitly. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
 
@@ -42,7 +43,7 @@ After reviewing the inventory, generate an explicit backup scope template:
 make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-20260722-120000.json
 ```
 
-This writes `$B1_BACKUP_ROOT/old-stack-scope.json`. It lists candidate old AI containers, AI-hinted Docker volumes, Compose file paths, Open WebUI data/database paths, discovered but unreadable Open WebUI Docker data roots, model directories, and the inventory's hardware/port/model/Open WebUI readiness summary, but it selects nothing automatically.
+This writes `$B1_BACKUP_ROOT/old-stack-scope.json`. It lists candidate old AI containers, candidate old AI systemd services such as a host-managed Ollama daemon, AI-hinted Docker volumes, Compose file paths, systemd unit/drop-in paths, Open WebUI data/database paths, discovered but unreadable Open WebUI Docker data roots, model directories, and the inventory's hardware/port/model/Open WebUI readiness summary, but it selects nothing automatically.
 
 Edit the scope file only after operator review:
 
@@ -70,6 +71,12 @@ Edit the scope file only after operator review:
     {
       "name": "open-webui",
       "reason": "container inspect metadata for rollback"
+    }
+  ],
+  "include_systemd_services": [
+    {
+      "name": "ollama.service",
+      "reason": "host Ollama service to stop during GPU cutover and restart during rollback"
     }
   ]
 }
@@ -116,7 +123,7 @@ make cutover-plan \
 
 This writes `$B1_BACKUP_ROOT/cutover-plan.json` in the `b1-ai-hub-cutover-plan/v1` format. The planner verifies the old-stack backup before writing the plan, refuses scoped containers that the inventory classified as `b1-ai-hub-current-preserve` or `preserve-unrelated`, refuses to write a staging plan when the selected temporary HTTP/HTTPS ports are already listening, validates that the Open WebUI preservation plan was generated from the same inventory and backup, carries hardware readiness, GPU container runtime readiness, and runtime-agent Docker socket readiness from the same inventory, and records warnings for explicitly scoped containers that were not present in the inventory or were `unknown-preserve-by-default`.
 
-The cutover plan is a reviewed runbook, not an executor. It includes commands to start B1 AI Hub on temporary ports, suggested validation commands, exact `docker stop` and rollback `docker start` commands for only the scoped old-stack containers, `hardware_readiness`, `gpu_runtime_readiness`, `runtime_agent_socket_readiness`, `port_readiness`, `dns_readiness`, and `open_webui_preservation` sections, and a production `docker compose up -d` command. If production ports `80` or `443` or the optional legacy ComfyUI port `8188` are already listening, the plan records warnings instead of assuming those listeners belong to the old AI stack. If any core B1 virtual host is missing from the inventory DNS records, or if the core virtual hosts do not share a common gateway address, the plan records DNS warnings and leaves route changes as explicit operator actions. Optional profile hosts are reported separately under `dns_readiness.optional_*`; a missing optional monitoring hostname is acceptable unless the monitoring profile is enabled, while an optional hostname that resolves to a different address is flagged for review before that profile is used. If the inventory reports less than the initial 12 GB VRAM / 32 GB RAM profile, the plan records hardware warnings and operators must either change hardware or explicitly validate a reduced-resource policy before cutover. If the inventory cannot prove `nvidia-smi`, Docker's `nvidia` runtime, and `nvidia-ctk` are healthy, the plan records GPU runtime warnings because production LocalAI, ComfyUI, and Voicebox overlays depend on NVIDIA Container Toolkit. If the inventory reports missing Docker socket access or a `B1_DOCKER_GID` mismatch, the plan records runtime-agent socket warnings because service inventory, bounded logs, unload/recovery, and controlled rollback depend on that access. If the Open WebUI preservation plan contains warnings, lacks source-version evidence, uses a floating source image tag, or uses a strategy that requires manual export/import, the cutover plan carries those warnings forward. Operators must still enter maintenance mode, drain work, validate temporary B1 services, resolve production port listeners, apply DNS or reverse-proxy changes, and run the listed commands manually during the cutover window.
+The cutover plan is a reviewed runbook, not an executor. It includes commands to start B1 AI Hub on temporary ports, suggested validation commands, exact `docker stop` / rollback `docker start` commands for scoped old-stack containers, exact `systemctl stop` / rollback `systemctl start` commands for scoped old-stack systemd services, `hardware_readiness`, `gpu_runtime_readiness`, `runtime_agent_socket_readiness`, `port_readiness`, `dns_readiness`, and `open_webui_preservation` sections, and a production `docker compose up -d` command. If production ports `80` or `443` or the optional legacy ComfyUI port `8188` are already listening, the plan records warnings instead of assuming those listeners belong to the old AI stack. If any core B1 virtual host is missing from the inventory DNS records, or if the core virtual hosts do not share a common gateway address, the plan records DNS warnings and leaves route changes as explicit operator actions. Optional profile hosts are reported separately under `dns_readiness.optional_*`; a missing optional monitoring hostname is acceptable unless the monitoring profile is enabled, while an optional hostname that resolves to a different address is flagged for review before that profile is used. If the inventory reports less than the initial 12 GB VRAM / 32 GB RAM profile, the plan records hardware warnings and operators must either change hardware or explicitly validate a reduced-resource policy before cutover. If the inventory cannot prove `nvidia-smi`, Docker's `nvidia` runtime, and `nvidia-ctk` are healthy, the plan records GPU runtime warnings because production LocalAI, ComfyUI, and Voicebox overlays depend on NVIDIA Container Toolkit. If the inventory reports missing Docker socket access or a `B1_DOCKER_GID` mismatch, the plan records runtime-agent socket warnings because service inventory, bounded logs, unload/recovery, and controlled rollback depend on that access. If the Open WebUI preservation plan contains warnings, lacks source-version evidence, uses a floating source image tag, or uses a strategy that requires manual export/import, the cutover plan carries those warnings forward. Operators must still enter maintenance mode, drain work, validate temporary B1 services, resolve production port listeners, apply DNS or reverse-proxy changes, and run the listed commands manually during the cutover window.
 
 Cutover rules:
 
@@ -124,7 +131,7 @@ Cutover rules:
 2. Start B1 AI Hub on temporary hostnames or ports.
 3. Avoid running two GPU inference stacks concurrently.
 4. Validate chat, API, TTS, image, video, ComfyUI compatibility, Model Hub, and external integrations.
-5. Stop only identified old-stack services during the cutover window.
+5. Stop only identified old-stack containers and host services during the cutover window.
 6. Retain old volumes and data stopped/read-only for rollback.
 
 No script may delete the old stack automatically after migration.

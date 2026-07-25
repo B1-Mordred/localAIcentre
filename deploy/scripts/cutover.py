@@ -16,6 +16,7 @@ PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 INVENTORY_FORMAT = old_stack_backup.INVENTORY_FORMAT
 OPEN_WEBUI_PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
 BLOCKED_CONTAINER_CLASSIFICATIONS = {"b1-ai-hub-current-preserve", "preserve-unrelated"}
+BLOCKED_SERVICE_CLASSIFICATIONS = {"b1-ai-hub-current-preserve", "preserve-unrelated"}
 PRODUCTION_HOSTS = (
     "ai.b1.germering",
     "control.ai.b1.germering",
@@ -101,6 +102,29 @@ def inventory_container_map(inventory: dict[str, Any]) -> dict[str, dict[str, An
     return mapped
 
 
+def inventory_systemd_service_map(inventory: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    classification = inventory.get("classification") if isinstance(inventory.get("classification"), dict) else {}
+    services = classification.get("systemd_services")
+    if not isinstance(services, list):
+        return {}
+    mapped: dict[str, dict[str, Any]] = {}
+    for item in services:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("service")
+        if isinstance(name, str) and name:
+            mapped[name] = item
+    return mapped
+
+
+def validate_systemd_service_name(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise CutoverPlanError("systemd service name is required")
+    if not value.endswith(".service") or not all(char.isalnum() or char in "_.@:-" for char in value):
+        raise CutoverPlanError(f"unsafe systemd service name: {value}")
+    return value
+
+
 def validate_scope_against_inventory(scope: dict[str, Any], inventory: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     containers = inventory_container_map(inventory)
@@ -114,6 +138,18 @@ def validate_scope_against_inventory(scope: dict[str, Any], inventory: dict[str,
             raise CutoverPlanError(f"refusing to plan cutover for container {name} classified as {classification}")
         if classification == "unknown-preserve-by-default":
             warnings.append(f"container {name} was scoped despite inventory classification unknown-preserve-by-default")
+    services = inventory_systemd_service_map(inventory)
+    for name in scope_names(scope, "include_systemd_services"):
+        service_name = validate_systemd_service_name(name)
+        item = services.get(service_name)
+        if item is None:
+            warnings.append(f"systemd service {service_name} was explicitly scoped but was not present in the inventory")
+            continue
+        classification = item.get("classification")
+        if classification in BLOCKED_SERVICE_CLASSIFICATIONS:
+            raise CutoverPlanError(f"refusing to plan cutover for systemd service {service_name} classified as {classification}")
+        if classification == "unknown-preserve-by-default":
+            warnings.append(f"systemd service {service_name} was scoped despite inventory classification unknown-preserve-by-default")
     return warnings
 
 
@@ -474,6 +510,14 @@ def docker_command(action: str, containers: list[str]) -> dict[str, Any] | None:
     return {"argv": argv, "shell": shell_join(argv)}
 
 
+def systemctl_command(action: str, services: list[str]) -> dict[str, Any] | None:
+    if not services:
+        return None
+    safe_services = [validate_systemd_service_name(service) for service in services]
+    argv = ["systemctl", action, *safe_services]
+    return {"argv": argv, "shell": shell_join(argv)}
+
+
 def validation_commands(temporary_https_port: int) -> list[dict[str, Any]]:
     base_url = f"https://127.0.0.1:{temporary_https_port}"
     return [
@@ -528,6 +572,7 @@ def build_plan(
     )
     warnings.extend(open_webui_warnings)
     old_containers = scope_names(scope, "include_containers")
+    old_systemd_services = scope_names(scope, "include_systemd_services")
     old_volumes = scope_names(scope, "include_docker_volumes")
     old_paths = scope_paths(scope)
     created_at = (now or datetime.now(tz=UTC)).astimezone(UTC).isoformat()
@@ -545,6 +590,8 @@ def build_plan(
     }
     stop_command = docker_command("stop", old_containers)
     start_command = docker_command("start", old_containers)
+    systemd_stop_command = systemctl_command("stop", old_systemd_services)
+    systemd_start_command = systemctl_command("start", old_systemd_services)
     return {
         "format": PLAN_FORMAT,
         "created_at": created_at,
@@ -568,6 +615,8 @@ def build_plan(
             "review_notes": scope.get("review_notes"),
             "containers_to_stop_during_cutover": old_containers,
             "containers_to_restart_for_rollback": old_containers,
+            "systemd_services_to_stop_during_cutover": old_systemd_services,
+            "systemd_services_to_restart_for_rollback": old_systemd_services,
             "docker_volumes_preserved": old_volumes,
             "host_paths_preserved": old_paths,
         },
@@ -620,9 +669,9 @@ def build_plan(
             },
             {
                 "name": "cutover-window",
-                "commands": [stop_command] if stop_command else [],
+                "commands": [command for command in (stop_command, systemd_stop_command) if command],
                 "operator_actions": [
-                    "Stop only the explicitly scoped old-stack containers listed in this plan.",
+                    "Stop only the explicitly scoped old-stack containers and systemd services listed in this plan.",
                     "Resolve any production port listener warnings from port_readiness before starting the production Compose project.",
                     "Resolve dns_readiness warnings before switching users or external clients to the B1 virtual hosts.",
                     "Resolve open_webui_preservation warnings before switching ordinary users to the production Open WebUI hostname.",
@@ -641,10 +690,10 @@ def build_plan(
             },
             {
                 "name": "rollback",
-                "commands": [start_command] if start_command else [],
+                "commands": [command for command in (systemd_start_command, start_command) if command],
                 "operator_actions": [
                     "Revert DNS, reverse-proxy routes, or port bindings to the old stack.",
-                    "Restart only the old-stack containers explicitly scoped in this plan.",
+                    "Restart only the old-stack containers and systemd services explicitly scoped in this plan.",
                     "Leave B1 data and old-stack backups intact for diagnosis.",
                 ],
             },

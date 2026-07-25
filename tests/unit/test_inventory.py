@@ -52,6 +52,32 @@ class InventoryTests(unittest.TestCase):
         self.assertIn(11434, review["ports_requiring_review"])
         self.assertEqual(review["legacy_comfy_listeners"][0]["port"], 8188)
 
+        services = inventory.parse_systemd_services(
+            "  ollama.service loaded active running Ollama Service\n"
+            "● hermes.service loaded active running Hermes worker\n"
+            "  cron.service loaded active running Regular background program processing daemon\n"
+        )
+        self.assertEqual(services[0]["unit"], "ollama.service")
+        self.assertEqual(services[0]["active_state"], "active")
+        self.assertEqual(services[1]["unit"], "hermes.service")
+        service_classes = {item["service"]: item["classification"] for item in map(inventory.classify_systemd_service, services)}
+        self.assertEqual(service_classes["ollama.service"], "candidate-old-ai-stack-review-required")
+        self.assertEqual(service_classes["hermes.service"], "preserve-unrelated")
+        self.assertEqual(service_classes["cron.service"], "unknown-preserve-by-default")
+
+        shown = inventory.parse_systemctl_show(
+            "Id=ollama.service\n"
+            "Names=ollama.service\n"
+            "Description=Ollama Service\n"
+            "FragmentPath=/etc/systemd/system/ollama.service\n"
+            "DropInPaths=/etc/systemd/system/ollama.service.d/override.conf /etc/systemd/system/ollama.service.d/private.conf\n"
+            "ExecStart={ argv[]=/usr/local/bin/ollama serve --token=secret-token ; }\n"
+            "User=ollama\n"
+        )
+        self.assertEqual(shown["id"], "ollama.service")
+        self.assertEqual(shown["drop_in_paths"][0], "/etc/systemd/system/ollama.service.d/override.conf")
+        self.assertNotIn("secret-token", json.dumps(shown))
+
         gpu = inventory.parse_nvidia_smi("0, NVIDIA GeForce RTX 3060, 555.42, 12288, 2048, 55, 12\n")
         self.assertEqual(gpu[0]["memory_total_mib"], 12288)
         self.assertEqual(gpu[0]["utilization_percent"], 12)
@@ -175,6 +201,12 @@ class InventoryTests(unittest.TestCase):
                 "docker_network_ls": json.dumps({"Name": "comfy_default"}),
                 "docker_info": json.dumps({"ServerVersion": "27.0", "Runtimes": {"runc": {}, "nvidia": {}}, "DefaultRuntime": "runc"}),
                 "docker_version": json.dumps({"Client": {"Version": "27.0"}, "Server": {"Version": "27.0"}}),
+                "systemd_services": (
+                    "  ollama.service loaded active running Ollama Service\n"
+                    "  hermes.service loaded active running Hermes worker\n"
+                    "  b1-ai-hub.service loaded inactive dead B1 AI Hub maintenance unit\n"
+                    "  cron.service loaded active running Regular background program processing daemon\n"
+                ),
                 "listening_tcp": "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\nLISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:((\"ollama\",pid=1,fd=3))\n",
                 "nvidia_smi": "0, NVIDIA GeForce RTX 3060, 555.42, 12288, 2048, 55, 12\n",
                 "nvidia_container_toolkit": "NVIDIA Container Toolkit CLI version 1.17.8\n",
@@ -237,6 +269,23 @@ class InventoryTests(unittest.TestCase):
                 "open-webui": [{"Name": "open-webui", "Driver": "local", "Mountpoint": str(volume_webui), "Scope": "local"}],
                 "ollama-models": [{"Name": "ollama-models", "Driver": "local", "Mountpoint": str(model_volume), "Scope": "local"}],
             }
+            systemd_shows = {
+                "ollama.service": (
+                    "Id=ollama.service\n"
+                    "Names=ollama.service\n"
+                    "Description=Ollama Service\n"
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    f"FragmentPath={root / 'systemd' / 'ollama.service'}\n"
+                    f"DropInPaths={root / 'systemd' / 'ollama.service.d' / 'override.conf'}\n"
+                    "ExecStart={ argv[]=/usr/local/bin/ollama serve --token=should-not-be-in-report ; }\n"
+                    "User=ollama\n"
+                    "Group=ollama\n"
+                ),
+                "hermes.service": "Id=hermes.service\nDescription=Hermes worker\nActiveState=active\n",
+                "b1-ai-hub.service": "Id=b1-ai-hub.service\nDescription=B1 AI Hub maintenance unit\nActiveState=inactive\n",
+            }
 
             def runner(command: list[str]) -> dict[str, Any]:
                 if command[:3] == ["docker", "container", "inspect"]:
@@ -245,6 +294,8 @@ class InventoryTests(unittest.TestCase):
                 if command[:3] == ["docker", "volume", "inspect"]:
                     payload = volume_inspects.get(command[3], [])
                     return {"available": True, "command": command, "stdout": json.dumps(payload), "stderr": "", "returncode": 0}
+                if command[:2] == ["systemctl", "show"]:
+                    return {"available": True, "command": command, "stdout": systemd_shows.get(command[2], ""), "stderr": "", "returncode": 0}
                 name = next(key for key, value in inventory.COMMANDS.items() if value == command)
                 return {"available": True, "command": command, "stdout": outputs[name], "stderr": "", "returncode": 0}
 
@@ -266,6 +317,11 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(classifications["old-open-webui"], "candidate-old-ai-stack-review-required")
         self.assertEqual(classifications["hermes-bot"], "preserve-unrelated")
         self.assertEqual(classifications["b1-ai-hub-control-plane-1"], "b1-ai-hub-current-preserve")
+        systemd_classifications = {item["service"]: item["classification"] for item in report["classification"]["systemd_services"]}
+        self.assertEqual(systemd_classifications["ollama.service"], "candidate-old-ai-stack-review-required")
+        self.assertEqual(systemd_classifications["hermes.service"], "preserve-unrelated")
+        self.assertEqual(systemd_classifications["b1-ai-hub.service"], "b1-ai-hub-current-preserve")
+        self.assertEqual(report["classification"]["systemd_old_ai_stack_candidates"][0]["service"], "ollama.service")
         self.assertEqual(report["docker"]["info"]["nvidia_runtime_available"], True)
         self.assertTrue(report["migration_readiness"]["gpu_container_runtime"]["accepted"])
         self.assertTrue(report["migration_readiness"]["gpu_container_runtime"]["docker_nvidia_runtime_available"])
@@ -274,6 +330,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["migration_readiness"]["runtime_agent_docker_socket"]["gid"], docker_gid)
         report_json = json.dumps(report, sort_keys=True)
         self.assertNotIn("should-not-be-in-report", report_json)
+        self.assertEqual(report["host"]["systemd_service_inspects"][0]["service"], "ollama.service")
+        self.assertEqual(report["host"]["systemd_service_inspects"][0]["fragment_path"], str(root / "systemd" / "ollama.service"))
         self.assertEqual(report["docker"]["container_inspects"][0]["mounts"][0]["source"], str(volume_webui))
         self.assertEqual(report["docker"]["volume_inspects"][0]["mountpoint"], str(volume_webui))
         data_roots = {item["path"]: item for item in report["paths"]["open_webui_data_roots"]}

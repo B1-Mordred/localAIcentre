@@ -89,7 +89,11 @@ class CutoverPlanTests(unittest.TestCase):
                 "containers": [
                     {"container": container, "classification": classification, "confidence": "medium"},
                     {"container": "b1-ai-hub-control-plane-1", "classification": "b1-ai-hub-current-preserve", "confidence": "high"},
-                ]
+                ],
+                "systemd_services": [
+                    {"service": "ollama.service", "classification": "candidate-old-ai-stack-review-required", "confidence": "medium"},
+                    {"service": "hermes.service", "classification": "preserve-unrelated", "confidence": "high"},
+                ],
             },
             "host": {
                 "dns": {
@@ -113,6 +117,7 @@ class CutoverPlanTests(unittest.TestCase):
             "include_paths": [{"path": str(root / "old-compose.yaml"), "reason": "old compose file"}],
             "include_docker_volumes": [],
             "include_containers": [{"name": container, "reason": "old AI container metadata and rollback target"}],
+            "include_systemd_services": [{"name": "ollama.service", "reason": "old Ollama daemon and rollback target"}],
         }
 
     def fake_runner(self, container: str = "old-open-webui"):
@@ -217,10 +222,13 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["safety"]["old_stack_deletion_allowed"])
         self.assertEqual(plan["inputs"]["old_stack_backup_verification"]["status"], "verified")
         self.assertEqual(plan["old_stack_scope"]["containers_to_stop_during_cutover"], ["old-open-webui"])
+        self.assertEqual(plan["old_stack_scope"]["systemd_services_to_stop_during_cutover"], ["ollama.service"])
         cutover_phase = next(phase for phase in plan["phases"] if phase["name"] == "cutover-window")
         rollback_phase = next(phase for phase in plan["phases"] if phase["name"] == "rollback")
         self.assertEqual(cutover_phase["commands"][0]["argv"], ["docker", "stop", "old-open-webui"])
-        self.assertEqual(rollback_phase["commands"][0]["argv"], ["docker", "start", "old-open-webui"])
+        self.assertEqual(cutover_phase["commands"][1]["argv"], ["systemctl", "stop", "ollama.service"])
+        self.assertEqual(rollback_phase["commands"][0]["argv"], ["systemctl", "start", "ollama.service"])
+        self.assertEqual(rollback_phase["commands"][1]["argv"], ["docker", "start", "old-open-webui"])
         self.assertIn("B1_HTTPS_PORT=18443", next(phase for phase in plan["phases"] if phase["name"] == "temporary-b1-start")["commands"][1]["shell"])
         self.assertTrue(plan["port_readiness"]["temporary_ports_clear"])
         self.assertTrue(plan["dns_readiness"]["all_hosts_resolve"])

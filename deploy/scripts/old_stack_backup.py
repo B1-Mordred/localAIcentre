@@ -292,7 +292,9 @@ def normalize_scope_items(raw: Any, key: str) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in raw:
         if isinstance(item, str):
-            normalized.append({"name" if key.startswith("include_docker") or key == "include_containers" else "path": item})
+            normalized.append(
+                {"name" if key.startswith("include_docker") or key in {"include_containers", "include_systemd_services"} else "path": item}
+            )
         elif isinstance(item, dict):
             normalized.append(item)
         else:
@@ -314,6 +316,7 @@ def load_scope(path: Path) -> dict[str, Any]:
         "include_paths": normalize_scope_items(scope.get("include_paths"), "include_paths"),
         "include_docker_volumes": normalize_scope_items(scope.get("include_docker_volumes"), "include_docker_volumes"),
         "include_containers": normalize_scope_items(scope.get("include_containers"), "include_containers"),
+        "include_systemd_services": normalize_scope_items(scope.get("include_systemd_services"), "include_systemd_services"),
     }
 
 
@@ -328,6 +331,26 @@ def candidate_names(items: Any, name_key: str) -> list[str]:
         if isinstance(value, str) and value not in names:
             names.append(value)
     return sorted(names)
+
+
+def systemd_unit_candidate_paths(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    paths: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("classification") != "candidate-old-ai-stack-review-required":
+            continue
+        fragment = item.get("fragment_path")
+        if isinstance(fragment, str) and fragment and fragment != "/dev/null" and fragment not in paths:
+            paths.append(fragment)
+        drop_ins = item.get("drop_in_paths")
+        if isinstance(drop_ins, list):
+            for drop_in in drop_ins:
+                if isinstance(drop_in, str) and drop_in and drop_in not in paths:
+                    paths.append(drop_in)
+    return sorted(paths)
 
 
 def existing_candidate_paths(items: Any) -> list[str]:
@@ -374,6 +397,7 @@ def items_with_classification(items: Any, classification: str) -> list[dict[str,
 def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     classification = inventory.get("classification") if isinstance(inventory.get("classification"), dict) else {}
     paths = inventory.get("paths") if isinstance(inventory.get("paths"), dict) else {}
+    host = inventory.get("host") if isinstance(inventory.get("host"), dict) else {}
     readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
     created_at = (now or datetime.now(tz=UTC)).astimezone(UTC).isoformat()
     return {
@@ -386,8 +410,13 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
         "include_paths": [],
         "include_docker_volumes": [],
         "include_containers": [],
+        "include_systemd_services": [],
         "candidates": {
             "old_ai_stack_container_names": candidate_names(classification.get("old_ai_stack_candidates", []), "container"),
+            "old_ai_stack_systemd_service_names": candidate_names(
+                classification.get("systemd_old_ai_stack_candidates", []),
+                "service",
+            ),
             "old_ai_stack_compose_projects": candidate_names(
                 items_with_classification(classification.get("compose_projects"), "candidate-old-ai-stack-review-required"),
                 "project",
@@ -401,6 +430,7 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
             "open_webui_unreadable_data_roots": unreadable_candidate_paths(paths.get("open_webui_data_roots", [])),
             "open_webui_database_paths": existing_candidate_paths(paths.get("open_webui_database_candidates", [])),
             "model_directory_paths": existing_candidate_paths(paths.get("model_directories", [])),
+            "systemd_unit_paths": systemd_unit_candidate_paths(host.get("systemd_service_inspects") if isinstance(host, dict) else []),
         },
         "inventory_review": {
             "hardware_profile": readiness.get("hardware_profile", {}),

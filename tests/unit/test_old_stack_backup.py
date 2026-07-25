@@ -25,6 +25,8 @@ class OldStackBackupTests(unittest.TestCase):
         compose_file = root / "old-open-webui" / "compose.yaml"
         open_webui_data = root / "old-open-webui" / "data"
         model_dir = root / "models"
+        ollama_unit = root / "systemd" / "ollama.service"
+        ollama_drop_in = root / "systemd" / "ollama.service.d" / "override.conf"
         return {
             "format": "b1-ai-hub-host-inventory/v1",
             "created_at": "2026-07-22T12:00:00+00:00",
@@ -32,11 +34,24 @@ class OldStackBackupTests(unittest.TestCase):
                 "old_ai_stack_candidates": [
                     {"container": "old-open-webui", "classification": "candidate-old-ai-stack-review-required"}
                 ],
+                "systemd_old_ai_stack_candidates": [
+                    {"service": "ollama.service", "classification": "candidate-old-ai-stack-review-required"}
+                ],
                 "compose_projects": [
                     {"project": "old-ai", "classification": "candidate-old-ai-stack-review-required"},
                     {"project": "hermes", "classification": "preserve-unrelated"},
                 ],
                 "volumes_with_ai_hints": [{"Name": "open-webui_data"}],
+            },
+            "host": {
+                "systemd_service_inspects": [
+                    {
+                        "service": "ollama.service",
+                        "classification": "candidate-old-ai-stack-review-required",
+                        "fragment_path": str(ollama_unit),
+                        "drop_in_paths": [str(ollama_drop_in)],
+                    }
+                ]
             },
             "paths": {
                 "compose_file_candidates": [{"path": str(compose_file), "exists": True, "type": "file"}],
@@ -144,7 +159,13 @@ class OldStackBackupTests(unittest.TestCase):
         self.assertEqual(template["include_paths"], [])
         self.assertEqual(template["include_docker_volumes"], [])
         self.assertEqual(template["include_containers"], [])
+        self.assertEqual(template["include_systemd_services"], [])
         self.assertEqual(template["candidates"]["old_ai_stack_container_names"], ["old-open-webui"])
+        self.assertEqual(template["candidates"]["old_ai_stack_systemd_service_names"], ["ollama.service"])
+        self.assertEqual(
+            template["candidates"]["systemd_unit_paths"],
+            [str(root / "systemd" / "ollama.service"), str(root / "systemd" / "ollama.service.d" / "override.conf")],
+        )
         self.assertEqual(template["candidates"]["old_ai_stack_compose_projects"], ["old-ai"])
         self.assertEqual(template["candidates"]["ai_hint_volume_names"], ["open-webui_data"])
         self.assertEqual(template["candidates"]["open_webui_data_paths"], [str(root / "old-open-webui" / "data")])
