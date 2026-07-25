@@ -123,6 +123,13 @@ def configured_credential_source() -> str:
     return "none"
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def comfyui_container_is_running(container: dict[str, Any]) -> bool:
     state = str(container.get("state") or "").strip().lower()
     status = str(container.get("status") or "").strip().lower()
@@ -184,6 +191,7 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.checks = {}
         cls.samples = []
+        cls.allow_placeholder = env_flag("B1_REMOTE_NODES_ALLOW_PLACEHOLDER", False)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -248,14 +256,22 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
             selected_model = nodes.B1SelectModelAlias().run(model)[0]
             self.assertEqual(selected_model, model)
             self.record_check("model_alias_selected", model=selected_model)
-            file_path, byte_count, digest = nodes.B1TextToSpeech().run(
+            file_path, byte_count, digest, placeholder_proof = nodes.text_to_speech_download(
                 model,
                 "B1 remote-node non-Comfy compatibility test.",
                 "default",
                 runtime_policy=runtime_policy,
                 filename="b1-remote-node-non-comfy.wav",
             )
-        self.record_check("non_comfy_tts_completed", model=model, runtime_policy=runtime_policy, byte_count=byte_count)
+        self.record_check(
+            "non_comfy_tts_completed",
+            "incomplete" if placeholder_proof.get("placeholder_failure") else "ok",
+            model=model,
+            runtime_policy=runtime_policy,
+            byte_count=byte_count,
+            placeholder_proof=placeholder_proof,
+            placeholder_allowed=self.allow_placeholder,
+        )
         self.assertEqual(Path(file_path).parent.resolve(), output_dir)
         self.assertGreater(byte_count, 0)
         self.assertEqual(len(digest), 64)
@@ -269,8 +285,15 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
                 "output_filename": Path(file_path).name,
                 "byte_count": byte_count,
                 "sha256": digest,
+                "placeholder_proof": placeholder_proof,
             }
         )
+        if placeholder_proof.get("placeholder_failure") and not self.allow_placeholder:
+            reason = ", ".join(str(item) for item in placeholder_proof.get("reasons") or []) or "placeholder output"
+            raise AssertionError(
+                "remote-node non-Comfy TTS returned placeholder or unproven output "
+                f"({reason}); install a real non-Comfy TTS model/runtime before handoff"
+            )
 
     def verify_credentials_externalized(self) -> None:
         source = configured_credential_source()

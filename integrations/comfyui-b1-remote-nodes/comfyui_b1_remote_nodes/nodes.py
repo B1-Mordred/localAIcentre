@@ -48,6 +48,7 @@ ALLOWED_UPLOAD_MIME_TYPES = {
     "video/mp4",
     "video/webm",
 }
+PLACEHOLDER_CPU_AUDIO_ENGINES = {"scaffold"}
 
 
 class B1RemoteNodeError(RuntimeError):
@@ -363,6 +364,48 @@ def request_bytes(
         raise B1RemoteNodeError(response_error_detail(exc)) from exc
     except urllib.error.URLError as exc:
         raise B1RemoteNodeError(f"B1 API request failed: {exc.reason}") from exc
+
+
+def tts_placeholder_proof(headers: dict[str, str]) -> dict[str, Any]:
+    header_map = {str(key).lower(): str(value).strip() for key, value in headers.items()}
+    marker_text = header_map.get("x-b1-placeholder", "").lower()
+    placeholder: bool | None = None
+    reasons: list[str] = []
+    if marker_text in {"true", "false"}:
+        placeholder = marker_text == "true"
+    else:
+        reasons.append("placeholder_marker_missing")
+    cpu_audio_engine = header_map.get("x-b1-cpu-audio-engine", "")
+    if placeholder is True:
+        reasons.append("explicit_placeholder_marker")
+    if cpu_audio_engine and placeholder is not False:
+        reasons.append("audio_cpu_non_placeholder_marker_missing")
+    if cpu_audio_engine.lower() in PLACEHOLDER_CPU_AUDIO_ENGINES:
+        reasons.append("scaffold_cpu_audio_engine")
+    return {
+        "placeholder": placeholder,
+        "cpu_audio_engine": cpu_audio_engine or None,
+        "placeholder_failure": bool(reasons),
+        "reasons": reasons,
+    }
+
+
+def text_to_speech_download(
+    model: str,
+    text: str,
+    voice: str,
+    response_format: str = "wav",
+    runtime_policy: str = "any",
+    filename: str = "speech.wav",
+) -> tuple[str, int, str, dict[str, Any]]:
+    content, headers = request_bytes(
+        "/v1/audio/speech",
+        {"model": model, "input": text, "voice": voice, "response_format": response_format, "runtime_policy": runtime_policy},
+        method="POST",
+        timeout_seconds=1800,
+    )
+    file_path, byte_count, digest = write_download(content, headers, filename)
+    return file_path, byte_count, digest, tts_placeholder_proof(headers)
 
 
 def json_output(payload: Any) -> str:
@@ -1119,13 +1162,8 @@ class B1TextToSpeech:
     CATEGORY = "B1 AI Hub"
 
     def run(self, model: str, text: str, voice: str, response_format: str = "wav", runtime_policy: str = "any", filename: str = "speech.wav"):
-        content, headers = request_bytes(
-            "/v1/audio/speech",
-            {"model": model, "input": text, "voice": voice, "response_format": response_format, "runtime_policy": runtime_policy},
-            method="POST",
-            timeout_seconds=1800,
-        )
-        return write_download(content, headers, filename)
+        file_path, byte_count, digest, _proof = text_to_speech_download(model, text, voice, response_format, runtime_policy, filename)
+        return file_path, byte_count, digest
 
 
 class B1SpeechToText:

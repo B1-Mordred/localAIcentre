@@ -517,6 +517,12 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "model": "tts-fast",
                     "runtime_policy": "non_comfy_only",
                     "byte_count": 2048,
+                    "placeholder_proof": {
+                        "placeholder": False,
+                        "cpu_audio_engine": "piper",
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
                 },
                 "artifact_downloaded": {
                     "status": "ok",
@@ -2074,7 +2080,53 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("remote_models_listed.model", snapshot["missing_compatibility_evidence"])
         self.assertIn("credentials_externalized.credential_source", snapshot["missing_compatibility_evidence"])
         self.assertIn("non_comfy_tts_completed.runtime_policy", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.placeholder_proof", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.sha256", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_rejects_placeholder_tts_proof(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "non_comfy_tts_completed": {
+                    **payload["checks"]["non_comfy_tts_completed"],
+                    "placeholder_proof": {
+                        "placeholder": True,
+                        "cpu_audio_engine": "scaffold",
+                        "placeholder_failure": True,
+                        "reasons": ["explicit_placeholder_marker", "scaffold_cpu_audio_engine"],
+                    },
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn("non_comfy_tts_completed.non_placeholder_proof", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.cpu_audio_engine_not_scaffold", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_rejects_unproven_tts_marker(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "non_comfy_tts_completed": {
+                    **payload["checks"]["non_comfy_tts_completed"],
+                    "placeholder_proof": {
+                        "placeholder": None,
+                        "cpu_audio_engine": None,
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn("non_comfy_tts_completed.non_placeholder_proof", snapshot["missing_compatibility_evidence"])
 
     def test_report_blocks_handoff_for_incomplete_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2794,6 +2846,12 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "model": "tts-fast",
                                 "runtime_policy": "non_comfy_only",
                                 "byte_count": 2048,
+                                "placeholder_proof": {
+                                    "placeholder": False,
+                                    "cpu_audio_engine": "piper",
+                                    "placeholder_failure": False,
+                                    "reasons": [],
+                                },
                             },
                             "artifact_downloaded": {
                                 "status": "ok",

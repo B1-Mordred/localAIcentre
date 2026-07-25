@@ -386,7 +386,7 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
 
         def fake_request_bytes(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
             calls.append({"path": path, "payload": payload, **kwargs})
-            return b"RIFF....WAVEaudio", {"content-type": "audio/wav"}
+            return b"RIFF....WAVEaudio", {"content-type": "audio/wav", "x-b1-placeholder": "false", "x-b1-cpu-audio-engine": "piper"}
 
         self.patch_attr("request_bytes", fake_request_bytes)
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
@@ -399,6 +399,52 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(calls[0]["payload"]["runtime_policy"], "non_comfy_only")
         self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
+
+    def test_text_to_speech_download_returns_placeholder_proof(self) -> None:
+        def fake_request_bytes(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            self.assertEqual(path, "/v1/audio/speech")
+            self.assertEqual(payload["model"], "tts-fast")
+            self.assertEqual(payload["runtime_policy"], "non_comfy_only")
+            return b"RIFF....WAVEaudio", {
+                "content-type": "audio/wav",
+                "x-b1-placeholder": "false",
+                "x-b1-cpu-audio-engine": "piper",
+            }
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest, proof = nodes.text_to_speech_download(
+                "tts-fast",
+                "hello",
+                "default",
+                runtime_policy="non_comfy_only",
+                filename="speech.wav",
+            )
+            self.assertTrue(Path(file_path).is_file())
+
+        self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
+        self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
+        self.assertEqual(
+            proof,
+            {"placeholder": False, "cpu_audio_engine": "piper", "placeholder_failure": False, "reasons": []},
+        )
+
+    def test_tts_placeholder_proof_rejects_scaffold_or_unmarked_audio_cpu(self) -> None:
+        explicit_scaffold = nodes.tts_placeholder_proof({"X-B1-Placeholder": "true", "X-B1-Cpu-Audio-Engine": "scaffold"})
+        self.assertTrue(explicit_scaffold["placeholder_failure"])
+        self.assertIn("explicit_placeholder_marker", explicit_scaffold["reasons"])
+        self.assertIn("scaffold_cpu_audio_engine", explicit_scaffold["reasons"])
+
+        unmarked_real_engine = nodes.tts_placeholder_proof({"X-B1-Cpu-Audio-Engine": "piper"})
+        self.assertTrue(unmarked_real_engine["placeholder_failure"])
+        self.assertIn("placeholder_marker_missing", unmarked_real_engine["reasons"])
+        self.assertIn("audio_cpu_non_placeholder_marker_missing", unmarked_real_engine["reasons"])
+
+        unknown_runtime = nodes.tts_placeholder_proof({})
+        self.assertTrue(unknown_runtime["placeholder_failure"])
+        self.assertIn("placeholder_marker_missing", unknown_runtime["reasons"])
+        self.assertIsNone(unknown_runtime["placeholder"])
+        self.assertIsNone(unknown_runtime["cpu_audio_engine"])
 
     def test_speech_to_text_uses_openai_style_multipart_model_and_file(self) -> None:
         calls: list[dict[str, Any]] = []

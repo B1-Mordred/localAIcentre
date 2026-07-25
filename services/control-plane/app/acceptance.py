@@ -977,6 +977,14 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
         missing.append("non_comfy_tts_completed.runtime_policy")
     if _positive_int(tts.get("byte_count")) < 1:
         missing.append("non_comfy_tts_completed.byte_count")
+    placeholder_proof = tts.get("placeholder_proof") if isinstance(tts.get("placeholder_proof"), dict) else {}
+    if not placeholder_proof:
+        missing.append("non_comfy_tts_completed.placeholder_proof")
+    elif placeholder_proof.get("placeholder_failure") is not False or placeholder_proof.get("placeholder") is not False:
+        missing.append("non_comfy_tts_completed.non_placeholder_proof")
+    cpu_audio_engine = str(placeholder_proof.get("cpu_audio_engine") or "").strip().lower()
+    if cpu_audio_engine == "scaffold":
+        missing.append("non_comfy_tts_completed.cpu_audio_engine_not_scaffold")
 
     artifact = _check_record(checks, "artifact_downloaded")
     if _positive_int(artifact.get("byte_count")) < 1:
