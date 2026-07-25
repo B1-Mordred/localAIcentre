@@ -364,6 +364,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "view-artifact",
             ],
         },
+        "legacy_comfyui_listener": {
+            "available": False,
+            "reason": "optional legacy listener not enabled",
+            "root": "/srv/b1-ai-hub/backups/acceptance",
+        },
         "remote_nodes_non_comfy": {
             "available": True,
             "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
@@ -752,6 +757,7 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("Installed workflow acceptance", markdown)
             self.assertIn("native-comfyui.json", markdown)
             self.assertIn("Native ComfyUI compatibility", markdown)
+            self.assertIn("Optional legacy ComfyUI listener", markdown)
             self.assertIn("remote-nodes-non-comfy.json", markdown)
             self.assertIn("Remote-node non-Comfy compatibility", markdown)
             self.assertIn("modelhub-client-sync.json", markdown)
@@ -1427,6 +1433,65 @@ class AcceptanceReportTests(unittest.TestCase):
             ],
         )
 
+    def test_absent_legacy_comfyui_evidence_is_non_blocking(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["legacy_comfyui_listener"] = {"available": False, "reason": "optional listener not enabled"}
+        report = sample_report(live_evidence=live_evidence)
+
+        summary = acceptance.public_report_summary(report)
+        self.assertTrue(report["operator_handoff_ready"])
+        self.assertTrue(summary["legacy_comfyui_evidence_ready"])
+        self.assertTrue(summary["live_evidence_ready"])
+        self.assertFalse(any("legacy ComfyUI listener" in blocker for blocker in report["acceptance_blockers"]))
+
+    def test_report_blocks_handoff_for_incomplete_legacy_comfyui_evidence_when_present(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["legacy_comfyui_listener"] = {
+            "available": True,
+            "format": "b1-ai-hub-legacy-comfyui-listener/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener.json",
+            "generated_at": "2026-07-24T12:34:00+00:00",
+            "base_url": "http://ai.b1.germering:8188",
+            "status": "incomplete",
+            "required_checks": ["object_info_without_auth", "system_stats_without_auth", "websocket_without_auth"],
+            "missing_checks": ["websocket_without_auth"],
+            "checks": {
+                "object_info_without_auth": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "system_stats_without_auth": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+            },
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["legacy_comfyui_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("legacy ComfyUI listener evidence status is incomplete", report["acceptance_blockers"])
+        self.assertIn(
+            "legacy ComfyUI listener evidence is missing required checks: websocket_without_auth",
+            report["acceptance_blockers"],
+        )
+
+    def test_legacy_comfyui_snapshot_requires_all_legacy_listener_checks(self) -> None:
+        snapshot = acceptance.legacy_comfyui_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-legacy-comfyui-listener/v1",
+                "generated_at": "2026-07-24T12:34:00+00:00",
+                "base_url": "http://ai.b1.germering:8188",
+                "status": "ok",
+                "checks": {
+                    "object_info_without_auth": {"status": "ok"},
+                    "system_stats_without_auth": {"status": "ok"},
+                },
+                "samples": [{"label": "object-info"}],
+            }
+        )
+
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["required_checks"], list(acceptance.LEGACY_COMFYUI_REQUIRED_CHECKS))
+        self.assertEqual(snapshot["missing_checks"], ["websocket_without_auth"])
+        self.assertEqual(snapshot["sample_count"], 1)
+
     def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["remote_nodes_non_comfy"] = {"available": False, "reason": "missing"}
@@ -2048,6 +2113,24 @@ class AcceptanceReportTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            legacy_comfyui = evidence_root / "legacy-comfy-listener.json"
+            legacy_comfyui.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-legacy-comfyui-listener/v1",
+                        "generated_at": "2026-07-24T12:34:00+00:00",
+                        "base_url": "http://ai.b1.germering:8188",
+                        "status": "ok",
+                        "checks": {
+                            "object_info_without_auth": {"status": "ok"},
+                            "system_stats_without_auth": {"status": "ok"},
+                            "websocket_without_auth": {"status": "ok"},
+                        },
+                        "samples": [{"label": "object-info"}, {"label": "system-stats"}, {"label": "websocket"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
             modelhub = evidence_root / "modelhub-client-sync.json"
             modelhub.write_text(
                 json.dumps(
@@ -2235,6 +2318,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
         self.assertEqual(native["sample_count"], 11)
+        legacy = snapshot["legacy_comfyui_listener"]
+        self.assertTrue(legacy["available"])
+        self.assertEqual(legacy["source_path"], str(legacy_comfyui.resolve()))
+        self.assertEqual(legacy["status"], "ok")
+        self.assertEqual(legacy["missing_checks"], [])
+        self.assertEqual(legacy["sample_count"], 3)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))

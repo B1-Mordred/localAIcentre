@@ -128,6 +128,12 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "interrupt_accessible",
     "view_artifact_accessible",
 )
+LEGACY_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-legacy-comfyui-listener/v1"
+LEGACY_COMFYUI_REQUIRED_CHECKS = (
+    "object_info_without_auth",
+    "system_stats_without_auth",
+    "websocket_without_auth",
+)
 VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"
 VOICEBOX_REQUIRED_CHECKS = (
     "native_http_proxy_accessible",
@@ -198,6 +204,7 @@ LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
     ("localai_runtime", "LocalAI runtime acceptance"),
     ("installed_workflows", "installed workflow acceptance"),
     ("native_comfyui_compatibility", "native ComfyUI compatibility"),
+    ("legacy_comfyui_listener", "optional legacy ComfyUI listener"),
     ("remote_nodes_non_comfy", "remote-node non-Comfy compatibility"),
     ("modelhub_client_sync", "Model Hub client sync"),
     ("voicebox_remote", "Voicebox remote compatibility"),
@@ -677,6 +684,16 @@ def native_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path 
     )
 
 
+def legacy_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=LEGACY_COMFYUI_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported legacy ComfyUI listener evidence format",
+        required_checks=LEGACY_COMFYUI_REQUIRED_CHECKS,
+    )
+
+
 def voicebox_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     return _live_evidence_snapshot(
         payload,
@@ -724,6 +741,7 @@ def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
         "localai_runtime": {"available": False, "reason": reason, "root": str(root)},
         "installed_workflows": {"available": False, "reason": reason, "root": str(root)},
         "native_comfyui_compatibility": {"available": False, "reason": reason, "root": str(root)},
+        "legacy_comfyui_listener": {"available": False, "reason": reason, "root": str(root)},
         "remote_nodes_non_comfy": {"available": False, "reason": reason, "root": str(root)},
         "modelhub_client_sync": {"available": False, "reason": reason, "root": str(root)},
         "voicebox_remote": {"available": False, "reason": reason, "root": str(root)},
@@ -779,6 +797,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == NATIVE_COMFYUI_EVIDENCE_FORMAT and "native_comfyui_compatibility" not in found:
             snapshots["native_comfyui_compatibility"] = native_comfyui_evidence_snapshot(payload, path.resolve())
             found.add("native_comfyui_compatibility")
+        elif payload.get("format") == LEGACY_COMFYUI_EVIDENCE_FORMAT and "legacy_comfyui_listener" not in found:
+            snapshots["legacy_comfyui_listener"] = legacy_comfyui_evidence_snapshot(payload, path.resolve())
+            found.add("legacy_comfyui_listener")
         elif payload.get("format") == REMOTE_NODES_EVIDENCE_FORMAT and "remote_nodes_non_comfy" not in found:
             snapshots["remote_nodes_non_comfy"] = remote_nodes_evidence_snapshot(payload, path.resolve())
             found.add("remote_nodes_non_comfy")
@@ -803,6 +824,7 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             "localai_runtime",
             "installed_workflows",
             "native_comfyui_compatibility",
+            "legacy_comfyui_listener",
             "remote_nodes_non_comfy",
             "modelhub_client_sync",
             "voicebox_remote",
@@ -996,6 +1018,13 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = native_comfyui_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("native ComfyUI compatibility evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+    legacy_comfyui_evidence = live_evidence.get("legacy_comfyui_listener") if isinstance(live_evidence.get("legacy_comfyui_listener"), dict) else {}
+    if legacy_comfyui_evidence.get("available") is True:
+        if legacy_comfyui_evidence.get("status") != "ok":
+            blockers.append(f"legacy ComfyUI listener evidence status is {legacy_comfyui_evidence.get('status', 'unknown')}")
+        missing_checks = legacy_comfyui_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("legacy ComfyUI listener evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     if remote_nodes_evidence.get("available") is not True:
         blockers.append("remote-node non-Comfy compatibility evidence is unavailable")
@@ -1269,6 +1298,7 @@ def build_report(
             "localai_runtime": {"available": False, "reason": "not supplied"},
             "installed_workflows": {"available": False, "reason": "not supplied"},
             "native_comfyui_compatibility": {"available": False, "reason": "not supplied"},
+            "legacy_comfyui_listener": {"available": False, "reason": "not supplied"},
             "remote_nodes_non_comfy": {"available": False, "reason": "not supplied"},
             "modelhub_client_sync": {"available": False, "reason": "not supplied"},
             "voicebox_remote": {"available": False, "reason": "not supplied"},
@@ -1498,6 +1528,9 @@ def markdown_report(report: dict[str, Any]) -> str:
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
     )
+    legacy_comfyui_evidence = (
+        live_evidence.get("legacy_comfyui_listener") if isinstance(live_evidence.get("legacy_comfyui_listener"), dict) else {}
+    )
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
@@ -1637,6 +1670,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             )
             + "\n\n"
             + _live_evidence_markdown(
+                "Optional legacy ComfyUI listener",
+                legacy_comfyui_evidence,
+                "No legacy ComfyUI listener checks recorded.",
+            )
+            + "\n\n"
+            + _live_evidence_markdown(
                 "Remote-node non-Comfy compatibility",
                 remote_nodes_evidence,
                 "No remote-node non-Comfy compatibility checks recorded.",
@@ -1748,6 +1787,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
     )
+    legacy_comfyui_evidence = (
+        live_evidence.get("legacy_comfyui_listener") if isinstance(live_evidence.get("legacy_comfyui_listener"), dict) else {}
+    )
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     modelhub_evidence = live_evidence.get("modelhub_client_sync") if isinstance(live_evidence.get("modelhub_client_sync"), dict) else {}
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
@@ -1794,6 +1836,14 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and native_comfyui_evidence.get("status") == "ok"
         and not native_comfyui_evidence.get("missing_checks")
         and "native_comfyui_compatibility" not in freshness_failures
+    )
+    legacy_comfyui_evidence_ready = (
+        legacy_comfyui_evidence.get("available") is not True
+        or (
+            legacy_comfyui_evidence.get("status") == "ok"
+            and not legacy_comfyui_evidence.get("missing_checks")
+            and "legacy_comfyui_listener" not in freshness_failures
+        )
     )
     remote_nodes_evidence_ready = (
         remote_nodes_evidence.get("available") is True
@@ -1865,6 +1915,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "localai_evidence_ready": localai_evidence_ready,
         "installed_workflows_evidence_ready": installed_workflows_evidence_ready,
         "native_comfyui_evidence_ready": native_comfyui_evidence_ready,
+        "legacy_comfyui_evidence_ready": legacy_comfyui_evidence_ready,
         "remote_nodes_evidence_ready": remote_nodes_evidence_ready,
         "modelhub_evidence_ready": modelhub_evidence_ready,
         "voicebox_evidence_ready": voicebox_evidence_ready,
@@ -1879,6 +1930,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and localai_evidence_ready
             and installed_workflows_evidence_ready
             and native_comfyui_evidence_ready
+            and legacy_comfyui_evidence_ready
             and remote_nodes_evidence_ready
             and modelhub_evidence_ready
             and voicebox_evidence_ready

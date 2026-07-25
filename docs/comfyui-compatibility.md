@@ -68,3 +68,5 @@ python3 -m unittest tests.compatibility.test_legacy_comfyui_listener
 ```
 
 The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
+
+When `B1_LEGACY_COMFY_EVIDENCE` points under `$B1_BACKUP_ROOT/acceptance`, Control Center acceptance reports ingest the latest legacy listener evidence as an optional section. Missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete, failed, or stale evidence is reported as a handoff blocker when an operator has enabled and tested that path.

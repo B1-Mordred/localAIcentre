@@ -596,6 +596,7 @@ const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
   ["localai_runtime", "LocalAI runtime"],
   ["installed_workflows", "Installed workflows"],
   ["native_comfyui_compatibility", "Native ComfyUI"],
+  ["legacy_comfyui_listener", "Legacy :8188"],
   ["remote_nodes_non_comfy", "Remote nodes"],
   ["modelhub_client_sync", "Model Hub sync"],
   ["voicebox_remote", "Voicebox remote"],
