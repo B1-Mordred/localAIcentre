@@ -287,6 +287,17 @@ def _validate_archive_member(
 ) -> tuple[PurePosixPath, dict[str, Any]]:
     relative_path = safe_archive_member_path(name.rstrip("/"))
     path_key = relative_path.as_posix()
+    for parent in relative_path.parents:
+        if parent == PurePosixPath("."):
+            continue
+        parent_kind = seen_paths.get(parent.as_posix())
+        if parent_kind == "file":
+            raise ModelLifecycleError(f"archive member path is below a file member: {path_key}")
+    if kind == "file":
+        child_prefix = f"{path_key}/"
+        for existing_path in seen_paths:
+            if existing_path.startswith(child_prefix):
+                raise ModelLifecycleError(f"archive file member conflicts with existing child member: {path_key}")
     previous_kind = seen_paths.get(path_key)
     if previous_kind and not (previous_kind == "directory" and kind == "directory"):
         raise ModelLifecycleError(f"archive contains duplicate member path: {path_key}")

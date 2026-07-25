@@ -211,6 +211,40 @@ class ModelLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "uncompressed size exceeds limit"):
                 model_lifecycle.inspect_archive(archive, max_total_size_bytes=5)
 
+    def test_archive_rejects_file_parent_conflicts(self) -> None:
+        zip_cases = [
+            (("weights", "weights/model.gguf"), "below a file member"),
+            (("weights/model.gguf", "weights"), "conflicts with existing child member"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for members, expected in zip_cases:
+                with self.subTest(kind="zip", members=members):
+                    archive = root / f"{members[0].replace('/', '-')}.zip"
+                    with zipfile.ZipFile(archive, "w") as handle:
+                        for member in members:
+                            handle.writestr(member, b"payload")
+
+                    with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, expected):
+                        model_lifecycle.inspect_archive(archive)
+
+            tar_cases = [
+                (("weights", "weights/model.gguf"), "below a file member"),
+                (("weights/model.gguf", "weights"), "conflicts with existing child member"),
+            ]
+            for members, expected in tar_cases:
+                with self.subTest(kind="tar", members=members):
+                    archive = root / f"{members[0].replace('/', '-')}.tar"
+                    with tarfile.open(archive, "w") as handle:
+                        for member in members:
+                            data = b"payload"
+                            info = tarfile.TarInfo(member)
+                            info.size = len(data)
+                            handle.addfile(info, io.BytesIO(data))
+
+                    with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, expected):
+                        model_lifecycle.inspect_archive(archive)
+
     def test_archive_rejects_denied_file_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / "bad.zip"
