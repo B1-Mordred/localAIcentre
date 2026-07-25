@@ -23,9 +23,14 @@ SECURITY_REQUIRED_CHECKS = (
     "csrf_browser_mutation_rejected",
     "comfyui_management_routes_blocked",
     "import_ssrf_blocked",
+    "import_metadata_ssrf_blocked",
+    "import_private_network_blocked",
+    "import_plain_http_blocked",
     "artifact_traversal_blocked",
     "artifact_authorization_enforced",
     "runtime_agent_mutation_guard",
+    "runtime_agent_arbitrary_runtime_rejected",
+    "runtime_agent_arbitrary_logs_rejected",
     "logs_redacted",
 )
 
@@ -326,10 +331,11 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.verify_cors_denied_without_wildcard_credentials()
         self.verify_csrf_browser_mutation_rejected()
         self.verify_comfyui_management_route_blocked()
-        self.verify_import_ssrf_blocked()
+        self.verify_import_url_policy_blocked()
         self.verify_artifact_traversal_blocked()
         self.verify_artifact_authorization_enforced()
         self.verify_runtime_agent_mutation_guard()
+        self.verify_runtime_agent_arbitrary_operations_rejected()
         self.verify_logs_redacted()
 
     def verify_unauthenticated_rejected(self) -> None:
@@ -412,8 +418,7 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.record_check("comfyui_management_routes_blocked", path=path, http_status=status)
         self.sample("comfyui-manager-denied", path=path, http_status=status)
 
-    def verify_import_ssrf_blocked(self) -> None:
-        manifest_url = os.getenv("B1_SECURITY_SSRF_MANIFEST_URL", "http://127.0.0.1:1/manifest.json")
+    def assert_import_url_rejected(self, check_name: str, manifest_url: str) -> None:
         status, _headers, payload = self.request_json(
             self.api_base,
             "POST",
@@ -423,16 +428,35 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             allow_http_error=True,
         )
         self.assertEqual(status, 422, payload)
-        self.assertIn("public HTTPS URL", json.dumps(payload, sort_keys=True))
+        payload_text = json.dumps(payload, sort_keys=True)
+        self.assertRegex(payload_text, r"public HTTPS URL|private|loopback|link-local|SSRF|scheme")
         parsed = urllib.parse.urlsplit(manifest_url)
         self.record_check(
-            "import_ssrf_blocked",
+            check_name,
             path="/admin/models/download-plan",
             http_status=status,
             rejected_scheme=parsed.scheme,
             rejected_host=parsed.hostname or "",
         )
-        self.sample("manifest-ssrf-denied", http_status=status, rejected_host=parsed.hostname or "")
+        self.sample(check_name.replace("_", "-"), http_status=status, rejected_host=parsed.hostname or "")
+
+    def verify_import_url_policy_blocked(self) -> None:
+        self.assert_import_url_rejected(
+            "import_ssrf_blocked",
+            os.getenv("B1_SECURITY_SSRF_MANIFEST_URL", "http://127.0.0.1:1/manifest.json"),
+        )
+        self.assert_import_url_rejected(
+            "import_metadata_ssrf_blocked",
+            os.getenv("B1_SECURITY_METADATA_MANIFEST_URL", "https://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+        )
+        self.assert_import_url_rejected(
+            "import_private_network_blocked",
+            os.getenv("B1_SECURITY_PRIVATE_MANIFEST_URL", "https://172.17.0.1/manifest.json"),
+        )
+        self.assert_import_url_rejected(
+            "import_plain_http_blocked",
+            os.getenv("B1_SECURITY_HTTP_MANIFEST_URL", "http://example.com/manifest.json"),
+        )
 
     def verify_artifact_traversal_blocked(self) -> None:
         path = os.getenv("B1_SECURITY_TRAVERSAL_ARTIFACT_PATH", "/artifacts/%2e%2e/secrets/master_encryption_key")
@@ -566,6 +590,32 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
             runtime_action_service_count=len(runtime_action_services),
         )
         self.sample("runtime-agent-mutation-guard", path="/admin/self-test", http_status=status)
+
+    def verify_runtime_agent_arbitrary_operations_rejected(self) -> None:
+        runtime = os.getenv("B1_SECURITY_FORBIDDEN_RUNTIME", "postgres")
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "POST",
+            f"/admin/runtimes/{urllib.parse.quote(runtime)}/recover",
+            body={"reason": "security acceptance must reject arbitrary runtime names", "timeout_seconds": 1},
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertIn(status, {404, 422}, payload)
+        self.record_check("runtime_agent_arbitrary_runtime_rejected", runtime=runtime, http_status=status)
+        self.sample("runtime-agent-arbitrary-runtime-denied", runtime=runtime, http_status=status)
+
+        service = os.getenv("B1_SECURITY_FORBIDDEN_LOG_SERVICE", "postgres")
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            f"/admin/services/{urllib.parse.quote(service)}/logs?lines=1",
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 404, payload)
+        self.record_check("runtime_agent_arbitrary_logs_rejected", service=service, http_status=status)
+        self.sample("runtime-agent-arbitrary-logs-denied", service=service, http_status=status)
 
     def verify_logs_redacted(self) -> None:
         service = os.getenv("B1_SECURITY_LOG_SERVICE", "control-plane")

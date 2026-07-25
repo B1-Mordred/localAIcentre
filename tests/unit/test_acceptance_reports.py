@@ -445,9 +445,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "csrf_browser_mutation_rejected",
                 "comfyui_management_routes_blocked",
                 "import_ssrf_blocked",
+                "import_metadata_ssrf_blocked",
+                "import_private_network_blocked",
+                "import_plain_http_blocked",
                 "artifact_traversal_blocked",
                 "artifact_authorization_enforced",
                 "runtime_agent_mutation_guard",
+                "runtime_agent_arbitrary_runtime_rejected",
+                "runtime_agent_arbitrary_logs_rejected",
                 "logs_redacted",
             ],
             "missing_checks": [],
@@ -458,22 +463,32 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "csrf_browser_mutation_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "import_metadata_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "import_private_network_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "import_plain_http_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_authorization_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:49:30+00:00"},
                 "runtime_agent_mutation_guard": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "runtime_agent_arbitrary_runtime_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "runtime_agent_arbitrary_logs_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
                 "logs_redacted": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
             },
-            "sample_count": 10,
+            "sample_count": 15,
             "sample_labels": [
                 "unauthenticated-admin",
                 "under-scoped-admin",
                 "cors-denied-origin",
                 "csrf-missing-token",
                 "comfyui-manager-denied",
-                "manifest-ssrf-denied",
+                "import-ssrf-blocked",
+                "import-metadata-ssrf-blocked",
+                "import-private-network-blocked",
+                "import-plain-http-blocked",
                 "artifact-traversal-denied",
                 "artifact-authorization-denied",
                 "runtime-agent-mutation-guard",
+                "runtime-agent-arbitrary-runtime-denied",
+                "runtime-agent-arbitrary-logs-denied",
                 "service-logs-redacted",
             ],
         },
@@ -1417,16 +1432,21 @@ class AcceptanceReportTests(unittest.TestCase):
         live_evidence["security_acceptance"] = {
             **live_evidence["security_acceptance"],
             "status": "incomplete",
-            "missing_checks": ["csrf_browser_mutation_rejected", "logs_redacted"],
+            "missing_checks": ["import_private_network_blocked", "runtime_agent_arbitrary_logs_rejected"],
             "checks": {
                 "unauthenticated_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:46:00+00:00"},
                 "under_scoped_requests_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
                 "cors_credentials_not_wildcard": {"status": "ok", "recorded_at": "2026-07-24T12:47:00+00:00"},
+                "csrf_browser_mutation_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "comfyui_management_routes_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:48:00+00:00"},
                 "import_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "import_metadata_ssrf_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
+                "import_plain_http_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_traversal_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:49:00+00:00"},
                 "artifact_authorization_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:49:30+00:00"},
                 "runtime_agent_mutation_guard": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "runtime_agent_arbitrary_runtime_rejected": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
+                "logs_redacted": {"status": "ok", "recorded_at": "2026-07-24T12:50:00+00:00"},
             },
         }
         report = sample_report(live_evidence=live_evidence)
@@ -1437,7 +1457,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("security acceptance evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "security acceptance evidence is missing required checks: csrf_browser_mutation_rejected, logs_redacted",
+            "security acceptance evidence is missing required checks: import_private_network_blocked, runtime_agent_arbitrary_logs_rejected",
             report["acceptance_blockers"],
         )
 
@@ -1942,9 +1962,14 @@ class AcceptanceReportTests(unittest.TestCase):
                             "csrf_browser_mutation_rejected": {"status": "ok"},
                             "comfyui_management_routes_blocked": {"status": "ok"},
                             "import_ssrf_blocked": {"status": "ok"},
+                            "import_metadata_ssrf_blocked": {"status": "ok"},
+                            "import_private_network_blocked": {"status": "ok"},
+                            "import_plain_http_blocked": {"status": "ok"},
                             "artifact_traversal_blocked": {"status": "ok"},
                             "artifact_authorization_enforced": {"status": "ok"},
                             "runtime_agent_mutation_guard": {"status": "ok"},
+                            "runtime_agent_arbitrary_runtime_rejected": {"status": "ok"},
+                            "runtime_agent_arbitrary_logs_rejected": {"status": "ok"},
                             "logs_redacted": {"status": "ok"},
                         },
                         "samples": [
@@ -1953,10 +1978,15 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "cors-denied-origin"},
                             {"label": "csrf-missing-token"},
                             {"label": "comfyui-manager-denied"},
-                            {"label": "manifest-ssrf-denied"},
+                            {"label": "import-ssrf-blocked"},
+                            {"label": "import-metadata-ssrf-blocked"},
+                            {"label": "import-private-network-blocked"},
+                            {"label": "import-plain-http-blocked"},
                             {"label": "artifact-traversal-denied"},
                             {"label": "artifact-authorization-denied"},
                             {"label": "runtime-agent-mutation-guard"},
+                            {"label": "runtime-agent-arbitrary-runtime-denied"},
+                            {"label": "runtime-agent-arbitrary-logs-denied"},
                             {"label": "service-logs-redacted"},
                         ],
                     }
@@ -2077,7 +2107,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(security_acceptance["source_path"], str(security.resolve()))
         self.assertEqual(security_acceptance["status"], "ok")
         self.assertEqual(security_acceptance["missing_checks"], [])
-        self.assertEqual(security_acceptance["sample_count"], 10)
+        self.assertEqual(security_acceptance["sample_count"], 15)
         restart = snapshot["restart_reconciliation"]
         self.assertTrue(restart["available"])
         self.assertEqual(restart["source_path"], str(restart_reconciliation.resolve()))

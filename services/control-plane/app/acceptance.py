@@ -135,9 +135,14 @@ SECURITY_REQUIRED_CHECKS = (
     "csrf_browser_mutation_rejected",
     "comfyui_management_routes_blocked",
     "import_ssrf_blocked",
+    "import_metadata_ssrf_blocked",
+    "import_private_network_blocked",
+    "import_plain_http_blocked",
     "artifact_traversal_blocked",
     "artifact_authorization_enforced",
     "runtime_agent_mutation_guard",
+    "runtime_agent_arbitrary_runtime_rejected",
+    "runtime_agent_arbitrary_logs_rejected",
     "logs_redacted",
 )
 RESTART_RECONCILIATION_EVIDENCE_FORMAT = "b1-ai-hub-restart-reconciliation-acceptance/v1"
