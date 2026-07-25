@@ -102,6 +102,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "upload_image_accessible",
     "upload_mask_accessible",
     "prompt_submission",
+    "prompt_idempotency_replay",
     "websocket_events",
     "history_listing_accessible",
     "history_available",

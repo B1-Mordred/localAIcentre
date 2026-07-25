@@ -182,6 +182,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "upload_image_accessible",
                 "upload_mask_accessible",
                 "prompt_submission",
+                "prompt_idempotency_replay",
                 "websocket_events",
                 "history_listing_accessible",
                 "history_available",
@@ -199,6 +200,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "upload_image_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "upload_mask_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
                 "prompt_submission": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
+                "prompt_idempotency_replay": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "websocket_events": {"status": "ok", "recorded_at": "2026-07-24T12:32:00+00:00"},
                 "history_listing_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
                 "history_available": {"status": "ok", "recorded_at": "2026-07-24T12:33:00+00:00"},
@@ -213,6 +215,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "upload-image",
                 "upload-mask",
                 "prompt-submission",
+                "prompt-idempotency-replay",
                 "websocket-completed",
                 "history-listing",
                 "queue-delete",
@@ -937,12 +940,14 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("queue_delete_accessible", snapshot["required_checks"])
         self.assertIn("interrupt_accessible", snapshot["required_checks"])
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
+        self.assertIn("prompt_idempotency_replay", snapshot["required_checks"])
         self.assertEqual(
             snapshot["missing_checks"],
             [
                 "object_info_node_accessible",
                 "upload_image_accessible",
                 "upload_mask_accessible",
+                "prompt_idempotency_replay",
                 "history_listing_accessible",
                 "queue_delete_accessible",
                 "interrupt_accessible",
@@ -1410,6 +1415,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "upload_image_accessible": {"status": "ok"},
                             "upload_mask_accessible": {"status": "ok"},
                             "prompt_submission": {"status": "ok"},
+                            "prompt_idempotency_replay": {"status": "ok"},
                             "websocket_events": {"status": "ok"},
                             "history_listing_accessible": {"status": "ok"},
                             "history_available": {"status": "ok"},
@@ -1423,6 +1429,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "upload-image"},
                             {"label": "upload-mask"},
                             {"label": "prompt-submission"},
+                            {"label": "prompt-idempotency-replay"},
                             {"label": "websocket-completed"},
                             {"label": "history-listing"},
                             {"label": "queue-delete"},
@@ -1597,7 +1604,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["source_path"], str(native_comfyui.resolve()))
         self.assertEqual(native["status"], "ok")
         self.assertEqual(native["missing_checks"], [])
-        self.assertEqual(native["sample_count"], 10)
+        self.assertEqual(native["sample_count"], 11)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))

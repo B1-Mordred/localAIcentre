@@ -26,6 +26,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "upload_image_accessible",
     "upload_mask_accessible",
     "prompt_submission",
+    "prompt_idempotency_replay",
     "websocket_events",
     "history_listing_accessible",
     "history_available",
@@ -188,9 +189,17 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         return urllib.parse.urlunparse(parsed._replace(scheme=scheme))
 
     @classmethod
-    def request_json(cls, method: str, path: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any] | list[Any]:
+    def request_json(
+        cls,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | list[Any]:
         data = None
         headers = cls.headers()
+        headers.update(extra_headers or {})
         if payload is not None:
             data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -224,10 +233,12 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         path: str,
         payload: dict[str, Any] | None = None,
         timeout: float | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict[str, str], int]:
         data = None
         headers = cls.headers()
         headers["Accept"] = "*/*"
+        headers.update(extra_headers or {})
         if payload is not None:
             data = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -360,12 +371,14 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
     async def submit_prompt_and_collect_ws(self) -> str:
         payload = dict(self.prompt_payload)
         payload["client_id"] = self.client_id
+        idempotency_key = f"b1-native-comfyui-{uuid.uuid4().hex}"
+        idempotency_header = {"Idempotency-Key": idempotency_key}
         event_types: list[str] = []
         binary_messages = 0
         completed = False
         prompt_id = ""
         async with await self.connect_websocket() as websocket:
-            response = await asyncio.to_thread(self.request_json, "POST", "/prompt", payload, self.timeout_seconds)
+            response = await asyncio.to_thread(self.request_json, "POST", "/prompt", payload, self.timeout_seconds, idempotency_header)
             self.assertIsInstance(response, dict)
             prompt_id = str(response.get("prompt_id") or "")
             self.assertTrue(prompt_id, f"POST /prompt did not return prompt_id: {response}")
@@ -374,6 +387,34 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
                 prompt_id=prompt_id,
                 response_keys=sorted(str(key) for key in response.keys()),
                 queue_number=response.get("number"),
+            )
+            replay_body, replay_headers, replay_status = await asyncio.to_thread(
+                self.request_status,
+                "POST",
+                "/prompt",
+                payload,
+                min(self.timeout_seconds, 60),
+                idempotency_header,
+            )
+            self.assertEqual(replay_status, 200)
+            replay_payload = json.loads(replay_body.decode("utf-8"))
+            self.assertIsInstance(replay_payload, dict)
+            self.assertEqual(replay_payload.get("prompt_id"), prompt_id)
+            replay_header = replay_headers.get("x-b1-idempotent-replay", "")
+            self.assertEqual(replay_header.lower(), "true")
+            self.record_check(
+                "prompt_idempotency_replay",
+                prompt_id=prompt_id,
+                response_keys=sorted(str(key) for key in replay_payload.keys()),
+                replay_header=replay_header,
+                idempotency_key_length=len(idempotency_key),
+            )
+            self.samples.append(
+                {
+                    "label": "prompt-idempotency-replay",
+                    "prompt_id": prompt_id,
+                    "replay_header": replay_header,
+                }
             )
             deadline = asyncio.get_running_loop().time() + self.timeout_seconds
             while asyncio.get_running_loop().time() < deadline:

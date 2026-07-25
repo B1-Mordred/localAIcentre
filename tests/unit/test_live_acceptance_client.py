@@ -107,6 +107,43 @@ class LiveAcceptanceClientTests(unittest.TestCase):
 
         self.assertFalse(called)
 
+    def test_native_comfyui_request_status_sends_idempotency_header(self) -> None:
+        module = load_module("tests/compatibility/test_native_comfyui_compatibility.py", "native_comfyui_idempotency_header")
+        cls = module.NativeComfyUiCompatibilityTests
+        cls.base_url = "https://comfy.ai.b1.germering"
+        cls.api_key = "b1k_public.secret"
+        cls.host_header = ""
+        cls.timeout_seconds = 1
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(request: Any, timeout: float = 0, context: Any | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+            seen["body"] = request.data
+            return FakeResponse()
+
+        original_urlopen = module.urllib.request.urlopen
+        original_ssl_context = cls.ssl_context
+        try:
+            module.urllib.request.urlopen = fake_urlopen
+            cls.ssl_context = classmethod(lambda inner_cls: None)
+            body, _headers, status = cls.request_status(
+                "POST",
+                "/prompt",
+                {"prompt": {"1": {"class_type": "CheckpointLoaderSimple"}}},
+                extra_headers={"Idempotency-Key": "prompt-1"},
+            )
+        finally:
+            module.urllib.request.urlopen = original_urlopen
+            cls.ssl_context = original_ssl_context
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'{"status":"ok"}')
+        self.assertEqual(seen["url"], "https://comfy.ai.b1.germering/prompt")
+        self.assertEqual(seen["headers"]["authorization"], "Bearer b1k_public.secret")
+        self.assertEqual(seen["headers"]["idempotency-key"], "prompt-1")
+        self.assertIn(b'"prompt"', seen["body"])
+
     def test_voicebox_http_api_key_is_rejected_before_network(self) -> None:
         module = load_module("tests/compatibility/test_voicebox_remote.py", "voicebox_transport_guard")
         cls = module.VoiceboxRemoteCompatibilityTests
