@@ -187,6 +187,15 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", result)
         self.assertNotIn("secret prompt", str(result))
         self.assertNotIn("idem_sensitive", str(result))
+        self.assertEqual(
+            result["links"],
+            {
+                "self": "/v1/media/jobs/job_1",
+                "events": "/v1/media/jobs/job_1/events",
+                "artifacts": "/v1/media/jobs/job_1/artifacts",
+                "cancel": "/v1/media/jobs/job_1",
+            },
+        )
 
     def test_public_media_job_get_rejects_other_owner(self) -> None:
         self.patch_attr("database", FakeJobsDatabase(job_row(owner_id="other_client")))
@@ -214,6 +223,19 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", result)
         self.assertNotIn("raw secret", str(result))
         self.assertNotIn("idem_secret", str(result))
+
+    def test_public_job_links_percent_encode_job_id_path_segments(self) -> None:
+        result = main.public_job(job_row(id="job/one two"))
+
+        self.assertEqual(
+            result["links"],
+            {
+                "self": "/v1/media/jobs/job%2Fone%20two",
+                "events": "/v1/media/jobs/job%2Fone%20two/events",
+                "artifacts": "/v1/media/jobs/job%2Fone%20two/artifacts",
+                "cancel": "/v1/media/jobs/job%2Fone%20two",
+            },
+        )
 
     def test_admin_job_listing_requires_admin_or_operator_role(self) -> None:
         fake_database = FakeJobsDatabase()

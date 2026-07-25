@@ -366,6 +366,12 @@ class AdmissionApiTests(unittest.TestCase):
         result = asyncio.run(main.image_generations(payload, authorization="Bearer key"))
 
         self.assertTrue(result["b1_job_id"].startswith("job_"))
+        self.assertEqual(result["object"], "b1.async_job")
+        self.assertEqual(result["b1_status"], "queued")
+        self.assertEqual(result["b1_job_url"], f"/v1/media/jobs/{result['b1_job_id']}")
+        self.assertEqual(result["b1_events_url"], f"/v1/media/jobs/{result['b1_job_id']}/events")
+        self.assertEqual(result["b1_artifacts_url"], f"/v1/media/jobs/{result['b1_job_id']}/artifacts")
+        self.assertEqual(result["b1_cancel_url"], f"/v1/media/jobs/{result['b1_job_id']}")
         self.assertEqual(resolver_calls, [("image-default", "image", "non_comfy_only", "image-generation")])
         inserted = fake_database.inserted[0]
         self.assertEqual(inserted["priority"], "image_batch")
@@ -425,6 +431,7 @@ class AdmissionApiTests(unittest.TestCase):
         result = asyncio.run(main.media_job_create(payload, idempotency_key="media_1"))
 
         self.assertEqual(result["id"], "job_existing")
+        self.assertEqual(result["links"]["events"], "/v1/media/jobs/job_existing/events")
         self.assertNotIn("request_params", result)
         self.assertNotIn("idempotency_key", result)
         self.assertNotIn("castle", str(result))

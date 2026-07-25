@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable, Literal
-from urllib.parse import unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis.asyncio as redis
@@ -3223,6 +3223,17 @@ async def call_openai_runtime_stream(
     return StreamingResponse(chunks(), media_type="text/event-stream")
 
 
+def media_job_links(job_id: str) -> dict[str, str]:
+    encoded_job_id = quote(str(job_id), safe="")
+    base = f"/v1/media/jobs/{encoded_job_id}"
+    return {
+        "self": base,
+        "events": f"{base}/events",
+        "artifacts": f"{base}/artifacts",
+        "cancel": base,
+    }
+
+
 def public_job(row: dict[str, Any]) -> dict[str, Any]:
     job = dict(row)
     raw_request = job.pop("request_params", None)
@@ -3231,6 +3242,8 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(redacted_request, dict):
         redacted_request = redact_request(raw_request) if isinstance(raw_request, dict) else {}
     job["redacted_request"] = redacted_request
+    if job.get("id"):
+        job["links"] = media_job_links(str(job["id"]))
     return jsonable_encoder(job)
 
 
@@ -3318,7 +3331,18 @@ def ensure_existing_job_endpoint(existing: dict[str, Any], *, modality: str, ope
 
 
 def openai_image_job_response(job: dict[str, Any]) -> dict[str, Any]:
-    return {"created": int(datetime.now(tz=UTC).timestamp()), "b1_job_id": job["id"], "data": []}
+    links = media_job_links(str(job["id"]))
+    return {
+        "object": "b1.async_job",
+        "created": int(datetime.now(tz=UTC).timestamp()),
+        "b1_job_id": job["id"],
+        "b1_status": job.get("state"),
+        "b1_job_url": links["self"],
+        "b1_events_url": links["events"],
+        "b1_artifacts_url": links["artifacts"],
+        "b1_cancel_url": links["cancel"],
+        "data": [],
+    }
 
 
 def comfyui_native_job_payload(client_id: str | None, native_prompt_hash: str, prompt_summary: dict[str, Any]) -> MediaJobCreate:
