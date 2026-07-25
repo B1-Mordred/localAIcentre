@@ -984,6 +984,95 @@ class ModelClientTests(unittest.TestCase):
         finally:
             client.urllib.request.urlopen = original
 
+    def test_download_blob_requires_integrity_headers_before_reading_body(self) -> None:
+        payload = b"missing-header"
+        digest = hashlib.sha256(payload).hexdigest()
+        complete_headers = {
+            "ETag": f'"sha256:{digest}"',
+            "X-Checksum-SHA256": digest,
+            "Content-Length": str(len(payload)),
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, headers: dict[str, str]) -> None:
+                self.headers = headers
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                raise AssertionError("body must not be read when integrity headers are missing")
+
+        for missing_header, expected_error in [
+            ("ETag", "missing ETag"),
+            ("X-Checksum-SHA256", "missing X-Checksum-SHA256"),
+            ("Content-Length", "missing Content-Length"),
+        ]:
+            with self.subTest(missing_header=missing_header):
+                headers = {key: value for key, value in complete_headers.items() if key != missing_header}
+
+                def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+                    return FakeResponse(headers)
+
+                original = client.urllib.request.urlopen
+                try:
+                    client.urllib.request.urlopen = fake_urlopen
+                    with tempfile.TemporaryDirectory() as tmp:
+                        target = Path(tmp) / "blobs" / digest
+                        with self.assertRaisesRegex(RuntimeError, expected_error):
+                            client.download_blob("http://modelhub", None, digest, len(payload), target)
+                        self.assertFalse(target.exists())
+                finally:
+                    client.urllib.request.urlopen = original
+
+    def test_download_blob_rejects_unexpected_success_status_before_reading_body(self) -> None:
+        payload = b"status-check"
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class FakeResponse:
+            def __init__(self, status: int) -> None:
+                self.status = status
+                self.headers = {
+                    "ETag": f'"sha256:{digest}"',
+                    "X-Checksum-SHA256": digest,
+                    "Content-Length": str(len(payload)),
+                    "Content-Range": f"bytes 0-{len(payload) - 1}/{len(payload)}",
+                }
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                raise AssertionError("body must not be read when HTTP status is unexpected")
+
+        def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+            return FakeResponse(206)
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "blobs" / digest
+                with self.assertRaisesRegex(RuntimeError, "unexpected HTTP status 206"):
+                    client.download_blob("http://modelhub", None, digest, len(payload), target)
+                self.assertFalse(target.exists())
+        finally:
+            client.urllib.request.urlopen = original
+
     def test_download_blob_tightens_existing_verified_blob_permissions(self) -> None:
         payload = b"already-present"
         digest = hashlib.sha256(payload).hexdigest()
@@ -1205,6 +1294,61 @@ class ModelClientTests(unittest.TestCase):
             client.urllib.request.urlopen = original
 
         self.assertEqual(seen_ranges, ["bytes=5-", None])
+
+    def test_download_blob_restarts_when_resume_range_is_ignored_with_full_response(self) -> None:
+        payload = b"ignored-range-full-response"
+        digest = hashlib.sha256(payload).hexdigest()
+        seen_ranges: list[str | None] = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self) -> None:
+                self.headers = {
+                    "ETag": f'"sha256:{digest}"',
+                    "X-Checksum-SHA256": digest,
+                    "Content-Length": str(len(payload)),
+                }
+                self.offset = 0
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return self.status
+
+            def read(self, size: int = -1) -> bytes:
+                if self.offset >= len(payload):
+                    return b""
+                end = len(payload) if size < 0 else min(len(payload), self.offset + size)
+                chunk = payload[self.offset:end]
+                self.offset = end
+                return chunk
+
+        def fake_urlopen(request: object, timeout: int = 120) -> FakeResponse:
+            headers = {key.lower(): value for key, value in request.header_items()}
+            seen_ranges.append(headers.get("range"))
+            return FakeResponse()
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "blobs" / digest
+                target.parent.mkdir(parents=True)
+                partial = target.with_suffix(".partial")
+                partial.write_bytes(b"stale")
+                result = client.download_blob("http://modelhub", None, digest, len(payload), target)
+                self.assertEqual(result["status"], "downloaded")
+                self.assertEqual(target.read_bytes(), payload)
+                self.assertFalse(partial.exists())
+        finally:
+            client.urllib.request.urlopen = original
+
+        self.assertEqual(seen_ranges, ["bytes=5-"])
 
     def test_download_blob_sends_license_acceptance_header_when_enabled(self) -> None:
         payload = b"accepted-model"

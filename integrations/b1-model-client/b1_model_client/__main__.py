@@ -521,21 +521,30 @@ def header_value(headers: Any, name: str) -> str:
 
 
 def validate_blob_response_headers(sha256: str, expected_size: int, status: int, headers: Any, resume_from: int) -> None:
+    expected_statuses = {206} if resume_from else {200}
+    if status not in expected_statuses:
+        expected_text = "206" if resume_from else "200"
+        raise RuntimeError(f"{sha256}: unexpected HTTP status {status}; expected {expected_text}")
     etag = header_value(headers, "ETag")
-    if etag and etag != expected_etag(sha256):
+    if not etag:
+        raise RuntimeError(f"{sha256}: missing ETag")
+    if etag != expected_etag(sha256):
         raise RuntimeError(f"{sha256}: unexpected ETag {etag}")
     checksum = header_value(headers, "X-Checksum-SHA256")
-    if checksum and checksum.lower() != sha256:
+    if not checksum:
+        raise RuntimeError(f"{sha256}: missing X-Checksum-SHA256")
+    if checksum.lower() != sha256:
         raise RuntimeError(f"{sha256}: unexpected X-Checksum-SHA256 {checksum}")
     length = header_value(headers, "Content-Length")
-    if length:
-        try:
-            actual_length = int(length)
-        except ValueError as exc:
-            raise RuntimeError(f"{sha256}: invalid Content-Length {length}") from exc
-        expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
-        if actual_length != expected_remaining:
-            raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {actual_length}")
+    if not length:
+        raise RuntimeError(f"{sha256}: missing Content-Length")
+    try:
+        actual_length = int(length)
+    except ValueError as exc:
+        raise RuntimeError(f"{sha256}: invalid Content-Length {length}") from exc
+    expected_remaining = expected_size - resume_from if resume_from and status == 206 else expected_size
+    if actual_length != expected_remaining:
+        raise RuntimeError(f"{sha256}: expected Content-Length {expected_remaining}, got {actual_length}")
     if not (resume_from and status == 206):
         return
     content_range = header_value(headers, "Content-Range")
@@ -603,6 +612,8 @@ def download_blob(
         with response_context as response:
             status = getattr(response, "status", response.getcode())
             if resume_from and status != 206:
+                if status != 200:
+                    raise RuntimeError(f"{sha256}: unexpected HTTP status {status}; expected 206 or 200 when resuming")
                 partial.unlink(missing_ok=True)
                 resume_from = 0
             validate_blob_response_headers(sha256, expected_size, status, getattr(response, "headers", {}), resume_from)
