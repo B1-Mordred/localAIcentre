@@ -16,6 +16,8 @@ SAFE_PERMISSIONS_POLICY_DIRECTIVES = {
     "microphone": ("microphone=()", "microphone=(self)"),
     "geolocation": ("geolocation=()",),
 }
+MIB_PER_GIB = 1024
+BYTES_PER_GIB = 1024**3
 
 
 def check(name: str, status: str, detail: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -67,6 +69,115 @@ def check_http_result(name: str, payload: dict[str, Any] | None, error: str | No
     if payload is None:
         return check(name, "degraded", "no response payload")
     return check(name, "ok", "response received", payload)
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _largest_gpu_device(gpu: dict[str, Any]) -> dict[str, Any] | None:
+    devices = gpu.get("devices") if isinstance(gpu.get("devices"), list) else []
+    candidates = [device for device in devices if isinstance(device, dict) and _number(device.get("memory_total_mib")) is not None]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: float(item.get("memory_total_mib") or 0))
+
+
+def hardware_resource_policy_check(
+    agent_metrics: dict[str, Any] | None,
+    resource_policy: dict[str, Any],
+    deployment_mode: str,
+) -> dict[str, Any]:
+    name = "hardware:resource-policy"
+    mode = deployment_mode.strip().lower()
+    failure_status = "failed" if mode == "production" else "warning"
+    policy_gpu_total = _number(resource_policy.get("gpu_total_vram_gib")) or 0.0
+    policy_gpu_reserve = _number(resource_policy.get("gpu_reserve_vram_gib")) or 0.0
+    policy_host_total = _number(resource_policy.get("host_total_ram_gib")) or 0.0
+    policy_host_reserve = _number(resource_policy.get("host_reserve_ram_gib")) or 0.0
+    required_gpu_total_mib = int(policy_gpu_total * MIB_PER_GIB)
+    required_gpu_reserve_mib = int(policy_gpu_reserve * MIB_PER_GIB)
+    required_host_total_bytes = int(policy_host_total * BYTES_PER_GIB)
+    required_host_reserve_bytes = int(policy_host_reserve * BYTES_PER_GIB)
+
+    data: dict[str, Any] = {
+        "deployment_mode": mode,
+        "policy": {
+            "gpu_total_vram_gib": policy_gpu_total,
+            "gpu_reserve_vram_gib": policy_gpu_reserve,
+            "host_total_ram_gib": policy_host_total,
+            "host_reserve_ram_gib": policy_host_reserve,
+        },
+        "observed": {},
+        "warnings": [],
+    }
+
+    if not isinstance(agent_metrics, dict):
+        data["warnings"].append("runtime-agent metrics are unavailable")
+        detail = "runtime-agent metrics are unavailable; cannot verify host/GPU policy"
+        if mode != "production":
+            detail += "; development mode permits bootstrapping only"
+        return check(name, failure_status, detail, data)
+
+    gpu = agent_metrics.get("gpu") if isinstance(agent_metrics.get("gpu"), dict) else {}
+    memory = agent_metrics.get("memory") if isinstance(agent_metrics.get("memory"), dict) else {}
+    largest_gpu = _largest_gpu_device(gpu)
+    observed_gpu_total_mib = _number(largest_gpu.get("memory_total_mib")) if largest_gpu else None
+    observed_gpu_free_mib = _number(largest_gpu.get("memory_free_mib")) if largest_gpu else None
+    observed_host_total_bytes = _number(memory.get("total_bytes"))
+    observed_host_available_bytes = _number(memory.get("available_bytes"))
+    data["observed"] = {
+        "gpu_available": gpu.get("available"),
+        "gpu_device_count": len(gpu.get("devices") or []) if isinstance(gpu.get("devices"), list) else 0,
+        "largest_gpu_name": largest_gpu.get("name") if largest_gpu else None,
+        "largest_gpu_memory_total_mib": int(observed_gpu_total_mib) if observed_gpu_total_mib is not None else None,
+        "largest_gpu_memory_free_mib": int(observed_gpu_free_mib) if observed_gpu_free_mib is not None else None,
+        "host_memory_total_bytes": int(observed_host_total_bytes) if observed_host_total_bytes is not None else None,
+        "host_memory_available_bytes": int(observed_host_available_bytes) if observed_host_available_bytes is not None else None,
+    }
+
+    warnings: list[str] = data["warnings"]
+    if gpu.get("available") is not True or largest_gpu is None:
+        warnings.append("GPU metrics are unavailable")
+    elif observed_gpu_total_mib is not None and observed_gpu_total_mib < required_gpu_total_mib:
+        warnings.append(
+            f"largest GPU VRAM is {int(observed_gpu_total_mib)} MiB; policy requires {required_gpu_total_mib} MiB"
+        )
+    if largest_gpu is not None and observed_gpu_free_mib is None:
+        warnings.append("largest GPU free VRAM is unavailable")
+    elif observed_gpu_free_mib is not None and observed_gpu_free_mib < required_gpu_reserve_mib:
+        warnings.append(
+            f"largest GPU free VRAM is {int(observed_gpu_free_mib)} MiB; policy reserve requires {required_gpu_reserve_mib} MiB"
+        )
+
+    if observed_host_total_bytes is None:
+        warnings.append("host total RAM is unavailable")
+    elif observed_host_total_bytes < required_host_total_bytes:
+        observed_mib = int(observed_host_total_bytes / (1024**2))
+        required_mib = int(required_host_total_bytes / (1024**2))
+        warnings.append(f"host RAM is {observed_mib} MiB; policy requires {required_mib} MiB")
+    if observed_host_available_bytes is None:
+        warnings.append("host available RAM is unavailable")
+    elif observed_host_available_bytes < required_host_reserve_bytes:
+        observed_mib = int(observed_host_available_bytes / (1024**2))
+        required_mib = int(required_host_reserve_bytes / (1024**2))
+        warnings.append(f"host available RAM is {observed_mib} MiB; policy reserve requires {required_mib} MiB")
+
+    if not warnings:
+        return check(name, "ok", "observed GPU/RAM satisfy the effective resource policy and reserves", data)
+
+    detail = "; ".join(warnings)
+    if mode != "production":
+        detail += "; development mode permits bootstrapping only"
+    return check(name, failure_status, detail, data)
 
 
 def runtime_agent_mutation_guard_check(payload: dict[str, Any] | None) -> dict[str, Any]:

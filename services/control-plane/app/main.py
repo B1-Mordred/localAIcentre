@@ -6579,6 +6579,13 @@ async def build_self_test_report(subject_id: str) -> dict[str, Any]:
         checks.append(selftest_policy.check("gpu:nvml", "warning", agent_metrics.get("gpu", {}).get("error", "GPU metrics are unavailable")))
     elif agent_metrics:
         checks.append(selftest_policy.check("gpu:nvml", "ok", "GPU metrics are available", agent_metrics.get("gpu", {})))
+    checks.append(
+        selftest_policy.hardware_resource_policy_check(
+            agent_metrics,
+            resource_policy_dict(resource_policy()),
+            settings.runtime_deployment_mode,
+        )
+    )
 
     checks.extend(await run_operator_self_test_probes(subject_id))
 

@@ -629,6 +629,11 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
                 sample_tls_routing_check(),
                 {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                {
+                    "name": "hardware:resource-policy",
+                    "status": "ok",
+                    "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                },
                 {"name": "runtimes:production-readiness", "status": "ok", "detail": "required runtimes are production-ready"},
                 {
                     "name": "runtime-agent:mutation-guard",
@@ -902,6 +907,49 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("TLS gateway routing check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_hardware_resource_policy_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("hardware resource policy check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_hardware_resource_policy_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {"name": "hardware:resource-policy", "status": "failed", "detail": "largest GPU VRAM is 6144 MiB"},
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("hardware resource policy check is failed", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_when_tls_routing_evidence_has_no_routes(self) -> None:
         report = sample_report(

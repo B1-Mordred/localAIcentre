@@ -33,6 +33,83 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(selftest.check_http_result("agent", {"ok": True})["status"], "ok")
         self.assertEqual(selftest.check_http_result("agent", None, "timeout")["status"], "degraded")
 
+    def test_hardware_resource_policy_passes_when_metrics_satisfy_policy(self) -> None:
+        result = selftest.hardware_resource_policy_check(
+            {
+                "gpu": {
+                    "available": True,
+                    "devices": [
+                        {
+                            "name": "RTX 3060",
+                            "memory_total_mib": 12288,
+                            "memory_free_mib": 11264,
+                        }
+                    ],
+                },
+                "memory": {
+                    "total_bytes": 32 * 1024**3,
+                    "available_bytes": 24 * 1024**3,
+                },
+            },
+            {
+                "gpu_total_vram_gib": 12.0,
+                "gpu_reserve_vram_gib": 1.5,
+                "host_total_ram_gib": 32.0,
+                "host_reserve_ram_gib": 6.0,
+            },
+            "production",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["observed"]["largest_gpu_memory_total_mib"], 12288)
+
+    def test_hardware_resource_policy_fails_undersized_production_host(self) -> None:
+        result = selftest.hardware_resource_policy_check(
+            {
+                "gpu": {
+                    "available": True,
+                    "devices": [
+                        {
+                            "name": "RTX 3060 Laptop GPU",
+                            "memory_total_mib": 6144,
+                            "memory_free_mib": 4096,
+                        }
+                    ],
+                },
+                "memory": {
+                    "total_bytes": 31 * 1024**3,
+                    "available_bytes": 5 * 1024**3,
+                },
+            },
+            {
+                "gpu_total_vram_gib": 12.0,
+                "gpu_reserve_vram_gib": 1.5,
+                "host_total_ram_gib": 32.0,
+                "host_reserve_ram_gib": 6.0,
+            },
+            "production",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("largest GPU VRAM is 6144 MiB", result["detail"])
+        self.assertIn("host RAM is 31744 MiB", result["detail"])
+        self.assertIn("host available RAM is 5120 MiB", result["detail"])
+
+    def test_hardware_resource_policy_warns_in_development(self) -> None:
+        result = selftest.hardware_resource_policy_check(
+            None,
+            {
+                "gpu_total_vram_gib": 12.0,
+                "gpu_reserve_vram_gib": 1.5,
+                "host_total_ram_gib": 32.0,
+                "host_reserve_ram_gib": 6.0,
+            },
+            "development",
+        )
+
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("development mode permits bootstrapping only", result["detail"])
+
     def test_runtime_agent_mutation_guard_passes_for_hardened_status(self) -> None:
         result = selftest.runtime_agent_mutation_guard_check(
             {

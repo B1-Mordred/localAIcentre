@@ -1075,6 +1075,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("GPU/NVML check is absent")
     elif gpu_check.get("status") != "ok":
         blockers.append(f"GPU/NVML check is {gpu_check.get('status', 'unknown')}")
+    hardware_policy = _check_by_name(report.get("self_test") or {}, "hardware:resource-policy")
+    if not hardware_policy:
+        blockers.append("hardware resource policy check is absent")
+    elif hardware_policy.get("status") != "ok":
+        blockers.append(f"hardware resource policy check is {hardware_policy.get('status', 'unknown')}")
     mutation_guard = _check_by_name(report.get("self_test") or {}, "runtime-agent:mutation-guard")
     if not mutation_guard:
         blockers.append("runtime-agent mutation guard check is absent")
