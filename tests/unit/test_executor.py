@@ -264,6 +264,55 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(artifact["sha256"], hashlib.sha256(b"wav-bytes").hexdigest())
             self.assertEqual((Path(tmp) / "audio-cpu" / "job_gpu" / "0.wav").read_bytes(), b"wav-bytes")
 
+    def test_cpu_runner_cancels_blocking_tts_call(self) -> None:
+        class CancellingDatabase(FakeDatabase):
+            async def get_job(self, job_id: str) -> dict[str, Any]:
+                if getattr(self, "call_started", False) and self.job.get("stage") == "audio_cpu_speech" and self.job.get("state") == "running":
+                    self.job["state"] = "cancelling"
+                return dict(self.job)
+
+        fake = CancellingDatabase(runtime="audio-cpu")
+        fake.call_started = False
+        fake.job.update(
+            {
+                "model_alias": "tts-fast",
+                "resolved_model_version": "b1-cpu-placeholder-tts@0.1.0",
+                "modality": "tts",
+                "operation": "speech",
+                "request_params": {"input": {"text": "cancel me"}},
+            }
+        )
+        self.patch_database(fake)
+
+        class AudioCancelRunner(executor.CpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    audio_cpu_url="http://audio-cpu",
+                    runtime_cancel_poll_seconds=0.05,
+                )
+                self.runtime_call_cancelled = False
+
+            async def post_audio_cpu_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+                fake.call_started = True
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    self.runtime_call_cancelled = True
+                    raise
+                raise AssertionError("audio-cpu speech call should be cancelled before it returns")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = AudioCancelRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertTrue(runner.runtime_call_cancelled)
+        self.assertEqual(fake.job["state"], "cancelled")
+        self.assertEqual(fake.job["stage"], "cancelled")
+        self.assertEqual(fake.job["artifacts"], [])
+        self.assertIsInstance(fake.job["run_time_ms"], int)
+
     def test_cpu_runner_submits_stt_job_and_stores_transcript_artifact(self) -> None:
         fake = FakeDatabase(runtime="audio-cpu")
         fake.job.update(

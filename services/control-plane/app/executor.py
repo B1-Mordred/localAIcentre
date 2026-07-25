@@ -123,11 +123,13 @@ class CpuJobRunner:
         interval_seconds: int = 1,
         audio_cpu_url: str = "",
         pause_check: PauseCheck | None = None,
+        runtime_cancel_poll_seconds: float = 1.0,
     ) -> None:
         self.artifact_root = artifact_root
         self.interval_seconds = max(1, interval_seconds)
         self.audio_cpu_url = audio_cpu_url.rstrip("/")
         self.pause_check = pause_check
+        self.runtime_cancel_poll_seconds = max(0.05, float(runtime_cancel_poll_seconds))
         self._stopped = asyncio.Event()
         self.startup_reconciliation = pending_startup_reconciliation(CPU_RUNTIMES)
 
@@ -142,6 +144,27 @@ class CpuJobRunner:
             await database.update_job(job_id, state=JobState.CANCELLED.value, stage="cancelled", progress=100)
             return True
         return False
+
+    async def await_cancellable_runtime_call(self, job: dict[str, Any], call: Awaitable[Any]) -> tuple[bool, Any]:
+        task = asyncio.create_task(call)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.runtime_cancel_poll_seconds)
+                if task in done:
+                    return False, await task
+                if await self.cancel_if_requested(str(job["id"])):
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                    return True, None
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            raise
+        except Exception:
+            if not task.done():
+                task.cancel()
+            raise
 
     def request_input(self, job: dict[str, Any]) -> dict[str, Any]:
         request_params = job.get("request_params")
@@ -216,7 +239,10 @@ class CpuJobRunner:
             await database.update_job(job["id"], state=JobState.RUNNING.value, stage="audio_cpu_speech", progress=60)
             if await self.cancel_if_requested(job["id"]):
                 return True
-            content, mime_type = await self.post_audio_cpu_speech(self.audio_payload_for_job(job))
+            cancelled, result = await self.await_cancellable_runtime_call(job, self.post_audio_cpu_speech(self.audio_payload_for_job(job)))
+            if cancelled:
+                return True
+            content, mime_type = result
             if not content:
                 await database.update_job(
                     job["id"],
@@ -244,7 +270,9 @@ class CpuJobRunner:
             await database.update_job(job["id"], state=JobState.RUNNING.value, stage="audio_cpu_transcription", progress=60)
             if await self.cancel_if_requested(job["id"]):
                 return True
-            body = await self.post_audio_cpu_transcription(self.audio_payload_for_job(job))
+            cancelled, body = await self.await_cancellable_runtime_call(job, self.post_audio_cpu_transcription(self.audio_payload_for_job(job)))
+            if cancelled:
+                return True
             if not isinstance(body.get("text"), str):
                 await database.update_job(
                     job["id"],
