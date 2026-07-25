@@ -184,6 +184,7 @@ async def ingest_comfyui_artifact(
                         digest.update(chunk)
                         byte_count += len(chunk)
         target = artifact_store_path(artifact_root, relative)
+        media_artifacts.ensure_regular_file_replace_target(target)
         temporary.replace(target)
     except (OSError, ValueError, httpx.HTTPError) as exc:
         temporary.unlink(missing_ok=True)

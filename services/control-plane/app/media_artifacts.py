@@ -90,6 +90,17 @@ def read_regular_file_bytes(path: Path) -> bytes:
             os.close(fd)
 
 
+def ensure_regular_file_replace_target(path: Path) -> None:
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(file_stat.st_mode):
+        raise ValueError("artifact file is a symlink")
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("artifact file is not a regular file")
+
+
 def write_regular_file_bytes(path: Path, content: bytes) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -102,6 +113,7 @@ def write_regular_file_bytes(path: Path, content: bytes) -> None:
         with os.fdopen(fd, "wb") as handle:
             fd = -1
             handle.write(content)
+        ensure_regular_file_replace_target(path)
         os.replace(temporary, path)
     except Exception:
         try:

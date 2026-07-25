@@ -254,6 +254,25 @@ class MediaArtifactTests(unittest.TestCase):
             self.assertEqual(real.read_bytes(), b"outside")
             self.assertTrue(target.is_symlink())
 
+    def test_write_artifact_bytes_refuses_existing_non_regular_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "localai" / "job_1" / "0.png"
+            target.mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                media_artifacts.write_artifact_bytes(
+                    root,
+                    namespace="localai",
+                    job_id="job_1",
+                    index=0,
+                    content=PNG_BYTES,
+                    mime_type="image/png",
+                    source="runtime",
+                )
+
+            self.assertTrue(target.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
