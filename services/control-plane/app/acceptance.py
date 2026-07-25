@@ -346,6 +346,7 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
             "unknown_resources_preserved_by_default": bool(safety.get("unknown_resources_preserved_by_default")),
         },
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
+        "dns_readiness": plan.get("dns_readiness") if isinstance(plan.get("dns_readiness"), dict) else {"available": False},
         "hardware_readiness": plan.get("hardware_readiness") if isinstance(plan.get("hardware_readiness"), dict) else {"available": False},
         "open_webui_preservation": plan.get("open_webui_preservation") if isinstance(plan.get("open_webui_preservation"), dict) else {},
         "warnings": _as_string_list(plan.get("warnings")),
@@ -1059,6 +1060,21 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         cutover_warnings = _as_string_list(preservation.get("warnings"))
         if cutover_warnings:
             blockers.append("cutover plan has unresolved warnings")
+        dns = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+        dns_missing = _as_string_list(dns.get("missing_hosts"))
+        dns_divergent = _as_string_list(dns.get("divergent_hosts"))
+        dns_optional_divergent = _as_string_list(dns.get("optional_divergent_hosts"))
+        if not dns:
+            blockers.append("cutover DNS readiness is unavailable")
+        elif (
+            dns.get("all_hosts_resolve") is not True
+            or dns.get("all_hosts_share_gateway_address") is not True
+            or dns.get("operator_must_review_dns") is True
+            or dns_missing
+            or dns_divergent
+            or dns_optional_divergent
+        ):
+            blockers.append("cutover DNS readiness requires operator review")
         hardware = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
         if hardware.get("available") is not True:
             blockers.append("cutover hardware readiness is unavailable")
@@ -1326,6 +1342,7 @@ def markdown_report(report: dict[str, Any]) -> str:
 
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
     open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
     preserved_rows = [["Class", "Value"]]
     resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
@@ -1350,6 +1367,17 @@ def markdown_report(report: dict[str, Any]) -> str:
     preservation_summary_rows.append(["warning_count", _format_value(len(cutover_warnings))])
     for warning in cutover_warnings[:10]:
         preservation_summary_rows.append(["warning", _format_value(warning)])
+    for key in (
+        "all_hosts_resolve",
+        "all_hosts_share_gateway_address",
+        "operator_must_review_dns",
+        "reference_host",
+        "common_addresses",
+        "optional_missing_hosts",
+        "optional_divergent_hosts",
+    ):
+        if key in dns_readiness:
+            preservation_summary_rows.append([f"dns.{key}", _format_value(dns_readiness.get(key))])
     for key in (
         "profile",
         "accepted",
@@ -1589,8 +1617,17 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     operator_evidence = [item for item in report.get("operator_evidence") or [] if isinstance(item, dict)]
     preservation = report.get("cutover_preservation") if isinstance(report.get("cutover_preservation"), dict) else {}
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
+    dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
     open_webui_readiness = preservation.get("open_webui_preservation") if isinstance(preservation.get("open_webui_preservation"), dict) else {}
     cutover_warnings = _as_string_list(preservation.get("warnings"))
+    dns_ready = (
+        dns_readiness.get("all_hosts_resolve") is True
+        and dns_readiness.get("all_hosts_share_gateway_address") is True
+        and dns_readiness.get("operator_must_review_dns") is not True
+        and not _as_string_list(dns_readiness.get("missing_hosts"))
+        and not _as_string_list(dns_readiness.get("divergent_hosts"))
+        and not _as_string_list(dns_readiness.get("optional_divergent_hosts"))
+    )
     open_webui_preservation_ready = (
         open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True
     )
@@ -1695,12 +1732,14 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0
+        and dns_ready
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True
         and open_webui_preservation_ready
         and not cutover_warnings,
         "cutover_warnings_ready": not cutover_warnings,
+        "cutover_dns_ready": dns_ready,
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,

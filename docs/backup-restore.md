@@ -234,7 +234,7 @@ make cutover-plan \
   OPEN_WEBUI_PLAN=/srv/b1-ai-hub/backups/open-webui-migration-plan.json
 ```
 
-The cutover planner verifies the backup again, refuses resources classified as unrelated or current B1 AI Hub, refuses occupied temporary staging ports, validates the Open WebUI preservation plan input, and writes only a non-destructive plan. Existing production or optional legacy ComfyUI listeners are reported in `port_readiness`; intended virtual-host DNS records are reported in `dns_readiness`; Open WebUI preservation evidence is reported in `open_webui_preservation`, including the source-version compatibility status. Missing or divergent DNS records and unresolved Open WebUI preservation warnings become warnings for operator review. The planner never stops containers, rewrites DNS, deletes files, imports Open WebUI data, or marks the old stack removable.
+The cutover planner verifies the backup again, refuses resources classified as unrelated or current B1 AI Hub, refuses occupied temporary staging ports, validates the Open WebUI preservation plan input, and writes only a non-destructive plan. Existing production or optional legacy ComfyUI listeners are reported in `port_readiness`; intended virtual-host DNS records are reported in `dns_readiness`; Open WebUI preservation evidence is reported in `open_webui_preservation`, including the source-version compatibility status. Missing or divergent core DNS records and unresolved Open WebUI preservation warnings become warnings for operator review. Optional profile DNS is tracked separately; a missing monitoring hostname is acceptable unless the monitoring profile is enabled, while a divergent optional hostname must be reviewed before final evidence is generated. The planner never stops containers, rewrites DNS, deletes files, imports Open WebUI data, or marks the old stack removable.
 
 ## Backup, Migration, and Rollback Evidence
 
@@ -243,7 +243,7 @@ Control Center acceptance reports require machine-readable evidence that B1 back
 - a B1 backup was created and verified
 - that B1 backup was restored to an alternate directory and produced `restore-report.json`
 - the old-stack inventory, old-stack backup, Open WebUI migration plan, and cutover plan were reviewed
-- the cutover plan has no unresolved warnings
+- the cutover plan has no unresolved warnings and its core virtual-host DNS readiness is accepted
 - rollback commands/actions were rehearsed and old resources remain preserved
 
 Create the rollback rehearsal report after reviewing the rollback phase in the cutover plan and verifying that old-stack resources are still present:
@@ -285,4 +285,4 @@ make backup-migration-rollback-evidence \
   ROLLBACK_REPORT=/srv/b1-ai-hub/backups/rollback-rehearsal.json
 ```
 
-This writes `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` in the `b1-ai-hub-backup-migration-rollback-acceptance/v1` format. The generator verifies the B1 backup archive and PostgreSQL dump coverage, matches the restore report to that backup, verifies the old-stack backup archive, checks that the Open WebUI and cutover plans reference the same inventory and old-stack backup, rejects unresolved plan warnings, and refuses to emit green evidence without the rollback rehearsal checks.
+This writes `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` in the `b1-ai-hub-backup-migration-rollback-acceptance/v1` format. The generator verifies the B1 backup archive and PostgreSQL dump coverage, matches the restore report to that backup, verifies the old-stack backup archive, checks that the Open WebUI and cutover plans reference the same inventory and old-stack backup, rejects unresolved plan warnings, requires accepted core virtual-host DNS readiness, and refuses to emit green evidence without the rollback rehearsal checks.

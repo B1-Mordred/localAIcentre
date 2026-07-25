@@ -218,6 +218,39 @@ def verify_open_webui_plan(path: Path, inventory_path: Path, old_stack_backup_pa
     }
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
+
+
+def verify_cutover_dns_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    dns = payload.get("dns_readiness") if isinstance(payload.get("dns_readiness"), dict) else {}
+    if not dns:
+        raise EvidenceError("cutover DNS readiness is missing")
+    missing_hosts = _string_list(dns.get("missing_hosts"))
+    divergent_hosts = _string_list(dns.get("divergent_hosts"))
+    optional_missing_hosts = _string_list(dns.get("optional_missing_hosts"))
+    optional_divergent_hosts = _string_list(dns.get("optional_divergent_hosts"))
+    if dns.get("all_hosts_resolve") is not True or missing_hosts:
+        raise EvidenceError("cutover DNS readiness is missing core host records")
+    if dns.get("all_hosts_share_gateway_address") is not True or divergent_hosts:
+        raise EvidenceError("cutover DNS readiness does not share a common gateway address")
+    if dns.get("operator_must_review_dns") is True or optional_divergent_hosts:
+        raise EvidenceError("cutover DNS readiness requires operator review")
+    return {
+        "all_hosts_resolve": True,
+        "all_hosts_share_gateway_address": True,
+        "operator_must_review_dns": False,
+        "reference_host": dns.get("reference_host") or "",
+        "common_addresses": _string_list(dns.get("common_addresses")),
+        "missing_hosts": missing_hosts,
+        "divergent_hosts": divergent_hosts,
+        "optional_missing_hosts": optional_missing_hosts,
+        "optional_divergent_hosts": optional_divergent_hosts,
+    }
+
+
 def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path: Path, open_webui_plan_path: Path) -> dict[str, Any]:
     payload = load_json_file(path)
     validate_format(payload, CUTOVER_PLAN_FORMAT, "cutover plan")
@@ -232,6 +265,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         raise EvidenceError("cutover plan does not match the Open WebUI plan path")
     if payload.get("warnings"):
         raise EvidenceError("cutover plan still has warnings")
+    dns_readiness = verify_cutover_dns_readiness(payload)
     safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
     if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
         raise EvidenceError("cutover plan safety invariants are incomplete")
@@ -248,6 +282,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "path": str(path.resolve()),
         "resources": resources,
         "resource_count": resource_count,
+        "dns_readiness": dns_readiness,
         "reviewed_by": old_scope.get("reviewed_by"),
     }
 

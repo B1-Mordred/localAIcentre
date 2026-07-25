@@ -52,6 +52,17 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "unknown_resources_preserved_by_default": True,
         },
         "old_stack_backup_verification_status": "verified",
+        "dns_readiness": {
+            "all_hosts_resolve": True,
+            "all_hosts_share_gateway_address": True,
+            "operator_must_review_dns": False,
+            "reference_host": "ai.b1.germering",
+            "common_addresses": ["192.168.2.100"],
+            "missing_hosts": [],
+            "divergent_hosts": [],
+            "optional_missing_hosts": ["monitoring.ai.b1.germering"],
+            "optional_divergent_hosts": [],
+        },
         "hardware_readiness": {
             "available": True,
             "profile": "rtx3060-32gb-initial",
@@ -1209,6 +1220,29 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_hardware_ready"])
         self.assertIn("cutover hardware readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_cutover_dns_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                dns_readiness={
+                    "all_hosts_resolve": True,
+                    "all_hosts_share_gateway_address": True,
+                    "operator_must_review_dns": True,
+                    "reference_host": "ai.b1.germering",
+                    "common_addresses": ["192.168.2.100"],
+                    "missing_hosts": [],
+                    "divergent_hosts": [],
+                    "optional_missing_hosts": [],
+                    "optional_divergent_hosts": ["monitoring.ai.b1.germering"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["cutover_dns_ready"])
+        self.assertIn("cutover DNS readiness requires operator review", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_when_open_webui_preservation_requires_review(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -1258,6 +1292,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "docker_volumes_preserved": ["open-webui-data"],
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
+                "dns_readiness": sample_cutover_preservation()["dns_readiness"],
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
                 "open_webui_preservation": {"plan_supplied": True, "operator_must_review_open_webui": False},
                 "warnings": ["review DNS"],
@@ -1270,6 +1305,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertTrue(snapshot["available"])
         self.assertEqual(snapshot["source_path"], str(current.resolve()))
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
+        self.assertEqual(snapshot["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
         self.assertFalse(snapshot["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])

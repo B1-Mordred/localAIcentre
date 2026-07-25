@@ -401,6 +401,7 @@ type AcceptanceReportSummary = {
   operator_handoff_ready: boolean;
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
+  cutover_dns_ready?: boolean;
   smoke_evidence_ready?: boolean;
   gpu_evidence_ready?: boolean;
   localai_evidence_ready?: boolean;
@@ -4891,7 +4892,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>
@@ -4923,6 +4924,7 @@ function System() {
             <div><strong>Mode</strong><small>{selectedSummary.runtime_deployment_mode ?? "unknown"}</small></div>
             <div><strong>Generated</strong><small>{formatDateTime(selectedSummary.generated_at)}</small></div>
             <div><strong>Handoff</strong><small>{selectedSummary.operator_handoff_ready ? "ready" : "blocked"}</small></div>
+            <div><strong>Cutover DNS</strong><small>{selectedSummary.cutover_dns_ready ? "ready" : "review required"}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>

@@ -103,6 +103,17 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "docker_volumes_preserved": [],
                     "host_paths_preserved": [str(root / "old-stack" / "docker-compose.yaml")],
                 },
+                "dns_readiness": {
+                    "all_hosts_resolve": True,
+                    "all_hosts_share_gateway_address": True,
+                    "operator_must_review_dns": False,
+                    "reference_host": "ai.b1.germering",
+                    "common_addresses": ["192.168.2.100"],
+                    "missing_hosts": [],
+                    "divergent_hosts": [],
+                    "optional_missing_hosts": ["monitoring.ai.b1.germering"],
+                    "optional_divergent_hosts": [],
+                },
                 "phases": [
                     {
                         "name": "rollback",
@@ -148,7 +159,57 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["required_checks"], list(evidence.REQUIRED_CHECKS))
         self.assertTrue(all(payload["checks"][name]["status"] == "ok" for name in evidence.REQUIRED_CHECKS))
+        self.assertEqual(
+            payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
+            ["monitoring.ai.b1.germering"],
+        )
         self.assertEqual([sample["label"] for sample in payload["samples"]], ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"])
+
+    def test_build_evidence_rejects_cutover_dns_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["dns_readiness"]["all_hosts_resolve"] = False
+            payload["dns_readiness"]["operator_must_review_dns"] = True
+            payload["dns_readiness"]["missing_hosts"] = ["voice.ai.b1.germering"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover DNS readiness is missing core host records"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_divergent_optional_monitoring_dns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["dns_readiness"]["operator_must_review_dns"] = True
+            payload["dns_readiness"]["optional_missing_hosts"] = []
+            payload["dns_readiness"]["optional_divergent_hosts"] = ["monitoring.ai.b1.germering"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover DNS readiness requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
 
     def test_build_evidence_rejects_rollback_report_without_preservation_proof(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
