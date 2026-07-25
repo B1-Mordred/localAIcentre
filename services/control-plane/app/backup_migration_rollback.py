@@ -215,6 +215,7 @@ def verify_open_webui_plan(path: Path, inventory_path: Path, old_stack_backup_pa
         "path": str(path.resolve()),
         "recommended_strategy": open_webui.get("recommended_strategy"),
         "readable_database_count": open_webui.get("readable_database_count"),
+        "data_domains": open_webui.get("data_domains") if isinstance(open_webui.get("data_domains"), dict) else {},
     }
 
 
@@ -337,6 +338,7 @@ def verify_cutover_open_webui_preservation(payload: dict[str, Any]) -> dict[str,
         "recommended_strategy": preservation.get("recommended_strategy") or "",
         "compatibility_status": preservation.get("compatibility_status") or "",
         "requires_temporary_instance_validation": preservation.get("requires_temporary_instance_validation"),
+        "data_domains": preservation.get("data_domains") if isinstance(preservation.get("data_domains"), dict) else {},
         "plan_warnings": [],
     }
 

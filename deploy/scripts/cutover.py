@@ -387,6 +387,7 @@ def analyze_open_webui_preservation(
     )
     plan_warnings = [str(item) for item in plan.get("warnings", []) if isinstance(item, str)]
     strategy = str(open_webui.get("recommended_strategy") or "unknown")
+    data_domains = open_webui.get("data_domains") if isinstance(open_webui.get("data_domains"), dict) else {}
     cutover_warnings = [f"Open WebUI preservation plan warning: {warning}" for warning in plan_warnings]
     if strategy != "preserve-backed-up-sqlite-and-test-supported-open-webui-import":
         cutover_warnings.append(f"Open WebUI preservation strategy requires operator review before cutover: {strategy}")
@@ -400,6 +401,7 @@ def analyze_open_webui_preservation(
             "recommended_strategy": strategy,
             "readable_database_count": open_webui.get("readable_database_count", 0),
             "backed_up_database_candidate_count": open_webui.get("backed_up_database_candidate_count", 0),
+            "data_domains": data_domains,
             "backup_database_artifact_count": len(open_webui.get("backup_database_artifacts", [])) if isinstance(open_webui.get("backup_database_artifacts"), list) else 0,
             "compatibility_status": version_evidence.get("compatibility_status") or "unknown",
             "source_version_evidence_count": len(source_containers),

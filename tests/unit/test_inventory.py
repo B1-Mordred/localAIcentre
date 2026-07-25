@@ -163,19 +163,27 @@ class InventoryTests(unittest.TestCase):
             with sqlite3.connect(open_webui / "webui.db") as connection:
                 connection.execute("CREATE TABLE user (id TEXT PRIMARY KEY)")
                 connection.execute("CREATE TABLE chat (id TEXT PRIMARY KEY)")
+                connection.execute("CREATE TABLE document (id TEXT PRIMARY KEY, content TEXT)")
+                connection.execute("CREATE TABLE file (id TEXT PRIMARY KEY, filename TEXT)")
+                connection.execute("CREATE TABLE config (id TEXT PRIMARY KEY, value TEXT)")
                 connection.execute("INSERT INTO user (id) VALUES ('user_1')")
                 connection.execute("INSERT INTO chat (id) VALUES ('chat_1')")
                 connection.execute("INSERT INTO chat (id) VALUES ('chat_2')")
+                connection.execute("INSERT INTO document (id, content) VALUES ('doc_1', 'private RAG document text')")
+                connection.execute("INSERT INTO file (id, filename) VALUES ('file_1', 'secret-upload.pdf')")
+                connection.execute("INSERT INTO config (id, value) VALUES ('cfg_1', 'private setting value')")
             (open_webui / "alternate.db").write_text("sqlite", encoding="utf-8")
             volume_webui = root / "docker" / "volumes" / "open-webui" / "_data"
             volume_webui.mkdir(parents=True)
             with sqlite3.connect(volume_webui / "webui.db") as connection:
                 connection.execute("CREATE TABLE user (id TEXT PRIMARY KEY)")
                 connection.execute("CREATE TABLE chat (id TEXT PRIMARY KEY)")
+                connection.execute("CREATE TABLE knowledge (id TEXT PRIMARY KEY, name TEXT)")
                 connection.execute("INSERT INTO user (id) VALUES ('volume_user')")
                 connection.execute("INSERT INTO chat (id) VALUES ('volume_chat')")
                 connection.execute("INSERT INTO chat (id) VALUES ('volume_chat_2')")
                 connection.execute("INSERT INTO chat (id) VALUES ('volume_chat_3')")
+                connection.execute("INSERT INTO knowledge (id, name) VALUES ('knowledge_1', 'private knowledge base')")
             model_volume = root / "docker" / "volumes" / "ollama-models" / "_data"
             model_volume.mkdir(parents=True)
             (model_volume / "volume-model.gguf").write_bytes(b"volume-model")
@@ -355,8 +363,12 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(webui_db["sqlite"]["readable"])
         self.assertEqual(webui_db["sqlite"]["table_counts"]["user"], 1)
         self.assertEqual(webui_db["sqlite"]["table_counts"]["chat"], 2)
+        self.assertEqual(webui_db["sqlite"]["table_counts"]["document"], 1)
+        self.assertEqual(webui_db["sqlite"]["data_domains"]["documents_rag"]["known_row_count"], 2)
+        self.assertEqual(webui_db["sqlite"]["data_domains"]["settings"]["known_row_count"], 1)
         volume_db = next(item for item in report["paths"]["open_webui_database_candidates"] if item["path"] == str(volume_webui / "webui.db"))
         self.assertEqual(volume_db["sqlite"]["table_counts"]["chat"], 3)
+        self.assertEqual(volume_db["sqlite"]["data_domains"]["documents_rag"]["row_counts"]["knowledge"], 1)
         alternate_db = next(item for item in report["paths"]["open_webui_database_candidates"] if item["path"].endswith("alternate.db"))
         self.assertFalse(alternate_db["sqlite"]["readable"])
         b1_models = next(item for item in report["paths"]["model_directories"] if item["path"].endswith("/b1/models"))
@@ -372,6 +384,16 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["migration_readiness"]["open_webui"]["known_table_counts"][volume_webui_path]["chat"], 3)
         self.assertEqual(report["migration_readiness"]["open_webui"]["known_table_counts_by_path"][b1_webui_path]["chat"], 2)
         self.assertEqual(report["migration_readiness"]["open_webui"]["known_table_counts_by_path"][volume_webui_path]["chat"], 3)
+        self.assertEqual(
+            report["migration_readiness"]["open_webui"]["known_data_domains_by_path"][b1_webui_path]["documents_rag"]["known_row_count"],
+            2,
+        )
+        self.assertEqual(report["migration_readiness"]["open_webui"]["data_domain_totals"]["documents_rag"]["database_count"], 2)
+        self.assertEqual(report["migration_readiness"]["open_webui"]["data_domain_totals"]["documents_rag"]["known_row_count"], 3)
+        self.assertNotIn("private RAG document text", report_json)
+        self.assertNotIn("secret-upload.pdf", report_json)
+        self.assertNotIn("private setting value", report_json)
+        self.assertNotIn("private knowledge base", report_json)
         self.assertIn(11434, report["migration_readiness"]["port_review"]["ports_requiring_review"])
         hinted_volumes = {item["Name"] for item in report["classification"]["volumes_with_ai_hints"]}
         self.assertIn("open-webui", hinted_volumes)

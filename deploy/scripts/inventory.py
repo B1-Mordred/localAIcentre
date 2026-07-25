@@ -86,7 +86,28 @@ MODEL_FILE_SUFFIXES = {
     ".safetensors",
     ".tflite",
 }
-OPEN_WEBUI_TABLE_COUNT_CANDIDATES = ("user", "chat", "document", "file", "folder", "tag", "model", "config", "feedback")
+OPEN_WEBUI_DATA_DOMAIN_TABLES: dict[str, tuple[str, ...]] = {
+    "accounts": ("user", "auth", "api_key"),
+    "chats": ("chat", "message", "message_reaction", "tag", "folder", "chatidtag", "pinned_chat"),
+    "settings": ("config", "setting", "settings", "user_setting", "user_settings"),
+    "documents_rag": (
+        "document",
+        "file",
+        "files",
+        "knowledge",
+        "knowledge_file",
+        "collection",
+        "embedding",
+        "embeddings",
+        "vector",
+        "memory",
+    ),
+    "models_prompts_tools": ("model", "prompt", "tool", "function"),
+    "feedback": ("feedback", "rating"),
+}
+OPEN_WEBUI_TABLE_COUNT_CANDIDATES = tuple(
+    dict.fromkeys(table for tables in OPEN_WEBUI_DATA_DOMAIN_TABLES.values() for table in tables)
+)
 OPEN_WEBUI_MOUNT_DESTINATION_HINTS = ("/app/backend/data", "/data/open-webui", "/open-webui")
 DOCKER_COMPOSE_LABEL_PREFIX = "com.docker.compose."
 DOCKER_LABEL_ALLOWLIST = {
@@ -757,6 +778,26 @@ def quote_sqlite_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def summarize_open_webui_data_domains(tables: list[str], table_counts: dict[str, int]) -> dict[str, Any]:
+    table_set = set(tables)
+    summary: dict[str, Any] = {}
+    for domain, candidates in OPEN_WEBUI_DATA_DOMAIN_TABLES.items():
+        present = sorted(table for table in candidates if table in table_set)
+        row_counts = {
+            table: int(table_counts[table])
+            for table in present
+            if isinstance(table_counts.get(table), int)
+        }
+        summary[domain] = {
+            "tables": present,
+            "table_count": len(present),
+            "row_counts": row_counts,
+            "known_row_count": sum(row_counts.values()),
+            "content_rows_read": False,
+        }
+    return summary
+
+
 def inspect_sqlite_database(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
         return {"readable": False, "reason": "not_regular_file"}
@@ -787,6 +828,7 @@ def inspect_sqlite_database(path: Path) -> dict[str, Any]:
             "estimated_size_bytes": int(page_count) * int(page_size),
             "tables": tables,
             "table_counts": table_counts,
+            "data_domains": summarize_open_webui_data_domains(tables, table_counts),
             "content_rows_read": False,
         }
     except sqlite3.Error as exc:
@@ -857,20 +899,41 @@ def summarize_open_webui_inventory(databases: list[dict[str, Any]]) -> dict[str,
             filename_counts[name] = filename_counts.get(name, 0) + 1
     known_table_counts: dict[str, dict[str, int]] = {}
     known_table_counts_by_path: dict[str, dict[str, int]] = {}
+    known_data_domains_by_path: dict[str, dict[str, Any]] = {}
+    domain_totals: dict[str, dict[str, Any]] = {
+        domain: {"database_count": 0, "tables": [], "known_row_count": 0}
+        for domain in OPEN_WEBUI_DATA_DOMAIN_TABLES
+    }
     for item in readable:
         if not isinstance(item.get("path"), str):
             continue
         path = item["path"]
         name = Path(path).name
         table_counts = item["sqlite"].get("table_counts", {})
+        data_domains = item["sqlite"].get("data_domains")
+        if not isinstance(data_domains, dict):
+            data_domains = summarize_open_webui_data_domains(item["sqlite"].get("tables", []), table_counts)
         key = path if filename_counts.get(name, 0) > 1 else name
         known_table_counts[key] = table_counts
         known_table_counts_by_path[path] = table_counts
+        known_data_domains_by_path[path] = data_domains
+        for domain, domain_data in data_domains.items():
+            if not isinstance(domain_data, dict):
+                continue
+            tables = [str(table) for table in domain_data.get("tables", []) if isinstance(table, str)]
+            if not tables:
+                continue
+            total = domain_totals.setdefault(domain, {"database_count": 0, "tables": [], "known_row_count": 0})
+            total["database_count"] = int(total.get("database_count") or 0) + 1
+            total["tables"] = sorted(set([*total.get("tables", []), *tables]))
+            total["known_row_count"] = int(total.get("known_row_count") or 0) + int(domain_data.get("known_row_count") or 0)
     return {
         "database_candidate_count": len(existing),
         "readable_sqlite_count": len(readable),
         "known_table_counts": known_table_counts,
         "known_table_counts_by_path": known_table_counts_by_path,
+        "known_data_domains_by_path": known_data_domains_by_path,
+        "data_domain_totals": domain_totals,
         "content_rows_read": False,
     }
 

@@ -40,8 +40,14 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         with sqlite3.connect(path) as connection:
             connection.execute("CREATE TABLE user (id TEXT PRIMARY KEY, name TEXT)")
             connection.execute("CREATE TABLE chat (id TEXT PRIMARY KEY, title TEXT)")
+            connection.execute("CREATE TABLE document (id TEXT PRIMARY KEY, content TEXT)")
+            connection.execute("CREATE TABLE file (id TEXT PRIMARY KEY, filename TEXT)")
+            connection.execute("CREATE TABLE config (id TEXT PRIMARY KEY, value TEXT)")
             connection.execute("INSERT INTO user (id, name) VALUES ('user_1', 'Admin')")
             connection.execute("INSERT INTO chat (id, title) VALUES ('chat_1', 'Private prompt title')")
+            connection.execute("INSERT INTO document (id, content) VALUES ('doc_1', 'Private RAG document text')")
+            connection.execute("INSERT INTO file (id, filename) VALUES ('file_1', 'private-source.pdf')")
+            connection.execute("INSERT INTO config (id, value) VALUES ('cfg_1', 'private setting')")
 
     def inventory(
         self,
@@ -72,8 +78,38 @@ class OpenWebUiMigrationTests(unittest.TestCase):
                         "type": "file",
                         "sqlite": {
                             "readable": True,
-                            "tables": ["chat", "user"],
-                            "table_counts": {"chat": 1, "user": 1},
+                            "tables": ["chat", "config", "document", "file", "user"],
+                            "table_counts": {"chat": 1, "config": 1, "document": 1, "file": 1, "user": 1},
+                            "data_domains": {
+                                "accounts": {
+                                    "tables": ["user"],
+                                    "table_count": 1,
+                                    "row_counts": {"user": 1},
+                                    "known_row_count": 1,
+                                    "content_rows_read": False,
+                                },
+                                "chats": {
+                                    "tables": ["chat"],
+                                    "table_count": 1,
+                                    "row_counts": {"chat": 1},
+                                    "known_row_count": 1,
+                                    "content_rows_read": False,
+                                },
+                                "settings": {
+                                    "tables": ["config"],
+                                    "table_count": 1,
+                                    "row_counts": {"config": 1},
+                                    "known_row_count": 1,
+                                    "content_rows_read": False,
+                                },
+                                "documents_rag": {
+                                    "tables": ["document", "file"],
+                                    "table_count": 2,
+                                    "row_counts": {"document": 1, "file": 1},
+                                    "known_row_count": 2,
+                                    "content_rows_read": False,
+                                },
+                            },
                             "content_rows_read": False,
                         },
                     }
@@ -132,7 +168,12 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertEqual(plan["open_webui"]["unreadable_data_roots"], [])
         self.assertEqual(plan["open_webui"]["backed_up_database_candidate_count"], 1)
         self.assertEqual(plan["open_webui"]["database_candidates"][0]["backup_coverage"], "covered")
-        self.assertEqual(plan["open_webui"]["database_candidates"][0]["table_counts"], {"chat": 1, "user": 1})
+        self.assertEqual(plan["open_webui"]["database_candidates"][0]["table_counts"]["chat"], 1)
+        self.assertEqual(plan["open_webui"]["database_candidates"][0]["table_counts"]["document"], 1)
+        self.assertEqual(plan["open_webui"]["database_candidates"][0]["data_domains"]["documents_rag"]["known_row_count"], 2)
+        self.assertEqual(plan["open_webui"]["data_domains"]["all_readable"]["documents_rag"]["known_row_count"], 2)
+        self.assertEqual(plan["open_webui"]["data_domains"]["backed_up_readable"]["documents_rag"]["known_row_count"], 2)
+        self.assertEqual(plan["open_webui"]["data_domains"]["backed_up_readable"]["settings"]["known_row_count"], 1)
         self.assertEqual(plan["open_webui"]["database_candidates"][0]["content_rows_read"], False)
         self.assertEqual(plan["open_webui"]["recommended_strategy"], "preserve-backed-up-sqlite-and-test-supported-open-webui-import")
         version_evidence = plan["open_webui"]["version_evidence"]
@@ -144,6 +185,9 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertEqual(version_evidence["source_containers"][0]["version_hint"], "v0.6.18")
         self.assertTrue(plan["open_webui"]["backup_database_artifacts"][0]["sensitive"])
         self.assertNotIn("Private prompt title", json.dumps(plan, sort_keys=True))
+        self.assertNotIn("Private RAG document text", json.dumps(plan, sort_keys=True))
+        self.assertNotIn("private-source.pdf", json.dumps(plan, sort_keys=True))
+        self.assertNotIn("private setting", json.dumps(plan, sort_keys=True))
         self.assertEqual(plan["warnings"], [])
 
     def test_plan_warns_when_open_webui_root_is_discovered_but_unreadable(self) -> None:
@@ -181,6 +225,27 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertTrue(any("could not be scanned" in warning for warning in plan["warnings"]))
         self.assertEqual(plan["open_webui"]["recommended_strategy"], "no-readable-open-webui-database-found-preserve-old-stack")
 
+    def test_plan_derives_data_domains_from_older_inventory_table_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_path = root / "old-open-webui" / "data" / "webui.db"
+            self.create_webui_db(database_path)
+            inventory_payload = self.inventory(root, database_path)
+            sqlite = inventory_payload["paths"]["open_webui_database_candidates"][0]["sqlite"]
+            sqlite.pop("data_domains")
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            backup_dir = self.make_backup(root, database_path.parent)
+
+            plan = open_webui_migration.build_plan(
+                inventory_path=inventory_path,
+                backup_dir=backup_dir,
+                restore_target="/restore/open-webui",
+            )
+
+        domains = plan["open_webui"]["database_candidates"][0]["data_domains"]
+        self.assertEqual(domains["documents_rag"]["known_row_count"], 2)
+        self.assertEqual(plan["open_webui"]["data_domains"]["backed_up_readable"]["documents_rag"]["database_count"], 1)
+
     def test_plan_warns_when_readable_database_is_not_backed_up(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -201,6 +266,7 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertEqual(plan["open_webui"]["backed_up_database_candidate_count"], 0)
         self.assertEqual(plan["open_webui"]["recommended_strategy"], "back-up-open-webui-before-cutover")
         self.assertTrue(any("not covered by the verified old-stack backup" in warning for warning in plan["warnings"]))
+        self.assertTrue(any("data domains" in warning and "documents_rag" in warning for warning in plan["warnings"]))
 
     def test_plan_warns_when_open_webui_image_tag_is_floating(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

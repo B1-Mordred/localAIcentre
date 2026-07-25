@@ -13,6 +13,25 @@ PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
 OPEN_WEBUI_DB_NAMES = {"webui.db", "database.sqlite", "db.sqlite"}
 OPEN_WEBUI_HINTS = ("open-webui", "open_webui")
 FLOATING_IMAGE_TAGS = {"latest", "main", "master", "dev", "nightly", "edge", "stable"}
+OPEN_WEBUI_DATA_DOMAIN_TABLES: dict[str, tuple[str, ...]] = {
+    "accounts": ("user", "auth", "api_key"),
+    "chats": ("chat", "message", "message_reaction", "tag", "folder", "chatidtag", "pinned_chat"),
+    "settings": ("config", "setting", "settings", "user_setting", "user_settings"),
+    "documents_rag": (
+        "document",
+        "file",
+        "files",
+        "knowledge",
+        "knowledge_file",
+        "collection",
+        "embedding",
+        "embeddings",
+        "vector",
+        "memory",
+    ),
+    "models_prompts_tools": ("model", "prompt", "tool", "function"),
+    "feedback": ("feedback", "rating"),
+}
 INVENTORY_FORMAT = backup_migration_rollback.INVENTORY_FORMAT
 OLD_STACK_BACKUP_FORMAT = backup_migration_rollback.OLD_STACK_BACKUP_FORMAT
 PLAN_PATTERN = "open-webui-migration-plan*.json"
@@ -74,6 +93,63 @@ def inventory_paths(inventory: dict[str, Any], key: str) -> list[dict[str, Any]]
     return [dict(item) for item in items if isinstance(item, dict)]
 
 
+def open_webui_data_domain_summary(tables: list[str], table_counts: dict[str, int]) -> dict[str, Any]:
+    table_set = set(tables)
+    summary: dict[str, Any] = {}
+    for domain, candidates in OPEN_WEBUI_DATA_DOMAIN_TABLES.items():
+        present = sorted(table for table in candidates if table in table_set)
+        row_counts = {
+            table: int(table_counts[table])
+            for table in present
+            if isinstance(table_counts.get(table), int)
+        }
+        summary[domain] = {
+            "tables": present,
+            "table_count": len(present),
+            "row_counts": row_counts,
+            "known_row_count": sum(row_counts.values()),
+            "content_rows_read": False,
+        }
+    return summary
+
+
+def aggregate_open_webui_data_domains(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    totals: dict[str, dict[str, Any]] = {
+        domain: {"database_count": 0, "tables": [], "known_row_count": 0}
+        for domain in OPEN_WEBUI_DATA_DOMAIN_TABLES
+    }
+    for candidate in candidates:
+        domains = candidate.get("data_domains") if isinstance(candidate.get("data_domains"), dict) else {}
+        for domain, domain_data in domains.items():
+            if not isinstance(domain_data, dict):
+                continue
+            tables = [str(table) for table in domain_data.get("tables", []) if isinstance(table, str)]
+            if not tables:
+                continue
+            total = totals.setdefault(domain, {"database_count": 0, "tables": [], "known_row_count": 0})
+            total["database_count"] = int(total.get("database_count") or 0) + 1
+            total["tables"] = sorted(set([*total.get("tables", []), *tables]))
+            total["known_row_count"] = int(total.get("known_row_count") or 0) + int(domain_data.get("known_row_count") or 0)
+    return totals
+
+
+def open_webui_data_domain_coverage_gaps(readable: list[dict[str, Any]], backed_readable: list[dict[str, Any]]) -> list[str]:
+    all_domains = aggregate_open_webui_data_domains(readable)
+    backed_domains = aggregate_open_webui_data_domains(backed_readable)
+    gaps: list[str] = []
+    for domain in OPEN_WEBUI_DATA_DOMAIN_TABLES:
+        all_domain = all_domains.get(domain) or {}
+        backed_domain = backed_domains.get(domain) or {}
+        if int(all_domain.get("database_count") or 0) <= 0:
+            continue
+        if (
+            int(backed_domain.get("database_count") or 0) < int(all_domain.get("database_count") or 0)
+            or int(backed_domain.get("known_row_count") or 0) < int(all_domain.get("known_row_count") or 0)
+        ):
+            gaps.append(domain)
+    return gaps
+
+
 def database_candidates(inventory: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for item in inventory_paths(inventory, "open_webui_database_candidates"):
@@ -81,14 +157,20 @@ def database_candidates(inventory: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(path, str) or not path:
             continue
         sqlite = item.get("sqlite") if isinstance(item.get("sqlite"), dict) else {}
+        table_counts = sqlite.get("table_counts", {}) if isinstance(sqlite.get("table_counts"), dict) else {}
+        tables = [str(table) for table in sqlite.get("tables", []) if isinstance(table, str)]
+        data_domains = sqlite.get("data_domains") if isinstance(sqlite.get("data_domains"), dict) else None
+        if data_domains is None:
+            data_domains = open_webui_data_domain_summary(tables, table_counts)
         candidates.append(
             {
                 "path": path,
                 "exists": bool(item.get("exists")),
                 "type": item.get("type"),
                 "readable_sqlite": bool(sqlite.get("readable")),
-                "table_counts": sqlite.get("table_counts", {}),
-                "tables": sqlite.get("tables", []),
+                "table_counts": table_counts,
+                "tables": tables,
+                "data_domains": data_domains,
                 "content_rows_read": False,
             }
         )
@@ -299,6 +381,8 @@ def build_plan(
     readable = [item for item in databases if item["readable_sqlite"]]
     backed = [item for item in databases if item["backup_coverage"] == "covered"]
     readable_not_backed = [item for item in readable if item["backup_coverage"] != "covered"]
+    backed_readable = [item for item in readable if item["backup_coverage"] == "covered"]
+    domain_coverage_gaps = open_webui_data_domain_coverage_gaps(readable, backed_readable)
     warnings: list[str] = []
     if not readable:
         warnings.append("inventory did not contain a readable Open WebUI SQLite database; preserve the old stack for manual export")
@@ -311,6 +395,11 @@ def build_plan(
         warnings.append(
             "readable Open WebUI database candidates are not covered by the verified old-stack backup: "
             + ", ".join(item["path"] for item in readable_not_backed)
+        )
+    if domain_coverage_gaps:
+        warnings.append(
+            "Open WebUI data domains found in readable databases are not fully covered by the verified old-stack backup: "
+            + ", ".join(domain_coverage_gaps)
         )
     if artifacts and not backed:
         warnings.append("backup contains Open WebUI-like database artifacts that were not matched to inventory candidates; review source paths before import")
@@ -344,6 +433,11 @@ def build_plan(
             "backup_database_artifacts": artifacts,
             "readable_database_count": len(readable),
             "backed_up_database_candidate_count": len(backed),
+            "data_domains": {
+                "all_readable": aggregate_open_webui_data_domains(readable),
+                "backed_up_readable": aggregate_open_webui_data_domains(backed_readable),
+                "content_rows_read": False,
+            },
             "recommended_strategy": choose_strategy(databases, artifacts),
             "version_evidence": {
                 "source_containers": version_evidence,
@@ -485,6 +579,7 @@ def summarize_plan(path: Path) -> dict[str, Any]:
         "warnings": warnings,
         "readable_database_count": open_webui.get("readable_database_count"),
         "backed_up_database_candidate_count": open_webui.get("backed_up_database_candidate_count"),
+        "data_domains": open_webui.get("data_domains") if isinstance(open_webui.get("data_domains"), dict) else {},
         "compatibility_status": version.get("compatibility_status"),
     }
 

@@ -76,7 +76,23 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "old_stack_backup": str(old_stack_backup_dir.resolve()),
                     "old_stack_backup_verification": {"status": "verified", "backup": str(old_stack_backup_dir.resolve())},
                 },
-                "open_webui": {"recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import"},
+                "open_webui": {
+                    "recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+                    "readable_database_count": 1,
+                    "data_domains": {
+                        "all_readable": {
+                            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                        },
+                        "backed_up_readable": {
+                            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                        },
+                        "content_rows_read": False,
+                    },
+                },
                 "warnings": [],
             },
         )
@@ -162,6 +178,19 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
                     "compatibility_status": "source-version-recorded-temporary-validation-required",
                     "requires_temporary_instance_validation": True,
+                    "data_domains": {
+                        "all_readable": {
+                            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                        },
+                        "backed_up_readable": {
+                            "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                            "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                            "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                        },
+                        "content_rows_read": False,
+                    },
                     "plan_warnings": [],
                 },
                 "phases": [
@@ -217,6 +246,14 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["gpu_runtime_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(payload["checks"]["cutover_plan_reviewed"]["open_webui_preservation"]["operator_must_review_open_webui"])
+        self.assertEqual(
+            payload["checks"]["open_webui_migration_plan_reviewed"]["data_domains"]["backed_up_readable"]["documents_rag"]["known_row_count"],
+            2,
+        )
+        self.assertEqual(
+            payload["checks"]["cutover_plan_reviewed"]["open_webui_preservation"]["data_domains"]["backed_up_readable"]["documents_rag"]["known_row_count"],
+            2,
+        )
         self.assertEqual([sample["label"] for sample in payload["samples"]], ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"])
 
     def test_build_evidence_rejects_cutover_dns_requiring_review(self) -> None:

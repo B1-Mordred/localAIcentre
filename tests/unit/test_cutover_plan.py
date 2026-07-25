@@ -192,6 +192,19 @@ class CutoverPlanTests(unittest.TestCase):
                 "readable_database_count": 1,
                 "backed_up_database_candidate_count": 1,
                 "backup_database_artifacts": [{"archive_path": "docker-volumes/open-webui_data/webui.db"}],
+                "data_domains": {
+                    "all_readable": {
+                        "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                        "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                        "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                    },
+                    "backed_up_readable": {
+                        "accounts": {"database_count": 1, "tables": ["user"], "known_row_count": 1},
+                        "chats": {"database_count": 1, "tables": ["chat"], "known_row_count": 2},
+                        "documents_rag": {"database_count": 1, "tables": ["document", "file"], "known_row_count": 2},
+                    },
+                    "content_rows_read": False,
+                },
                 "recommended_strategy": strategy,
                 "version_evidence": {
                     "source_containers": [
@@ -261,6 +274,8 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertTrue(plan["open_webui_preservation"]["plan_supplied"])
         self.assertEqual(plan["open_webui_preservation"]["recommended_strategy"], "preserve-backed-up-sqlite-and-test-supported-open-webui-import")
         self.assertEqual(plan["open_webui_preservation"]["compatibility_status"], "source-version-recorded-temporary-validation-required")
+        self.assertEqual(plan["open_webui_preservation"]["data_domains"]["backed_up_readable"]["documents_rag"]["known_row_count"], 2)
+        self.assertFalse(plan["open_webui_preservation"]["data_domains"]["content_rows_read"])
         self.assertEqual(plan["open_webui_preservation"]["source_version_evidence_count"], 1)
         self.assertEqual(plan["open_webui_preservation"]["backed_up_container_metadata_count"], 1)
         self.assertFalse(plan["open_webui_preservation"]["direct_database_reuse_approved_by_plan"])
