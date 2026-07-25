@@ -13,12 +13,12 @@ export B1_NATIVE_COMFYUI_API_BASE=https://api.ai.b1.germering
 export B1_NATIVE_COMFYUI_API_KEY=...
 export B1_NATIVE_COMFYUI_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
 export B1_NATIVE_COMFYUI_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/native-comfyui.json
-python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
+make native-comfyui-compatibility
 ```
 
 For temporary IP/host validation, set `B1_NATIVE_COMFYUI_HOST_HEADER=comfy.ai.b1.germering` and `B1_NATIVE_COMFYUI_API_HOST_HEADER=api.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_NATIVE_COMFYUI_CA_FILE=/path/to/root.crt`; use `B1_NATIVE_COMFYUI_TLS_VERIFY=0` only during an explicit LAN validation window. The harness refuses to send `B1_NATIVE_COMFYUI_API_KEY` over plain HTTP or `ws://` unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run. `B1_NATIVE_COMFYUI_PROMPT_JSON` may be used instead of `B1_NATIVE_COMFYUI_PROMPT_FILE` for a small inline native prompt.
 
-When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, `Idempotency-Key` replay, `/ws`, `/history`, `/history/{prompt_id}`, B1 durable job lookup by native prompt ID, B1 artifact listing/download, `POST /queue` deletion, targeted `POST /interrupt`, or `/view` artifact checks are absent or incomplete. The report also requires native prompt ID correlation, replay header proof, completed native WebSocket events or previews, B1 durable job/artifact IDs, artifact byte counts and content type, and retrieved `/view` filename/output-key details; check names alone are not accepted as proof.
+When `B1_NATIVE_COMFYUI_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted route/prompt samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` native ComfyUI evidence file and block handoff if `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, `Idempotency-Key` replay, `/ws`, `/history`, `/history/{prompt_id}`, B1 durable job lookup by native prompt ID, B1 artifact listing/download, `POST /queue` deletion, targeted `POST /interrupt`, or `/view` artifact checks are absent or incomplete. The report also requires native prompt ID correlation, replay header proof, completed native WebSocket events or previews, B1 durable job/artifact IDs, successful queue/interrupt HTTP status, artifact byte counts and content type, and retrieved `/view` filename/output-key details; check names alone are not accepted as proof.
 
 ## Optional Legacy ComfyUI Listener
 
@@ -28,7 +28,7 @@ The disabled-by-default legacy listener is only for clients that must use plain 
 export B1_LEGACY_COMFY_LIVE_TEST=1
 export B1_LEGACY_COMFY_BASE=http://ai.b1.germering:8188
 export B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener.json
-python3 -m unittest tests.compatibility.test_legacy_comfyui_listener
+make legacy-comfyui-compatibility
 ```
 
 The legacy harness intentionally sends no bearer token. It verifies that `/object_info`, `/system_stats`, and `/ws` are reachable through the scheduler-aware Caddy/control-plane path. Control Center acceptance reports ingest this optional evidence when present; missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete or stale evidence is reported. It is not a substitute for the authenticated native ComfyUI compatibility evidence required for handoff.
@@ -46,7 +46,7 @@ export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
 export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
 export B1_REMOTE_NODES_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/remote-nodes-non-comfy.json
-python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy
+make remote-nodes-non-comfy-compatibility
 ```
 
 `B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose` makes the test stop the local Compose `comfyui` service before running the remote-node operation and restore it afterward if it was previously running. Use this only during an explicit compatibility window. If the service has already been stopped by another runbook, set `B1_REMOTE_NODES_COMFYUI_STOP_MODE=manual`; the test then avoids local Compose mutations but still verifies the stopped state through `GET /admin/runtimes` runtime-agent service inventory. The API key must include the normal remote-node inference scopes plus `runtimes:read` for that verification.
@@ -66,7 +66,7 @@ export B1_MODELHUB_SYNC_MODEL=chat-default
 export B1_MODELHUB_INFERENCE_ONLY_MODEL=tts-quality
 export B1_MODELHUB_ACCEPT_LICENSES=1
 export B1_MODELHUB_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/modelhub-client-sync.json
-python3 -m unittest tests.compatibility.test_modelhub_client_sync
+make modelhub-compatibility
 ```
 
 Set `B1_MODELHUB_CA_FILE` when the test host does not already trust the Caddy internal CA. The harness uses the same hardened transport helpers as `b1-model-client`, including the direct `HEAD` metadata, `If-None-Match`, and Range probes, and refuses to send `B1_MODELHUB_TOKEN` over plain HTTP unless `B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP=true` is set for an isolated development harness. Set `B1_MODELHUB_ACCEPT_LICENSES=1` only after reviewing the sync plan and licence terms for the selected downloadable model. When `B1_MODELHUB_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if catalog access, plan creation, `HEAD` metadata validation, `If-None-Match`/304 revalidation, Range/resume download, managed cache state, safe prune behavior, or inference-only download policy checks are absent or incomplete. The report also requires the check records to include the synced blob SHA-256, expected size, content-addressed `ETag`, checksum, partial and final download sizes, managed-blob count, prune safety flag, and inference-only policy action count; check names alone are not accepted as proof.
@@ -82,7 +82,7 @@ export B1_VOICEBOX_API_BASE=https://api.ai.b1.germering
 export B1_VOICEBOX_API_KEY=...
 export B1_VOICEBOX_SPEECH_MODEL=tts-quality
 export B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json
-python3 -m unittest tests.compatibility.test_voicebox_remote
+make voicebox-compatibility
 ```
 
 For temporary IP/host validation, set `B1_VOICEBOX_HOST_HEADER=voice.ai.b1.germering` and `B1_VOICEBOX_API_HOST_HEADER=api.ai.b1.germering`. For a Caddy internal CA that is not trusted by the test host yet, set `B1_VOICEBOX_CA_FILE=/path/to/root.crt`; use `B1_VOICEBOX_TLS_VERIFY=0` only during an explicit LAN validation window. The harness refuses to send `B1_VOICEBOX_API_KEY` or `B1_VOICEBOX_NATIVE_API_KEY` over plain HTTP or `ws://` unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run.
@@ -95,3 +95,11 @@ export B1_VOICEBOX_WEBSOCKET_LIMITATION="Pinned Voicebox v0.5.0 does not expose 
 ```
 
 `B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if native HTTP proxying, profile lifecycle validation, reference-sample artifact protection, profile export validation, delete audit proof, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete. The report also requires upstream version, profile ID/model/sample counts, protected sample URL and byte count, export format and sensitivity flag, delete status, and either generated speech bytes/hash/content type or a pinned-upstream limitation. WebSocket evidence likewise must include either a validated route/result type or a pinned-upstream limitation.
+
+After the native ComfyUI prompt, remote-node credentials, Model Hub sync client, and Voicebox settings are configured, run the required external compatibility evidence group with:
+
+```bash
+make external-compatibility-acceptance
+```
+
+The optional legacy listener remains separate because it is disabled by default and should only be enabled during a narrow legacy-client compatibility window.

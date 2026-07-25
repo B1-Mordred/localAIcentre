@@ -11,6 +11,17 @@ B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
 B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/backup-migration-rollback.json
+B1_SMOKE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/live-smoke.json
+B1_WORKFLOWS_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/installed-workflows.json
+B1_LOCALAI_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/localai-runtime.json
+B1_GPU_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/cross-runtime-gpu.json
+B1_RESTART_RECONCILIATION_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/restart-reconciliation.json
+B1_NATIVE_COMFYUI_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/native-comfyui.json
+B1_LEGACY_COMFY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/legacy-comfy-listener.json
+B1_REMOTE_NODES_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/remote-nodes-non-comfy.json
+B1_MODELHUB_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/modelhub-client-sync.json
+B1_VOICEBOX_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/voicebox-remote.json
+B1_SECURITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/security-acceptance.json
 B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
@@ -18,7 +29,7 @@ B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
@@ -98,26 +109,53 @@ unit:
 smoke:
 	python3 -m unittest discover -s tests/smoke -v
 
+live-smoke-acceptance:
+	B1_SMOKE_LIVE_TEST=1 B1_SMOKE_EVIDENCE="$(B1_SMOKE_EVIDENCE)" python3 -m unittest discover -s tests/smoke -v
+
 integration:
 	python3 -m unittest discover -s tests/integration -v
 
+installed-workflows-acceptance:
+	B1_WORKFLOWS_LIVE_TEST=1 B1_WORKFLOWS_EVIDENCE="$(B1_WORKFLOWS_EVIDENCE)" python3 -m unittest tests.integration.test_live_installed_workflows -v
+
 localai-acceptance:
-	B1_LOCALAI_ACCEPTANCE_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_localai_runtime -v
+	B1_LOCALAI_ACCEPTANCE_LIVE_TEST=1 B1_LOCALAI_ACCEPTANCE_EVIDENCE="$(B1_LOCALAI_ACCEPTANCE_EVIDENCE)" python3 -m unittest tests.integration.test_live_localai_runtime -v
 
 gpu-acceptance:
-	B1_GPU_ACCEPTANCE_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_cross_runtime_gpu -v
+	B1_GPU_ACCEPTANCE_LIVE_TEST=1 B1_GPU_ACCEPTANCE_EVIDENCE="$(B1_GPU_ACCEPTANCE_EVIDENCE)" python3 -m unittest tests.integration.test_live_cross_runtime_gpu -v
 
 restart-reconciliation-acceptance:
-	B1_RESTART_RECONCILIATION_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_restart_reconciliation -v
+	B1_RESTART_RECONCILIATION_LIVE_TEST=1 B1_RESTART_RECONCILIATION_EVIDENCE="$(B1_RESTART_RECONCILIATION_EVIDENCE)" python3 -m unittest tests.integration.test_live_restart_reconciliation -v
 
 compatibility:
 	python3 -m unittest discover -s tests/compatibility -v
+
+native-comfyui-compatibility:
+	B1_NATIVE_COMFYUI_LIVE_TEST=1 B1_NATIVE_COMFYUI_EVIDENCE="$(B1_NATIVE_COMFYUI_EVIDENCE)" python3 -m unittest tests.compatibility.test_native_comfyui_compatibility -v
+
+legacy-comfyui-compatibility:
+	B1_LEGACY_COMFY_LIVE_TEST=1 B1_LEGACY_COMFY_EVIDENCE="$(B1_LEGACY_COMFY_EVIDENCE)" python3 -m unittest tests.compatibility.test_legacy_comfyui_listener -v
+
+remote-nodes-non-comfy-compatibility:
+	B1_REMOTE_NODES_LIVE_TEST=1 B1_REMOTE_NODES_EVIDENCE="$(B1_REMOTE_NODES_EVIDENCE)" python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy -v
+
+modelhub-compatibility:
+	B1_MODELHUB_LIVE_TEST=1 B1_MODELHUB_EVIDENCE="$(B1_MODELHUB_EVIDENCE)" python3 -m unittest tests.compatibility.test_modelhub_client_sync -v
+
+voicebox-compatibility:
+	B1_VOICEBOX_LIVE_TEST=1 B1_VOICEBOX_EVIDENCE="$(B1_VOICEBOX_EVIDENCE)" python3 -m unittest tests.compatibility.test_voicebox_remote -v
+
+external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility
+
+# Requires the target host acceptance window, installed real models, workflow job files,
+# scoped API keys, and the restart-reconciliation drill state documented in tests/.
+operator-live-acceptance: live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
 
 security:
 	python3 -m unittest discover -s tests/security -v
 
 security-acceptance:
-	B1_SECURITY_LIVE_TEST=1 python3 -m unittest tests.security.test_live_security_acceptance -v
+	B1_SECURITY_LIVE_TEST=1 B1_SECURITY_EVIDENCE="$(B1_SECURITY_EVIDENCE)" python3 -m unittest tests.security.test_live_security_acceptance -v
 
 openapi:
 	python3 deploy/scripts/generate_openapi.py --output docs/openapi.json

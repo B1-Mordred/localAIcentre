@@ -31,7 +31,7 @@ export B1_WORKFLOWS_IMAGE_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-gen
 export B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-edit-job.json
 export B1_WORKFLOWS_VIDEO_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/short-video-job.json
 export B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json
-B1_WORKFLOWS_LIVE_TEST=1 python3 -m unittest tests.integration.test_live_installed_workflows
+make installed-workflows-acceptance
 ```
 
 The image, edit, and video job files should be full `POST /v1/media/jobs` JSON bodies that reference installed aliases and either published workflow IDs or native ComfyUI/LocalAI inputs validated for the RTX 3060 profile. The harness provides simple prompt defaults only to keep dry runs ergonomic; production acceptance should use explicit job files so the operator can review exact model/workflow dependencies. Set `B1_WORKFLOWS_CPU_TTS_MODEL` and `B1_WORKFLOWS_CPU_STT_MODEL` when CPU lease validation should use aliases different from the ordinary `tts-fast` and `stt-default` defaults. Set `B1_WORKFLOWS_ALLOW_PLACEHOLDER=1` only for a labelled development dry run; handoff evidence should leave it unset so placeholder TTS/STT output fails.
@@ -122,3 +122,5 @@ Use the same TLS helper variables as smoke tests when testing through the Caddy 
 All harnesses that use the shared live API client refuse to send bearer keys over plain HTTP unless `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is set for an isolated development run. Handoff evidence should use HTTPS and either trust the Caddy internal CA or set the relevant `*_CA_FILE`.
 
 Native ComfyUI REST/WebSocket compatibility, optional legacy ComfyUI listener checks, external ComfyUI remote-node execution, Model Hub blob semantics, and Voicebox remote/server scenarios live under `tests/compatibility/`; deployed security acceptance lives under `tests/security/`.
+
+When every required live-test environment variable is configured and the restart-reconciliation drill state has already been prepared, `make operator-live-acceptance` runs the live smoke, installed workflow, LocalAI, GPU, external compatibility, security, and restart-reconciliation harnesses with their default evidence paths under `$B1_BACKUP_ROOT/acceptance/`. It does not generate backup/migration/rollback evidence; that remains a reviewed artifact flow.

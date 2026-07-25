@@ -662,6 +662,11 @@ def _nonempty_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _successful_http_status(value: Any) -> bool:
+    status = _positive_int(value)
+    return 200 <= status < 300
+
+
 def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
@@ -724,8 +729,8 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
 
     for check_name in ("queue_delete_accessible", "interrupt_accessible"):
         record = require_prompt_match(check_name)
-        if _positive_int(record.get("byte_count")) < 1:
-            missing.append(f"{check_name}.byte_count")
+        if not _successful_http_status(record.get("http_status")):
+            missing.append(f"{check_name}.http_status")
 
     view = require_prompt_match("view_artifact_accessible")
     if _positive_int(view.get("byte_count")) < 1:

@@ -417,12 +417,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:33:00+00:00",
                     "prompt_id": native_prompt_id,
+                    "http_status": 200,
                     "byte_count": 2,
                 },
                 "interrupt_accessible": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:33:00+00:00",
                     "prompt_id": native_prompt_id,
+                    "http_status": 200,
                     "byte_count": 2,
                 },
                 "view_artifact_accessible": {
@@ -1786,7 +1788,71 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("websocket_events.completed", snapshot["missing_compatibility_evidence"])
         self.assertIn("durable_job_observable.job_id", snapshot["missing_compatibility_evidence"])
         self.assertIn("durable_artifacts_observable.byte_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("queue_delete_accessible.http_status", snapshot["missing_compatibility_evidence"])
+        self.assertIn("interrupt_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("view_artifact_accessible.filename", snapshot["missing_compatibility_evidence"])
+
+    def test_native_comfyui_snapshot_accepts_empty_queue_and_interrupt_bodies(self) -> None:
+        prompt_id = "prompt_native_empty_body"
+        job_id = "job_native_empty_body"
+        checks = ok_checks(acceptance.NATIVE_COMFYUI_REQUIRED_CHECKS)
+        checks.update(
+            {
+                "prompt_submission": {"status": "ok", "prompt_id": prompt_id, "queue_number": 1},
+                "prompt_idempotency_replay": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "replay_header": "true",
+                    "idempotency_key_length": 48,
+                },
+                "websocket_events": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "event_types": ["execution_start", "executing"],
+                    "binary_messages": 0,
+                    "completed": True,
+                },
+                "history_available": {"status": "ok", "prompt_id": prompt_id, "history_keys": [prompt_id]},
+                "durable_job_observable": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "job_id": job_id,
+                    "state": "completed",
+                    "artifact_count": 1,
+                },
+                "durable_artifacts_observable": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "job_id": job_id,
+                    "artifact_count": 1,
+                    "byte_count": 4096,
+                    "content_type": "image/png",
+                },
+                "queue_delete_accessible": {"status": "ok", "prompt_id": prompt_id, "http_status": 204, "byte_count": 0},
+                "interrupt_accessible": {"status": "ok", "prompt_id": prompt_id, "http_status": 200, "byte_count": 0},
+                "view_artifact_accessible": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "output_key": "images",
+                    "filename": "native-output.png",
+                    "byte_count": 4096,
+                },
+            }
+        )
+
+        snapshot = acceptance.native_comfyui_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-native-comfyui-compatibility/v1",
+                "generated_at": "2026-07-24T12:33:00+00:00",
+                "base_url": "https://comfy.ai.b1.germering",
+                "status": "ok",
+                "checks": checks,
+                "samples": [{"label": "prompt-submission"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertEqual(snapshot["missing_compatibility_evidence"], [])
 
     def test_absent_legacy_comfyui_evidence_is_non_blocking(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2698,8 +2764,18 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "byte_count": 4096,
                                 "content_type": "image/png",
                             },
-                            "queue_delete_accessible": {"status": "ok", "prompt_id": native_prompt_id, "byte_count": 2},
-                            "interrupt_accessible": {"status": "ok", "prompt_id": native_prompt_id, "byte_count": 2},
+                            "queue_delete_accessible": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "http_status": 200,
+                                "byte_count": 2,
+                            },
+                            "interrupt_accessible": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "http_status": 200,
+                                "byte_count": 2,
+                            },
                             "view_artifact_accessible": {
                                 "status": "ok",
                                 "prompt_id": native_prompt_id,

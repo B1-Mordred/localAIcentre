@@ -109,7 +109,7 @@ export B1_AI_HUB_API_KEY=...
 export B1_AI_HUB_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
 export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
 export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
-python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy
+make remote-nodes-non-comfy-compatibility
 ```
 
 `docker-compose` mode stops the B1 `comfyui` service before invoking the node and starts it again afterward if it was running. Use `manual` only when another runbook has already stopped the service and you want the test to avoid mutating Compose.

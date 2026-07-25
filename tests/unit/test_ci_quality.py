@@ -92,6 +92,55 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("security", validate_line)
         self.assertIn("openapi-client-check", validate_line)
 
+    def test_makefile_exposes_live_acceptance_evidence_targets(self) -> None:
+        expected_defaults = (
+            ("B1_SMOKE_EVIDENCE", "live-smoke.json"),
+            ("B1_WORKFLOWS_EVIDENCE", "installed-workflows.json"),
+            ("B1_LOCALAI_ACCEPTANCE_EVIDENCE", "localai-runtime.json"),
+            ("B1_GPU_ACCEPTANCE_EVIDENCE", "cross-runtime-gpu.json"),
+            ("B1_RESTART_RECONCILIATION_EVIDENCE", "restart-reconciliation.json"),
+            ("B1_NATIVE_COMFYUI_EVIDENCE", "native-comfyui.json"),
+            ("B1_LEGACY_COMFY_EVIDENCE", "legacy-comfy-listener.json"),
+            ("B1_REMOTE_NODES_EVIDENCE", "remote-nodes-non-comfy.json"),
+            ("B1_MODELHUB_EVIDENCE", "modelhub-client-sync.json"),
+            ("B1_VOICEBOX_EVIDENCE", "voicebox-remote.json"),
+            ("B1_SECURITY_EVIDENCE", "security-acceptance.json"),
+        )
+        for variable, filename in expected_defaults:
+            with self.subTest(variable=variable):
+                self.assertIn(f"{variable} ?= $(B1_BACKUP_ROOT)/acceptance/{filename}", self.makefile_text)
+
+        expected_targets = (
+            ("live-smoke-acceptance", "B1_SMOKE_LIVE_TEST=1", "B1_SMOKE_EVIDENCE"),
+            ("installed-workflows-acceptance", "B1_WORKFLOWS_LIVE_TEST=1", "B1_WORKFLOWS_EVIDENCE"),
+            ("localai-acceptance", "B1_LOCALAI_ACCEPTANCE_LIVE_TEST=1", "B1_LOCALAI_ACCEPTANCE_EVIDENCE"),
+            ("gpu-acceptance", "B1_GPU_ACCEPTANCE_LIVE_TEST=1", "B1_GPU_ACCEPTANCE_EVIDENCE"),
+            (
+                "restart-reconciliation-acceptance",
+                "B1_RESTART_RECONCILIATION_LIVE_TEST=1",
+                "B1_RESTART_RECONCILIATION_EVIDENCE",
+            ),
+            ("native-comfyui-compatibility", "B1_NATIVE_COMFYUI_LIVE_TEST=1", "B1_NATIVE_COMFYUI_EVIDENCE"),
+            ("legacy-comfyui-compatibility", "B1_LEGACY_COMFY_LIVE_TEST=1", "B1_LEGACY_COMFY_EVIDENCE"),
+            ("remote-nodes-non-comfy-compatibility", "B1_REMOTE_NODES_LIVE_TEST=1", "B1_REMOTE_NODES_EVIDENCE"),
+            ("modelhub-compatibility", "B1_MODELHUB_LIVE_TEST=1", "B1_MODELHUB_EVIDENCE"),
+            ("voicebox-compatibility", "B1_VOICEBOX_LIVE_TEST=1", "B1_VOICEBOX_EVIDENCE"),
+            ("security-acceptance", "B1_SECURITY_LIVE_TEST=1", "B1_SECURITY_EVIDENCE"),
+        )
+        for target, live_flag, evidence_variable in expected_targets:
+            with self.subTest(target=target):
+                self.assertIn(f"\n{target}:", self.makefile_text)
+                self.assertIn(live_flag, self.makefile_text)
+                self.assertIn(f'{evidence_variable}="$({evidence_variable})"', self.makefile_text)
+
+        self.assertIn(
+            "external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non-comfy-compatibility "
+            "modelhub-compatibility voicebox-compatibility",
+            self.makefile_text,
+        )
+        self.assertIn("operator-live-acceptance:", self.makefile_text)
+        self.assertIn("restart-reconciliation drill state documented in tests/.", self.makefile_text)
+
     def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:
         target_start = self.makefile_text.index("quality:")
         target_end = self.makefile_text.index("\ncompose-config:", target_start)

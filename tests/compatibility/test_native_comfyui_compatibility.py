@@ -659,10 +659,11 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             "queue_delete_accessible",
             path="/queue",
             prompt_id=prompt_id,
+            http_status=status,
             byte_count=len(body),
             content_type=headers.get("content-type", ""),
         )
-        self.samples.append({"label": "queue-delete", "prompt_id": prompt_id, "byte_count": len(body)})
+        self.samples.append({"label": "queue-delete", "prompt_id": prompt_id, "http_status": status, "byte_count": len(body)})
 
     def verify_targeted_interrupt(self, prompt_id: str) -> None:
         body, headers, status = self.request_status("POST", "/interrupt", {"prompt_id": prompt_id}, timeout=60)
@@ -671,10 +672,11 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             "interrupt_accessible",
             path="/interrupt",
             prompt_id=prompt_id,
+            http_status=status,
             byte_count=len(body),
             content_type=headers.get("content-type", ""),
         )
-        self.samples.append({"label": "targeted-interrupt", "prompt_id": prompt_id, "byte_count": len(body)})
+        self.samples.append({"label": "targeted-interrupt", "prompt_id": prompt_id, "http_status": status, "byte_count": len(body)})
 
     def verify_history_listing(self) -> None:
         payload = self.request_json("GET", "/history?max_items=1", timeout=60)

@@ -48,7 +48,7 @@ B1_VOICEBOX_API_BASE=https://api.ai.b1.germering \
 B1_VOICEBOX_API_KEY=... \
 B1_VOICEBOX_SPEECH_MODEL=tts-quality \
 B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json \
-python3 -m unittest tests.compatibility.test_voicebox_remote
+make voicebox-compatibility
 ```
 
 If pinned upstream Voicebox lacks a stable remote WebSocket route or compatible speech mode for the selected profile, set `B1_VOICEBOX_SKIP_WEBSOCKET=1` with `B1_VOICEBOX_WEBSOCKET_LIMITATION=...` or `B1_VOICEBOX_SKIP_SPEECH=1` with `B1_VOICEBOX_SPEECH_LIMITATION=...`. Those limitation strings become machine-readable acceptance evidence; missing models, unhealthy containers, or credentials are not valid upstream limitations.

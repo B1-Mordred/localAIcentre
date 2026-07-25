@@ -2,20 +2,20 @@
 
 Smoke tests are opt-in live checks against a running B1 AI Hub deployment. By default they skip so normal unit validation never mutates a local stack.
 
-Run the first live path with a scoped key that has `models:read`, `jobs:read`, and `jobs:write`:
+Run the first live path through Make with a scoped key that has `models:read`, `jobs:read`, and `jobs:write`:
 
 ```bash
 export B1_SMOKE_LIVE_TEST=1
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
 export B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json
-python3 -m unittest discover -s tests/smoke -v
+make live-smoke-acceptance
 ```
 
-Or through Make:
+The underlying unittest module remains available for isolated harness debugging:
 
 ```bash
-B1_SMOKE_LIVE_TEST=1 B1_AI_HUB_API_KEY=... make smoke
+python3 -m unittest discover -s tests/smoke -v
 ```
 
 When testing through `https://127.0.0.1` or another temporary address, set the routed host explicitly:

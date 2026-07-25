@@ -136,7 +136,7 @@ Run opt-in live smoke checks against a deployed stack:
 B1_SMOKE_LIVE_TEST=1 \
 B1_AI_HUB_API_KEY=... \
 B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json \
-make smoke
+make live-smoke-acceptance
 ```
 
 See [tests/smoke/README.md](./tests/smoke/README.md) for LAN TLS and temporary-host options.
@@ -164,7 +164,7 @@ B1_WORKFLOWS_IMAGE_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-generation
 B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-edit-job.json \
 B1_WORKFLOWS_VIDEO_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/short-video-job.json \
 B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json \
-python3 -m unittest tests.integration.test_live_installed_workflows
+make installed-workflows-acceptance
 ```
 
 Run native ComfyUI compatibility from an external client after a real API-format workflow is installed:
@@ -175,7 +175,13 @@ B1_NATIVE_COMFYUI_BASE=https://comfy.ai.b1.germering \
 B1_NATIVE_COMFYUI_API_KEY=... \
 B1_NATIVE_COMFYUI_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json \
 B1_NATIVE_COMFYUI_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/native-comfyui.json \
-python3 -m unittest tests.compatibility.test_native_comfyui_compatibility
+make native-comfyui-compatibility
+```
+
+Run the external compatibility group after the native ComfyUI prompt file, remote-node credentials, Model Hub sync client, and Voicebox settings are configured:
+
+```bash
+make external-compatibility-acceptance
 ```
 
 Run deployed security acceptance after production authentication and runtime-agent log access are configured:
@@ -188,6 +194,14 @@ B1_SECURITY_BROWSER_PASSWORD=... \
 B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json \
 make security-acceptance
 ```
+
+After all required live-test environment variables are set and the restart-reconciliation drill state has been prepared, the operator can run the live evidence group:
+
+```bash
+make operator-live-acceptance
+```
+
+This writes the live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
 
 Generate backup, migration, and rollback handoff evidence after B1 backup verification, alternate-directory restore rehearsal, old-stack migration review, and rollback rehearsal:
 
