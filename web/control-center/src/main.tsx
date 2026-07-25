@@ -572,6 +572,7 @@ type LiveEvidenceDetail = {
   status: string;
   sourcePath: string;
   missingChecks: string[];
+  details: string[];
   samples: string[];
 };
 
@@ -619,6 +620,22 @@ const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
   ["security_acceptance", "Security acceptance"],
   ["restart_reconciliation", "Restart reconciliation"],
   ["backup_migration_rollback", "Backup/migration/rollback"]
+] as const;
+
+const ACCEPTANCE_LIVE_EVIDENCE_DETAIL_FIELDS = [
+  ["missing_preflight_evidence", "preflight proof"],
+  ["missing_smoke_evidence", "smoke proof"],
+  ["missing_gpu_evidence", "GPU proof"],
+  ["missing_localai_evidence", "LocalAI proof"],
+  ["missing_installed_workflow_evidence", "workflow proof"],
+  ["missing_model_measurements", "model measurements"],
+  ["missing_compatibility_evidence", "compatibility proof"],
+  ["missing_integrity_evidence", "integrity proof"],
+  ["missing_security_evidence", "security proof"],
+  ["missing_reconciliation_evidence", "restart proof"],
+  ["missing_backup_migration_rollback_evidence", "backup/rollback proof"],
+  ["failed_checks", "failed checks"],
+  ["warning_checks", "warnings"]
 ] as const;
 
 const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
@@ -2710,6 +2727,16 @@ function acceptanceOperatorEvidenceRows(report: Record<string, unknown>): Accept
     .filter((item) => item.key || item.label);
 }
 
+function liveEvidenceProofDetails(snapshot: Record<string, unknown>): string[] {
+  const details: string[] = [];
+  for (const [field, label] of ACCEPTANCE_LIVE_EVIDENCE_DETAIL_FIELDS) {
+    for (const value of stringList(snapshot[field])) {
+      details.push(`${label}: ${value}`);
+    }
+  }
+  return details;
+}
+
 function acceptanceLiveEvidenceRows(report: Record<string, unknown>): LiveEvidenceDetail[] {
   const liveEvidence = objectOrNull(report.live_evidence) ?? {};
   return ACCEPTANCE_LIVE_EVIDENCE_SECTIONS.map(([key, label]) => {
@@ -2723,6 +2750,7 @@ function acceptanceLiveEvidenceRows(report: Record<string, unknown>): LiveEviden
       status,
       sourcePath: typeof snapshot.source_path === "string" ? snapshot.source_path : "",
       missingChecks: stringList(snapshot.missing_checks),
+      details: liveEvidenceProofDetails(snapshot),
       samples: stringList(snapshot.sample_labels)
     };
   });
@@ -5146,13 +5174,14 @@ function System() {
           <div className="acceptance-detail-section">
             <h4>Live Evidence</h4>
             <table>
-              <thead><tr><th>Evidence</th><th>Status</th><th>Missing Checks</th><th>Source</th></tr></thead>
+              <thead><tr><th>Evidence</th><th>Status</th><th>Missing Checks</th><th>Details</th><th>Source</th></tr></thead>
               <tbody>
                 {selectedLiveEvidence.map((item) => (
                   <tr key={item.key}>
                     <td>{item.label}<small>{item.samples.length ? item.samples.join(", ") : item.key}</small></td>
                     <td><span className={statusPillClass(item.available && item.status === "ok" ? "ok" : item.status)}>{item.status}</span></td>
                     <td>{item.missingChecks.length ? item.missingChecks.join(", ") : "none"}</td>
+                    <td>{item.details.length ? item.details.join("; ") : "none"}</td>
                     <td>{item.sourcePath || "not recorded"}</td>
                   </tr>
                 ))}
