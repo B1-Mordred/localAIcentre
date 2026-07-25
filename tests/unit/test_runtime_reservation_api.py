@@ -39,6 +39,7 @@ def reservation_row(**overrides: Any) -> dict[str, Any]:
         "resolved_model_version": "chat-model@1.0.0",
         "duration_seconds": 300,
         "reason": "batch window",
+        "idempotency_key": None,
         "status": "active",
         "created_at": now,
         "updated_at": now,
@@ -62,6 +63,11 @@ class FakeReservationDatabase:
 
     async def get_runtime_reservation(self, reservation_id: str) -> dict[str, Any] | None:
         if self.row and self.row["id"] == reservation_id:
+            return dict(self.row)
+        return None
+
+    async def get_runtime_reservation_by_idempotency_key(self, owner_id: str, idempotency_key: str) -> dict[str, Any] | None:
+        if self.row and self.row["owner_id"] == owner_id and self.row.get("idempotency_key") == idempotency_key:
             return dict(self.row)
         return None
 
@@ -183,20 +189,79 @@ class RuntimeReservationApiTests(unittest.TestCase):
                     model="chat-default",
                     duration_seconds=600,
                     reason="batch window pasted prompt secret",
-                )
+                ),
+                idempotency_key="reservation-key-1",
             )
         )
 
         self.assertEqual(result["runtime"], "localai")
         self.assertEqual(result["model_alias"], "chat-default")
         self.assertEqual(result["resolved_model_version"], "chat-model@1.0.0")
+        self.assertNotIn("idempotency_key", result)
         self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
         self.assertEqual(fake_database.inserted[0]["duration_seconds"], 600)
         self.assertEqual(fake_database.inserted[0]["reason"], "batch window pasted prompt secret")
+        self.assertEqual(fake_database.inserted[0]["idempotency_key"], "reservation-key-1")
         self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.created")
         self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
         self.assertNotIn("reason", audit_events[0]["metadata"])
         self.assertNotIn("pasted prompt secret", str(audit_events[0]["metadata"]))
+
+    def test_create_reservation_idempotency_returns_existing_before_mutable_checks(self) -> None:
+        existing = reservation_row(idempotency_key="reservation-key-1", reason="batch window")
+        fake_database = FakeReservationDatabase(existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+
+        def forbidden_catalog(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("catalog must not be consulted for an idempotent reservation replay")
+
+        def forbidden_maintenance(reason: str) -> None:
+            raise AssertionError("maintenance must not block an idempotent reservation replay")
+
+        self.patch_attr("require_catalog_alias", forbidden_catalog)
+        self.patch_attr("require_not_in_maintenance", forbidden_maintenance)
+
+        result = asyncio.run(
+            main.runtime_reservation_create(
+                main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=300, reason="batch window"),
+                idempotency_key="reservation-key-1",
+            )
+        )
+
+        self.assertEqual(result["id"], "reservation_1")
+        self.assertNotIn("idempotency_key", result)
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_create_reservation_idempotency_conflict_reports_public_fields_only(self) -> None:
+        existing = reservation_row(idempotency_key="reservation-key-1", reason="original sensitive reason")
+        fake_database = FakeReservationDatabase(existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.runtime_reservation_create(
+                    main.RuntimeReservationCreate(
+                        runtime="voicebox",
+                        model="tts-quality",
+                        duration_seconds=600,
+                        reason="new sensitive reason",
+                    ),
+                    idempotency_key="reservation-key-1",
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["code"], "idempotency_key_conflict")
+        self.assertEqual(caught.exception.detail["reservation_id"], "reservation_1")
+        self.assertEqual(
+            caught.exception.detail["mismatched_fields"],
+            ["runtime", "model_alias", "duration_seconds", "reason"],
+        )
+        self.assertNotIn("original sensitive reason", str(caught.exception.detail))
+        self.assertNotIn("new sensitive reason", str(caught.exception.detail))
+        self.assertEqual(fake_database.inserted, [])
 
     def test_create_reservation_rejects_gpu_when_production_hardware_policy_fails(self) -> None:
         self.patch_settings(

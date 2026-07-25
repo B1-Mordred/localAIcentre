@@ -218,6 +218,7 @@ runtime_reservations = Table(
     Column("resolved_model_version", String(256), nullable=False),
     Column("duration_seconds", Integer, nullable=False),
     Column("reason", Text, nullable=False, default=""),
+    Column("idempotency_key", String(256), nullable=True),
     Column("status", String(64), nullable=False, default="active"),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -467,6 +468,13 @@ Index("b1_model_downloads_status_idx", model_downloads.c.status)
 Index("b1_model_downloads_model_idx", model_downloads.c.model_id, model_downloads.c.model_version)
 Index("b1_model_alias_policies_enabled_idx", model_alias_policies.c.enabled)
 Index("b1_runtime_reservations_status_idx", runtime_reservations.c.status)
+Index(
+    "b1_runtime_reservations_owner_idempotency_key_uq",
+    runtime_reservations.c.owner_id,
+    runtime_reservations.c.idempotency_key,
+    unique=True,
+    postgresql_where=runtime_reservations.c.idempotency_key.isnot(None),
+)
 Index("b1_runtime_state_status_idx", runtime_state.c.status)
 Index("b1_modelhub_clients_api_client_id_uq", modelhub_clients.c.api_client_id, unique=True)
 Index("b1_voice_profiles_status_idx", voice_profiles.c.status)
@@ -550,7 +558,12 @@ SCHEMA_COMPATIBILITY_SQL = [
         ")"
     ),
     "CREATE INDEX IF NOT EXISTS b1_model_alias_policies_enabled_idx ON b1_model_alias_policies (enabled)",
+    "ALTER TABLE b1_runtime_reservations ADD COLUMN IF NOT EXISTS idempotency_key varchar(256)",
     "CREATE INDEX IF NOT EXISTS b1_runtime_reservations_status_idx ON b1_runtime_reservations (status)",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS b1_runtime_reservations_owner_idempotency_key_uq "
+        "ON b1_runtime_reservations (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
+    ),
     "CREATE INDEX IF NOT EXISTS b1_runtime_state_status_idx ON b1_runtime_state (status)",
     "CREATE UNIQUE INDEX IF NOT EXISTS b1_modelhub_clients_api_client_id_uq ON b1_modelhub_clients (api_client_id)",
     "CREATE INDEX IF NOT EXISTS b1_voice_profiles_status_idx ON b1_voice_profiles (status)",
@@ -2712,6 +2725,7 @@ async def insert_runtime_reservation(payload: dict[str, Any]) -> dict[str, Any]:
         "cancelled_at": None,
         "status": "active",
         "reason": "",
+        "idempotency_key": None,
         **payload,
     }
     async with engine.begin() as conn:
@@ -2818,6 +2832,22 @@ async def get_runtime_reservation(reservation_id: str) -> dict[str, Any] | None:
         raise RuntimeError("database engine is not configured")
     async with engine.connect() as conn:
         result = await conn.execute(select(runtime_reservations).where(runtime_reservations.c.id == reservation_id))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def get_runtime_reservation_by_idempotency_key(owner_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            select(runtime_reservations).where(
+                and_(
+                    runtime_reservations.c.owner_id == owner_id,
+                    runtime_reservations.c.idempotency_key == idempotency_key,
+                )
+            )
+        )
         row = result.mappings().first()
     return dict(row) if row else None
 

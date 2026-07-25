@@ -3422,6 +3422,31 @@ def ensure_existing_job_endpoint(existing: dict[str, Any], *, modality: str, ope
     )
 
 
+def expected_runtime_reservation_identity(payload: RuntimeReservationCreate) -> dict[str, Any]:
+    return {
+        "runtime": payload.runtime,
+        "model_alias": payload.model,
+        "duration_seconds": payload.duration_seconds,
+        "reason": payload.reason,
+    }
+
+
+def ensure_idempotent_runtime_reservation_matches(existing: dict[str, Any], payload: RuntimeReservationCreate) -> None:
+    expected = expected_runtime_reservation_identity(payload)
+    mismatched_fields = [field for field, value in expected.items() if existing.get(field) != value]
+    if not mismatched_fields:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "idempotency_key_conflict",
+            "message": "Idempotency-Key was already used for a different runtime reservation request",
+            "reservation_id": existing.get("id"),
+            "mismatched_fields": mismatched_fields,
+        },
+    )
+
+
 def openai_image_job_response(job: dict[str, Any]) -> dict[str, Any]:
     links = media_job_links(str(job["id"]))
     return {
@@ -4291,6 +4316,7 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
 
 def public_runtime_reservation(row: dict[str, Any]) -> dict[str, Any]:
     public = dict(row)
+    public.pop("idempotency_key", None)
     if public.get("status") == "active" and public["expires_at"] <= datetime.now(tz=UTC):
         public["status"] = "expired"
     return jsonable_encoder(public)
@@ -8931,9 +8957,19 @@ async def artifact_download(artifact_path: str, request: Request, authorization:
 
 
 @app.post("/v1/runtime-reservations")
-async def runtime_reservation_create(payload: RuntimeReservationCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+async def runtime_reservation_create(
+    payload: RuntimeReservationCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "runtimes:write")
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_runtime_reservation_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_runtime_reservation_matches(existing, payload)
+            return public_runtime_reservation(existing)
     require_not_in_maintenance("runtime/reservation")
     alias = require_catalog_alias(payload.model, auth=auth)
     registry = runtime_registry_snapshot()
@@ -8989,6 +9025,7 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
             "resolved_model_version": resolved_model_version,
             "duration_seconds": payload.duration_seconds,
             "reason": payload.reason,
+            "idempotency_key": normalized_idempotency_key,
             "expires_at": datetime.now(tz=UTC) + timedelta(seconds=payload.duration_seconds),
         }
     )
