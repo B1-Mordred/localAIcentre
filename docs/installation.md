@@ -74,7 +74,7 @@ B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json \
 make smoke
 ```
 
-The smoke suite checks gateway health, authenticated model listing, an async `tts-fast` media job, SSE job events, artifact download, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. When `B1_SMOKE_EVIDENCE` is set, the suite writes the machine-readable smoke proof ingested by Control Center handoff reports. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt` or trust that root certificate on the test machine. See `tests/smoke/README.md` for temporary-host and TLS options.
+The smoke suite checks gateway health, authenticated model listing, an async `tts-fast` media job, resolved runtime/model evidence, SSE job events through a terminal state, artifact download, artifact metadata integrity, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. When `B1_SMOKE_EVIDENCE` is set, the suite writes the machine-readable smoke proof ingested by Control Center handoff reports. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt` or trust that root certificate on the test machine. See `tests/smoke/README.md` for temporary-host and TLS options.
 
 After installing real GPU model manifests and publishing at least one target-host ComfyUI API prompt/workflow, run the cross-runtime RTX acceptance suite during a maintenance validation window:
 

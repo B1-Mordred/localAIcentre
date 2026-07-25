@@ -174,16 +174,22 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "healthz_ok",
                 "models_listed",
                 "tts_media_job_completed",
+                "tts_media_job_resolved_model_recorded",
                 "job_events_streamed",
+                "job_events_terminal_state_observed",
                 "artifact_downloaded",
+                "artifact_metadata_verified",
             ],
             "missing_checks": [],
             "checks": {
                 "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
                 "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00"},
                 "tts_media_job_completed": {"status": "ok", "recorded_at": "2026-07-24T12:22:00+00:00"},
+                "tts_media_job_resolved_model_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:22:05+00:00"},
                 "job_events_streamed": {"status": "ok", "recorded_at": "2026-07-24T12:23:00+00:00"},
+                "job_events_terminal_state_observed": {"status": "ok", "recorded_at": "2026-07-24T12:23:05+00:00"},
                 "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:24:00+00:00"},
+                "artifact_metadata_verified": {"status": "ok", "recorded_at": "2026-07-24T12:24:05+00:00"},
             },
             "sample_count": 5,
             "sample_labels": ["healthz", "models", "tts-job", "job-events", "artifact-download"],
@@ -1179,12 +1185,14 @@ class AcceptanceReportTests(unittest.TestCase):
         live_evidence["live_stack_smoke"] = {
             **live_evidence["live_stack_smoke"],
             "status": "incomplete",
-            "missing_checks": ["artifact_downloaded"],
+            "missing_checks": ["artifact_downloaded", "artifact_metadata_verified"],
             "checks": {
                 "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
                 "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00"},
                 "tts_media_job_completed": {"status": "ok", "recorded_at": "2026-07-24T12:22:00+00:00"},
+                "tts_media_job_resolved_model_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:22:05+00:00"},
                 "job_events_streamed": {"status": "ok", "recorded_at": "2026-07-24T12:23:00+00:00"},
+                "job_events_terminal_state_observed": {"status": "ok", "recorded_at": "2026-07-24T12:23:05+00:00"},
             },
         }
         report = sample_report(live_evidence=live_evidence)
@@ -1195,8 +1203,35 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("live stack smoke evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "live stack smoke evidence is missing required checks: artifact_downloaded",
+            "live stack smoke evidence is missing required checks: artifact_downloaded, artifact_metadata_verified",
             report["acceptance_blockers"],
+        )
+
+    def test_smoke_snapshot_requires_resolution_terminal_event_and_artifact_metadata(self) -> None:
+        snapshot = acceptance.smoke_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-live-smoke/v1",
+                "generated_at": "2026-07-24T12:25:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "healthz_ok": {"status": "ok"},
+                    "models_listed": {"status": "ok"},
+                    "tts_media_job_completed": {"status": "ok"},
+                    "job_events_streamed": {"status": "ok"},
+                    "artifact_downloaded": {"status": "ok"},
+                },
+                "samples": [{"label": "tts-job"}],
+            }
+        )
+
+        self.assertEqual(
+            snapshot["missing_checks"],
+            [
+                "tts_media_job_resolved_model_recorded",
+                "job_events_terminal_state_observed",
+                "artifact_metadata_verified",
+            ],
         )
 
     def test_report_blocks_handoff_for_incomplete_live_gpu_evidence(self) -> None:
@@ -2064,8 +2099,11 @@ class AcceptanceReportTests(unittest.TestCase):
                             "healthz_ok": {"status": "ok"},
                             "models_listed": {"status": "ok"},
                             "tts_media_job_completed": {"status": "ok"},
+                            "tts_media_job_resolved_model_recorded": {"status": "ok"},
                             "job_events_streamed": {"status": "ok"},
+                            "job_events_terminal_state_observed": {"status": "ok"},
                             "artifact_downloaded": {"status": "ok"},
+                            "artifact_metadata_verified": {"status": "ok"},
                         },
                         "samples": [
                             {"label": "healthz"},

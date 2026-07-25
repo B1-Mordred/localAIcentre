@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import ssl
 import time
 import unittest
@@ -21,8 +23,11 @@ SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
     "models_listed",
     "tts_media_job_completed",
+    "tts_media_job_resolved_model_recorded",
     "job_events_streamed",
+    "job_events_terminal_state_observed",
     "artifact_downloaded",
+    "artifact_metadata_verified",
 )
 MODEL_MEASUREMENT_RUN_FIELDS = (
     "id",
@@ -41,6 +46,7 @@ MODEL_MEASUREMENT_RUN_FIELDS = (
     "resource_estimate",
 )
 MEDIA_JOB_LINK_NAMES = ("self", "events", "artifacts", "cancel")
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -69,6 +75,41 @@ def assert_media_job_links(testcase: unittest.TestCase, job: dict[str, Any]) -> 
         value = links.get(name) if isinstance(links, dict) else None
         testcase.assertIsInstance(value, str, job)
         testcase.assertTrue(value.startswith("/v1/media/jobs/"), value)
+
+
+def response_header(headers: dict[str, str], name: str) -> str:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return ""
+
+
+def sse_payloads(raw: bytes) -> list[dict[str, Any] | str]:
+    text = raw.decode("utf-8", errors="replace")
+    payloads: list[dict[str, Any] | str] = []
+    for event_block in text.split("\n\n"):
+        data_lines = []
+        for line in event_block.splitlines():
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines)
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            payloads.append(data)
+        else:
+            payloads.append(parsed if isinstance(parsed, dict) else data)
+    return payloads
+
+
+def terminal_job_event_payload(payloads: list[dict[str, Any] | str], job_id: str, state: str) -> dict[str, Any] | None:
+    for payload in payloads:
+        if isinstance(payload, dict) and payload.get("id") == job_id and payload.get("state") == state:
+            return payload
+    return None
 
 
 class LiveApiClient:
@@ -348,29 +389,102 @@ class LiveStackSmokeTests(unittest.TestCase):
         final_job = self.wait_for_terminal_job(job)
         assert_media_job_links(self, final_job)
         self.assertEqual(final_job.get("state"), "completed", final_job)
-        self.samples.append({"label": "tts-job", "job_id": job_id, "state": final_job.get("state"), "model": model, "link_keys": list(MEDIA_JOB_LINK_NAMES)})
+        resolved_model_version = final_job.get("resolved_model_version")
+        runtime = final_job.get("runtime")
+        self.assertIsInstance(resolved_model_version, str, final_job)
+        self.assertRegex(resolved_model_version, r"^[^@]+@[^@]+$", final_job)
+        self.assertIsInstance(runtime, str, final_job)
+        self.assertTrue(runtime, final_job)
+        self.samples.append(
+            {
+                "label": "tts-job",
+                "job_id": job_id,
+                "state": final_job.get("state"),
+                "model": model,
+                "runtime": runtime,
+                "resolved_model_version": resolved_model_version,
+                "link_keys": list(MEDIA_JOB_LINK_NAMES),
+            }
+        )
         self.record_check("tts_media_job_completed", job_id=job_id, model=model)
+        self.record_check(
+            "tts_media_job_resolved_model_recorded",
+            job_id=job_id,
+            model=model,
+            runtime=runtime,
+            resolved_model_version=resolved_model_version,
+        )
 
         status, _, events = self.client.request("GET", media_job_link(final_job, "events", "/events"), require_auth=True)
         self.assertEqual(status, 200, events[:500])
         self.assertIn(b"event: job", events)
-        self.samples.append({"label": "job-events", "job_id": job_id, "bytes": len(events)})
+        parsed_events = sse_payloads(events)
+        terminal_event = terminal_job_event_payload(parsed_events, job_id, "completed")
+        self.assertIsNotNone(terminal_event, events[:1000])
+        self.samples.append({"label": "job-events", "job_id": job_id, "bytes": len(events), "event_count": len(parsed_events)})
         self.record_check("job_events_streamed", job_id=job_id, bytes=len(events), link=media_job_link(final_job, "events", "/events"))
+        self.record_check(
+            "job_events_terminal_state_observed",
+            job_id=job_id,
+            state="completed",
+            event_count=len(parsed_events),
+        )
 
         status, _, artifact_payload = self.client.json_request("GET", media_job_link(final_job, "artifacts", "/artifacts"), require_auth=True)
         self.assert_json_status(status, artifact_payload)
         artifacts = artifact_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
         self.assertGreater(len(artifacts), 0, artifact_payload)
-        artifact_url = artifacts[0].get("url")
+        artifact = artifacts[0]
+        self.assertIsInstance(artifact, dict)
+        artifact_url = artifact.get("url")
         self.assertIsInstance(artifact_url, str)
+        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
+        artifact_mime_type = artifact.get("mime_type")
+        artifact_bytes = artifact.get("bytes")
+        artifact_sha256 = artifact.get("sha256")
+        self.assertIsInstance(artifact_mime_type, str, artifact)
+        self.assertTrue(artifact_mime_type, artifact)
+        self.assertIsInstance(artifact_bytes, int, artifact)
+        self.assertGreater(artifact_bytes, 0, artifact)
+        self.assertIsInstance(artifact_sha256, str, artifact)
+        self.assertRegex(artifact_sha256, SHA256_RE, artifact)
 
         status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
         self.assertEqual(status, 200, content[:200])
         self.assertGreater(len(content), 0)
-        self.assertIn("content-length", {key.lower() for key in headers})
-        self.samples.append({"label": "artifact-download", "job_id": job_id, "bytes": len(content)})
-        self.record_check("artifact_downloaded", job_id=job_id, bytes=len(content))
+        content_length = response_header(headers, "content-length")
+        self.assertEqual(content_length, str(len(content)), headers)
+        self.assertEqual(artifact_bytes, len(content), artifact)
+        downloaded_sha256 = hashlib.sha256(content).hexdigest()
+        self.assertEqual(artifact_sha256, downloaded_sha256, artifact)
+        content_type = response_header(headers, "content-type")
+        etag = response_header(headers, "etag")
+        accept_ranges = response_header(headers, "accept-ranges")
+        self.assertTrue(content_type, headers)
+        self.assertTrue(etag, headers)
+        self.assertEqual(accept_ranges.lower(), "bytes", headers)
+        self.samples.append(
+            {
+                "label": "artifact-download",
+                "job_id": job_id,
+                "bytes": len(content),
+                "mime_type": artifact_mime_type,
+                "sha256": artifact_sha256,
+            }
+        )
+        self.record_check("artifact_downloaded", job_id=job_id, bytes=len(content), sha256=artifact_sha256)
+        self.record_check(
+            "artifact_metadata_verified",
+            job_id=job_id,
+            artifact_url=artifact_url,
+            bytes=len(content),
+            mime_type=artifact_mime_type,
+            sha256=artifact_sha256,
+            content_type_header=content_type,
+            etag_header=etag,
+            accept_ranges_header=accept_ranges,
+        )
 
     def test_admin_self_test_when_key_has_scope(self) -> None:
         api_key = os.getenv("B1_SMOKE_ADMIN_API_KEY") or self.client.api_key

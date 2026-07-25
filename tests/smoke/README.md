@@ -45,12 +45,15 @@ The live suite currently checks:
 - authenticated `/v1/models`
 - async TTS media-job creation through `tts-fast`
 - advertised media-job `self`, `events`, `artifacts`, and `cancel` links
+- final job runtime and immutable resolved model version
 - terminal job polling
 - SSE job event delivery
+- terminal completed job state observed in the SSE stream
 - artifact listing and authenticated artifact download
+- artifact metadata integrity against the downloaded bytes, including SHA-256, size, ETag, and range support
 - optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` has sufficient scope
 
-When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, SSE events, or artifact download checks are absent or incomplete.
+When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete.
 
 Useful knobs:
 

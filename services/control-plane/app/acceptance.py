@@ -77,8 +77,11 @@ SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
     "models_listed",
     "tts_media_job_completed",
+    "tts_media_job_resolved_model_recorded",
     "job_events_streamed",
+    "job_events_terminal_state_observed",
     "artifact_downloaded",
+    "artifact_metadata_verified",
 )
 LOCALAI_EVIDENCE_FORMAT = "b1-ai-hub-localai-runtime-acceptance/v1"
 LOCALAI_REQUIRED_CHECKS = ("streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified")
