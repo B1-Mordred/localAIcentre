@@ -108,6 +108,33 @@ def placeholder_proof(headers: dict[str, str], payload: Any, *, runtime: str | N
     }
 
 
+def response_header_value(headers: dict[str, str], name: str) -> str:
+    wanted = name.lower()
+    for key, value in headers.items():
+        if key.lower() == wanted:
+            return value
+    return ""
+
+
+def downloaded_artifact_proof(artifact: dict[str, Any], headers: dict[str, str], content: bytes, *, index: int) -> dict[str, Any]:
+    digest = hashlib.sha256(content).hexdigest()
+    return {
+        "artifact_index": index,
+        "artifact_url": str(artifact.get("url") or ""),
+        "artifact_id": str(artifact.get("id") or ""),
+        "artifact_kind": str(artifact.get("kind") or ""),
+        "artifact_mime_type": str(artifact.get("mime_type") or ""),
+        "artifact_bytes": artifact.get("bytes"),
+        "artifact_sha256": str(artifact.get("sha256") or ""),
+        "download_bytes": len(content),
+        "download_sha256": digest,
+        "download_content_type": response_header_value(headers, "content-type"),
+        "download_content_length": response_header_value(headers, "content-length"),
+        "download_etag": response_header_value(headers, "etag"),
+        "download_accept_ranges": response_header_value(headers, "accept-ranges"),
+    }
+
+
 @unittest.skipUnless(os.getenv("B1_WORKFLOWS_LIVE_TEST") == "1", "set B1_WORKFLOWS_LIVE_TEST=1 to run installed workflow acceptance")
 class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
@@ -179,11 +206,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         }
 
     def response_header(self, headers: dict[str, str], name: str) -> str:
-        wanted = name.lower()
-        for key, value in headers.items():
-            if key.lower() == wanted:
-                return value
-        return ""
+        return response_header_value(headers, name)
 
     def require_measured_model(self, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
         self.__class__.required_model_aliases.add(alias)
@@ -522,7 +545,77 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         artifacts = artifact_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
         self.assertGreater(len(artifacts), 0, artifact_payload)
-        artifact = artifacts[0]
+        artifact_proofs = []
+        for index, artifact in enumerate(artifacts):
+            artifact_proofs.append(self.verify_media_artifact_download(artifact, index))
+        first_proof = artifact_proofs[0]
+        total_downloaded_bytes = sum(int(proof["download_bytes"]) for proof in artifact_proofs)
+        self.__class__.media_artifact_proofs[label] = {
+            "job_id": str(job["id"]),
+            "artifact_count": len(artifacts),
+            "verified_artifact_count": len(artifact_proofs),
+            "total_downloaded_bytes": total_downloaded_bytes,
+            "artifacts": artifact_proofs,
+            "artifact_url": first_proof["artifact_url"],
+            "artifact_id": first_proof["artifact_id"],
+            "artifact_kind": first_proof["artifact_kind"],
+            "artifact_mime_type": first_proof["artifact_mime_type"],
+            "artifact_bytes": first_proof["artifact_bytes"],
+            "artifact_sha256": first_proof["artifact_sha256"],
+            "download_content_type": first_proof["download_content_type"],
+            "download_content_length": first_proof["download_content_length"],
+            "download_etag": first_proof["download_etag"],
+            "download_accept_ranges": first_proof["download_accept_ranges"],
+        }
+        self.record_check(
+            check_name,
+            job_id=job["id"],
+            model=body.get("model"),
+            resolved_model_version=final_job.get("resolved_model_version"),
+            runtime=final_job.get("runtime"),
+            modality=body.get("modality"),
+            operation=body.get("operation"),
+            load_time_ms=final_job.get("load_time_ms"),
+            run_time_ms=final_job.get("run_time_ms"),
+            peak_vram_mib=final_job.get("peak_vram_mib"),
+            peak_ram_mib=final_job.get("peak_ram_mib"),
+            model_measurement=measurement,
+            job_links=final_job.get("links"),
+            artifact_count=len(artifacts),
+            verified_artifact_count=len(artifact_proofs),
+            total_downloaded_bytes=total_downloaded_bytes,
+            artifact_proofs=artifact_proofs,
+            first_artifact_bytes=first_proof["download_bytes"],
+            first_artifact_sha256=first_proof["download_sha256"],
+            first_artifact_mime_type=first_proof["artifact_mime_type"],
+            first_artifact_url=first_proof["artifact_url"],
+            content_type_header=first_proof["download_content_type"],
+            content_length_header=first_proof["download_content_length"],
+            etag_header=first_proof["download_etag"],
+            accept_ranges_header=first_proof["download_accept_ranges"],
+        )
+        self.samples.append(
+            {
+                "label": label,
+                "job_id": job["id"],
+                "model": body.get("model"),
+                "resolved_model_version": final_job.get("resolved_model_version"),
+                "runtime": final_job.get("runtime"),
+                "load_time_ms": final_job.get("load_time_ms"),
+                "run_time_ms": final_job.get("run_time_ms"),
+                "peak_vram_mib": final_job.get("peak_vram_mib"),
+                "peak_ram_mib": final_job.get("peak_ram_mib"),
+                "job_links": final_job.get("links"),
+                "artifact_count": len(artifacts),
+                "verified_artifact_count": len(artifact_proofs),
+                "total_downloaded_bytes": total_downloaded_bytes,
+                "first_artifact_bytes": first_proof["download_bytes"],
+                "first_artifact_sha256": first_proof["download_sha256"],
+                "first_artifact_mime_type": first_proof["artifact_mime_type"],
+            }
+        )
+
+    def verify_media_artifact_download(self, artifact: dict[str, Any], index: int) -> dict[str, Any]:
         artifact_url = artifact.get("url")
         self.assertIsInstance(artifact_url, str)
         self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
@@ -549,61 +642,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.assertEqual(content_length_header, str(len(content)), headers)
         self.assertTrue(etag_header, headers)
         self.assertEqual(accept_ranges_header.lower(), "bytes", headers)
-        self.__class__.media_artifact_proofs[label] = {
-            "job_id": str(job["id"]),
-            "artifact_url": artifact_url,
-            "artifact_id": str(artifact.get("id") or ""),
-            "artifact_kind": str(artifact.get("kind") or ""),
-            "artifact_mime_type": artifact_mime_type,
-            "artifact_bytes": artifact_bytes,
-            "artifact_sha256": artifact_sha256,
-            "download_content_type": content_type_header,
-            "download_content_length": content_length_header,
-            "download_etag": etag_header,
-            "download_accept_ranges": accept_ranges_header,
-        }
-        self.record_check(
-            check_name,
-            job_id=job["id"],
-            model=body.get("model"),
-            resolved_model_version=final_job.get("resolved_model_version"),
-            runtime=final_job.get("runtime"),
-            modality=body.get("modality"),
-            operation=body.get("operation"),
-            load_time_ms=final_job.get("load_time_ms"),
-            run_time_ms=final_job.get("run_time_ms"),
-            peak_vram_mib=final_job.get("peak_vram_mib"),
-            peak_ram_mib=final_job.get("peak_ram_mib"),
-            model_measurement=measurement,
-            job_links=final_job.get("links"),
-            artifact_count=len(artifacts),
-            first_artifact_bytes=len(content),
-            first_artifact_sha256=digest,
-            first_artifact_mime_type=artifact_mime_type,
-            first_artifact_url=artifact_url,
-            content_type_header=content_type_header,
-            content_length_header=content_length_header,
-            etag_header=etag_header,
-            accept_ranges_header=accept_ranges_header,
-        )
-        self.samples.append(
-            {
-                "label": label,
-                "job_id": job["id"],
-                "model": body.get("model"),
-                "resolved_model_version": final_job.get("resolved_model_version"),
-                "runtime": final_job.get("runtime"),
-                "load_time_ms": final_job.get("load_time_ms"),
-                "run_time_ms": final_job.get("run_time_ms"),
-                "peak_vram_mib": final_job.get("peak_vram_mib"),
-                "peak_ram_mib": final_job.get("peak_ram_mib"),
-                "job_links": final_job.get("links"),
-                "artifact_count": len(artifacts),
-                "first_artifact_bytes": len(content),
-                "first_artifact_sha256": digest,
-                "first_artifact_mime_type": artifact_mime_type,
-            }
-        )
+        return downloaded_artifact_proof(artifact, headers, content, index=index)
 
     def verify_media_artifacts_verified(self) -> None:
         required_labels = ("image-generation", "image-edit", "short-video")
@@ -613,7 +652,8 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         self.record_check(
             "media_artifacts_verified",
             workflow_labels=list(required_labels),
-            artifact_count=len(required_labels),
+            artifact_count=sum(int(self.media_artifact_proofs[label]["artifact_count"]) for label in required_labels),
+            verified_artifact_count=sum(int(self.media_artifact_proofs[label]["verified_artifact_count"]) for label in required_labels),
             artifacts={label: self.media_artifact_proofs[label] for label in required_labels},
         )
 

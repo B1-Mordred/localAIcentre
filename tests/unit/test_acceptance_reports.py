@@ -78,6 +78,46 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def sample_artifact_proof(url: str, byte_count: int, sha256: str, mime_type: str, *, index: int = 0, kind: str = "") -> dict[str, Any]:
+    artifact_kind = kind or mime_type.split("/", 1)[0]
+    return {
+        "artifact_index": index,
+        "artifact_url": url,
+        "artifact_id": f"artifact-{index}",
+        "artifact_kind": artifact_kind,
+        "artifact_mime_type": mime_type,
+        "artifact_bytes": byte_count,
+        "artifact_sha256": sha256,
+        "download_bytes": byte_count,
+        "download_sha256": sha256,
+        "download_content_type": mime_type,
+        "download_content_length": str(byte_count),
+        "download_etag": '"sha256:' + sha256 + '"',
+        "download_accept_ranges": "bytes",
+    }
+
+
+def sample_artifact_collection(job_id: str, proofs: list[dict[str, Any]]) -> dict[str, Any]:
+    first = proofs[0]
+    return {
+        "job_id": job_id,
+        "artifact_count": len(proofs),
+        "verified_artifact_count": len(proofs),
+        "total_downloaded_bytes": sum(int(proof["download_bytes"]) for proof in proofs),
+        "artifacts": proofs,
+        "artifact_url": first["artifact_url"],
+        "artifact_id": first["artifact_id"],
+        "artifact_kind": first["artifact_kind"],
+        "artifact_mime_type": first["artifact_mime_type"],
+        "artifact_bytes": first["artifact_bytes"],
+        "artifact_sha256": first["artifact_sha256"],
+        "download_content_type": first["download_content_type"],
+        "download_content_length": first["download_content_length"],
+        "download_etag": first["download_etag"],
+        "download_accept_ranges": first["download_accept_ranges"],
+    }
+
+
 def ok_checks(names: tuple[str, ...]) -> dict[str, dict[str, str]]:
     return {name: {"status": "ok"} for name in names}
 
@@ -524,6 +564,12 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     workflow_image_sha = "3" * 64
     workflow_edit_sha = "4" * 64
     workflow_video_sha = "5" * 64
+    workflow_image_proofs = [sample_artifact_proof("/artifacts/workflows/image.png", 4096, workflow_image_sha, "image/png")]
+    workflow_edit_proofs = [sample_artifact_proof("/artifacts/workflows/edit.png", 4096, workflow_edit_sha, "image/png")]
+    workflow_video_proofs = [sample_artifact_proof("/artifacts/workflows/video.mp4", 8192, workflow_video_sha, "video/mp4")]
+    workflow_image_artifacts = sample_artifact_collection("job_workflow_image_1", workflow_image_proofs)
+    workflow_edit_artifacts = sample_artifact_collection("job_workflow_edit_1", workflow_edit_proofs)
+    workflow_video_artifacts = sample_artifact_collection("job_workflow_video_1", workflow_video_proofs)
     remote_artifact_sha = "b" * 64
     voicebox_profile_id = "vp_acceptance1"
     voicebox_speech_sha = "d" * 64
@@ -914,6 +960,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "modality": "image",
                     "operation": "generation",
                     "artifact_count": 1,
+                    "verified_artifact_count": 1,
+                    "total_downloaded_bytes": 4096,
+                    "artifact_proofs": workflow_image_proofs,
                     "first_artifact_bytes": 4096,
                     "first_artifact_sha256": workflow_image_sha,
                     "first_artifact_mime_type": "image/png",
@@ -933,6 +982,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "modality": "image",
                     "operation": "edit",
                     "artifact_count": 1,
+                    "verified_artifact_count": 1,
+                    "total_downloaded_bytes": 4096,
+                    "artifact_proofs": workflow_edit_proofs,
                     "first_artifact_bytes": 4096,
                     "first_artifact_sha256": workflow_edit_sha,
                     "first_artifact_mime_type": "image/png",
@@ -952,6 +1004,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "modality": "video",
                     "operation": "generation",
                     "artifact_count": 1,
+                    "verified_artifact_count": 1,
+                    "total_downloaded_bytes": 8192,
+                    "artifact_proofs": workflow_video_proofs,
                     "first_artifact_bytes": 8192,
                     "first_artifact_sha256": workflow_video_sha,
                     "first_artifact_mime_type": "video/mp4",
@@ -966,40 +1021,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "recorded_at": "2026-07-24T12:31:30+00:00",
                     "workflow_labels": ["image-generation", "image-edit", "short-video"],
                     "artifact_count": 3,
+                    "verified_artifact_count": 3,
                     "artifacts": {
-                        "image-generation": {
-                            "job_id": "job_workflow_image_1",
-                            "artifact_url": "/artifacts/workflows/image.png",
-                            "artifact_bytes": 4096,
-                            "artifact_sha256": workflow_image_sha,
-                            "artifact_mime_type": "image/png",
-                            "download_content_type": "image/png",
-                            "download_content_length": "4096",
-                            "download_etag": '"sha256:' + workflow_image_sha + '"',
-                            "download_accept_ranges": "bytes",
-                        },
-                        "image-edit": {
-                            "job_id": "job_workflow_edit_1",
-                            "artifact_url": "/artifacts/workflows/edit.png",
-                            "artifact_bytes": 4096,
-                            "artifact_sha256": workflow_edit_sha,
-                            "artifact_mime_type": "image/png",
-                            "download_content_type": "image/png",
-                            "download_content_length": "4096",
-                            "download_etag": '"sha256:' + workflow_edit_sha + '"',
-                            "download_accept_ranges": "bytes",
-                        },
-                        "short-video": {
-                            "job_id": "job_workflow_video_1",
-                            "artifact_url": "/artifacts/workflows/video.mp4",
-                            "artifact_bytes": 8192,
-                            "artifact_sha256": workflow_video_sha,
-                            "artifact_mime_type": "video/mp4",
-                            "download_content_type": "video/mp4",
-                            "download_content_length": "8192",
-                            "download_etag": '"sha256:' + workflow_video_sha + '"',
-                            "download_accept_ranges": "bytes",
-                        },
+                        "image-generation": workflow_image_artifacts,
+                        "image-edit": workflow_edit_artifacts,
+                        "short-video": workflow_video_artifacts,
                     },
                 },
             },
@@ -2636,8 +2662,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("stt_completed.placeholder_proof", snapshot["missing_installed_workflow_evidence"])
         self.assertIn("cpu_audio_does_not_take_gpu_lease.runtime_policy", snapshot["missing_installed_workflow_evidence"])
         self.assertIn("image_generation_completed.job_id", snapshot["missing_installed_workflow_evidence"])
-        self.assertIn("image_edit_completed.accept_ranges_header", snapshot["missing_installed_workflow_evidence"])
-        self.assertIn("short_video_completed.sha256", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("image_generation_completed.artifact_proofs", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("image_edit_completed.artifact_proofs", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("short_video_completed.artifact_proofs", snapshot["missing_installed_workflow_evidence"])
         self.assertIn("media_artifacts_verified.artifacts.image-generation", snapshot["missing_installed_workflow_evidence"])
 
         report = sample_report(live_evidence=sample_live_evidence(installed_workflows=snapshot))
@@ -2645,6 +2672,61 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(report["operator_handoff_ready"])
         self.assertFalse(summary["installed_workflows_evidence_ready"])
         self.assertIn("installed workflow evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
+    def test_installed_workflow_snapshot_requires_all_returned_artifacts_to_be_verified(self) -> None:
+        live_evidence = sample_live_evidence()
+        workflows = live_evidence["installed_workflows"]
+        first = sample_artifact_proof("/artifacts/workflows/image-0.png", 4096, "6" * 64, "image/png")
+        second = sample_artifact_proof("/artifacts/workflows/image-1.png", 2048, "7" * 64, "image/png", index=1)
+        incomplete = sample_artifact_collection("job_workflow_image_1", [first])
+        workflows["checks"]["image_generation_completed"] = {
+            **workflows["checks"]["image_generation_completed"],
+            "artifact_count": 2,
+            "verified_artifact_count": 1,
+            "artifact_proofs": [first],
+        }
+        workflows["checks"]["media_artifacts_verified"] = {
+            **workflows["checks"]["media_artifacts_verified"],
+            "artifact_count": 4,
+            "verified_artifact_count": 3,
+            "artifacts": {
+                **workflows["checks"]["media_artifacts_verified"]["artifacts"],
+                "image-generation": incomplete,
+            },
+        }
+        workflows["media_artifacts"] = {
+            **workflows.get("media_artifacts", {}),
+            "image-generation-expected-second": second,
+        }
+        snapshot = acceptance.installed_workflows_evidence_snapshot(workflows)
+
+        self.assertIn("image_generation_completed.verified_artifact_count", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("image_generation_completed.artifact_proofs_complete", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("media_artifacts_verified.verified_artifact_count", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn(
+            "media_artifacts_verified.artifacts.image-generation.verified_artifact_count",
+            snapshot["missing_installed_workflow_evidence"],
+        )
+        self.assertIn(
+            "media_artifacts_verified.artifacts.image-generation.artifact_proofs_complete",
+            snapshot["missing_installed_workflow_evidence"],
+        )
+
+    def test_installed_workflow_snapshot_requires_download_digest_for_each_artifact(self) -> None:
+        live_evidence = sample_live_evidence()
+        workflows = live_evidence["installed_workflows"]
+        workflows["checks"]["image_generation_completed"]["artifact_proofs"][0].pop("download_sha256")
+        workflows["checks"]["media_artifacts_verified"]["artifacts"]["image-generation"]["artifacts"][0].pop("download_bytes")
+        snapshot = acceptance.installed_workflows_evidence_snapshot(workflows)
+
+        self.assertIn(
+            "image_generation_completed.artifact_proofs.0.download_sha256",
+            snapshot["missing_installed_workflow_evidence"],
+        )
+        self.assertIn(
+            "media_artifacts_verified.artifacts.image-generation.artifact_proofs.0.download_bytes",
+            snapshot["missing_installed_workflow_evidence"],
+        )
 
     def test_report_blocks_handoff_for_missing_installed_workflow_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()

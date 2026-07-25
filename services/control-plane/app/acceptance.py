@@ -939,6 +939,53 @@ def _require_artifact_metadata_evidence(record: dict[str, Any], check_name: str,
     return byte_count, digest
 
 
+def _artifact_proof_records(record: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = record.get("artifact_proofs")
+    if not isinstance(raw, list):
+        raw = record.get("artifacts")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _require_artifact_collection_evidence(
+    record: dict[str, Any],
+    check_name: str,
+    missing: list[str],
+    *,
+    expected_count: int | None = None,
+) -> int:
+    artifact_count = _positive_int(record.get("artifact_count"))
+    verified_count = _positive_int(record.get("verified_artifact_count"))
+    artifacts = _artifact_proof_records(record)
+    expected = expected_count if expected_count is not None and expected_count > 0 else artifact_count
+    if expected and artifact_count and artifact_count != expected:
+        missing.append(f"{check_name}.artifact_count_matches_job")
+    if expected and verified_count != expected:
+        missing.append(f"{check_name}.verified_artifact_count")
+    if expected and len(artifacts) != expected:
+        missing.append(f"{check_name}.artifact_proofs_complete")
+    if not artifacts:
+        missing.append(f"{check_name}.artifact_proofs")
+        return 0
+    verified = 0
+    for index, proof in enumerate(artifacts):
+        byte_count, digest = _require_artifact_metadata_evidence(proof, f"{check_name}.artifact_proofs.{index}", missing)
+        if byte_count and digest:
+            download_bytes = _positive_int(proof.get("download_bytes"))
+            download_digest = _normalized_sha256(proof.get("download_sha256"))
+            if not download_bytes:
+                missing.append(f"{check_name}.artifact_proofs.{index}.download_bytes")
+            if not download_digest:
+                missing.append(f"{check_name}.artifact_proofs.{index}.download_sha256")
+            if download_bytes and download_bytes != byte_count:
+                missing.append(f"{check_name}.artifact_proofs.{index}.download_bytes_matches_artifact")
+            if download_digest and download_digest != digest:
+                missing.append(f"{check_name}.artifact_proofs.{index}.download_sha256_matches_artifact")
+            verified += 1
+    return verified
+
+
 def _require_non_placeholder_proof(record: dict[str, Any], check_name: str, missing: list[str], *, proof_key: str = "placeholder_proof") -> None:
     proof = record.get(proof_key) if isinstance(record.get(proof_key), dict) else {}
     runtime = _nonempty_text(record.get("runtime") or proof.get("runtime")).lower()
@@ -1295,24 +1342,30 @@ def _installed_workflows_summary(payload: dict[str, Any]) -> dict[str, Any]:
             missing.append(f"{check_name}.runtime")
         if _positive_int(record.get("artifact_count")) < 1:
             missing.append(f"{check_name}.artifact_count")
-        byte_count, digest = _require_artifact_metadata_evidence(record, check_name, missing)
-        if byte_count and digest:
-            media_artifact_count += 1
+        media_artifact_count += _require_artifact_collection_evidence(record, check_name, missing)
 
     verified = _check_record(checks, "media_artifacts_verified")
     workflow_labels = _as_string_list(verified.get("workflow_labels"))
     for label in media_labels:
         if label not in workflow_labels:
             missing.append(f"media_artifacts_verified.workflow_labels.{label}")
-    if _positive_int(verified.get("artifact_count")) < len(media_labels):
+    expected_media_artifact_count = sum(_positive_int(_check_record(checks, check_name).get("artifact_count")) for check_name in media_check_names)
+    if _positive_int(verified.get("artifact_count")) < max(len(media_labels), expected_media_artifact_count):
         missing.append("media_artifacts_verified.artifact_count")
+    if expected_media_artifact_count and _positive_int(verified.get("verified_artifact_count")) != expected_media_artifact_count:
+        missing.append("media_artifacts_verified.verified_artifact_count")
     artifacts = verified.get("artifacts") if isinstance(verified.get("artifacts"), dict) else {}
-    for label in media_labels:
+    for label, check_name in zip(media_labels, media_check_names, strict=True):
         proof = artifacts.get(label) if isinstance(artifacts.get(label), dict) else {}
         if not proof:
             missing.append(f"media_artifacts_verified.artifacts.{label}")
             continue
-        _require_artifact_metadata_evidence(proof, f"media_artifacts_verified.artifacts.{label}", missing)
+        _require_artifact_collection_evidence(
+            proof,
+            f"media_artifacts_verified.artifacts.{label}",
+            missing,
+            expected_count=_positive_int(_check_record(checks, check_name).get("artifact_count")),
+        )
 
     return {
         "installed_workflow_artifact_count": media_artifact_count,
