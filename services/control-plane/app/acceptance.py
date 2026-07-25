@@ -484,6 +484,46 @@ def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _live_evidence_snapshot(
+    payload: dict[str, Any],
+    source_path: Path | None,
+    *,
+    expected_format: str,
+    unsupported_reason: str,
+    required_checks: tuple[str, ...],
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if payload.get("format") != expected_format:
+        return {"available": False, "reason": unsupported_reason}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing_checks = [
+        name
+        for name in required_checks
+        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
+    ]
+    sample_labels = [
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    ]
+    snapshot = {
+        "available": True,
+        "format": payload.get("format"),
+        "source_path": str(source_path) if source_path else "",
+        "generated_at": str(payload.get("generated_at") or ""),
+        "base_url": str(payload.get("base_url") or ""),
+        "status": str(payload.get("status") or "unknown"),
+        "required_checks": list(required_checks),
+        "missing_checks": missing_checks,
+        "checks": checks,
+        "sample_count": len(samples),
+        "sample_labels": sample_labels[:100],
+    }
+    snapshot.update(extra_fields or {})
+    return snapshot
+
+
 def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     if plan.get("format") != CUTOVER_PLAN_FORMAT:
         return {"available": False, "reason": "unsupported cutover plan format"}
@@ -565,339 +605,116 @@ def latest_cutover_preservation_snapshot(backup_root: Path) -> dict[str, Any]:
 
 
 def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != GPU_ACCEPTANCE_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported GPU acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    measurements = _model_measurement_summary(payload)
-    missing_checks = [
-        name
-        for name in GPU_ACCEPTANCE_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        **measurements,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=GPU_ACCEPTANCE_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported GPU acceptance evidence format",
+        required_checks=GPU_ACCEPTANCE_REQUIRED_CHECKS,
+        extra_fields=_model_measurement_summary(payload),
+    )
 
 
 def smoke_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != SMOKE_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported live smoke evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in SMOKE_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(SMOKE_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=SMOKE_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported live smoke evidence format",
+        required_checks=SMOKE_REQUIRED_CHECKS,
+    )
 
 
 def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != LOCALAI_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported LocalAI runtime acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    measurements = _model_measurement_summary(payload)
-    missing_checks = [
-        name
-        for name in LOCALAI_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(LOCALAI_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        **measurements,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=LOCALAI_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported LocalAI runtime acceptance evidence format",
+        required_checks=LOCALAI_REQUIRED_CHECKS,
+        extra_fields=_model_measurement_summary(payload),
+    )
 
 
 def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != INSTALLED_WORKFLOWS_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported installed workflow acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    measurements = _model_measurement_summary(payload)
-    missing_checks = [
-        name
-        for name in INSTALLED_WORKFLOWS_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(INSTALLED_WORKFLOWS_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        **measurements,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=INSTALLED_WORKFLOWS_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported installed workflow acceptance evidence format",
+        required_checks=INSTALLED_WORKFLOWS_REQUIRED_CHECKS,
+        extra_fields=_model_measurement_summary(payload),
+    )
 
 
 def remote_nodes_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != REMOTE_NODES_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported remote-node compatibility evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in REMOTE_NODES_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(REMOTE_NODES_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=REMOTE_NODES_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported remote-node compatibility evidence format",
+        required_checks=REMOTE_NODES_REQUIRED_CHECKS,
+    )
 
 
 def modelhub_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != MODELHUB_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported Model Hub client sync evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in MODELHUB_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(MODELHUB_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=MODELHUB_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported Model Hub client sync evidence format",
+        required_checks=MODELHUB_REQUIRED_CHECKS,
+    )
 
 
 def native_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != NATIVE_COMFYUI_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported native ComfyUI compatibility evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in NATIVE_COMFYUI_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=NATIVE_COMFYUI_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported native ComfyUI compatibility evidence format",
+        required_checks=NATIVE_COMFYUI_REQUIRED_CHECKS,
+    )
 
 
 def voicebox_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != VOICEBOX_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported Voicebox remote compatibility evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in VOICEBOX_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(VOICEBOX_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=VOICEBOX_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported Voicebox remote compatibility evidence format",
+        required_checks=VOICEBOX_REQUIRED_CHECKS,
+    )
 
 
 def security_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != SECURITY_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported security acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in SECURITY_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(SECURITY_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=SECURITY_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported security acceptance evidence format",
+        required_checks=SECURITY_REQUIRED_CHECKS,
+    )
 
 
 def restart_reconciliation_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != RESTART_RECONCILIATION_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported restart reconciliation acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in RESTART_RECONCILIATION_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(RESTART_RECONCILIATION_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=RESTART_RECONCILIATION_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported restart reconciliation acceptance evidence format",
+        required_checks=RESTART_RECONCILIATION_REQUIRED_CHECKS,
+    )
 
 
 def backup_migration_rollback_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
-    if payload.get("format") != BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT:
-        return {"available": False, "reason": "unsupported backup/migration/rollback acceptance evidence format"}
-    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
-    missing_checks = [
-        name
-        for name in BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS
-        if not isinstance(checks.get(name), dict) or checks[name].get("status") != "ok"
-    ]
-    sample_labels = [
-        str(sample.get("label"))
-        for sample in samples
-        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
-    ]
-    return {
-        "available": True,
-        "format": payload.get("format"),
-        "source_path": str(source_path) if source_path else "",
-        "generated_at": str(payload.get("generated_at") or ""),
-        "base_url": str(payload.get("base_url") or ""),
-        "status": str(payload.get("status") or "unknown"),
-        "required_checks": list(BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS),
-        "missing_checks": missing_checks,
-        "checks": checks,
-        "sample_count": len(samples),
-        "sample_labels": sample_labels[:100],
-    }
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported backup/migration/rollback acceptance evidence format",
+        required_checks=BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS,
+    )
 
 
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
