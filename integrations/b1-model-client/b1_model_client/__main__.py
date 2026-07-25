@@ -6,6 +6,7 @@ import json
 import os
 import re
 import ssl
+import stat
 import sys
 import time
 import urllib.error
@@ -208,8 +209,34 @@ def chmod_private_file(path: Path) -> None:
         path.chmod(PRIVATE_FILE_MODE)
 
 
+def is_regular_file_no_symlink(path: Path) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    return stat.S_ISREG(mode)
+
+
+def require_regular_file_no_symlink(path: Path, label: str) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{label} is missing: {path}") from exc
+    if not stat.S_ISREG(mode):
+        raise RuntimeError(f"{label} must be a regular file, not a symlink or special file: {path}")
+
+
+def existing_regular_file_size(path: Path, label: str) -> int:
+    if not path.exists() and not path.is_symlink():
+        return 0
+    require_regular_file_no_symlink(path, label)
+    return path.stat().st_size
+
+
 def private_open_binary(path: Path, *, append: bool = False) -> Any:
     ensure_private_directory(path.parent)
+    if path.exists() or path.is_symlink():
+        require_regular_file_no_symlink(path, "cache file")
     flags = os.O_WRONLY | os.O_CREAT
     flags |= os.O_APPEND if append else os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
@@ -380,7 +407,7 @@ def local_blob_inventory(cache: Path) -> list[dict[str, Any]]:
         return []
     inventory: list[dict[str, Any]] = []
     for path in sorted(blobs.iterdir()):
-        if not path.is_file() or path.name.endswith(".partial"):
+        if not is_regular_file_no_symlink(path) or path.name.endswith(".partial"):
             continue
         digest = path.name.lower()
         if not is_sha256(digest):
@@ -531,11 +558,13 @@ def download_blob(
     sha256 = normalize_sha256(sha256, label="blob")
     ensure_private_directory(target.parent)
     partial = target.with_suffix(".partial")
-    if target.exists() and sha256_file(target) == sha256:
-        chmod_private_file(target)
-        return {"blob": sha256, "status": "kept", "path": str(target), "size_bytes": target.stat().st_size}
+    if target.exists() or target.is_symlink():
+        require_regular_file_no_symlink(target, "cache blob target")
+        if sha256_file(target) == sha256:
+            chmod_private_file(target)
+            return {"blob": sha256, "status": "kept", "path": str(target), "size_bytes": target.stat().st_size}
 
-    resume_from = partial.stat().st_size if partial.exists() else 0
+    resume_from = existing_regular_file_size(partial, "partial cache blob")
     if resume_from >= expected_size:
         if sha256_file(partial) == sha256:
             partial.replace(target)
@@ -772,7 +801,7 @@ def prune_plan(base_url: str, token: str | None, cache: Path, models: list[str],
         entry = {"blob": sha256, "path": str(path), "size_bytes": metadata.get("size_bytes")}
         if sha256 in required:
             kept.append({**entry, "reason": "required by pinned model"})
-        elif path.is_file():
+        elif is_regular_file_no_symlink(path):
             candidates.append({**entry, "reason": "managed blob is no longer required"})
         else:
             missing.append({**entry, "reason": "managed blob is missing on disk"})
@@ -793,7 +822,7 @@ def apply_prune_plan(cache: Path, plan_payload: dict[str, Any]) -> list[dict[str
     deleted: list[dict[str, Any]] = []
     for candidate in plan_payload["candidates"]:
         path = Path(candidate["path"])
-        if path.is_file() and path.parent.resolve() == (cache / "blobs").resolve() and is_sha256(path.name.lower()):
+        if is_regular_file_no_symlink(path) and path.parent.resolve() == (cache / "blobs").resolve() and is_sha256(path.name.lower()):
             path.unlink()
             deleted.append(candidate)
         state.get("managed_blobs", {}).pop(candidate["blob"], None)

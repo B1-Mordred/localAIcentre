@@ -39,6 +39,14 @@ class ModelClientTests(unittest.TestCase):
         client.sync_plan_from_server = unavailable
         self.addCleanup(lambda: setattr(client, "sync_plan_from_server", original))
 
+    def symlink_or_skip(self, target: Path, link: Path) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlink creation is unavailable")
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
     def test_validate_base_url_canonicalizes_safe_http_endpoint(self) -> None:
         self.assertEqual(
             client.validate_base_url(" HTTPS://models.ai.b1.germering/modelhub/ "),
@@ -617,6 +625,21 @@ class ModelClientTests(unittest.TestCase):
 
         self.assertEqual(inventory, [{"sha256": valid_digest, "size_bytes": len(valid_payload)}])
 
+    def test_local_blob_inventory_ignores_symlinked_digest_blobs(self) -> None:
+        payload = b"verified-but-outside-cache"
+        digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside-blob"
+            outside.write_bytes(payload)
+            blobs = root / "cache" / "blobs"
+            blobs.mkdir(parents=True)
+            self.symlink_or_skip(outside, blobs / digest)
+
+            inventory = client.local_blob_inventory(root / "cache")
+
+        self.assertEqual(inventory, [])
+
     def test_pin_and_unpin_persist_local_state_without_plaintext_tokens(self) -> None:
         original = client.model_record
         try:
@@ -901,6 +924,48 @@ class ModelClientTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), payload)
             if os.name != "nt":
                 self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def test_download_blob_refuses_symlinked_existing_target(self) -> None:
+        payload = b"outside-existing-blob"
+        digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside-blob"
+            outside.write_bytes(payload)
+            target = root / "cache" / "blobs" / digest
+            target.parent.mkdir(parents=True)
+            self.symlink_or_skip(outside, target)
+
+            with self.assertRaisesRegex(RuntimeError, "cache blob target must be a regular file"):
+                client.download_blob("http://modelhub", None, digest, len(payload), target)
+
+    def test_download_blob_refuses_symlinked_partial_before_network(self) -> None:
+        payload = b"full-blob-payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        called = False
+
+        def fake_urlopen(request: object, timeout: int = 120) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called for symlinked partial blobs")
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                outside = root / "outside-partial"
+                outside.write_bytes(payload[:4])
+                target = root / "cache" / "blobs" / digest
+                target.parent.mkdir(parents=True)
+                self.symlink_or_skip(outside, target.with_suffix(".partial"))
+
+                with self.assertRaisesRegex(RuntimeError, "partial cache blob must be a regular file"):
+                    client.download_blob("http://modelhub", None, digest, len(payload), target)
+        finally:
+            client.urllib.request.urlopen = original
+
+        self.assertFalse(called)
 
     def test_download_blob_accepts_exact_resumed_content_range(self) -> None:
         partial_payload = b"hello-"
