@@ -22,6 +22,7 @@ MODELHUB_EVIDENCE_FORMAT = "b1-ai-hub-modelhub-client-sync/v1"
 MODELHUB_REQUIRED_CHECKS = (
     "catalog_visible",
     "download_plan_created",
+    "head_metadata_validated",
     "range_resume_downloaded",
     "cache_state_managed",
     "dry_run_prune_safe",
@@ -116,6 +117,43 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         partial.write_bytes(content)
         return partial_size
 
+    def validate_blob_head_metadata(self, action: dict[str, Any]) -> None:
+        blob = str(action["blob"]).lower()
+        expected_size = int(action["expected_size"])
+        request = urllib.request.Request(
+            client.modelhub_request_url(self.base_url, f"/modelhub/v1/blobs/{blob}", self.token),
+            method="HEAD",
+        )
+        request.add_header("Accept", "application/octet-stream")
+        request.add_header("Authorization", f"Bearer {self.token}")
+        if self.accept_licenses:
+            accepted_refs = client.accepted_license_refs_for_action(action)
+            if accepted_refs:
+                request.add_header("X-B1-Accept-License", ", ".join(sorted(accepted_refs)))
+        with client.modelhub_urlopen(request, timeout=120, ca_file=self.ca_file) as response:
+            status = getattr(response, "status", response.getcode())
+            headers = getattr(response, "headers", {})
+            self.assertEqual(status, 200, "Model Hub blob HEAD must return metadata for downloadable blobs")
+            client.validate_blob_response_headers(blob, expected_size, status, headers, resume_from=0)
+            content_length = client.header_value(headers, "Content-Length")
+            etag = client.header_value(headers, "ETag")
+            checksum = client.header_value(headers, "X-Checksum-SHA256")
+            accept_ranges = client.header_value(headers, "Accept-Ranges")
+        self.assertEqual(etag, client.expected_etag(blob))
+        self.assertEqual(checksum.lower(), blob)
+        self.assertEqual(int(content_length), expected_size)
+        if accept_ranges:
+            self.assertEqual(accept_ranges.lower(), "bytes")
+        self.record_check(
+            "head_metadata_validated",
+            model=self.sync_model,
+            blob=blob,
+            expected_size=expected_size,
+            etag=etag,
+            checksum=checksum,
+            accept_ranges=accept_ranges,
+        )
+
     def first_download_action(self, cache: Path) -> dict[str, Any]:
         actions = client.planned_actions(self.base_url, self.token, cache, [self.sync_model], ca_file=self.ca_file)
         candidates = [action for action in actions if action.get("action") in {"download", "replace"} and action.get("blob")]
@@ -146,6 +184,7 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="b1-modelhub-compat-") as tmp:
             cache = Path(tmp)
             action = self.first_download_action(cache)
+            self.validate_blob_head_metadata(action)
             partial_size = self.range_seed_partial(cache, action)
             result = client.sync_once(
                 self.base_url,

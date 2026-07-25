@@ -361,6 +361,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "required_checks": [
                 "catalog_visible",
                 "download_plan_created",
+                "head_metadata_validated",
                 "range_resume_downloaded",
                 "cache_state_managed",
                 "dry_run_prune_safe",
@@ -370,6 +371,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "checks": {
                 "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
                 "download_plan_created": {"status": "ok", "recorded_at": "2026-07-24T12:37:00+00:00"},
+                "head_metadata_validated": {"status": "ok", "recorded_at": "2026-07-24T12:37:30+00:00"},
                 "range_resume_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:38:00+00:00"},
                 "cache_state_managed": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
                 "dry_run_prune_safe": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
@@ -1316,7 +1318,7 @@ class AcceptanceReportTests(unittest.TestCase):
         live_evidence["modelhub_client_sync"] = {
             **live_evidence["modelhub_client_sync"],
             "status": "incomplete",
-            "missing_checks": ["range_resume_downloaded"],
+            "missing_checks": ["head_metadata_validated"],
             "checks": {
                 "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
                 "download_plan_created": {"status": "ok", "recorded_at": "2026-07-24T12:37:00+00:00"},
@@ -1329,7 +1331,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["modelhub_evidence_ready"])
         self.assertIn("Model Hub client sync evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "Model Hub client sync evidence is missing required checks: range_resume_downloaded",
+            "Model Hub client sync evidence is missing required checks: head_metadata_validated",
             report["acceptance_blockers"],
         )
 
@@ -1855,6 +1857,7 @@ class AcceptanceReportTests(unittest.TestCase):
                         "checks": {
                             "catalog_visible": {"status": "ok"},
                             "download_plan_created": {"status": "ok"},
+                            "head_metadata_validated": {"status": "ok"},
                             "range_resume_downloaded": {"status": "ok"},
                             "cache_state_managed": {"status": "ok"},
                             "dry_run_prune_safe": {"status": "ok"},

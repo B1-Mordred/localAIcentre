@@ -89,6 +89,7 @@ MODELHUB_EVIDENCE_FORMAT = "b1-ai-hub-modelhub-client-sync/v1"
 MODELHUB_REQUIRED_CHECKS = (
     "catalog_visible",
     "download_plan_created",
+    "head_metadata_validated",
     "range_resume_downloaded",
     "cache_state_managed",
     "dry_run_prune_safe",
