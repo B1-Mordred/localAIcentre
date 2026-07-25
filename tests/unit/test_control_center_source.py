@@ -145,6 +145,7 @@ class ControlCenterSourceTests(unittest.TestCase):
 
     def test_system_tab_surfaces_acceptance_reports(self) -> None:
         self.assertIn("type AcceptanceReportSummary", self.source)
+        self.assertIn("deployment_pins_ready?: boolean;", self.source)
         self.assertIn("operator_evidence_ready?: boolean;", self.source)
         self.assertIn("cutover_preservation_ready?: boolean;", self.source)
         self.assertIn("cutover_dns_ready?: boolean;", self.source)
@@ -168,6 +169,7 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("rtx3060_acceptance", self.source)
         self.assertIn("restart_reconciliation", self.source)
         self.assertIn("smoke proof missing", self.source)
+        self.assertIn("deployment pins missing", self.source)
         self.assertIn("LocalAI proof missing", self.source)
         self.assertIn("operator_evidence: acceptanceEvidence", self.source)
         self.assertIn("selectedAcceptanceReportIsPreview", self.source)
@@ -229,6 +231,10 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Download checksums", self.source)
         self.assertIn("Acceptance Report Detail", self.source)
         self.assertIn("Cutover DNS", self.source)
+        self.assertIn("Deployment Pins", self.source)
+        self.assertIn("acceptanceDeploymentPinRows", self.source)
+        self.assertIn("acceptanceDeploymentPinFindings", self.source)
+        self.assertIn("No deployment pins recorded", self.source)
         self.assertIn("acceptanceOperatorEvidenceRows", self.source)
         self.assertIn("acceptanceLiveEvidenceRows", self.source)
         self.assertIn("acceptancePreservedResourceRows", self.source)

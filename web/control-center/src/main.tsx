@@ -406,6 +406,7 @@ type AcceptanceReportSummary = {
   status: string;
   runtime_deployment_mode?: string;
   operator_handoff_ready: boolean;
+  deployment_pins_ready?: boolean;
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
   cutover_dns_ready?: boolean;
@@ -577,6 +578,14 @@ type PreservedResourceDetail = {
   key: string;
   label: string;
   items: string[];
+};
+
+type DeploymentPinDetail = {
+  key: string;
+  subject: string;
+  reference: string;
+  pin: string;
+  detail: string;
 };
 
 const ACCEPTANCE_EVIDENCE_ITEMS = [
@@ -2727,6 +2736,70 @@ function acceptancePreservedResourceRows(report: Record<string, unknown>): Prese
   }));
 }
 
+function deploymentPinValue(item: Record<string, unknown>, key: string): string {
+  return typeof item[key] === "string" && item[key] ? String(item[key]) : "";
+}
+
+function acceptanceDeploymentPinRows(report: Record<string, unknown>): DeploymentPinDetail[] {
+  const pins = objectOrNull(report.deployment_pins) ?? {};
+  const rows: DeploymentPinDetail[] = [];
+  const composeImages = Array.isArray(pins.compose_images) ? pins.compose_images : [];
+  composeImages.forEach((entry, index) => {
+    const item = objectOrNull(entry);
+    if (!item) return;
+    const service = deploymentPinValue(item, "service") || `compose-${index + 1}`;
+    rows.push({
+      key: `compose:${service}:${index}`,
+      subject: service,
+      reference: deploymentPinValue(item, "default_image") || deploymentPinValue(item, "image"),
+      pin: deploymentPinValue(item, "pin_type") || "unknown",
+      detail: [deploymentPinValue(item, "file"), deploymentPinValue(item, "profile")].filter(Boolean).join(" / ")
+    });
+  });
+  const dockerfileBases = Array.isArray(pins.dockerfile_bases) ? pins.dockerfile_bases : [];
+  dockerfileBases.forEach((entry, index) => {
+    const item = objectOrNull(entry);
+    if (!item) return;
+    const component = deploymentPinValue(item, "component") || `base-${index + 1}`;
+    const stage = deploymentPinValue(item, "stage") || "final";
+    rows.push({
+      key: `base:${component}:${stage}:${index}`,
+      subject: `${component}:${stage}`,
+      reference: deploymentPinValue(item, "default_image") || deploymentPinValue(item, "image"),
+      pin: deploymentPinValue(item, "pin_type") || "unknown",
+      detail: deploymentPinValue(item, "file")
+    });
+  });
+  const runtimeSources = Array.isArray(pins.runtime_sources) ? pins.runtime_sources : [];
+  runtimeSources.forEach((entry, index) => {
+    const item = objectOrNull(entry);
+    if (!item) return;
+    const runtime = deploymentPinValue(item, "runtime") || `runtime-${index + 1}`;
+    const version = deploymentPinValue(item, "upstream_version") || deploymentPinValue(item, "upstream_release") || deploymentPinValue(item, "engine");
+    const commits = Object.entries(item)
+      .filter(([key, value]) => key.endsWith("_commit") && typeof value === "string" && value)
+      .map(([key, value]) => `${key}=${value}`);
+    const hashes = Object.entries(item)
+      .filter(([key, value]) => key.endsWith("_sha256") && typeof value === "string" && value)
+      .map(([key, value]) => `${key}=${value}`);
+    rows.push({
+      key: `runtime:${runtime}:${index}`,
+      subject: runtime,
+      reference: version,
+      pin: commits.length || hashes.length ? "source-pinned" : "missing-source-pin",
+      detail: [...commits, ...hashes].join(" / ") || "none"
+    });
+  });
+  return rows;
+}
+
+function acceptanceDeploymentPinFindings(report: Record<string, unknown>): string[] {
+  const pins = objectOrNull(report.deployment_pins) ?? {};
+  const integrity = objectOrNull(pins.integrity) ?? {};
+  return ["floating_latest_refs", "unpinned_refs", "missing_runtime_pins", "missing_sections"]
+    .flatMap((key) => stringList(integrity[key]).map((value) => `${labelFromKey(key)}: ${value}`));
+}
+
 function labelFromKey(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
 }
@@ -4567,6 +4640,9 @@ function System() {
   const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
   const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
   const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
+  const selectedDeploymentPinRows = acceptanceDeploymentPinRows(selectedReport);
+  const selectedDeploymentPinFindings = acceptanceDeploymentPinFindings(selectedReport);
+  const selectedDeploymentPins = detailRecord(selectedReport.deployment_pins);
   const openWebUiPlanReadyCount = OPEN_WEBUI_PLAN_INPUT_LABELS.filter(([key]) => openWebUiPlan?.inputs[key]?.available).length;
   const openWebUiCurrent = openWebUiPlan?.inputs.current_plan;
   const backupRollbackInputReadyCount = BACKUP_ROLLBACK_INPUT_LABELS.filter(([key]) => backupRollbackEvidence?.inputs[key]?.available).length;
@@ -4973,7 +5049,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.operator_evidence_ready ? "evidence missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.operator_evidence_ready ? "evidence missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>
@@ -5006,6 +5082,7 @@ function System() {
             <div><strong>Generated</strong><small>{formatDateTime(selectedSummary.generated_at)}</small></div>
             <div><strong>Handoff</strong><small>{selectedSummary.operator_handoff_ready ? "ready" : "blocked"}</small></div>
             <div><strong>Cutover DNS</strong><small>{selectedSummary.cutover_dns_ready ? "ready" : "review required"}</small></div>
+            <div><strong>Deployment Pins</strong><small>{selectedSummary.deployment_pins_ready ? "clean" : String(selectedDeploymentPins.status ?? "blocked")}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedAcceptanceReportIsPreview ? "preview only" : selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
@@ -5025,6 +5102,28 @@ function System() {
             ) : (
               <p>None</p>
             )}
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Deployment Pins</h4>
+            <div className="acceptance-pin-summary">
+              <span className={statusPillClass(selectedSummary.deployment_pins_ready ? "ok" : "warning")}>{selectedSummary.deployment_pins_ready ? "clean" : "blocked"}</span>
+              <small>{String(selectedDeploymentPins.source ?? "unknown")} / {selectedDeploymentPinRows.length} pin rows</small>
+              {selectedDeploymentPinFindings.length ? <small>{selectedDeploymentPinFindings.join("; ")}</small> : <small>no pin findings</small>}
+            </div>
+            <table>
+              <thead><tr><th>Subject</th><th>Reference</th><th>Pin</th><th>Detail</th></tr></thead>
+              <tbody>
+                {selectedDeploymentPinRows.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.subject}</td>
+                    <td><code>{item.reference}</code></td>
+                    <td><span className={statusPillClass(item.pin === "digest" || item.pin === "source-pinned" || item.pin === "versioned-local-build" ? "ok" : "warning")}>{item.pin}</span></td>
+                    <td>{item.detail || "none"}</td>
+                  </tr>
+                ))}
+                {!selectedDeploymentPinRows.length && <tr><td colSpan={4}>No deployment pins recorded</td></tr>}
+              </tbody>
+            </table>
           </div>
           <div className="acceptance-detail-section">
             <h4>Operator Evidence</h4>

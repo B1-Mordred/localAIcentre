@@ -482,6 +482,18 @@ td small {
   gap: 8px;
 }
 
+.acceptance-pin-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: #5c675f;
+}
+
+.acceptance-pin-summary small {
+  overflow-wrap: anywhere;
+}
+
 .acceptance-blockers {
   margin: 0;
   padding-left: 20px;
