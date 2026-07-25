@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import importlib.util
 import json
 import sys
@@ -337,6 +339,51 @@ class OldStackBackupTests(unittest.TestCase):
 
             with self.assertRaisesRegex(old_stack_backup.OldStackBackupError, "checksum"):
                 old_stack_backup.verify_backup(backup_dir)
+
+    def test_verify_rejects_archive_file_parent_conflicts(self) -> None:
+        cases = [
+            ("parent-first", [("data", b"parent"), ("data/open-webui/webui.db", b"child")], "below a file member"),
+            ("child-first", [("data/open-webui/webui.db", b"child"), ("data", b"parent")], "conflicts with existing child member"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for backup_name, members, expected in cases:
+                with self.subTest(backup_name=backup_name):
+                    backup_dir = root / backup_name
+                    backup_dir.mkdir()
+                    archive_path = backup_dir / "payload.tar.gz"
+                    file_records = []
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        for member_name, payload in members:
+                            info = tarfile.TarInfo(member_name)
+                            info.size = len(payload)
+                            archive.addfile(info, io.BytesIO(payload))
+                            file_records.append(
+                                {
+                                    "archive_path": member_name,
+                                    "source_path": f"generated:{member_name}",
+                                    "source_type": "generated",
+                                    "size_bytes": len(payload),
+                                    "sha256": hashlib.sha256(payload).hexdigest(),
+                                    "sensitive": False,
+                                }
+                            )
+                    manifest = {
+                        "format": old_stack_backup.BACKUP_FORMAT,
+                        "created_at": "2026-07-22T12:00:00+00:00",
+                        "archive": {
+                            "file": "payload.tar.gz",
+                            "size_bytes": archive_path.stat().st_size,
+                            "sha256": old_stack_backup.sha256_file(archive_path),
+                        },
+                        "files": file_records,
+                        "contains_sensitive_data": False,
+                        "safety": {"old_stack_deletion_allowed": False},
+                    }
+                    (backup_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                    with self.assertRaisesRegex(old_stack_backup.OldStackBackupError, expected):
+                        old_stack_backup.verify_backup(backup_dir)
 
 
 if __name__ == "__main__":

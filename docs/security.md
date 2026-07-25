@@ -14,7 +14,7 @@ Controls implemented or planned:
 - AES-GCM encrypted configuration-secret storage backed by `$B1_DATA_ROOT/secrets/master_encryption_key`
 - metrics-only Prometheus scrape token generated outside Git and accepted only by `GET /admin/metrics.prometheus`
 - SSRF protection for model imports and generic runtime URLs
-- archive traversal, symlink/device-node refusal, denied executable/code file types, and zip-bomb limits
+- archive traversal, symlink/device-node refusal, denied executable/code file types, file/child conflict checks, and zip-bomb limits
 - path canonicalization for artifacts and blobs
 - no prompts, voice samples, bearer tokens, or documents in logs
 - pinned ComfyUI custom nodes

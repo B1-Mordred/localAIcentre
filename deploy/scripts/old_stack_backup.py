@@ -141,6 +141,19 @@ def safe_archive_path(value: str) -> str:
     return relative.as_posix()
 
 
+def validate_archive_file_tree(member_path: str, seen_paths: set[str]) -> None:
+    relative = PurePosixPath(member_path)
+    for parent in relative.parents:
+        if parent == PurePosixPath("."):
+            continue
+        if parent.as_posix() in seen_paths:
+            raise OldStackBackupError(f"archive member path is below a file member: {member_path}")
+    child_prefix = f"{member_path}/"
+    for existing_path in seen_paths:
+        if existing_path.startswith(child_prefix):
+            raise OldStackBackupError(f"archive file member conflicts with existing child member: {member_path}")
+
+
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -726,6 +739,7 @@ def verify_backup(backup_dir: Path) -> dict[str, Any]:
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in archive.getmembers():
             member_path = safe_archive_path(member.name)
+            validate_archive_file_tree(member_path, seen)
             if member_path in seen:
                 raise OldStackBackupError(f"duplicate archive member: {member.name}")
             if not member.isfile():
