@@ -508,6 +508,11 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
 def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     native_prompt_id = "prompt_native_1"
     native_job_id = "job_native_1"
+    smoke_artifact_sha = "1" * 64
+    workflow_tts_sha = "2" * 64
+    workflow_image_sha = "3" * 64
+    workflow_edit_sha = "4" * 64
+    workflow_video_sha = "5" * 64
     remote_artifact_sha = "b" * 64
     voicebox_profile_id = "vp_acceptance1"
     voicebox_speech_sha = "d" * 64
@@ -540,20 +545,73 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_checks": [],
             "checks": {
                 "healthz_ok": {"status": "ok", "recorded_at": "2026-07-24T12:20:00+00:00"},
-                "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00"},
-                "tts_media_job_completed": {"status": "ok", "recorded_at": "2026-07-24T12:22:00+00:00"},
-                "tts_media_job_resolved_model_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:22:05+00:00"},
+                "models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:21:00+00:00", "model_count": 4},
+                "tts_media_job_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:22:00+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "model": "tts-fast",
+                },
+                "tts_media_job_resolved_model_recorded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:22:05+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "model": "tts-fast",
+                    "runtime": "audio-cpu",
+                    "resolved_model_version": "b1-tts-fast@1.0.0",
+                },
                 "tts_media_job_not_placeholder": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:22:06+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "model": "tts-fast",
+                    "runtime": "audio-cpu",
+                    "resolved_model_version": "b1-tts-fast@1.0.0",
                     "placeholder": False,
                     "cpu_audio_engine": "piper",
                 },
-                "job_events_streamed": {"status": "ok", "recorded_at": "2026-07-24T12:23:00+00:00"},
-                "job_events_terminal_state_observed": {"status": "ok", "recorded_at": "2026-07-24T12:23:05+00:00"},
-                "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:24:00+00:00"},
-                "artifact_metadata_verified": {"status": "ok", "recorded_at": "2026-07-24T12:24:05+00:00"},
+                "job_events_streamed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:23:00+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "bytes": 768,
+                    "link": "/v1/media/jobs/job_smoke_tts_1/events",
+                },
+                "job_events_terminal_state_observed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:23:05+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "state": "completed",
+                    "event_count": 4,
+                },
+                "artifact_downloaded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:24:00+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "bytes": 4096,
+                    "sha256": smoke_artifact_sha,
+                },
+                "artifact_metadata_verified": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:24:05+00:00",
+                    "job_id": "job_smoke_tts_1",
+                    "artifact_url": "/artifacts/smoke/tts.wav",
+                    "bytes": 4096,
+                    "mime_type": "audio/wav",
+                    "sha256": smoke_artifact_sha,
+                    "content_type_header": "audio/wav",
+                    "content_length_header": "4096",
+                    "etag_header": '"sha256:' + smoke_artifact_sha + '"',
+                    "accept_ranges_header": "bytes",
+                },
             },
+            "smoke_tts_job_id": "job_smoke_tts_1",
+            "smoke_tts_model": "tts-fast",
+            "smoke_tts_runtime": "audio-cpu",
+            "smoke_tts_resolved_model_version": "b1-tts-fast@1.0.0",
+            "smoke_artifact_bytes": 4096,
+            "smoke_artifact_sha256": smoke_artifact_sha,
+            "missing_smoke_evidence": [],
             "sample_count": 5,
             "sample_labels": ["healthz", "models", "tts-job", "job-events", "artifact-download"],
         },
@@ -582,37 +640,75 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "missing_model_measurements": [],
             "checks": {
-                "resource_policy_and_runtime_readiness": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
+                "resource_policy_and_runtime_readiness": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:29:00+00:00",
+                    "runtime_deployment_mode": "production",
+                    "readiness_status": "ok",
+                },
                 "localai_exclusive_gpu_residency": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:29:30+00:00",
+                    "chat_model": "chat-default",
                     "chat_resolved_model_version": "b1-chat-default@1.0.0",
                 },
                 "comfyui_switch_completed": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:00+00:00",
+                    "comfyui_model": "image-default",
                     "comfyui_resolved_model_version": "b1-image-default@1.0.0",
+                    "comfyui_job_id": "job_gpu_comfy_1",
                 },
                 "voicebox_switch_completed": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:30+00:00",
+                    "voicebox_model": "tts-quality",
                     "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
+                    "voicebox_job_id": "job_gpu_voicebox_1",
                 },
-                "vram_reserve_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00", "sample_count": 4},
+                "vram_reserve_enforced": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:00+00:00",
+                    "sample_count": 4,
+                    "latest_sample": {
+                        "label": "after-voicebox-job",
+                        "gpu_memory_used_mib": 2048,
+                        "gpu_memory_total_mib": 12288,
+                        "reserve_mib": 1536,
+                        "usable_mib": 10752,
+                        "job_peak_vram_mib": 6144,
+                    },
+                },
                 "bounded_runtime_recovery_action": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:31:30+00:00",
                     "runtime": "localai",
+                    "result_status": "ok",
+                    "strategy": "restart-service",
                 },
                 "localai_comfyui_voicebox_switch": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:00+00:00",
                     "runtime_order": ["localai", "comfyui", "voicebox"],
+                    "chat_model": "chat-default",
                     "chat_resolved_model_version": "b1-chat-default@1.0.0",
+                    "comfyui_model": "image-default",
                     "comfyui_resolved_model_version": "b1-image-default@1.0.0",
+                    "voicebox_model": "tts-quality",
                     "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
+                    "comfyui_job_id": "job_gpu_comfy_1",
+                    "voicebox_job_id": "job_gpu_voicebox_1",
                 },
             },
+            "gpu_runtime_order": ["localai", "comfyui", "voicebox"],
+            "gpu_switch_resolved_models": {
+                "localai": "b1-chat-default@1.0.0",
+                "comfyui": "b1-image-default@1.0.0",
+                "voicebox": "b1-tts-quality@1.0.0",
+            },
+            "gpu_vram_sample_count": 4,
+            "gpu_recovery_runtime": "localai",
+            "missing_gpu_evidence": [],
             "sample_count": 6,
             "sample_labels": ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
         },
@@ -631,10 +727,38 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "missing_model_measurements": [],
             "checks": {
-                "streaming_chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:10+00:00"},
-                "single_backend_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:30:20+00:00"},
-                "graceful_unload_verified": {"status": "ok", "recorded_at": "2026-07-24T12:30:30+00:00"},
+                "streaming_chat_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:10+00:00",
+                    "model": "chat-default",
+                    "resolved_model_version": "b1-chat-default@1.0.0",
+                    "event_count": 5,
+                    "bytes": 1536,
+                },
+                "single_backend_enforced": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:20+00:00",
+                    "active_gpu_runtimes": ["localai"],
+                    "stage": "running",
+                    "state_status": "ok",
+                    "model_alias": "chat-default",
+                    "resolved_model_version": "b1-chat-default@1.0.0",
+                },
+                "graceful_unload_verified": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:30+00:00",
+                    "runtime_agent_status": "ok",
+                    "strategy": "graceful-unload",
+                    "state_status": "ok",
+                    "state_stage": "idle_unloaded",
+                },
             },
+            "localai_chat_model": "chat-default",
+            "localai_resolved_model_version": "b1-chat-default@1.0.0",
+            "localai_stream_event_count": 5,
+            "localai_stream_bytes": 1536,
+            "localai_unload_stage": "idle_unloaded",
+            "missing_localai_evidence": [],
             "sample_count": 3,
             "sample_labels": ["localai-stream-chat", "active-gpu-runtime-states", "localai-unload"],
         },
@@ -667,19 +791,177 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "missing_model_measurements": [],
             "checks": {
-                "chat_completed": {"status": "ok", "recorded_at": "2026-07-24T12:26:00+00:00"},
-                "tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:27:00+00:00"},
-                "stt_completed": {"status": "ok", "recorded_at": "2026-07-24T12:28:00+00:00"},
-                "cpu_audio_does_not_take_gpu_lease": {"status": "ok", "recorded_at": "2026-07-24T12:28:30+00:00"},
-                "image_generation_completed": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
-                "image_edit_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
-                "short_video_completed": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "chat_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:26:00+00:00",
+                    "model": "chat-default",
+                    "resolved_model_version": "b1-chat-default@1.0.0",
+                    "runtime": "localai",
+                    "choice_count": 1,
+                    "placeholder_proof": {"placeholder": None, "runtime": "localai", "placeholder_failure": False, "reasons": []},
+                },
+                "tts_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:27:00+00:00",
+                    "model": "tts-fast",
+                    "resolved_model_version": "b1-tts-fast@1.0.0",
+                    "runtime": "audio-cpu",
+                    "byte_count": 2048,
+                    "sha256": workflow_tts_sha,
+                    "placeholder_proof": {
+                        "placeholder": False,
+                        "runtime": "audio-cpu",
+                        "cpu_audio_engine": "piper",
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
+                },
+                "stt_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:28:00+00:00",
+                    "model": "stt-default",
+                    "resolved_model_version": "b1-stt-default@1.0.0",
+                    "runtime": "audio-cpu",
+                    "text_length": 0,
+                    "placeholder_proof": {
+                        "placeholder": False,
+                        "runtime": "audio-cpu",
+                        "cpu_audio_engine": "piper",
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
+                },
+                "cpu_audio_does_not_take_gpu_lease": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:28:30+00:00",
+                    "tts_model": "tts-fast",
+                    "stt_model": "stt-default",
+                    "tts_resolved_model_version": "b1-tts-fast@1.0.0",
+                    "stt_resolved_model_version": "b1-stt-default@1.0.0",
+                    "runtime_policy": "non_comfy_only",
+                    "scheduler_owner_before": "none",
+                    "scheduler_owner_after": "none",
+                    "tts_gpu_lease_required": "false",
+                    "stt_gpu_lease_required": False,
+                    "tts_byte_count": 2048,
+                    "stt_text_length": 0,
+                    "tts_placeholder_proof": {
+                        "placeholder": False,
+                        "runtime": "audio-cpu",
+                        "cpu_audio_engine": "piper",
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
+                    "stt_placeholder_proof": {
+                        "placeholder": False,
+                        "runtime": "audio-cpu",
+                        "cpu_audio_engine": "piper",
+                        "placeholder_failure": False,
+                        "reasons": [],
+                    },
+                },
+                "image_generation_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:29:00+00:00",
+                    "job_id": "job_workflow_image_1",
+                    "model": "image-default",
+                    "resolved_model_version": "b1-image-default@1.0.0",
+                    "runtime": "comfyui",
+                    "modality": "image",
+                    "operation": "generation",
+                    "artifact_count": 1,
+                    "first_artifact_bytes": 4096,
+                    "first_artifact_sha256": workflow_image_sha,
+                    "first_artifact_mime_type": "image/png",
+                    "first_artifact_url": "/artifacts/workflows/image.png",
+                    "content_type_header": "image/png",
+                    "content_length_header": "4096",
+                    "etag_header": '"sha256:' + workflow_image_sha + '"',
+                    "accept_ranges_header": "bytes",
+                },
+                "image_edit_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:00+00:00",
+                    "job_id": "job_workflow_edit_1",
+                    "model": "image-edit",
+                    "resolved_model_version": "b1-image-edit@1.0.0",
+                    "runtime": "comfyui",
+                    "modality": "image",
+                    "operation": "edit",
+                    "artifact_count": 1,
+                    "first_artifact_bytes": 4096,
+                    "first_artifact_sha256": workflow_edit_sha,
+                    "first_artifact_mime_type": "image/png",
+                    "first_artifact_url": "/artifacts/workflows/edit.png",
+                    "content_type_header": "image/png",
+                    "content_length_header": "4096",
+                    "etag_header": '"sha256:' + workflow_edit_sha + '"',
+                    "accept_ranges_header": "bytes",
+                },
+                "short_video_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:00+00:00",
+                    "job_id": "job_workflow_video_1",
+                    "model": "video-text",
+                    "resolved_model_version": "b1-video-text@1.0.0",
+                    "runtime": "comfyui",
+                    "modality": "video",
+                    "operation": "generation",
+                    "artifact_count": 1,
+                    "first_artifact_bytes": 8192,
+                    "first_artifact_sha256": workflow_video_sha,
+                    "first_artifact_mime_type": "video/mp4",
+                    "first_artifact_url": "/artifacts/workflows/video.mp4",
+                    "content_type_header": "video/mp4",
+                    "content_length_header": "8192",
+                    "etag_header": '"sha256:' + workflow_video_sha + '"',
+                    "accept_ranges_header": "bytes",
+                },
                 "media_artifacts_verified": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:31:30+00:00",
+                    "workflow_labels": ["image-generation", "image-edit", "short-video"],
                     "artifact_count": 3,
+                    "artifacts": {
+                        "image-generation": {
+                            "job_id": "job_workflow_image_1",
+                            "artifact_url": "/artifacts/workflows/image.png",
+                            "artifact_bytes": 4096,
+                            "artifact_sha256": workflow_image_sha,
+                            "artifact_mime_type": "image/png",
+                            "download_content_type": "image/png",
+                            "download_content_length": "4096",
+                            "download_etag": '"sha256:' + workflow_image_sha + '"',
+                            "download_accept_ranges": "bytes",
+                        },
+                        "image-edit": {
+                            "job_id": "job_workflow_edit_1",
+                            "artifact_url": "/artifacts/workflows/edit.png",
+                            "artifact_bytes": 4096,
+                            "artifact_sha256": workflow_edit_sha,
+                            "artifact_mime_type": "image/png",
+                            "download_content_type": "image/png",
+                            "download_content_length": "4096",
+                            "download_etag": '"sha256:' + workflow_edit_sha + '"',
+                            "download_accept_ranges": "bytes",
+                        },
+                        "short-video": {
+                            "job_id": "job_workflow_video_1",
+                            "artifact_url": "/artifacts/workflows/video.mp4",
+                            "artifact_bytes": 8192,
+                            "artifact_sha256": workflow_video_sha,
+                            "artifact_mime_type": "video/mp4",
+                            "download_content_type": "video/mp4",
+                            "download_content_length": "8192",
+                            "download_etag": '"sha256:' + workflow_video_sha + '"',
+                            "download_accept_ranges": "bytes",
+                        },
+                    },
                 },
             },
+            "installed_workflow_artifact_count": 3,
+            "installed_workflow_labels": ["image-generation", "image-edit", "short-video"],
+            "missing_installed_workflow_evidence": [],
             "sample_count": 7,
             "sample_labels": ["chat", "tts", "stt", "cpu-audio-no-gpu-lease", "image-generation", "image-edit", "short-video"],
         },
@@ -1884,6 +2166,17 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_smoke_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["live_stack_smoke"].pop("missing_smoke_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["smoke_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("live stack smoke evidence lacks detailed smoke summary", report["acceptance_blockers"])
+
     def test_smoke_snapshot_requires_resolution_terminal_event_and_artifact_metadata(self) -> None:
         snapshot = acceptance.smoke_evidence_snapshot(
             {
@@ -1911,6 +2204,19 @@ class AcceptanceReportTests(unittest.TestCase):
                 "artifact_metadata_verified",
             ],
         )
+        self.assertIn("samples.healthz", snapshot["missing_smoke_evidence"])
+        self.assertIn("models_listed.model_count", snapshot["missing_smoke_evidence"])
+        self.assertIn("tts_media_job_completed.job_id", snapshot["missing_smoke_evidence"])
+        self.assertIn("tts_media_job_resolved_model_recorded.resolved_model_version", snapshot["missing_smoke_evidence"])
+        self.assertIn("job_events_terminal_state_observed.completed_state", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_downloaded.sha256", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.etag_header", snapshot["missing_smoke_evidence"])
+
+        report = sample_report(live_evidence=sample_live_evidence(live_stack_smoke=snapshot))
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["smoke_evidence_ready"])
+        self.assertIn("live stack smoke evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
 
     def test_report_blocks_handoff_for_incomplete_live_gpu_evidence(self) -> None:
         report = sample_report(
@@ -1962,6 +2268,19 @@ class AcceptanceReportTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["missing_checks"], ["localai_comfyui_voicebox_switch"])
+        self.assertIn("resource_policy_and_runtime_readiness.runtime_deployment_mode", snapshot["missing_gpu_evidence"])
+        self.assertIn("localai_exclusive_gpu_residency.chat_resolved_model_version", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_job_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("voicebox_switch_completed.voicebox_job_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("localai_comfyui_voicebox_switch.runtime_order", snapshot["missing_gpu_evidence"])
+        self.assertIn("vram_reserve_enforced.latest_sample.gpu_memory_total_mib", snapshot["missing_gpu_evidence"])
+        self.assertIn("bounded_runtime_recovery_action.result_status", snapshot["missing_gpu_evidence"])
+
+        report = sample_report(live_evidence=sample_live_evidence(gpu_acceptance=snapshot))
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertIn("RTX 3060 GPU acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
 
     def test_report_blocks_handoff_for_missing_gpu_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()
@@ -1984,6 +2303,17 @@ class AcceptanceReportTests(unittest.TestCase):
             "RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: tts-quality",
             report["acceptance_blockers"],
         )
+
+    def test_report_blocks_handoff_when_gpu_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["gpu_acceptance"].pop("missing_gpu_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("RTX 3060 GPU acceptance evidence lacks detailed GPU summary", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_for_stale_live_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2076,6 +2406,43 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_localai_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["localai_runtime"].pop("missing_localai_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("LocalAI runtime acceptance evidence lacks detailed LocalAI summary", report["acceptance_blockers"])
+
+    def test_localai_snapshot_requires_stream_backend_and_unload_details(self) -> None:
+        snapshot = acceptance.localai_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-localai-runtime-acceptance/v1",
+                "generated_at": "2026-07-24T12:31:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": ok_checks(acceptance.LOCALAI_REQUIRED_CHECKS),
+                "required_model_aliases": [],
+                "model_measurements": {},
+                "samples": [{"label": "localai-stream-chat"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("streaming_chat_completed.resolved_model_version", snapshot["missing_localai_evidence"])
+        self.assertIn("streaming_chat_completed.event_count", snapshot["missing_localai_evidence"])
+        self.assertIn("single_backend_enforced.active_gpu_runtimes", snapshot["missing_localai_evidence"])
+        self.assertIn("graceful_unload_verified.runtime_agent_status", snapshot["missing_localai_evidence"])
+
+        report = sample_report(live_evidence=sample_live_evidence(localai_runtime=snapshot))
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["localai_evidence_ready"])
+        self.assertIn("LocalAI runtime acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
     def test_report_blocks_handoff_without_installed_workflow_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["installed_workflows"] = {"available": False, "reason": "missing"}
@@ -2135,6 +2502,20 @@ class AcceptanceReportTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["missing_checks"], ["media_artifacts_verified"])
+        self.assertIn("chat_completed.resolved_model_version", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("tts_completed.sha256", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("stt_completed.placeholder_proof", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("cpu_audio_does_not_take_gpu_lease.runtime_policy", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("image_generation_completed.job_id", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("image_edit_completed.accept_ranges_header", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("short_video_completed.sha256", snapshot["missing_installed_workflow_evidence"])
+        self.assertIn("media_artifacts_verified.artifacts.image-generation", snapshot["missing_installed_workflow_evidence"])
+
+        report = sample_report(live_evidence=sample_live_evidence(installed_workflows=snapshot))
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertIn("installed workflow evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
 
     def test_report_blocks_handoff_for_missing_installed_workflow_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2158,6 +2539,17 @@ class AcceptanceReportTests(unittest.TestCase):
             "installed workflow evidence is missing measured model runs for aliases: video-text",
             report["acceptance_blockers"],
         )
+
+    def test_report_blocks_handoff_when_installed_workflow_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["installed_workflows"].pop("missing_installed_workflow_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("installed workflow evidence lacks detailed workflow summary", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_native_comfyui_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -3202,132 +3594,21 @@ class AcceptanceReportTests(unittest.TestCase):
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
             smoke = evidence_root / "live-smoke.json"
-            smoke.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-live-smoke/v1",
-                        "generated_at": "2026-07-24T12:25:00+00:00",
-                        "base_url": "https://api.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "healthz_ok": {"status": "ok"},
-                            "models_listed": {"status": "ok"},
-                            "tts_media_job_completed": {"status": "ok"},
-                            "tts_media_job_resolved_model_recorded": {"status": "ok"},
-                            "tts_media_job_not_placeholder": {"status": "ok"},
-                            "job_events_streamed": {"status": "ok"},
-                            "job_events_terminal_state_observed": {"status": "ok"},
-                            "artifact_downloaded": {"status": "ok"},
-                            "artifact_metadata_verified": {"status": "ok"},
-                        },
-                        "samples": [
-                            {"label": "healthz"},
-                            {"label": "models"},
-                            {"label": "tts-job"},
-                            {"label": "job-events"},
-                            {"label": "artifact-download"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            smoke_payload = sample_live_evidence()["live_stack_smoke"]
+            smoke_payload["samples"] = [{"label": label} for label in smoke_payload["sample_labels"]]
+            smoke.write_text(json.dumps(smoke_payload), encoding="utf-8")
             current = evidence_root / "cross-runtime-gpu.json"
-            current.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
-                        "generated_at": "2026-07-24T12:30:00+00:00",
-                        "base_url": "https://api.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "resource_policy_and_runtime_readiness": {"status": "ok"},
-                            "localai_exclusive_gpu_residency": {"status": "ok"},
-                            "comfyui_switch_completed": {"status": "ok"},
-                            "voicebox_switch_completed": {"status": "ok"},
-                            "vram_reserve_enforced": {"status": "ok"},
-                            "bounded_runtime_recovery_action": {"status": "ok"},
-                            "localai_comfyui_voicebox_switch": {"status": "ok"},
-                        },
-                        "required_model_aliases": ["chat-default", "image-default", "tts-quality"],
-                        "model_measurements": {
-                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
-                            "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
-                            "tts-quality": sample_model_measurement("tts-quality", "voicebox", model_id="b1-tts-quality"),
-                        },
-                        "samples": [
-                            {"label": "initial-readiness"},
-                            {"label": "after-localai-chat"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            gpu_payload = sample_live_evidence()["gpu_acceptance"]
+            gpu_payload["samples"] = [{"label": label} for label in gpu_payload["sample_labels"]]
+            current.write_text(json.dumps(gpu_payload), encoding="utf-8")
             localai = evidence_root / "localai-runtime.json"
-            localai.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-localai-runtime-acceptance/v1",
-                        "generated_at": "2026-07-24T12:31:00+00:00",
-                        "base_url": "https://api.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "streaming_chat_completed": {"status": "ok"},
-                            "single_backend_enforced": {"status": "ok"},
-                            "graceful_unload_verified": {"status": "ok"},
-                        },
-                        "required_model_aliases": ["chat-default"],
-                        "model_measurements": {
-                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
-                        },
-                        "samples": [
-                            {"label": "localai-stream-chat"},
-                            {"label": "active-gpu-runtime-states"},
-                            {"label": "localai-unload"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            localai_payload = sample_live_evidence()["localai_runtime"]
+            localai_payload["samples"] = [{"label": label} for label in localai_payload["sample_labels"]]
+            localai.write_text(json.dumps(localai_payload), encoding="utf-8")
             installed = evidence_root / "installed-workflows.json"
-            installed.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-installed-workflows-acceptance/v1",
-                        "generated_at": "2026-07-24T12:32:00+00:00",
-                        "base_url": "https://api.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "chat_completed": {"status": "ok"},
-                            "tts_completed": {"status": "ok"},
-                            "stt_completed": {"status": "ok"},
-                            "cpu_audio_does_not_take_gpu_lease": {"status": "ok"},
-                            "image_generation_completed": {"status": "ok"},
-                            "image_edit_completed": {"status": "ok"},
-                            "short_video_completed": {"status": "ok"},
-                            "media_artifacts_verified": {"status": "ok"},
-                        },
-                        "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
-                        "model_measurements": {
-                            "chat-default": sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
-                            "tts-fast": sample_model_measurement("tts-fast", "audio-cpu", model_id="b1-tts-fast"),
-                            "stt-default": sample_model_measurement("stt-default", "audio-cpu", model_id="b1-stt-default"),
-                            "image-default": sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
-                            "image-edit": sample_model_measurement("image-edit", "comfyui", model_id="b1-image-edit"),
-                            "video-text": sample_model_measurement("video-text", "comfyui", model_id="b1-video-text"),
-                        },
-                        "samples": [
-                            {"label": "chat"},
-                            {"label": "tts"},
-                            {"label": "stt"},
-                            {"label": "cpu-audio-no-gpu-lease"},
-                            {"label": "image-generation"},
-                            {"label": "image-edit"},
-                            {"label": "short-video"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            installed_payload = sample_live_evidence()["installed_workflows"]
+            installed_payload["samples"] = [{"label": label} for label in installed_payload["sample_labels"]]
+            installed.write_text(json.dumps(installed_payload), encoding="utf-8")
             remote = evidence_root / "remote-nodes-non-comfy.json"
             remote.write_text(
                 json.dumps(
@@ -3670,6 +3951,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(smoke_snapshot["source_path"], str(smoke.resolve()))
         self.assertEqual(smoke_snapshot["status"], "ok")
         self.assertEqual(smoke_snapshot["missing_checks"], [])
+        self.assertEqual(smoke_snapshot["missing_smoke_evidence"], [])
+        self.assertEqual(smoke_snapshot["smoke_artifact_bytes"], 4096)
         self.assertEqual(smoke_snapshot["sample_count"], 5)
         gpu = snapshot["gpu_acceptance"]
         self.assertTrue(gpu["available"])
@@ -3677,15 +3960,19 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["status"], "ok")
         self.assertEqual(gpu["missing_checks"], [])
         self.assertEqual(gpu["missing_model_measurements"], [])
+        self.assertEqual(gpu["missing_gpu_evidence"], [])
+        self.assertEqual(gpu["gpu_runtime_order"], ["localai", "comfyui", "voicebox"])
         self.assertEqual(gpu["model_measurements"]["chat-default"]["resolved_model_version"], "b1-chat-default@1.0.0")
-        self.assertEqual(gpu["sample_count"], 2)
+        self.assertEqual(gpu["sample_count"], 4)
         localai_snapshot = snapshot["localai_runtime"]
         self.assertTrue(localai_snapshot["available"])
         self.assertEqual(localai_snapshot["source_path"], str(localai.resolve()))
         self.assertEqual(localai_snapshot["status"], "ok")
         self.assertEqual(localai_snapshot["missing_checks"], [])
         self.assertEqual(localai_snapshot["missing_model_measurements"], [])
+        self.assertEqual(localai_snapshot["missing_localai_evidence"], [])
         self.assertEqual(localai_snapshot["model_measurements"]["chat-default"]["runtime"], "localai")
+        self.assertEqual(localai_snapshot["localai_unload_stage"], "idle_unloaded")
         self.assertEqual(localai_snapshot["sample_count"], 3)
         workflows = snapshot["installed_workflows"]
         self.assertTrue(workflows["available"])
@@ -3693,6 +3980,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(workflows["status"], "ok")
         self.assertEqual(workflows["missing_checks"], [])
         self.assertEqual(workflows["missing_model_measurements"], [])
+        self.assertEqual(workflows["missing_installed_workflow_evidence"], [])
+        self.assertEqual(workflows["installed_workflow_artifact_count"], 3)
         self.assertEqual(workflows["model_measurements"]["video-text"]["runtime"], "comfyui")
         self.assertEqual(workflows["sample_count"], 7)
         native = snapshot["native_comfyui_compatibility"]

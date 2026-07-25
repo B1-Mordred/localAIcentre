@@ -863,6 +863,424 @@ def _successful_http_status(value: Any) -> bool:
     return 200 <= status < 300
 
 
+def _resolved_model_version(value: Any) -> str:
+    resolved = _nonempty_text(value)
+    return resolved if re.fullmatch(r"[^@\s]+@[^@\s]+", resolved) else ""
+
+
+def _positive_artifact_bytes(record: dict[str, Any]) -> int:
+    for key in ("bytes", "byte_count", "artifact_bytes", "first_artifact_bytes"):
+        value = _positive_int(record.get(key))
+        if value:
+            return value
+    return 0
+
+
+def _artifact_sha256(record: dict[str, Any]) -> str:
+    for key in ("sha256", "artifact_sha256", "first_artifact_sha256"):
+        digest = _normalized_sha256(record.get(key))
+        if digest:
+            return digest
+    return ""
+
+
+def _require_artifact_download_evidence(record: dict[str, Any], check_name: str, missing: list[str]) -> tuple[int, str]:
+    byte_count = _positive_artifact_bytes(record)
+    digest = _artifact_sha256(record)
+    if byte_count < 1:
+        missing.append(f"{check_name}.byte_count")
+    if not digest:
+        missing.append(f"{check_name}.sha256")
+    return byte_count, digest
+
+
+def _require_artifact_metadata_evidence(record: dict[str, Any], check_name: str, missing: list[str]) -> tuple[int, str]:
+    byte_count, digest = _require_artifact_download_evidence(record, check_name, missing)
+    artifact_url = _nonempty_text(record.get("artifact_url") or record.get("first_artifact_url"))
+    if not artifact_url.startswith("/artifacts/"):
+        missing.append(f"{check_name}.artifact_url")
+    mime_type = _nonempty_text(
+        record.get("mime_type")
+        or record.get("artifact_mime_type")
+        or record.get("first_artifact_mime_type")
+    )
+    if not mime_type:
+        missing.append(f"{check_name}.mime_type")
+    content_type = _nonempty_text(record.get("content_type_header") or record.get("download_content_type"))
+    if not content_type:
+        missing.append(f"{check_name}.content_type_header")
+    content_length = _nonempty_text(record.get("content_length_header") or record.get("download_content_length"))
+    if byte_count and content_length != str(byte_count):
+        missing.append(f"{check_name}.content_length_header")
+    etag = _nonempty_text(record.get("etag_header") or record.get("download_etag"))
+    if not etag:
+        missing.append(f"{check_name}.etag_header")
+    accept_ranges = _nonempty_text(record.get("accept_ranges_header") or record.get("download_accept_ranges")).lower()
+    if accept_ranges != "bytes":
+        missing.append(f"{check_name}.accept_ranges_header")
+    return byte_count, digest
+
+
+def _require_non_placeholder_proof(record: dict[str, Any], check_name: str, missing: list[str], *, proof_key: str = "placeholder_proof") -> None:
+    proof = record.get(proof_key) if isinstance(record.get(proof_key), dict) else {}
+    runtime = _nonempty_text(record.get("runtime") or proof.get("runtime")).lower()
+    if not proof:
+        missing.append(f"{check_name}.{proof_key}")
+        return
+    if proof.get("placeholder_failure") is not False:
+        missing.append(f"{check_name}.non_placeholder_proof")
+    if runtime == "audio-cpu" and proof.get("placeholder") is not False:
+        missing.append(f"{check_name}.audio_cpu_placeholder_false")
+    cpu_audio_engine = _nonempty_text(proof.get("cpu_audio_engine")).lower()
+    if runtime == "audio-cpu" and not cpu_audio_engine:
+        missing.append(f"{check_name}.cpu_audio_engine")
+    if cpu_audio_engine == "scaffold":
+        missing.append(f"{check_name}.cpu_audio_engine_not_scaffold")
+
+
+def _sample_labels(payload: dict[str, Any]) -> set[str]:
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    labels = {
+        str(sample.get("label"))
+        for sample in samples
+        if isinstance(sample, dict) and isinstance(sample.get("label"), str)
+    }
+    raw_labels = payload.get("sample_labels")
+    if isinstance(raw_labels, list):
+        labels.update(str(item) for item in raw_labels if isinstance(item, str))
+    return labels
+
+
+def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    labels = _sample_labels(payload)
+    for label in ("healthz", "models", "tts-job", "job-events", "artifact-download"):
+        if label not in labels:
+            missing.append(f"samples.{label}")
+
+    models = _check_record(checks, "models_listed")
+    model_count = _positive_int(models.get("model_count"))
+    if model_count < 1:
+        missing.append("models_listed.model_count")
+
+    tts = _check_record(checks, "tts_media_job_completed")
+    job_id = _nonempty_text(tts.get("job_id"))
+    model = _nonempty_text(tts.get("model"))
+    if not job_id:
+        missing.append("tts_media_job_completed.job_id")
+    if not model:
+        missing.append("tts_media_job_completed.model")
+
+    resolved = _check_record(checks, "tts_media_job_resolved_model_recorded")
+    resolved_job_id = _nonempty_text(resolved.get("job_id"))
+    if not resolved_job_id:
+        missing.append("tts_media_job_resolved_model_recorded.job_id")
+    elif job_id and resolved_job_id != job_id:
+        missing.append("tts_media_job_resolved_model_recorded.job_id_matches_completed")
+    runtime = _nonempty_text(resolved.get("runtime"))
+    resolved_model_version = _resolved_model_version(resolved.get("resolved_model_version"))
+    if not runtime:
+        missing.append("tts_media_job_resolved_model_recorded.runtime")
+    if not resolved_model_version:
+        missing.append("tts_media_job_resolved_model_recorded.resolved_model_version")
+
+    placeholder = _check_record(checks, "tts_media_job_not_placeholder")
+    placeholder_job_id = _nonempty_text(placeholder.get("job_id"))
+    if not placeholder_job_id:
+        missing.append("tts_media_job_not_placeholder.job_id")
+    elif job_id and placeholder_job_id != job_id:
+        missing.append("tts_media_job_not_placeholder.job_id_matches_completed")
+    if placeholder.get("placeholder") is not False:
+        missing.append("tts_media_job_not_placeholder.placeholder_false")
+    cpu_audio_engine = _nonempty_text(placeholder.get("cpu_audio_engine")).lower()
+    placeholder_runtime = _nonempty_text(placeholder.get("runtime") or runtime).lower()
+    if placeholder_runtime == "audio-cpu" and not cpu_audio_engine:
+        missing.append("tts_media_job_not_placeholder.cpu_audio_engine")
+    if cpu_audio_engine == "scaffold":
+        missing.append("tts_media_job_not_placeholder.cpu_audio_engine_not_scaffold")
+
+    events = _check_record(checks, "job_events_streamed")
+    if _nonempty_text(events.get("job_id")) != job_id:
+        missing.append("job_events_streamed.job_id_matches_completed")
+    if _positive_int(events.get("bytes")) < 1:
+        missing.append("job_events_streamed.bytes")
+    terminal = _check_record(checks, "job_events_terminal_state_observed")
+    if _nonempty_text(terminal.get("job_id")) != job_id:
+        missing.append("job_events_terminal_state_observed.job_id_matches_completed")
+    if terminal.get("state") != "completed":
+        missing.append("job_events_terminal_state_observed.completed_state")
+    if _positive_int(terminal.get("event_count")) < 1:
+        missing.append("job_events_terminal_state_observed.event_count")
+
+    artifact = _check_record(checks, "artifact_downloaded")
+    artifact_job_id = _nonempty_text(artifact.get("job_id"))
+    if artifact_job_id != job_id:
+        missing.append("artifact_downloaded.job_id_matches_completed")
+    artifact_bytes, artifact_sha256 = _require_artifact_download_evidence(artifact, "artifact_downloaded", missing)
+    metadata = _check_record(checks, "artifact_metadata_verified")
+    metadata_job_id = _nonempty_text(metadata.get("job_id"))
+    if metadata_job_id != job_id:
+        missing.append("artifact_metadata_verified.job_id_matches_completed")
+    metadata_bytes, metadata_sha256 = _require_artifact_metadata_evidence(metadata, "artifact_metadata_verified", missing)
+    if artifact_bytes and metadata_bytes and artifact_bytes != metadata_bytes:
+        missing.append("artifact_metadata_verified.bytes_match_download")
+    if artifact_sha256 and metadata_sha256 and artifact_sha256 != metadata_sha256:
+        missing.append("artifact_metadata_verified.sha256_matches_download")
+
+    return {
+        "smoke_tts_job_id": job_id,
+        "smoke_tts_model": model,
+        "smoke_tts_runtime": runtime,
+        "smoke_tts_resolved_model_version": resolved_model_version,
+        "smoke_artifact_bytes": artifact_bytes,
+        "smoke_artifact_sha256": artifact_sha256,
+        "missing_smoke_evidence": missing,
+    }
+
+
+def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    readiness = _check_record(checks, "resource_policy_and_runtime_readiness")
+    if readiness.get("runtime_deployment_mode") != "production":
+        missing.append("resource_policy_and_runtime_readiness.runtime_deployment_mode")
+    if readiness.get("readiness_status") != "ok":
+        missing.append("resource_policy_and_runtime_readiness.readiness_status")
+
+    localai = _check_record(checks, "localai_exclusive_gpu_residency")
+    chat_resolved = _resolved_model_version(localai.get("chat_resolved_model_version"))
+    if not chat_resolved:
+        missing.append("localai_exclusive_gpu_residency.chat_resolved_model_version")
+
+    comfyui = _check_record(checks, "comfyui_switch_completed")
+    comfyui_resolved = _resolved_model_version(comfyui.get("comfyui_resolved_model_version"))
+    if not comfyui_resolved:
+        missing.append("comfyui_switch_completed.comfyui_resolved_model_version")
+    if not _nonempty_text(comfyui.get("comfyui_job_id")):
+        missing.append("comfyui_switch_completed.comfyui_job_id")
+
+    voicebox = _check_record(checks, "voicebox_switch_completed")
+    voicebox_resolved = _resolved_model_version(voicebox.get("voicebox_resolved_model_version"))
+    if not voicebox_resolved:
+        missing.append("voicebox_switch_completed.voicebox_resolved_model_version")
+    if not _nonempty_text(voicebox.get("voicebox_job_id")):
+        missing.append("voicebox_switch_completed.voicebox_job_id")
+
+    switch = _check_record(checks, "localai_comfyui_voicebox_switch")
+    runtime_order = _as_string_list(switch.get("runtime_order"))
+    if runtime_order != ["localai", "comfyui", "voicebox"]:
+        missing.append("localai_comfyui_voicebox_switch.runtime_order")
+    switch_chat = _resolved_model_version(switch.get("chat_resolved_model_version"))
+    switch_comfyui = _resolved_model_version(switch.get("comfyui_resolved_model_version"))
+    switch_voicebox = _resolved_model_version(switch.get("voicebox_resolved_model_version"))
+    if not switch_chat:
+        missing.append("localai_comfyui_voicebox_switch.chat_resolved_model_version")
+    elif chat_resolved and switch_chat != chat_resolved:
+        missing.append("localai_comfyui_voicebox_switch.chat_resolved_matches_localai")
+    if not switch_comfyui:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_resolved_model_version")
+    elif comfyui_resolved and switch_comfyui != comfyui_resolved:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_resolved_matches_switch")
+    if not switch_voicebox:
+        missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_model_version")
+    elif voicebox_resolved and switch_voicebox != voicebox_resolved:
+        missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_matches_switch")
+    for key in ("comfyui_job_id", "voicebox_job_id"):
+        if not _nonempty_text(switch.get(key)):
+            missing.append(f"localai_comfyui_voicebox_switch.{key}")
+
+    vram = _check_record(checks, "vram_reserve_enforced")
+    vram_sample_count = _positive_int(vram.get("sample_count"))
+    if vram_sample_count < 1:
+        missing.append("vram_reserve_enforced.sample_count")
+    latest_sample = vram.get("latest_sample") if isinstance(vram.get("latest_sample"), dict) else {}
+    if _positive_int(latest_sample.get("gpu_memory_total_mib")) < 1:
+        missing.append("vram_reserve_enforced.latest_sample.gpu_memory_total_mib")
+    if _positive_int(latest_sample.get("reserve_mib")) < 1:
+        missing.append("vram_reserve_enforced.latest_sample.reserve_mib")
+    used = _integer_value(latest_sample.get("gpu_memory_used_mib"))
+    total = _integer_value(latest_sample.get("gpu_memory_total_mib"))
+    reserve = _integer_value(latest_sample.get("reserve_mib"))
+    if used is None or used < 0:
+        missing.append("vram_reserve_enforced.latest_sample.gpu_memory_used_mib")
+    elif total is not None and reserve is not None and used > total - reserve:
+        missing.append("vram_reserve_enforced.latest_sample.usage_within_reserve")
+
+    recovery = _check_record(checks, "bounded_runtime_recovery_action")
+    recovery_runtime = _nonempty_text(recovery.get("runtime"))
+    if recovery_runtime not in {"localai", "comfyui", "voicebox"}:
+        missing.append("bounded_runtime_recovery_action.runtime")
+    if recovery.get("result_status") != "ok":
+        missing.append("bounded_runtime_recovery_action.result_status")
+    if not _nonempty_text(recovery.get("strategy")):
+        missing.append("bounded_runtime_recovery_action.strategy")
+
+    return {
+        "gpu_runtime_order": runtime_order,
+        "gpu_switch_resolved_models": {
+            "localai": switch_chat or chat_resolved,
+            "comfyui": switch_comfyui or comfyui_resolved,
+            "voicebox": switch_voicebox or voicebox_resolved,
+        },
+        "gpu_vram_sample_count": vram_sample_count,
+        "gpu_recovery_runtime": recovery_runtime,
+        "missing_gpu_evidence": missing,
+    }
+
+
+def _localai_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    stream = _check_record(checks, "streaming_chat_completed")
+    model = _nonempty_text(stream.get("model"))
+    resolved = _resolved_model_version(stream.get("resolved_model_version"))
+    event_count = _positive_int(stream.get("event_count"))
+    byte_count = _positive_int(stream.get("bytes"))
+    if not model:
+        missing.append("streaming_chat_completed.model")
+    if not resolved:
+        missing.append("streaming_chat_completed.resolved_model_version")
+    if event_count < 1:
+        missing.append("streaming_chat_completed.event_count")
+    if byte_count < 1:
+        missing.append("streaming_chat_completed.bytes")
+
+    backend = _check_record(checks, "single_backend_enforced")
+    active = _as_string_list(backend.get("active_gpu_runtimes"))
+    if active != ["localai"]:
+        missing.append("single_backend_enforced.active_gpu_runtimes")
+    if _resolved_model_version(backend.get("resolved_model_version")) != resolved:
+        missing.append("single_backend_enforced.resolved_model_version_matches_stream")
+    if not _nonempty_text(backend.get("stage")):
+        missing.append("single_backend_enforced.stage")
+    if not _nonempty_text(backend.get("state_status") or backend.get("status")):
+        missing.append("single_backend_enforced.state_status")
+
+    unload = _check_record(checks, "graceful_unload_verified")
+    if unload.get("runtime_agent_status") != "ok":
+        missing.append("graceful_unload_verified.runtime_agent_status")
+    if unload.get("state_stage") != "idle_unloaded":
+        missing.append("graceful_unload_verified.state_stage")
+    if not _nonempty_text(unload.get("state_status")):
+        missing.append("graceful_unload_verified.state_status")
+
+    return {
+        "localai_chat_model": model,
+        "localai_resolved_model_version": resolved,
+        "localai_stream_event_count": event_count,
+        "localai_stream_bytes": byte_count,
+        "localai_unload_stage": _nonempty_text(unload.get("state_stage")),
+        "missing_localai_evidence": missing,
+    }
+
+
+def _installed_workflows_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    chat = _check_record(checks, "chat_completed")
+    if not _nonempty_text(chat.get("model")):
+        missing.append("chat_completed.model")
+    if not _resolved_model_version(chat.get("resolved_model_version")):
+        missing.append("chat_completed.resolved_model_version")
+    if not _nonempty_text(chat.get("runtime")):
+        missing.append("chat_completed.runtime")
+    if _positive_int(chat.get("choice_count")) < 1:
+        missing.append("chat_completed.choice_count")
+    _require_non_placeholder_proof(chat, "chat_completed", missing)
+
+    tts = _check_record(checks, "tts_completed")
+    if not _nonempty_text(tts.get("model")):
+        missing.append("tts_completed.model")
+    if not _resolved_model_version(tts.get("resolved_model_version")):
+        missing.append("tts_completed.resolved_model_version")
+    if not _nonempty_text(tts.get("runtime")):
+        missing.append("tts_completed.runtime")
+    _require_artifact_download_evidence(tts, "tts_completed", missing)
+    _require_non_placeholder_proof(tts, "tts_completed", missing)
+
+    stt = _check_record(checks, "stt_completed")
+    if not _nonempty_text(stt.get("model")):
+        missing.append("stt_completed.model")
+    if not _resolved_model_version(stt.get("resolved_model_version")):
+        missing.append("stt_completed.resolved_model_version")
+    if not _nonempty_text(stt.get("runtime")):
+        missing.append("stt_completed.runtime")
+    text_length = _integer_value(stt.get("text_length"))
+    if text_length is None or text_length < 0:
+        missing.append("stt_completed.text_length")
+    _require_non_placeholder_proof(stt, "stt_completed", missing)
+
+    cpu_audio = _check_record(checks, "cpu_audio_does_not_take_gpu_lease")
+    if cpu_audio.get("runtime_policy") != "non_comfy_only":
+        missing.append("cpu_audio_does_not_take_gpu_lease.runtime_policy")
+    if _nonempty_text(cpu_audio.get("scheduler_owner_before")) != _nonempty_text(cpu_audio.get("scheduler_owner_after")):
+        missing.append("cpu_audio_does_not_take_gpu_lease.scheduler_owner_unchanged")
+    if str(cpu_audio.get("tts_gpu_lease_required")).lower() != "false":
+        missing.append("cpu_audio_does_not_take_gpu_lease.tts_gpu_lease_required_false")
+    if cpu_audio.get("stt_gpu_lease_required") is not False:
+        missing.append("cpu_audio_does_not_take_gpu_lease.stt_gpu_lease_required_false")
+    if _positive_int(cpu_audio.get("tts_byte_count")) < 1:
+        missing.append("cpu_audio_does_not_take_gpu_lease.tts_byte_count")
+    cpu_stt_text_length = _integer_value(cpu_audio.get("stt_text_length"))
+    if cpu_stt_text_length is None or cpu_stt_text_length < 0:
+        missing.append("cpu_audio_does_not_take_gpu_lease.stt_text_length")
+    if not _resolved_model_version(cpu_audio.get("tts_resolved_model_version")):
+        missing.append("cpu_audio_does_not_take_gpu_lease.tts_resolved_model_version")
+    if not _resolved_model_version(cpu_audio.get("stt_resolved_model_version")):
+        missing.append("cpu_audio_does_not_take_gpu_lease.stt_resolved_model_version")
+    _require_non_placeholder_proof(cpu_audio, "cpu_audio_does_not_take_gpu_lease.tts", missing, proof_key="tts_placeholder_proof")
+    _require_non_placeholder_proof(cpu_audio, "cpu_audio_does_not_take_gpu_lease.stt", missing, proof_key="stt_placeholder_proof")
+
+    media_labels = ("image-generation", "image-edit", "short-video")
+    media_check_names = (
+        "image_generation_completed",
+        "image_edit_completed",
+        "short_video_completed",
+    )
+    media_artifact_count = 0
+    for check_name in media_check_names:
+        record = _check_record(checks, check_name)
+        if not _nonempty_text(record.get("job_id")):
+            missing.append(f"{check_name}.job_id")
+        if not _nonempty_text(record.get("model")):
+            missing.append(f"{check_name}.model")
+        if not _resolved_model_version(record.get("resolved_model_version")):
+            missing.append(f"{check_name}.resolved_model_version")
+        if not _nonempty_text(record.get("runtime")):
+            missing.append(f"{check_name}.runtime")
+        if _positive_int(record.get("artifact_count")) < 1:
+            missing.append(f"{check_name}.artifact_count")
+        byte_count, digest = _require_artifact_metadata_evidence(record, check_name, missing)
+        if byte_count and digest:
+            media_artifact_count += 1
+
+    verified = _check_record(checks, "media_artifacts_verified")
+    workflow_labels = _as_string_list(verified.get("workflow_labels"))
+    for label in media_labels:
+        if label not in workflow_labels:
+            missing.append(f"media_artifacts_verified.workflow_labels.{label}")
+    if _positive_int(verified.get("artifact_count")) < len(media_labels):
+        missing.append("media_artifacts_verified.artifact_count")
+    artifacts = verified.get("artifacts") if isinstance(verified.get("artifacts"), dict) else {}
+    for label in media_labels:
+        proof = artifacts.get(label) if isinstance(artifacts.get(label), dict) else {}
+        if not proof:
+            missing.append(f"media_artifacts_verified.artifacts.{label}")
+            continue
+        _require_artifact_metadata_evidence(proof, f"media_artifacts_verified.artifacts.{label}", missing)
+
+    return {
+        "installed_workflow_artifact_count": media_artifact_count,
+        "installed_workflow_labels": list(media_labels),
+        "missing_installed_workflow_evidence": missing,
+    }
+
+
 def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
@@ -1707,13 +2125,15 @@ def latest_cutover_preservation_snapshot(backup_root: Path) -> dict[str, Any]:
 
 
 def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    extra_fields = _model_measurement_summary(payload)
+    extra_fields.update(_gpu_acceptance_summary(payload))
     return _live_evidence_snapshot(
         payload,
         source_path,
         expected_format=GPU_ACCEPTANCE_EVIDENCE_FORMAT,
         unsupported_reason="unsupported GPU acceptance evidence format",
         required_checks=GPU_ACCEPTANCE_REQUIRED_CHECKS,
-        extra_fields=_model_measurement_summary(payload),
+        extra_fields=extra_fields,
     )
 
 
@@ -1724,28 +2144,33 @@ def smoke_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = 
         expected_format=SMOKE_EVIDENCE_FORMAT,
         unsupported_reason="unsupported live smoke evidence format",
         required_checks=SMOKE_REQUIRED_CHECKS,
+        extra_fields=_smoke_acceptance_summary(payload),
     )
 
 
 def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    extra_fields = _model_measurement_summary(payload)
+    extra_fields.update(_localai_acceptance_summary(payload))
     return _live_evidence_snapshot(
         payload,
         source_path,
         expected_format=LOCALAI_EVIDENCE_FORMAT,
         unsupported_reason="unsupported LocalAI runtime acceptance evidence format",
         required_checks=LOCALAI_REQUIRED_CHECKS,
-        extra_fields=_model_measurement_summary(payload),
+        extra_fields=extra_fields,
     )
 
 
 def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    extra_fields = _model_measurement_summary(payload)
+    extra_fields.update(_installed_workflows_summary(payload))
     return _live_evidence_snapshot(
         payload,
         source_path,
         expected_format=INSTALLED_WORKFLOWS_EVIDENCE_FORMAT,
         unsupported_reason="unsupported installed workflow acceptance evidence format",
         required_checks=INSTALLED_WORKFLOWS_REQUIRED_CHECKS,
-        extra_fields=_model_measurement_summary(payload),
+        extra_fields=extra_fields,
     )
 
 
@@ -2372,6 +2797,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = smoke_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("live stack smoke evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_detail = smoke_evidence.get("missing_smoke_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("live stack smoke evidence lacks detailed smoke summary")
+        elif missing_detail:
+            blockers.append("live stack smoke evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     if gpu_evidence.get("available") is not True:
         blockers.append("RTX 3060 GPU acceptance evidence is unavailable")
@@ -2384,6 +2814,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = gpu_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        missing_detail = gpu_evidence.get("missing_gpu_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("RTX 3060 GPU acceptance evidence lacks detailed GPU summary")
+        elif missing_detail:
+            blockers.append("RTX 3060 GPU acceptance evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
     if localai_evidence.get("available") is not True:
         blockers.append("LocalAI runtime acceptance evidence is unavailable")
@@ -2396,6 +2831,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = localai_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("LocalAI runtime acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        missing_detail = localai_evidence.get("missing_localai_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("LocalAI runtime acceptance evidence lacks detailed LocalAI summary")
+        elif missing_detail:
+            blockers.append("LocalAI runtime acceptance evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     if installed_workflows_evidence.get("available") is not True:
         blockers.append("installed workflow evidence is unavailable")
@@ -2408,6 +2848,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = installed_workflows_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("installed workflow evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        missing_detail = installed_workflows_evidence.get("missing_installed_workflow_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("installed workflow evidence lacks detailed workflow summary")
+        elif missing_detail:
+            blockers.append("installed workflow evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
     )
@@ -2800,6 +3245,18 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_models = evidence.get("missing_model_measurements")
     if isinstance(missing_models, list) and missing_models:
         summary_rows.append(["missing_model_measurements", ", ".join(str(item) for item in missing_models)])
+    missing_smoke = evidence.get("missing_smoke_evidence")
+    if isinstance(missing_smoke, list) and missing_smoke:
+        summary_rows.append(["missing_smoke_evidence", ", ".join(str(item) for item in missing_smoke)])
+    missing_gpu = evidence.get("missing_gpu_evidence")
+    if isinstance(missing_gpu, list) and missing_gpu:
+        summary_rows.append(["missing_gpu_evidence", ", ".join(str(item) for item in missing_gpu)])
+    missing_localai = evidence.get("missing_localai_evidence")
+    if isinstance(missing_localai, list) and missing_localai:
+        summary_rows.append(["missing_localai_evidence", ", ".join(str(item) for item in missing_localai)])
+    missing_installed = evidence.get("missing_installed_workflow_evidence")
+    if isinstance(missing_installed, list) and missing_installed:
+        summary_rows.append(["missing_installed_workflow_evidence", ", ".join(str(item) for item in missing_installed)])
     missing_integrity = evidence.get("missing_integrity_evidence")
     if isinstance(missing_integrity, list) and missing_integrity:
         summary_rows.append(["missing_integrity_evidence", ", ".join(str(item) for item in missing_integrity)])
@@ -3335,6 +3792,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         smoke_evidence.get("available") is True
         and smoke_evidence.get("status") == "ok"
         and not smoke_evidence.get("missing_checks")
+        and smoke_evidence.get("missing_smoke_evidence") == []
         and "live_stack_smoke" not in freshness_failures
     )
     gpu_evidence_ready = (
@@ -3342,6 +3800,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and gpu_evidence.get("status") == "ok"
         and not gpu_evidence.get("missing_checks")
         and not gpu_evidence.get("missing_model_measurements")
+        and gpu_evidence.get("missing_gpu_evidence") == []
         and "gpu_acceptance" not in freshness_failures
     )
     localai_evidence_ready = (
@@ -3349,6 +3808,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and localai_evidence.get("status") == "ok"
         and not localai_evidence.get("missing_checks")
         and not localai_evidence.get("missing_model_measurements")
+        and localai_evidence.get("missing_localai_evidence") == []
         and "localai_runtime" not in freshness_failures
     )
     installed_workflows_evidence_ready = (
@@ -3356,6 +3816,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and installed_workflows_evidence.get("status") == "ok"
         and not installed_workflows_evidence.get("missing_checks")
         and not installed_workflows_evidence.get("missing_model_measurements")
+        and installed_workflows_evidence.get("missing_installed_workflow_evidence") == []
         and "installed_workflows" not in freshness_failures
     )
     native_comfyui_evidence_ready = (

@@ -516,6 +516,7 @@ class LiveStackSmokeTests(unittest.TestCase):
             mime_type=artifact_mime_type,
             sha256=artifact_sha256,
             content_type_header=content_type,
+            content_length_header=content_length,
             etag_header=etag,
             accept_ranges_header=accept_ranges,
         )
