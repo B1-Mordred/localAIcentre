@@ -343,6 +343,10 @@ services:
       context: ./services/mock-runtime
     <<: *service-defaults
     read_only: true
+    labels:
+      b1.ai-hub.runtime: localai
+      b1.ai-hub.runtime.kind: placeholder-localai
+      b1.ai-hub.placeholder: "true"
     environment:
       B1_RUNTIME_NAME: localai
       B1_RUNTIME_KIND: placeholder-localai
@@ -360,6 +364,10 @@ services:
       context: ./services/mock-runtime
     <<: *service-defaults
     read_only: true
+    labels:
+      b1.ai-hub.runtime: comfyui
+      b1.ai-hub.runtime.kind: placeholder-comfyui
+      b1.ai-hub.placeholder: "true"
     environment:
       B1_RUNTIME_NAME: comfyui
       B1_RUNTIME_KIND: placeholder-comfyui
@@ -380,6 +388,10 @@ services:
     read_only: true
     profiles:
       - voicebox
+    labels:
+      b1.ai-hub.runtime: voicebox
+      b1.ai-hub.runtime.kind: placeholder-voicebox
+      b1.ai-hub.placeholder: "true"
     environment:
       B1_RUNTIME_NAME: voicebox
       B1_RUNTIME_KIND: placeholder-voicebox
@@ -402,6 +414,9 @@ services:
         B1_PIPER_SHA256: ${B1_PIPER_SHA256:-a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992}
     <<: *service-defaults
     read_only: true
+    labels:
+      b1.ai-hub.runtime: audio-cpu
+      b1.ai-hub.runtime.kind: audio-cpu
     environment:
       B1_CPU_AUDIO_ENGINE: ${B1_CPU_AUDIO_ENGINE:-scaffold}
       B1_CPU_EMBEDDING_ENGINE: ${B1_CPU_EMBEDDING_ENGINE:-}

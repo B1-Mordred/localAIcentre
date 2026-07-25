@@ -81,6 +81,10 @@ class FakeDockerEngineClient(DockerEngineClient):
                 "Labels": {
                     "com.docker.compose.project": "b1-ai-hub",
                     "com.docker.compose.service": "control-plane",
+                    "b1.ai-hub.runtime": "control-plane",
+                    "b1.ai-hub.runtime.kind": "control-plane",
+                    "b1.ai-hub.placeholder": "false",
+                    "unrelated.secret.label": "do-not-return",
                 },
             }
         ]
@@ -181,6 +185,9 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertEqual(containers[0]["id"], "abcdef1234567890")
         self.assertEqual(containers[0]["short_id"], "abcdef123456")
         self.assertEqual(containers[0]["image_id"], "sha256:" + "d" * 64)
+        self.assertEqual(containers[0]["labels"]["b1.ai-hub.runtime"], "control-plane")
+        self.assertEqual(containers[0]["labels"]["b1.ai-hub.placeholder"], "false")
+        self.assertNotIn("unrelated.secret.label", containers[0]["labels"])
         method, path = client.requests[0]
         self.assertEqual(method, "GET")
         self.assertIn("com.docker.compose.service", path)

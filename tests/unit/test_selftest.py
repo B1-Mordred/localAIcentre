@@ -253,6 +253,86 @@ class SelfTestTests(unittest.TestCase):
             [{"runtime": "comfyui", "status": "unreachable"}, {"runtime": "audio-cpu", "status": "missing"}],
         )
 
+    def test_runtime_production_readiness_fails_for_placeholder_service_inventory(self) -> None:
+        result = selftest.runtime_production_readiness_check(
+            [
+                {"name": "localai", "status": "ok", "details": {"version": "pinned"}},
+                {"name": "comfyui", "status": "ok", "details": {"version": "pinned"}},
+            ],
+            "production",
+            ("localai", "comfyui"),
+            {
+                "services": [
+                    {
+                        "name": "localai",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-localai-1",
+                                "image": "b1-ai-hub/mock-runtime:dev",
+                                "state": "running",
+                                "labels": {
+                                    "b1.ai-hub.runtime": "localai",
+                                    "b1.ai-hub.runtime.kind": "placeholder-localai",
+                                    "b1.ai-hub.placeholder": "true",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "name": "comfyui",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-comfyui-1",
+                                "image": "b1-ai-hub/comfyui:v0.3.77-b1",
+                                "state": "running",
+                                "labels": {
+                                    "b1.ai-hub.runtime": "comfyui",
+                                    "b1.ai-hub.runtime.kind": "comfyui",
+                                    "b1.ai-hub.placeholder": "false",
+                                },
+                            }
+                        ],
+                    },
+                ]
+            },
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["data"]["required_placeholders"], ["localai"])
+        self.assertEqual(result["data"]["placeholder_runtimes"], ["localai"])
+        self.assertIn("container label b1.ai-hub.placeholder=true", result["data"]["service_placeholder_reasons"]["localai"])
+
+    def test_runtime_production_readiness_ignores_stopped_placeholder_inventory(self) -> None:
+        result = selftest.runtime_production_readiness_check(
+            [{"name": "localai", "status": "ok", "details": {"version": "pinned"}}],
+            "production",
+            ("localai",),
+            {
+                "services": [
+                    {
+                        "name": "localai",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-localai-old",
+                                "image": "b1-ai-hub/mock-runtime:dev",
+                                "state": "exited",
+                                "labels": {"b1.ai-hub.placeholder": "true"},
+                            },
+                            {
+                                "name": "b1-ai-hub-localai-1",
+                                "image": "b1-ai-hub/localai:v4.7.1-b1",
+                                "state": "running",
+                                "labels": {"b1.ai-hub.placeholder": "false"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["required_placeholders"], [])
+
     def test_runtime_production_readiness_passes_for_required_real_runtimes(self) -> None:
         result = selftest.runtime_production_readiness_check(
             [

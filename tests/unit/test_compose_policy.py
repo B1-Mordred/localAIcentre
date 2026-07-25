@@ -118,6 +118,17 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assertEqual(missing, [])
 
+    def test_runtime_services_expose_placeholder_readiness_labels(self) -> None:
+        for runtime in ("localai", "comfyui", "voicebox"):
+            labels = self.compose["services"][runtime]["labels"]
+            self.assertEqual(labels["b1.ai-hub.runtime"], runtime)
+            self.assertEqual(labels["b1.ai-hub.runtime.kind"], f"placeholder-{runtime}")
+            self.assertEqual(labels["b1.ai-hub.placeholder"], "true")
+        audio_labels = self.compose["services"]["audio-cpu"]["labels"]
+        self.assertEqual(audio_labels["b1.ai-hub.runtime"], "audio-cpu")
+        self.assertEqual(audio_labels["b1.ai-hub.runtime.kind"], "audio-cpu")
+        self.assertNotIn("b1.ai-hub.placeholder", audio_labels)
+
     def test_open_webui_uses_generated_internal_api_key(self) -> None:
         open_webui = self.compose["services"]["open-webui"]
         control_plane = self.compose["services"]["control-plane"]
@@ -486,6 +497,9 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assertEqual(service["build"]["context"], "./deploy/localai")
         self.assertEqual(service["image"], "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime"], "localai")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime.kind"], "localai")
+        self.assertEqual(service["labels"]["b1.ai-hub.placeholder"], "false")
         self.assertEqual(build_args["B1_LOCALAI_UPSTREAM_VERSION"], "${B1_LOCALAI_UPSTREAM_VERSION:-v4.7.1-gpu-nvidia-cuda-12}")
         self.assertEqual(build_args["B1_LOCALAI_UPSTREAM_COMMIT"], "${B1_LOCALAI_UPSTREAM_COMMIT:-b224c96db6f4b87306a33a808650bfce63b12588}")
         self.assertNotIn("ports", service)
@@ -558,6 +572,9 @@ class ComposePolicyTests(unittest.TestCase):
         device = service["deploy"]["resources"]["reservations"]["devices"][0]
 
         self.assertEqual(service["image"], "${B1_COMFYUI_IMAGE:-b1-ai-hub/comfyui:v0.3.77-b1}")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime"], "comfyui")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime.kind"], "comfyui")
+        self.assertEqual(service["labels"]["b1.ai-hub.placeholder"], "false")
         self.assertEqual(service["build"]["context"], "./deploy/comfyui")
         self.assertEqual(build_args["B1_COMFYUI_VERSION"], "${B1_COMFYUI_VERSION:-v0.3.77}")
         self.assertEqual(build_args["B1_COMFYUI_COMMIT"], "${B1_COMFYUI_COMMIT:-59afc3984868289f808d02fa5cd180edfb2de240}")
@@ -626,6 +643,9 @@ class ComposePolicyTests(unittest.TestCase):
         device = service["deploy"]["resources"]["reservations"]["devices"][0]
 
         self.assertEqual(service["image"], "${B1_VOICEBOX_IMAGE:-b1-ai-hub/voicebox:v0.5.0-b1}")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime"], "voicebox")
+        self.assertEqual(service["labels"]["b1.ai-hub.runtime.kind"], "voicebox")
+        self.assertEqual(service["labels"]["b1.ai-hub.placeholder"], "false")
         self.assertEqual(service["build"]["context"], "./deploy/voicebox")
         self.assertEqual(build_args["B1_VOICEBOX_VERSION"], "${B1_VOICEBOX_VERSION:-v0.5.0}")
         self.assertEqual(build_args["B1_VOICEBOX_COMMIT"], "${B1_VOICEBOX_COMMIT:-2bcb98d1a8b6fe05e15fbc1559e3085669e4035d}")

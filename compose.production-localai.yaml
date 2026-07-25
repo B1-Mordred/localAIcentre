@@ -10,6 +10,10 @@ services:
       args:
         B1_LOCALAI_UPSTREAM_VERSION: ${B1_LOCALAI_UPSTREAM_VERSION:-v4.7.1-gpu-nvidia-cuda-12}
         B1_LOCALAI_UPSTREAM_COMMIT: ${B1_LOCALAI_UPSTREAM_COMMIT:-b224c96db6f4b87306a33a808650bfce63b12588}
+    labels:
+      b1.ai-hub.runtime: localai
+      b1.ai-hub.runtime.kind: localai
+      b1.ai-hub.placeholder: "false"
     read_only: false
     environment:
       B1_RUNTIME_KIND: !reset null

@@ -14,6 +14,10 @@ services:
         B1_QWEN3_TTS_COMMIT: ${B1_QWEN3_TTS_COMMIT:-022e286b98fbec7e1e916cb940cdf532cd9f488e}
         B1_LINACODEC_COMMIT: ${B1_LINACODEC_COMMIT:-c0ae7c7285e121475c27592cfbb600624b714290}
         B1_LUXTTS_COMMIT: ${B1_LUXTTS_COMMIT:-28ae6a61151684fffc9d1a7aa15eafa02286fe0b}
+    labels:
+      b1.ai-hub.runtime: voicebox
+      b1.ai-hub.runtime.kind: voicebox
+      b1.ai-hub.placeholder: "false"
     read_only: true
     environment:
       B1_RUNTIME_KIND: !reset null

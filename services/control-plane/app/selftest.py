@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 VALID_RUNTIME_DEPLOYMENT_MODES = {"development", "production"}
+B1_PLACEHOLDER_LABEL = "b1.ai-hub.placeholder"
+B1_RUNTIME_KIND_LABEL = "b1.ai-hub.runtime.kind"
+TRUE_LABEL_VALUES = {"1", "true", "yes", "on"}
+FALSE_LABEL_VALUES = {"0", "false", "no", "off"}
+INACTIVE_CONTAINER_STATES = {"dead", "exited", "removing"}
 REQUIRED_GATEWAY_SECURITY_HEADERS = {
     "strict-transport-security": ("max-age=", "includesubdomains"),
     "x-content-type-options": ("nosniff",),
@@ -276,6 +281,67 @@ def runtime_health_is_placeholder(item: dict[str, Any]) -> bool:
     )
 
 
+def service_inventory_items(service_inventory: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(service_inventory, dict):
+        return []
+    services = service_inventory.get("services")
+    return [item for item in services if isinstance(item, dict)] if isinstance(services, list) else []
+
+
+def _label_string(labels: dict[str, Any], key: str) -> str:
+    value = labels.get(key)
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _container_state_is_relevant(container: dict[str, Any]) -> bool:
+    state = container.get("state")
+    if not isinstance(state, str) or not state.strip():
+        return True
+    return state.strip().lower() not in INACTIVE_CONTAINER_STATES
+
+
+def _looks_like_placeholder_reference(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return (
+        "mock-runtime" in text
+        or "placeholder-" in text
+        or "-placeholder" in text
+        or "/placeholder" in text
+        or text.endswith(":placeholder")
+    )
+
+
+def runtime_service_placeholder_reasons(service_inventory: dict[str, Any] | None) -> dict[str, list[str]]:
+    reasons: dict[str, list[str]] = {}
+    for service in service_inventory_items(service_inventory):
+        name = runtime_health_name(service)
+        if not name:
+            continue
+        containers = service.get("containers")
+        if not isinstance(containers, list):
+            continue
+        for container in containers:
+            if not isinstance(container, dict) or not _container_state_is_relevant(container):
+                continue
+            labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
+            placeholder_label = _label_string(labels, B1_PLACEHOLDER_LABEL)
+            runtime_kind = _label_string(labels, B1_RUNTIME_KIND_LABEL)
+            container_reasons: list[str] = []
+            if placeholder_label in TRUE_LABEL_VALUES:
+                container_reasons.append("container label b1.ai-hub.placeholder=true")
+            elif placeholder_label and placeholder_label not in FALSE_LABEL_VALUES:
+                container_reasons.append("container placeholder label is invalid")
+            if runtime_kind.startswith("placeholder"):
+                container_reasons.append(f"container runtime kind is {runtime_kind}")
+            if _looks_like_placeholder_reference(container.get("image")):
+                container_reasons.append("container image reference looks like a placeholder runtime")
+            if _looks_like_placeholder_reference(container.get("name")):
+                container_reasons.append("container name looks like a placeholder runtime")
+            if container_reasons:
+                reasons.setdefault(name, []).extend(container_reasons)
+    return {name: sorted(set(items)) for name, items in reasons.items()}
+
+
 def normalize_runtime_names(names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     normalized: list[str] = []
@@ -291,11 +357,16 @@ def runtime_production_readiness_check(
     runtime_health: list[dict[str, Any]],
     deployment_mode: str,
     required_runtimes: tuple[str, ...] | list[str],
+    service_inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = deployment_mode.strip().lower()
     required = normalize_runtime_names(required_runtimes)
     health_by_name = {runtime_health_name(item): item for item in runtime_health if runtime_health_name(item)}
-    placeholder_runtimes = sorted(name for name, item in health_by_name.items() if runtime_health_is_placeholder(item))
+    service_placeholder_reasons = runtime_service_placeholder_reasons(service_inventory)
+    placeholder_runtimes = sorted(
+        {name for name, item in health_by_name.items() if runtime_health_is_placeholder(item)}
+        | set(service_placeholder_reasons)
+    )
     required_unhealthy: list[dict[str, str]] = []
     required_placeholders: list[str] = []
 
@@ -308,7 +379,7 @@ def runtime_production_readiness_check(
         normalized_status = status.strip().lower() if isinstance(status, str) and status.strip() else "unknown"
         if normalized_status != "ok":
             required_unhealthy.append({"runtime": runtime, "status": normalized_status})
-        if runtime_health_is_placeholder(item):
+        if runtime_health_is_placeholder(item) or runtime in service_placeholder_reasons:
             required_placeholders.append(runtime)
 
     data = {
@@ -317,6 +388,8 @@ def runtime_production_readiness_check(
         "placeholder_runtimes": placeholder_runtimes,
         "required_placeholders": required_placeholders,
         "required_unhealthy": required_unhealthy,
+        "service_inventory_available": bool(service_inventory_items(service_inventory)),
+        "service_placeholder_reasons": service_placeholder_reasons,
     }
 
     if mode not in VALID_RUNTIME_DEPLOYMENT_MODES:

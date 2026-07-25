@@ -6009,16 +6009,19 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
     ]
     health = await asyncio.gather(*(adapter.health() for adapter in adapters))
     runtime_states = {row["runtime"]: jsonable_encoder(row) for row in await database.list_runtime_states()}
+    service_inventory, service_error = await runtime_agent_get("/v1/services")
     readiness = selftest_policy.runtime_production_readiness_check(
         health,
         settings.runtime_deployment_mode,
         settings.runtime_production_required,
+        service_inventory,
     )
     return {
         "allow_external_providers": settings.allow_external_providers,
         "runtime_deployment_mode": settings.runtime_deployment_mode,
         "production_required_runtimes": list(settings.runtime_production_required),
         "readiness": readiness,
+        "runtime_agent_services": service_inventory or {"services": [], "error": service_error or "runtime-agent service inventory unavailable"},
         "adapters": registry.public_adapters(),
         "runtime_states": runtime_states,
         "health": sorted(
@@ -6623,17 +6626,20 @@ async def build_self_test_report(subject_id: str) -> dict[str, Any]:
     runtime_health = await asyncio.gather(*(adapter.health() for adapter in adapters))
     runtime_status = "ok" if all(item.get("status") == "ok" for item in runtime_health) else "degraded"
     checks.append(selftest_policy.check("runtimes", runtime_status, "runtime health probes completed", {"health": runtime_health}))
+    agent_status, agent_error = await runtime_agent_get("/v1/status")
+    service_inventory, service_error = await runtime_agent_get("/v1/services")
+    checks.append(selftest_policy.check_http_result("runtime-agent:status", agent_status, agent_error))
+    checks.append(selftest_policy.runtime_agent_mutation_guard_check(agent_status))
+    checks.append(selftest_policy.check_http_result("runtime-agent:services", service_inventory, service_error))
     checks.append(
         selftest_policy.runtime_production_readiness_check(
             runtime_health,
             settings.runtime_deployment_mode,
             settings.runtime_production_required,
+            service_inventory,
         )
     )
 
-    agent_status, agent_error = await runtime_agent_get("/v1/status")
-    checks.append(selftest_policy.check_http_result("runtime-agent:status", agent_status, agent_error))
-    checks.append(selftest_policy.runtime_agent_mutation_guard_check(agent_status))
     agent_metrics, metrics_error = await runtime_agent_get("/v1/metrics")
     checks.append(selftest_policy.check_http_result("runtime-agent:metrics", agent_metrics, metrics_error))
     if agent_metrics and not agent_metrics.get("gpu", {}).get("available", False):

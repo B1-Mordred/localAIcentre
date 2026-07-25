@@ -13,6 +13,11 @@ from urllib.parse import quote, urlencode
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SHA256_DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:$|[/?#])")
 DEFAULT_RUNTIME_ACTION_SERVICES = frozenset({"localai", "comfyui", "voicebox", "audio-cpu"})
+B1_CONTAINER_LABELS = (
+    "b1.ai-hub.runtime",
+    "b1.ai-hub.runtime.kind",
+    "b1.ai-hub.placeholder",
+)
 REDACTED = "<redacted>"
 LOG_LINE_MAX_BYTES = 4096
 TRUNCATION_SUFFIX = "...<truncated>"
@@ -374,6 +379,7 @@ def summarize_pull_events(events: list[dict[str, Any]], maximum: int = 25) -> di
 def container_summary(container: dict[str, Any]) -> dict[str, Any]:
     names = container.get("Names") or []
     name = names[0].lstrip("/") if names else ""
+    labels = container.get("Labels") or {}
     return {
         "id": str(container.get("Id", "")),
         "short_id": str(container.get("Id", ""))[:12],
@@ -383,7 +389,8 @@ def container_summary(container: dict[str, Any]) -> dict[str, Any]:
         "state": container.get("State", ""),
         "status": container.get("Status", ""),
         "labels": {
-            "com.docker.compose.project": (container.get("Labels") or {}).get("com.docker.compose.project", ""),
-            "com.docker.compose.service": (container.get("Labels") or {}).get("com.docker.compose.service", ""),
+            "com.docker.compose.project": labels.get("com.docker.compose.project", ""),
+            "com.docker.compose.service": labels.get("com.docker.compose.service", ""),
+            **{label: labels.get(label, "") for label in B1_CONTAINER_LABELS if labels.get(label, "")},
         },
     }
