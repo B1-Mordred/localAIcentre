@@ -14,6 +14,8 @@ SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SHA256_DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:$|[/?#])")
 DEFAULT_RUNTIME_ACTION_SERVICES = frozenset({"localai", "comfyui", "voicebox", "audio-cpu"})
 REDACTED = "<redacted>"
+LOG_LINE_MAX_BYTES = 4096
+TRUNCATION_SUFFIX = "...<truncated>"
 SECRET_PATTERNS = [
     re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
     re.compile(r"(\bBearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
@@ -259,7 +261,18 @@ def redact_line(line: str) -> str:
     redacted = redact_json_fragment(line)
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub(lambda match: match.group(1) + REDACTED if match.lastindex else REDACTED, redacted)
-    return redacted
+    return truncate_log_line(redacted)
+
+
+def truncate_log_line(line: str, maximum_bytes: int = LOG_LINE_MAX_BYTES) -> str:
+    encoded = line.encode("utf-8")
+    if len(encoded) <= maximum_bytes:
+        return line
+    suffix = TRUNCATION_SUFFIX.encode("utf-8")
+    if maximum_bytes <= len(suffix):
+        return suffix[:maximum_bytes].decode("utf-8", errors="ignore")
+    prefix = encoded[: maximum_bytes - len(suffix)].decode("utf-8", errors="ignore")
+    return prefix + TRUNCATION_SUFFIX
 
 
 def sensitive_json_key(key: str) -> bool:

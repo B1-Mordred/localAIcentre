@@ -26,6 +26,8 @@ assert metrics_spec.loader is not None
 metrics_spec.loader.exec_module(runtime_metrics)
 
 DockerEngineClient = docker_api.DockerEngineClient
+LOG_LINE_MAX_BYTES = docker_api.LOG_LINE_MAX_BYTES
+TRUNCATION_SUFFIX = docker_api.TRUNCATION_SUFFIX
 bound_log_lines = docker_api.bound_log_lines
 parse_allowed_services = docker_api.parse_allowed_services
 redact_line = docker_api.redact_line
@@ -114,6 +116,7 @@ class FakeDockerEngineClient(DockerEngineClient):
                         }
                     ),
                     '2026-07-22T09:00:01Z {"voice_sample":"private voice bytes","model":"chat-default"}',
+                    "long " + "x" * (LOG_LINE_MAX_BYTES + 256),
                 ]
             ).encode("utf-8") + b"\n"
             return b"\x01\x00\x00\x00" + len(line).to_bytes(4, "big") + line
@@ -161,6 +164,10 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertNotIn("secret prompt", structured)
         self.assertNotIn("provider-token", structured)
         self.assertIn('"prompt":"<redacted>"', structured)
+        long_redacted = redact_line("Authorization: Bearer b1k_public.secret " + "x" * (LOG_LINE_MAX_BYTES + 200))
+        self.assertLessEqual(len(long_redacted.encode("utf-8")), LOG_LINE_MAX_BYTES)
+        self.assertTrue(long_redacted.endswith(TRUNCATION_SUFFIX))
+        self.assertNotIn("b1k_public.secret", long_redacted)
 
     def test_strips_docker_multiplex_headers(self) -> None:
         payload = b"hello\n"
@@ -188,7 +195,7 @@ class RuntimeAgentTests(unittest.TestCase):
     def test_docker_client_logs_are_bounded_and_redacted(self) -> None:
         client = FakeDockerEngineClient()
         entries = client.service_logs("control-plane", 10, "b1-ai-hub")
-        self.assertEqual(len(entries), 3)
+        self.assertEqual(len(entries), 4)
         joined = "\n".join(entries)
         self.assertNotIn("b1k_public.secret", joined)
         self.assertNotIn("secret prompt", joined)
@@ -197,6 +204,8 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertNotIn("private voice bytes", joined)
         self.assertIn('"prompt":"<redacted>"', joined)
         self.assertIn('"voice_sample":"<redacted>"', joined)
+        self.assertLessEqual(len(entries[-1].encode("utf-8")), LOG_LINE_MAX_BYTES)
+        self.assertTrue(entries[-1].endswith(TRUNCATION_SUFFIX))
 
     def test_docker_client_inspects_and_pulls_pinned_images(self) -> None:
         client = FakeDockerEngineClient()
