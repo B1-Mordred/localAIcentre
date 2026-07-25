@@ -895,10 +895,31 @@ class ExecutorTests(unittest.TestCase):
                 return "prompt_mapped"
 
             async def fetch_comfyui_history(self, prompt_id: str) -> dict[str, Any] | None:
-                return {prompt_id: {"status": {"completed": True}, "outputs": {}}}
+                return {
+                    prompt_id: {
+                        "status": {"completed": True},
+                        "outputs": {
+                            "save": {
+                                "images": [
+                                    {"filename": "mapped.png", "subfolder": "", "type": "output"},
+                                ]
+                            }
+                        },
+                    }
+                }
 
             async def ingest_comfyui_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                return artifacts
+                return [
+                    {
+                        **artifact,
+                        "source": "artifact_store",
+                        "storage": "artifact-server",
+                        "bytes": 9,
+                        "sha256": "b" * 64,
+                        "ingest_status": "stored",
+                    }
+                    for artifact in artifacts
+                ]
 
         with tempfile.TemporaryDirectory() as tmp:
             runner = ComfyRunner(Path(tmp))
@@ -910,6 +931,55 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(prompt["3"]["inputs"]["steps"], 12)
             self.assertEqual(fake.job["native_prompt_id"], "prompt_mapped")
             self.assertEqual(fake.job["state"], "completed")
+            self.assertEqual(fake.job["artifacts"][0]["url"], "/artifacts/comfyui/prompt_mapped/0-mapped.png")
+
+    def test_gpu_runner_marks_comfyui_job_recovery_required_when_no_media_outputs(self) -> None:
+        fake = FakeDatabase(runtime="comfyui")
+        fake.job["request_params"] = {
+            "input": {
+                "comfyui_prompt": {
+                    "prompt": {
+                        "1": {
+                            "class_type": "PreviewOnly",
+                            "inputs": {"text": "no saved output"},
+                        }
+                    }
+                },
+            }
+        }
+        self.patch_database(fake)
+
+        class ComfyRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    interval_seconds=1,
+                    lease_ttl_seconds=60,
+                    runtime_urls={"comfyui": "http://comfyui"},
+                    comfyui_poll_seconds=1,
+                    comfyui_completion_timeout_seconds=30,
+                )
+
+            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+                return "prompt_empty"
+
+            async def fetch_comfyui_history(self, prompt_id: str) -> dict[str, Any] | None:
+                return {prompt_id: {"status": {"completed": True}, "outputs": {}}}
+
+            async def ingest_comfyui_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                raise AssertionError("empty ComfyUI outputs should not enter artifact ingestion")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = ComfyRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+            self.assertTrue(processed)
+            self.assertEqual(fake.job["native_prompt_id"], "prompt_empty")
+            self.assertEqual(fake.job["state"], "recovery_required")
+            self.assertEqual(fake.job["stage"], "comfyui_no_media_artifacts")
+            self.assertEqual(fake.job["failure_category"], "comfyui_no_media_artifacts")
+            self.assertEqual(fake.job["artifacts"], [])
+            self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
 
     def test_gpu_runner_submits_localai_image_generation_and_stores_b64_artifact(self) -> None:
         fake = FakeDatabase(runtime="localai")

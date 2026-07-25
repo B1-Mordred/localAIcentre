@@ -1050,12 +1050,22 @@ class GpuJobRunner:
         if await self.cancel_if_requested(job["id"]):
             return
         current = await database.get_job(job["id"]) or job
-        artifacts = await self.ingest_comfyui_artifacts(
-            comfyui_native.merge_job_artifacts(
-                current.get("artifacts") or [],
-                comfyui_native.comfyui_artifacts_from_history(prompt_id, history),
-            )
+        artifacts = comfyui_native.merge_job_artifacts(
+            current.get("artifacts") or [],
+            comfyui_native.comfyui_artifacts_from_history(prompt_id, history),
         )
+        if not artifacts:
+            await database.update_job(
+                job["id"],
+                state=JobState.RECOVERY_REQUIRED.value,
+                stage="comfyui_no_media_artifacts",
+                progress=90,
+                artifacts=[],
+                failure_category="comfyui_no_media_artifacts",
+                failure_message=f"ComfyUI prompt {prompt_id} completed without image, video, GIF, or audio outputs",
+            )
+            return
+        artifacts = await self.ingest_comfyui_artifacts(artifacts)
         failed_ingests = [artifact for artifact in artifacts if artifact.get("ingest_status") == "failed"]
         if failed_ingests:
             await database.update_job(

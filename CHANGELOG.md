@@ -24,6 +24,7 @@
 - Hardened internal artifact-server path and blob-name validation so storage requests repeat decoded path-control checks and reject newline-extended or otherwise non-exact SHA-256 blob IDs before file access.
 - Added `Idempotency-Key` handling for native ComfyUI `POST /prompt` so exact replays return the stored native prompt ID after acceptance and conflicting or still-pending replays do not submit duplicate GPU work.
 - Added live native ComfyUI acceptance coverage and handoff gating for same-body `POST /prompt` idempotency replay.
+- Changed ComfyUI-backed media jobs to enter `recovery_required` when native history contains no image, video, GIF, or audio outputs instead of completing without downloadable artifacts.
 - Added a PostgreSQL-backed ComfyUI custom-node approval registry with seed-file merge, administrator-only node-pin APIs, Control Center management, workflow dependency refresh, mutating-route prefix enforcement, audit records, and logical backup coverage.
 - Added Control Center and admin API Open WebUI migration-plan generation from constrained backup-root inventory/old-stack backup artifacts without reading chat rows, importing data, touching the old stack, or accepting arbitrary host paths.
 - Added a production Voicebox Compose override and pinned B1 Voicebox image build from upstream `v0.5.0`, including native `:17493` routing through a B1 REST/WebSocket proxy, B1-managed voice data/cache storage, read-only model-view mapping, conservative scheduler lifecycle hooks, and CI/SBOM inventory coverage.
