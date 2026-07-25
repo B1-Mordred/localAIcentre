@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -52,6 +53,15 @@ class ServiceLogsApiTests(unittest.TestCase):
                     "ok",
                     "Authorization: Bearer provider-token",
                     "key b1k_public.secret and b1adm_adminsecret",
+                    json.dumps(
+                        {
+                            "event": "job_created",
+                            "prompt": "secret prompt",
+                            "safe": "Authorization: Bearer json-provider-token",
+                            "nested": {"messages": [{"role": "user", "content": "private chat"}]},
+                        }
+                    ),
+                    '2026-07-22T09:00:00Z {"voice_sample":"private voice bytes","model":"chat-default"}',
                     "x" * 5000,
                 ],
             }, None
@@ -68,6 +78,12 @@ class ServiceLogsApiTests(unittest.TestCase):
         self.assertNotIn("provider-token", joined)
         self.assertNotIn("b1k_public.secret", joined)
         self.assertNotIn("b1adm_adminsecret", joined)
+        self.assertNotIn("secret prompt", joined)
+        self.assertNotIn("json-provider-token", joined)
+        self.assertNotIn("private chat", joined)
+        self.assertNotIn("private voice bytes", joined)
+        self.assertIn('"prompt":"<redacted>"', joined)
+        self.assertIn('"voice_sample":"<redacted>"', joined)
         self.assertIn("...<truncated>", result["entries"][-1])
 
     def test_service_logs_reject_bad_service_and_non_operator(self) -> None:

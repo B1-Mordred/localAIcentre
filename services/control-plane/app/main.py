@@ -3990,13 +3990,28 @@ def normalize_service_log_name(service: str) -> str:
 
 
 def redact_service_log_line(line: Any) -> str:
-    text = str(line)
+    text = redact_service_log_json_fragment(str(line))
     for pattern, replacement in SERVICE_LOG_SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
     encoded = text.encode("utf-8")
     if len(encoded) <= SERVICE_LOG_LINE_MAX_BYTES:
         return text
     return encoded[:SERVICE_LOG_LINE_MAX_BYTES].decode("utf-8", errors="ignore") + "...<truncated>"
+
+
+def redact_service_log_json_fragment(text: str) -> str:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(text):
+        if character not in "{[":
+            continue
+        try:
+            payload, end = decoder.raw_decode(text[index:])
+        except ValueError:
+            continue
+        redacted = audit_policy.redact_log_value(payload)
+        encoded = json.dumps(redacted, ensure_ascii=False, separators=(",", ":"))
+        return text[:index] + encoded + text[index + end :]
+    return text
 
 
 def external_runtime_env_base_url(runtime: str) -> str:
