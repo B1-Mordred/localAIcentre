@@ -8869,6 +8869,19 @@ async def runtime_reservation_create(payload: RuntimeReservationCreate, authoriz
     if adapter.external and not settings.allow_external_providers:
         raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} is external and external providers are disabled")
     resolved_model_version = f"{alias.manifest.id}@{alias.manifest.version}"
+    await enforce_gpu_hardware_admission(
+        RuntimeResolution(
+            public_alias=payload.model,
+            model_id=alias.manifest.id,
+            model_version=alias.manifest.version,
+            resolved_model_version=resolved_model_version,
+            runtime=payload.runtime,
+            preferred_runtime=getattr(alias, "preferred_runtime", payload.runtime),
+            requires_gpu=True,
+            resource_label=getattr(getattr(alias, "decision", None), "label", "unknown"),
+            runtime_policy="reservation",
+        )
+    )
     gate = await database.runtime_reservation_gate(auth.subject_id, payload.runtime, resolved_model_version, GPU_RUNTIMES)
     if not gate.get("allowed"):
         active = gate.get("active_reservation") or {}
