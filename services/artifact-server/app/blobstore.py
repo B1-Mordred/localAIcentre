@@ -4,9 +4,11 @@ import hashlib
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import unquote
 
 
 SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 CHUNK_SIZE = 1024 * 1024
 
 
@@ -19,12 +21,33 @@ class RangeNotSatisfiable(BlobStoreError):
 
 
 def validate_sha256(value: str) -> str:
-    if not SHA256_RE.match(value):
+    if not SHA256_RE.fullmatch(value):
         raise BlobStoreError("invalid SHA-256")
     return value.lower()
 
 
+def _has_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _validate_relative_segment(segment: str) -> None:
+    if BAD_PERCENT_ESCAPE_RE.search(segment):
+        raise BlobStoreError("path contains unsafe encoded segments")
+    try:
+        decoded = unquote(segment, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise BlobStoreError("path contains unsafe encoded segments") from exc
+    if decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded or _has_control_character(decoded):
+        raise BlobStoreError("path contains unsafe encoded segments")
+
+
 def resolve_inside(root: Path, relative: str) -> Path:
+    if not isinstance(relative, str) or not relative:
+        raise BlobStoreError("path must be a non-empty relative path")
+    if relative.startswith("/") or "\\" in relative:
+        raise BlobStoreError("path must be relative")
+    for segment in relative.split("/"):
+        _validate_relative_segment(segment)
     resolved_root = root.resolve()
     candidate = (resolved_root / relative).resolve()
     if resolved_root not in candidate.parents and candidate != resolved_root:

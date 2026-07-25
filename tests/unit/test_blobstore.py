@@ -31,8 +31,10 @@ class BlobStoreTests(unittest.TestCase):
     def test_validate_sha256_normalizes_and_rejects_bad_values(self) -> None:
         digest = "A" * 64
         self.assertEqual(validate_sha256(digest), "a" * 64)
-        with self.assertRaises(BlobStoreError):
-            validate_sha256("not-a-sha")
+        for value in ("not-a-sha", "a" * 64 + "\n", "a" * 63, "a" * 64 + "0"):
+            with self.subTest(value=value):
+                with self.assertRaises(BlobStoreError):
+                    validate_sha256(value)
 
     def test_parse_byte_ranges(self) -> None:
         self.assertIsNone(parse_byte_range(None, 10))
@@ -64,8 +66,25 @@ class BlobStoreTests(unittest.TestCase):
             self.assertEqual(resolve_inside(root, "blob"), blob.resolve())
             self.assertEqual(sha256_file(blob), hashlib.sha256(payload).hexdigest())
             self.assertEqual(b"".join(iter_file_range(blob, 2, 5, chunk_size=2)), b"2345")
-            with self.assertRaises(BlobStoreError):
-                resolve_inside(root, "../escape")
+            for relative in (
+                "",
+                "/absolute",
+                "../escape",
+                "safe/../escape",
+                "safe\\escape",
+                "safe%2Fescape",
+                "safe%5Cescape",
+                "safe%3Fquery",
+                "safe%23fragment",
+                "%00escape",
+                "%/escape",
+                "%2/escape",
+                "%zzescape",
+                "%ffescape",
+            ):
+                with self.subTest(relative=relative):
+                    with self.assertRaises(BlobStoreError):
+                        resolve_inside(root, relative)
 
 
 if __name__ == "__main__":
