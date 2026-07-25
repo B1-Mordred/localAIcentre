@@ -247,6 +247,27 @@ def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | Non
     return None
 
 
+def _tls_routing_evidence_failures(check: dict[str, Any]) -> list[str]:
+    data = check.get("data") if isinstance(check.get("data"), dict) else {}
+    routes = data.get("routes")
+    if not isinstance(routes, list) or not routes:
+        return ["TLS gateway routing evidence lists no checked routes"]
+
+    failures: list[str] = []
+    for index, route in enumerate(routes, start=1):
+        if not isinstance(route, dict):
+            failures.append(f"TLS gateway routing route {index} is invalid")
+            continue
+        url = str(route.get("url") or "")
+        if not url.startswith("https://"):
+            failures.append(f"TLS gateway routing route {index} is not HTTPS")
+        if route.get("status") != "ok":
+            failures.append(f"TLS gateway routing route {index} status is {route.get('status', 'unknown')}")
+        if route.get("security_headers") != "ok":
+            failures.append(f"TLS gateway routing route {index} security headers are {route.get('security_headers', 'unknown')}")
+    return failures
+
+
 def _parse_utc_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -971,6 +992,13 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     production = _check_by_name(report.get("self_test") or {}, "runtimes:production-readiness")
     if production and production.get("status") != "ok":
         blockers.append("required runtimes are not production-ready")
+    tls_routing = _check_by_name(report.get("self_test") or {}, "tls:routing")
+    if not tls_routing:
+        blockers.append("TLS gateway routing check is absent")
+    elif tls_routing.get("status") != "ok":
+        blockers.append(f"TLS gateway routing check is {tls_routing.get('status', 'unknown')}")
+    elif failures := _tls_routing_evidence_failures(tls_routing):
+        blockers.extend(failures)
     gpu_check = _check_by_name(report.get("self_test") or {}, "gpu:nvml")
     if not gpu_check:
         blockers.append("GPU/NVML check is absent")
