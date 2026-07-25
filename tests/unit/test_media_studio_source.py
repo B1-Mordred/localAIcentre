@@ -31,8 +31,18 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn("redacted_request", self.source)
         self.assertNotIn("request_params", self.source)
         self.assertIn("resolved_model_version", self.source)
-        self.assertIn("/v1/media/jobs/${job.id}/artifacts", self.source)
+        self.assertIn("jobRoute(job, \"artifacts\", \"/artifacts\")", self.source)
         self.assertIn("<History jobs={jobs} onRefresh={loadJobs} onSelect={loadHistoryArtifacts} />", self.source)
+
+    def test_media_job_links_are_used_for_streams_artifacts_and_cancellation(self) -> None:
+        self.assertIn("type MediaJobLinks", self.source)
+        self.assertIn("links?: MediaJobLinks;", self.source)
+        self.assertIn("function trustedMediaJobLink", self.source)
+        self.assertIn('value.startsWith("/v1/media/jobs/")', self.source)
+        self.assertIn('jobRoute(job, "events", "/events")', self.source)
+        self.assertIn('jobRoute(currentJob, "self")', self.source)
+        self.assertIn('jobRoute(currentJob, "cancel")', self.source)
+        self.assertIn('jobRoute(job, "artifacts", "/artifacts")', self.source)
 
     def test_artifact_outputs_are_previewed_with_authenticated_fetches(self) -> None:
         self.assertIn("function artifactPreviewSource", self.source)

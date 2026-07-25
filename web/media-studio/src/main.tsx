@@ -97,9 +97,17 @@ type MediaJob = {
   peak_vram_mib?: number | null;
   peak_ram_mib?: number | null;
   artifacts?: Artifact[];
+  links?: MediaJobLinks;
   failure_category?: string | null;
   failure_message?: string | null;
   redacted_request?: Record<string, JsonValue>;
+};
+
+type MediaJobLinks = {
+  self?: string;
+  events?: string;
+  artifacts?: string;
+  cancel?: string;
 };
 
 type Artifact = {
@@ -270,6 +278,16 @@ async function artifactPreviewSource(artifact: Artifact): Promise<{ src: string;
   };
 }
 
+function trustedMediaJobLink(value: string | undefined): string | null {
+  return value && value.startsWith("/v1/media/jobs/") ? value : null;
+}
+
+function jobRoute(job: MediaJob, linkName: keyof MediaJobLinks, fallbackSuffix = ""): string {
+  const linked = trustedMediaJobLink(job.links?.[linkName]);
+  if (linked) return linked;
+  return `/v1/media/jobs/${encodeURIComponent(job.id)}${fallbackSuffix}`;
+}
+
 function parseSseEvent(raw: string): { event: string; data: string } | null {
   let event = "message";
   const data: string[] = [];
@@ -286,14 +304,14 @@ function parseSseEvent(raw: string): { event: string; data: string } | null {
 }
 
 async function streamJobEvents(
-  jobId: string,
+  job: MediaJob,
   signal: AbortSignal,
   onJob: (job: MediaJob) => void
 ): Promise<void> {
   const headers = new Headers();
   headers.set("Accept", "text/event-stream");
   attachAuthHeaders(headers, "GET");
-  const response = await fetch(apiUrl(`/v1/media/jobs/${encodeURIComponent(jobId)}/events`), {
+  const response = await fetch(apiUrl(jobRoute(job, "events", "/events")), {
     credentials: "include",
     headers,
     signal
@@ -825,24 +843,24 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     if (!currentJob || TERMINAL_STATES.has(currentJob.state)) return;
     const controller = new AbortController();
     setEventStatus("streaming");
-    streamJobEvents(currentJob.id, controller.signal, (job) => {
+    streamJobEvents(currentJob, controller.signal, (job) => {
       setCurrentJob(job);
       setArtifacts(job.artifacts ?? []);
       setMessage(`${job.state} ${job.id}`);
       if (TERMINAL_STATES.has(job.state)) {
         setEventStatus("complete");
-        loadArtifacts(job.id);
+        loadArtifacts(job);
         loadJobs();
       }
     }).catch((error: Error) => {
       if (controller.signal.aborted) return;
       setEventStatus("refreshing");
-      apiJson<MediaJob>(`/v1/media/jobs/${currentJob.id}`)
+      apiJson<MediaJob>(jobRoute(currentJob, "self"))
         .then((job) => {
           setCurrentJob(job);
           setArtifacts(job.artifacts ?? []);
           if (TERMINAL_STATES.has(job.state)) {
-            loadArtifacts(job.id);
+            loadArtifacts(job);
             loadJobs();
           }
         })
@@ -860,8 +878,8 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
       .catch((error: Error) => setMessage(error.message));
   };
 
-  const loadArtifacts = (jobId: string) => {
-    apiJson<{ artifacts: Artifact[] }>(`/v1/media/jobs/${jobId}/artifacts`)
+  const loadArtifacts = (job: MediaJob) => {
+    apiJson<{ artifacts: Artifact[] }>(jobRoute(job, "artifacts", "/artifacts"))
       .then((payload) => setArtifacts(payload.artifacts ?? []))
       .catch((error: Error) => setMessage(error.message));
   };
@@ -947,7 +965,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
   const cancelCurrentJob = () => {
     if (!currentJob) return;
     setBusy(true);
-    apiJson<MediaJob>(`/v1/media/jobs/${currentJob.id}`, { method: "DELETE" })
+    apiJson<MediaJob>(jobRoute(currentJob, "cancel"), { method: "DELETE" })
       .then((job) => {
         setCurrentJob(job);
         setArtifacts(job.artifacts ?? []);
@@ -1258,7 +1276,7 @@ function StudioApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void 
     setSelectedHistoryJob(job);
     setHistoryArtifacts(job.artifacts ?? []);
     setHistoryStatus("loading artifacts");
-    apiJson<{ artifacts: Artifact[] }>(`/v1/media/jobs/${job.id}/artifacts`)
+    apiJson<{ artifacts: Artifact[] }>(jobRoute(job, "artifacts", "/artifacts"))
       .then((payload) => {
         setHistoryArtifacts(payload.artifacts ?? []);
         setHistoryStatus(`loaded ${(payload.artifacts ?? []).length} artifact(s)`);
