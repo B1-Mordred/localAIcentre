@@ -382,6 +382,7 @@ class ComposePolicyTests(unittest.TestCase):
         environment = service.get("environment", {})
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}:/srv/b1-ai-hub:ro", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:/srv/b1-ai-hub/data/control-plane", volumes)
+        self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/backups:/srv/b1-ai-hub/backups", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/restore-tests:/srv/b1-ai-hub/restore-tests", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views:/srv/b1-ai-hub/models/runtime-views", volumes)
@@ -404,6 +405,17 @@ class ComposePolicyTests(unittest.TestCase):
             volumes = self.compose["services"][service_name].get("volumes", [])
             self.assertIn(expected, volumes, service_name)
             self.assertNotIn(forbidden, volumes, service_name)
+            self.assertFalse(
+                any("/models/blobs" in volume for volume in volumes),
+                f"{service_name} must not mount the authoritative blob store",
+            )
+
+    def test_artifact_server_mounts_model_blobs_read_only(self) -> None:
+        volumes = self.compose["services"]["artifact-server"].get("volumes", [])
+        self.assertIn(
+            "${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs:ro",
+            volumes,
+        )
 
     def test_audio_cpu_placeholder_engine_is_policy_gated(self) -> None:
         service = self.compose["services"]["audio-cpu"]

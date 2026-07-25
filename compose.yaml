@@ -242,6 +242,7 @@ services:
     volumes:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}:/srv/b1-ai-hub:ro
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:/srv/b1-ai-hub/data/control-plane
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/backups:/srv/b1-ai-hub/backups
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/restore-tests:/srv/b1-ai-hub/restore-tests
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views:/srv/b1-ai-hub/models/runtime-views
