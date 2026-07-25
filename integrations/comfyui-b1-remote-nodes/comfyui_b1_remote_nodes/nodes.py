@@ -29,6 +29,7 @@ ALLOW_INSECURE_HTTP_ENV = "B1_AI_HUB_ALLOW_INSECURE_HTTP"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+BAD_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
 MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
 UPLOAD_ID_PATTERN = re.compile(r"^upload_[a-f0-9]{32}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -563,7 +564,12 @@ def require_internal_artifact_path(value: str) -> str:
     if len(parts) < 2 or parts[0] != "artifacts":
         raise B1RemoteNodeError("artifact_url must name an artifact below /artifacts")
     for part in parts:
-        decoded = urllib.parse.unquote(part)
+        if BAD_PERCENT_ESCAPE_PATTERN.search(part):
+            raise B1RemoteNodeError("artifact_url path is unsafe")
+        try:
+            decoded = urllib.parse.unquote(part, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise B1RemoteNodeError("artifact_url path is unsafe") from exc
         if not part or decoded in {".", ".."} or "/" in decoded or "\\" in decoded or any(ord(char) < 32 for char in decoded):
             raise B1RemoteNodeError("artifact_url path is unsafe")
     return parsed.path

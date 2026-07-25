@@ -34,6 +34,10 @@ class ArtifactPolicyTests(unittest.TestCase):
             "voicebox/safe%3Ftoken.wav",
             "voicebox/safe%23fragment.wav",
             "voicebox/%00sample.wav",
+            "voicebox/%/sample.wav",
+            "voicebox/%2/sample.wav",
+            "voicebox/%zz/sample.wav",
+            "voicebox/%ffsample.wav",
         ]:
             with self.subTest(artifact_path=artifact_path):
                 with self.assertRaises(ArtifactAccessError):

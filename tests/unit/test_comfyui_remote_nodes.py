@@ -451,6 +451,10 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             "/artifacts/runtime/../secret.png",
             "/artifacts/runtime/%2e%2e/secret.png",
             "/artifacts/runtime/%2Fsecret.png",
+            "/artifacts/runtime/%/secret.png",
+            "/artifacts/runtime/%2/secret.png",
+            "/artifacts/runtime/%zz/secret.png",
+            "/artifacts/runtime/%ffsecret.png",
         ]:
             with self.subTest(value=value):
                 with self.assertRaises(nodes.B1RemoteNodeError):

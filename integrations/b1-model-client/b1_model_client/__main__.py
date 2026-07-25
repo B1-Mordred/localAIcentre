@@ -20,6 +20,7 @@ CHUNK_SIZE = 1024 * 1024
 CACHE_STATE_VERSION = "b1-model-client-cache/v1"
 CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$")
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 MODELHUB_URL_ENV = "B1_MODELHUB_URL"
 TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
@@ -31,7 +32,12 @@ def has_unsafe_path_segment(path: str) -> bool:
     for segment in path.split("/"):
         if not segment:
             continue
-        decoded = unquote(segment)
+        if BAD_PERCENT_ESCAPE_RE.search(segment):
+            return True
+        try:
+            decoded = unquote(segment, errors="strict")
+        except UnicodeDecodeError:
+            return True
         if decoded in {".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded:
             return True
         if any(ord(character) < 32 or ord(character) == 127 for character in decoded):

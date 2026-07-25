@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import re
 from typing import Any
 from urllib.parse import unquote
 
@@ -9,12 +10,20 @@ class ArtifactAccessError(ValueError):
     pass
 
 
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
 def _has_control_character(value: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in value)
 
 
 def _validate_artifact_segment(segment: str) -> str:
-    decoded = unquote(segment)
+    if BAD_PERCENT_ESCAPE_RE.search(segment):
+        raise ArtifactAccessError("artifact path must not contain traversal segments")
+    try:
+        decoded = unquote(segment, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ArtifactAccessError("artifact path must not contain traversal segments") from exc
     if decoded in {"", ".", ".."} or "/" in decoded or "\\" in decoded or "?" in decoded or "#" in decoded or _has_control_character(decoded):
         raise ArtifactAccessError("artifact path must not contain traversal segments")
     return segment

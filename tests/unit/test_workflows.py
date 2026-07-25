@@ -698,6 +698,10 @@ class WorkflowTests(unittest.TestCase):
             "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%3Ftoken.png",
             "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/safe%23fragment.png",
             "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%00source.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%/source.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%2/source.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%zz/source.png",
+            "inputs/client/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%ffsource.png",
         ):
             with self.subTest(unsafe_path=unsafe_path):
                 with self.assertRaisesRegex(WorkflowError, "path is invalid"):

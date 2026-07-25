@@ -59,12 +59,35 @@ class ModelClientTests(unittest.TestCase):
             "https://models.ai.b1.germering/models%3ftoken",
             "https://models.ai.b1.germering/models%23fragment",
             "https://models.ai.b1.germering/models%00name",
+            "https://models.ai.b1.germering/models%name",
+            "https://models.ai.b1.germering/models%2/name",
+            "https://models.ai.b1.germering/models%zzname",
+            "https://models.ai.b1.germering/models%ffname",
             "https://models.ai.b1.germering:bad",
         ]
         for value in unsafe_values:
             with self.subTest(value=value):
                 with self.assertRaises(RuntimeError):
                     client.validate_base_url(value)
+
+    def test_request_json_rejects_unsafe_request_path_before_network(self) -> None:
+        called = False
+
+        def fake_urlopen(request: object, timeout: int = 30) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called for unsafe request paths")
+
+        original = client.urllib.request.urlopen
+        try:
+            client.urllib.request.urlopen = fake_urlopen
+            for path in ("/modelhub/v1/%/catalog", "/modelhub/v1/%2/catalog", "/modelhub/v1/%zz/catalog", "/modelhub/v1/%ffcatalog"):
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(RuntimeError, "request path is unsafe"):
+                        client.request_json("https://models.ai.b1.germering", path, None)
+        finally:
+            client.urllib.request.urlopen = original
+        self.assertFalse(called)
 
     def test_model_id_validation_rejects_path_controls_before_requests(self) -> None:
         unsafe_values = [

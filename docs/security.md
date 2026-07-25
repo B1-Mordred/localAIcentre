@@ -50,7 +50,7 @@ The implemented runtime-agent surface validates service names against immutable 
 
 Artifact downloads are authorized by the control plane. An artifact path must normalize under `/artifacts`, must be present on a durable job record, and must belong to the requesting API client unless the caller has administrative wildcard scope. The artifact-server remains internal-only and also requires the generated `B1_ARTIFACT_SERVER_TOKEN_FILE` bearer token on artifact and Model Hub blob routes; only `/healthz` is unauthenticated for Docker health checks.
 
-Artifact URLs and Voicebox reference-sample links are decoded before path checks. Literal or percent-encoded traversal segments, path separators, and control characters are rejected before an artifact can be authorized, retained, exported, or linked as sensitive voice material.
+Artifact URLs and Voicebox reference-sample links are decoded before path checks. Literal or percent-encoded traversal segments, path separators, malformed percent escapes, invalid percent-encoded UTF-8, and control characters are rejected before an artifact can be authorized, retained, exported, or linked as sensitive voice material.
 
 Media job visibility is owner-scoped on ordinary `/v1/media/jobs` routes. A service, creator, or user API key with `jobs:read` can list/read/cancel/event-stream only its own jobs unless it has wildcard administrative scope. Whole-system queue inspection and mutation use `/admin/jobs`, require `admin` or `operator` role, and audit priority, cancel, and retry mutations without storing prompts or media in audit metadata.
 
@@ -74,7 +74,7 @@ PostgreSQL logical import from a tested backup is split into planning and apply.
 
 Workflow-backed media jobs are not trusted just because they came from Media Studio. The control plane reloads the published workflow record, checks role visibility and dependency readiness, enforces the workflow's model/runtime metadata, rejects parameters outside the declared JSON Schema, validates base64 media fields, caps inline media payloads, and enforces resource limits before queueing the durable job.
 
-Staged media upload references are also treated as untrusted job input. The validator requires the generated `upload_*` identifier, a normalized `inputs/...` artifact path containing that identifier, a bounded byte count, a lowercase SHA-256 digest, and the expected MIME family. Literal or percent-encoded traversal, separators, query/fragment characters, and control bytes are rejected before the job is accepted.
+Staged media upload references are also treated as untrusted job input. The validator requires the generated `upload_*` identifier, a normalized `inputs/...` artifact path containing that identifier, a bounded byte count, a lowercase SHA-256 digest, and the expected MIME family. Literal or percent-encoded traversal, separators, query/fragment characters, malformed percent escapes, invalid percent-encoded UTF-8, and control bytes are rejected before the job is accepted.
 
 Custom ComfyUI node code is fail-closed. Workflow manifests may declare `node` dependencies only with lowercase 40-character git commit pins, and dependency readiness checks those pins against the read-only `$B1_COMFYUI_NODE_PIN_REGISTRY`. Registry entries must use HTTPS repository URLs without credentials, must be explicitly `approved`, and may include dependency-lock SHA-256 metadata so dependency changes are visible before operators publish workflows that require custom code.
 
