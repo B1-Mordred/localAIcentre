@@ -2183,11 +2183,7 @@ async def claim_next_job(
     async with engine.begin() as conn:
         active_reservations: list[dict[str, Any]] = []
         if respect_runtime_reservations:
-            await conn.execute(
-                update(runtime_reservations)
-                .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at <= now))
-                .values(status="expired", updated_at=now)
-            )
+            await expire_active_runtime_reservations(conn, now)
             reservation_result = await conn.execute(
                 select(runtime_reservations)
                 .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at > now, runtime_reservations.c.runtime.in_(runtime_names)))
@@ -2733,6 +2729,15 @@ async def insert_runtime_reservation(payload: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+async def expire_active_runtime_reservations(conn: Any, now: datetime | None = None) -> None:
+    current_time = now or datetime.now(tz=UTC)
+    await conn.execute(
+        update(runtime_reservations)
+        .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at <= current_time))
+        .values(status="expired", updated_at=current_time)
+    )
+
+
 def runtime_reservation_matches_request(
     reservation: dict[str, Any],
     owner_id: str,
@@ -2755,11 +2760,7 @@ async def list_active_runtime_reservations(runtime_names: list[str] | None = Non
         raise RuntimeError("database engine is not configured")
     now = datetime.now(tz=UTC)
     async with engine.begin() as conn:
-        await conn.execute(
-            update(runtime_reservations)
-            .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at <= now))
-            .values(status="expired", updated_at=now)
-        )
+        await expire_active_runtime_reservations(conn, now)
         query = select(runtime_reservations).where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at > now))
         if runtime_names:
             query = query.where(runtime_reservations.c.runtime.in_(runtime_names))
@@ -2792,11 +2793,7 @@ async def list_runtime_reservations(
         query = query.where(and_(*filters))
     query = query.order_by(runtime_reservations.c.created_at.desc()).limit(bounded_limit)
     async with engine.begin() as conn:
-        await conn.execute(
-            update(runtime_reservations)
-            .where(and_(runtime_reservations.c.status == "active", runtime_reservations.c.expires_at <= now))
-            .values(status="expired", updated_at=now)
-        )
+        await expire_active_runtime_reservations(conn, now)
         result = await conn.execute(query)
         rows = result.mappings().all()
     return [dict(row) for row in rows]
@@ -2830,7 +2827,9 @@ async def runtime_reservation_gate(
 async def get_runtime_reservation(reservation_id: str) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")
-    async with engine.connect() as conn:
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        await expire_active_runtime_reservations(conn, now)
         result = await conn.execute(select(runtime_reservations).where(runtime_reservations.c.id == reservation_id))
         row = result.mappings().first()
     return dict(row) if row else None
@@ -2839,7 +2838,9 @@ async def get_runtime_reservation(reservation_id: str) -> dict[str, Any] | None:
 async def get_runtime_reservation_by_idempotency_key(owner_id: str, idempotency_key: str) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")
-    async with engine.connect() as conn:
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        await expire_active_runtime_reservations(conn, now)
         result = await conn.execute(
             select(runtime_reservations).where(
                 and_(
@@ -2857,6 +2858,7 @@ async def cancel_runtime_reservation(reservation_id: str) -> dict[str, Any] | No
         raise RuntimeError("database engine is not configured")
     now = datetime.now(tz=UTC)
     async with engine.begin() as conn:
+        await expire_active_runtime_reservations(conn, now)
         result = await conn.execute(select(runtime_reservations).where(runtime_reservations.c.id == reservation_id).with_for_update())
         row = result.mappings().first()
         if row is None:

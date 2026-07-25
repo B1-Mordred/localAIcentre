@@ -327,6 +327,30 @@ class DatabaseExportTests(unittest.TestCase):
             )
         )
 
+    def test_runtime_reservation_direct_paths_reconcile_expired_rows(self) -> None:
+        source = (ROOT / "services" / "control-plane" / "app" / "database.py").read_text(encoding="utf-8")
+        required_handlers = [
+            "claim_next_job",
+            "list_active_runtime_reservations",
+            "list_runtime_reservations",
+            "get_runtime_reservation",
+            "get_runtime_reservation_by_idempotency_key",
+            "cancel_runtime_reservation",
+        ]
+        self.assertIn("async def expire_active_runtime_reservations", source)
+        for handler in required_handlers:
+            with self.subTest(handler=handler):
+                start = source.index(f"async def {handler}")
+                end = source.find("\n\nasync def ", start + 1)
+                body = source[start:] if end == -1 else source[start:end]
+                self.assertIn("expire_active_runtime_reservations(conn, now)", body)
+        for handler in ["get_runtime_reservation", "get_runtime_reservation_by_idempotency_key", "cancel_runtime_reservation"]:
+            with self.subTest(handler=handler):
+                start = source.index(f"async def {handler}")
+                end = source.find("\n\nasync def ", start + 1)
+                body = source[start:] if end == -1 else source[start:end]
+                self.assertIn("async with engine.begin() as conn", body)
+
     def test_select_claim_candidate_uses_priority_aging_policy(self) -> None:
         now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
         rows = [
