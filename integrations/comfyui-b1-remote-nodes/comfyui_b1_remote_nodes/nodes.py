@@ -33,6 +33,8 @@ BAD_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
 MIME_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
 UPLOAD_ID_PATTERN = re.compile(r"^upload_[a-f0-9]{32}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+MEDIA_JOB_ROUTE_PREFIX = "/v1/media/jobs/"
+MEDIA_JOB_LINK_SUFFIXES = {"self": "", "cancel": "", "events": "/events", "artifacts": "/artifacts"}
 MEDIA_KINDS = {"image", "audio", "video"}
 ALLOWED_UPLOAD_MIME_TYPES = {
     "image/png",
@@ -520,6 +522,58 @@ def safe_path_segment(value: str, label: str) -> str:
     return urllib.parse.quote(segment, safe="")
 
 
+def require_internal_media_job_route(value: str, link_name: str) -> str:
+    expected_suffix = MEDIA_JOB_LINK_SUFFIXES.get(link_name)
+    if expected_suffix is None:
+        raise B1RemoteNodeError("media job link name is unsupported")
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or not parsed.path.startswith(MEDIA_JOB_ROUTE_PREFIX):
+        raise B1RemoteNodeError("media job links must be internal /v1/media/jobs paths without query or fragment")
+    if "\\" in parsed.path or any(char.isspace() or ord(char) < 32 for char in parsed.path):
+        raise B1RemoteNodeError("media job link path is unsafe")
+    expected_parts = ["v1", "media", "jobs"]
+    parts = parsed.path.strip("/").split("/")
+    suffix_parts = [part for part in expected_suffix.strip("/").split("/") if part]
+    if len(parts) != 4 + len(suffix_parts) or parts[:3] != expected_parts or parts[4:] != suffix_parts:
+        raise B1RemoteNodeError(f"media job {link_name} link does not match the expected route")
+    job_segment = parts[3]
+    if not job_segment or len(job_segment) > 256 or BAD_PERCENT_ESCAPE_PATTERN.search(job_segment):
+        raise B1RemoteNodeError("media job link id segment is unsafe")
+    try:
+        decoded = urllib.parse.unquote(job_segment, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise B1RemoteNodeError("media job link id segment is unsafe") from exc
+    decoded_parts = decoded.split("/")
+    if (
+        any(part in {"", ".", ".."} for part in decoded_parts)
+        or "\\" in decoded
+        or any(ord(char) < 32 for char in decoded)
+    ):
+        raise B1RemoteNodeError("media job link id segment is unsafe")
+    return parsed.path
+
+
+def media_job_route(job_reference: str, link_name: str, fallback_suffix: str = "") -> str:
+    raw = job_reference.strip()
+    if not raw:
+        raise B1RemoteNodeError("job_id is required")
+    if raw.startswith("{"):
+        payload = parse_json_object(raw, "job_id")
+        links = payload.get("links")
+        if isinstance(links, dict) and link_name in links:
+            candidate = links[link_name]
+            if not isinstance(candidate, str):
+                raise B1RemoteNodeError(f"media job {link_name} link must be a string")
+            return require_internal_media_job_route(candidate, link_name)
+        raw_id = payload.get("id")
+        if not isinstance(raw_id, str):
+            raise B1RemoteNodeError("job JSON must include an id string when no usable link is present")
+        raw = raw_id
+    elif raw.startswith(MEDIA_JOB_ROUTE_PREFIX):
+        return require_internal_media_job_route(raw, link_name)
+    return f"/v1/media/jobs/{safe_path_segment(raw, 'job_id')}{fallback_suffix}"
+
+
 def multipart_form_data(
     fields: dict[str, str],
     files: list[tuple[str, str, str, bytes]],
@@ -659,17 +713,19 @@ def submit_media_job(modality: str, operation: str, model: str, input_payload: d
     )
 
 
-def wait_for_job(job_id: str, timeout_seconds: int, poll_interval_seconds: float) -> dict[str, Any]:
-    job_segment = safe_path_segment(job_id, "job_id")
+def wait_for_job(job_reference: str, timeout_seconds: int, poll_interval_seconds: float) -> dict[str, Any]:
+    path = media_job_route(job_reference, "self")
     deadline = time.monotonic() + max(1, timeout_seconds)
     interval = max(0.25, poll_interval_seconds)
     last: dict[str, Any] | None = None
     while time.monotonic() <= deadline:
-        last = request_json(f"/v1/media/jobs/{job_segment}")
+        last = request_json(path)
+        if isinstance(last.get("links"), dict):
+            path = media_job_route(json_output(last), "self")
         if str(last.get("state")) in TERMINAL_JOB_STATES:
             return last
         time.sleep(interval)
-    raise B1RemoteNodeError(f"job {job_id} did not finish before timeout; last state={last.get('state') if last else 'unknown'}")
+    raise B1RemoteNodeError(f"job did not finish before timeout; last state={last.get('state') if last else 'unknown'}")
 
 
 class B1ListModels:
@@ -1073,8 +1129,7 @@ class B1CancelMediaJob:
     CATEGORY = "B1 AI Hub"
 
     def run(self, job_id: str):
-        job_segment = safe_path_segment(job_id, "job_id")
-        return (json_output(request_json(f"/v1/media/jobs/{job_segment}", method="DELETE")),)
+        return (json_output(request_json(media_job_route(job_id, "cancel"), method="DELETE")),)
 
 
 class B1ListJobArtifacts:
@@ -1088,8 +1143,7 @@ class B1ListJobArtifacts:
     CATEGORY = "B1 AI Hub"
 
     def run(self, job_id: str):
-        job_segment = safe_path_segment(job_id, "job_id")
-        return (json_output(request_json(f"/v1/media/jobs/{job_segment}/artifacts")),)
+        return (json_output(request_json(media_job_route(job_id, "artifacts", "/artifacts"))),)
 
 
 class B1DownloadArtifact:

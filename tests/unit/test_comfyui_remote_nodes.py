@@ -65,6 +65,20 @@ def staged_reference(kind: str = "image", mime_type: str = "image/png") -> dict[
     }
 
 
+def job_payload(job_id: str = "job_1") -> dict[str, Any]:
+    base = f"/v1/media/jobs/{job_id}"
+    return {
+        "id": job_id,
+        "state": "queued",
+        "links": {
+            "self": base,
+            "events": f"{base}/events",
+            "artifacts": f"{base}/artifacts",
+            "cancel": base,
+        },
+    }
+
+
 def chmod_private(path: Path) -> None:
     if os.name != "nt":
         path.chmod(0o600)
@@ -436,6 +450,54 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(nodes.B1RemoteNodeError):
                     nodes.B1CancelMediaJob().run(value)
+
+    def test_job_routes_accept_server_links_from_job_json(self) -> None:
+        calls: list[dict[str, Any]] = []
+        linked_job = job_payload()
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            if kwargs.get("method") == "DELETE":
+                return {**linked_job, "state": "cancelled"}
+            if path.endswith("/artifacts"):
+                return {"artifacts": [{"id": "artifact_1", "url": "/artifacts/images/job_1/0.png"}]}
+            return {**linked_job, "state": "completed"}
+
+        self.patch_attr("request_json", fake_request_json)
+        self.patch_attr("time", type("FakeTime", (), {"monotonic": staticmethod(lambda: 0), "sleep": staticmethod(lambda seconds: None)})())
+
+        raw_job = json.dumps(linked_job)
+        state, waited_raw = nodes.B1WaitMediaJob().run(raw_job, 10, 0.25)
+        cancelled_raw = nodes.B1CancelMediaJob().run(raw_job)[0]
+        artifacts_raw = nodes.B1ListJobArtifacts().run(raw_job)[0]
+
+        self.assertEqual(state, "completed")
+        self.assertEqual(json.loads(waited_raw)["links"]["self"], "/v1/media/jobs/job_1")
+        self.assertEqual(json.loads(cancelled_raw)["state"], "cancelled")
+        self.assertEqual(json.loads(artifacts_raw)["artifacts"][0]["id"], "artifact_1")
+        self.assertEqual(
+            [call["path"] for call in calls],
+            ["/v1/media/jobs/job_1", "/v1/media/jobs/job_1", "/v1/media/jobs/job_1/artifacts"],
+        )
+
+    def test_job_routes_accept_valid_internal_routes_and_reject_unsafe_links(self) -> None:
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job_1", "self"), "/v1/media/jobs/job_1")
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job_1/artifacts", "artifacts"), "/v1/media/jobs/job_1/artifacts")
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job%2Fone%20two", "self"), "/v1/media/jobs/job%2Fone%20two")
+
+        invalid_jobs = [
+            ({"id": "job_1", "links": {"self": "https://api.ai.b1.germering/v1/media/jobs/job_1"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/job_1?token=secret"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/%2e%2e"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/job_1/events"}}, "self", ""),
+            ({"id": "job_1", "links": {"artifacts": "/v1/media/jobs/job_1"}}, "artifacts", "/artifacts"),
+            ({"id": "job_1", "links": {"cancel": 123}}, "cancel", ""),
+            ({"links": {}}, "self", ""),
+        ]
+        for payload, link_name, suffix in invalid_jobs:
+            with self.subTest(payload=payload):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.media_job_route(json.dumps(payload), link_name, suffix)
 
     def test_artifact_download_rejects_external_url_and_sanitizes_filename(self) -> None:
         def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
