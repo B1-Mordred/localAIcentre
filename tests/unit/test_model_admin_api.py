@@ -1267,6 +1267,91 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(len(fake_database.leases), 1)
         self.assertEqual(fake_database.releases, [fake_database.leases[0]["owner"]])
 
+    def test_model_runtime_smoke_rejects_production_hardware_policy_before_lease(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        row = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "display_name": "Chat Small",
+            "modality": "llm",
+            "preferred_runtime": "localai",
+            "status": "installed",
+            "resource_label": "recommended",
+            "manifest": manifest_payload(digest, len(data)),
+        }
+        fake_database = FakeDatabase(row, [row], active_jobs=0)
+        self.patch_common(Path(tempfile.gettempdir()), fake_database)
+        self.patch_attr(
+            "settings",
+            replace(
+                main.settings,
+                runtime_deployment_mode="production",
+                gpu_total_vram_gib=12.0,
+                gpu_usable_vram_gib=10.5,
+                gpu_reserve_vram_gib=1.5,
+                host_total_ram_gib=32.0,
+                host_reserve_ram_gib=6.0,
+            ),
+        )
+
+        metrics_calls: list[str] = []
+
+        async def fake_runtime_agent_get(path: str) -> tuple[dict[str, Any], None]:
+            metrics_calls.append(path)
+            return (
+                {
+                    "gpu": {
+                        "available": True,
+                        "devices": [
+                            {
+                                "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+                                "memory_total_mib": 6144,
+                                "memory_free_mib": 4096,
+                            }
+                        ],
+                    },
+                    "memory": {"total_bytes": 31 * 1024 * 1024 * 1024, "available_bytes": 8 * 1024 * 1024 * 1024},
+                },
+                None,
+            )
+
+        class UnexpectedRunner:
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+            async def unload_other_gpu_runtimes(self, job: dict[str, Any]) -> list[dict[str, Any] | None]:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+            async def verify_vram_or_recover(self, job: dict[str, Any]) -> None:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+            async def load_runtime_model(self, job: dict[str, Any]) -> dict[str, Any]:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+            async def warm_runtime_model(self, job: dict[str, Any]) -> dict[str, Any]:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+            async def smoke_runtime_model(self, job: dict[str, Any]) -> dict[str, Any]:
+                raise AssertionError("runtime preparation must not run after hardware-policy rejection")
+
+        self.patch_attr("runtime_agent_get", fake_runtime_agent_get)
+        self.patch_attr("runtime_control_runner", lambda lease_ttl_seconds=None: UnexpectedRunner())
+        manifest = main.model_lifecycle.parse_uploaded_manifest(row["manifest"])
+        auth = AuthContext(subject_id="test-admin", role=Role.ADMIN, scopes=frozenset({"*"}))
+
+        with self.assertRaises(main.HTTPException) as raised:
+            asyncio.run(main.run_model_runtime_smoke(manifest, auth))
+
+        detail = raised.exception.detail
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(detail["code"], "hardware_resource_policy")
+        self.assertEqual(detail["hardware_resource_policy"]["status"], "failed")
+        self.assertIn("largest GPU VRAM is 6144 MiB", detail["hardware_resource_policy"]["detail"])
+        self.assertEqual(metrics_calls, ["/v1/metrics"])
+        self.assertEqual(fake_database.leases, [])
+        self.assertEqual(fake_database.releases, [])
+
 
 if __name__ == "__main__":
     unittest.main()
