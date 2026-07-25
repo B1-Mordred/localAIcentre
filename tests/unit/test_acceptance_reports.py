@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -717,6 +718,14 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
 
 
 class AcceptanceReportTests(unittest.TestCase):
+    def symlink_or_skip(self, target: Path, link: Path, *, target_is_directory: bool = False) -> None:
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlink creation is unavailable")
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
     def test_report_writer_persists_json_markdown_and_checksums(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -804,6 +813,45 @@ class AcceptanceReportTests(unittest.TestCase):
             with self.assertRaises(acceptance.AcceptanceReportError) as raised:
                 acceptance.report_file_path(root, report["id"], "report.md")
             self.assertIn("symlink", str(raised.exception))
+
+    def test_report_root_symlink_is_rejected_for_reads_and_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            real_root = base / "acceptance-real"
+            real_root.mkdir()
+            linked_root = base / "acceptance-link"
+            self.symlink_or_skip(real_root, linked_root, target_is_directory=True)
+
+            report = sample_report()
+            for operation in (
+                lambda: acceptance.report_directory(linked_root, report["id"]),
+                lambda: acceptance.list_reports(linked_root),
+                lambda: acceptance.write_report(linked_root, report),
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaisesRegex(acceptance.AcceptanceReportError, "root is a symlink"):
+                        operation()
+
+    def test_atomic_report_write_rejects_symlink_and_non_regular_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside.json"
+            outside.write_bytes(b"outside")
+            linked = root / "report.json"
+            self.symlink_or_skip(outside, linked)
+
+            with self.assertRaisesRegex(acceptance.AcceptanceReportError, "symlink"):
+                acceptance._write_atomic(linked, b"report")  # noqa: SLF001
+
+            self.assertEqual(outside.read_bytes(), b"outside")
+            self.assertTrue(linked.is_symlink())
+
+            directory_target = root / "report.md"
+            directory_target.mkdir()
+            with self.assertRaisesRegex(acceptance.AcceptanceReportError, "not a regular file"):
+                acceptance._write_atomic(directory_target, b"markdown")  # noqa: SLF001
+
+            self.assertTrue(directory_target.is_dir())
 
     def test_handoff_records_voicebox_upstream_limitations(self) -> None:
         live_evidence = sample_live_evidence()

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -236,6 +237,8 @@ def validate_report_id(report_id: str) -> str:
 
 def report_directory(root: Path, report_id: str) -> Path:
     normalized = validate_report_id(report_id)
+    if root.is_symlink():
+        raise AcceptanceReportError("acceptance report root is a symlink")
     base = root.resolve()
     target = (base / normalized).resolve()
     if target.parent != base:
@@ -269,9 +272,47 @@ def _sha256_bytes(payload: bytes) -> str:
 
 
 def _write_atomic(path: Path, payload: bytes) -> None:
+    if path.parent.is_symlink():
+        raise AcceptanceReportError("acceptance report directory is a symlink")
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(file_stat.st_mode):
+            raise AcceptanceReportError("acceptance report file path is a symlink")
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise AcceptanceReportError("acceptance report file path is not a regular file")
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_bytes(payload)
-    os.replace(tmp, path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o640)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(payload)
+        try:
+            file_stat = path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(file_stat.st_mode):
+                raise AcceptanceReportError("acceptance report file path is a symlink")
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise AcceptanceReportError("acceptance report file path is not a regular file")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def _check_by_name(self_test: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -1951,6 +1992,8 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
 
 
 def list_reports(root: Path, limit: int = 50) -> list[dict[str, Any]]:
+    if root.is_symlink():
+        raise AcceptanceReportError("acceptance report root is a symlink")
     if not root.exists():
         return []
     bounded = max(1, min(int(limit), SUMMARY_LIMIT))
