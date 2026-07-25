@@ -91,6 +91,7 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "image_generation_completed",
     "image_edit_completed",
     "short_video_completed",
+    "media_artifacts_verified",
 )
 REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1"
 REMOTE_NODES_REQUIRED_CHECKS = (

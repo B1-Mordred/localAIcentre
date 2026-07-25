@@ -36,6 +36,7 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "image_generation_completed",
     "image_edit_completed",
     "short_video_completed",
+    "media_artifacts_verified",
 )
 
 
@@ -78,6 +79,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
     samples: list[dict[str, Any]] = []
     model_measurements: dict[str, dict[str, Any]] = {}
     required_model_aliases: set[str] = set()
+    media_artifact_proofs: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -85,6 +87,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         cls.samples = []
         cls.model_measurements = {}
         cls.required_model_aliases = set()
+        cls.media_artifact_proofs = {}
         api_key = os.getenv("B1_WORKFLOWS_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_WORKFLOWS_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -124,6 +127,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                     "samples": cls.samples,
                     "required_model_aliases": sorted(cls.required_model_aliases),
                     "model_measurements": cls.model_measurements,
+                    "media_artifacts": cls.media_artifact_proofs,
                 },
                 indent=2,
                 sort_keys=True,
@@ -138,6 +142,13 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             "recorded_at": datetime.now(tz=UTC).isoformat(),
             **data,
         }
+
+    def response_header(self, headers: dict[str, str], name: str) -> str:
+        wanted = name.lower()
+        for key, value in headers.items():
+            if key.lower() == wanted:
+                return value
+        return ""
 
     def require_measured_model(self, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:
         self.__class__.required_model_aliases.add(alias)
@@ -209,6 +220,7 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 },
             ),
         )
+        self.verify_media_artifacts_verified()
 
     def verify_chat(self) -> None:
         model = os.getenv("B1_WORKFLOWS_CHAT_MODEL", "chat-default")
@@ -461,10 +473,43 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         artifact = artifacts[0]
         artifact_url = artifact.get("url")
         self.assertIsInstance(artifact_url, str)
+        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
+        artifact_mime_type = artifact.get("mime_type")
+        self.assertIsInstance(artifact_mime_type, str, artifact)
+        self.assertTrue(artifact_mime_type, artifact)
+        artifact_bytes = artifact.get("bytes")
+        self.assertIsInstance(artifact_bytes, int, artifact)
+        self.assertGreater(artifact_bytes, 0, artifact)
+        artifact_sha256 = artifact.get("sha256")
+        self.assertIsInstance(artifact_sha256, str, artifact)
+        self.assertRegex(artifact_sha256, r"^[a-f0-9]{64}$", artifact)
         status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
         self.assertEqual(status, 200, content[:200])
         self.assertGreater(len(content), 0)
         digest = hashlib.sha256(content).hexdigest()
+        self.assertEqual(artifact_bytes, len(content), artifact)
+        self.assertEqual(artifact_sha256, digest, artifact)
+        content_type_header = self.response_header(headers, "content-type")
+        content_length_header = self.response_header(headers, "content-length")
+        etag_header = self.response_header(headers, "etag")
+        accept_ranges_header = self.response_header(headers, "accept-ranges")
+        self.assertTrue(content_type_header, headers)
+        self.assertEqual(content_length_header, str(len(content)), headers)
+        self.assertTrue(etag_header, headers)
+        self.assertEqual(accept_ranges_header.lower(), "bytes", headers)
+        self.__class__.media_artifact_proofs[label] = {
+            "job_id": str(job["id"]),
+            "artifact_url": artifact_url,
+            "artifact_id": str(artifact.get("id") or ""),
+            "artifact_kind": str(artifact.get("kind") or ""),
+            "artifact_mime_type": artifact_mime_type,
+            "artifact_bytes": artifact_bytes,
+            "artifact_sha256": artifact_sha256,
+            "download_content_type": content_type_header,
+            "download_content_length": content_length_header,
+            "download_etag": etag_header,
+            "download_accept_ranges": accept_ranges_header,
+        }
         self.record_check(
             check_name,
             job_id=job["id"],
@@ -482,7 +527,12 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
             artifact_count=len(artifacts),
             first_artifact_bytes=len(content),
             first_artifact_sha256=digest,
-            content_length_header=headers.get("Content-Length") or headers.get("content-length"),
+            first_artifact_mime_type=artifact_mime_type,
+            first_artifact_url=artifact_url,
+            content_type_header=content_type_header,
+            content_length_header=content_length_header,
+            etag_header=etag_header,
+            accept_ranges_header=accept_ranges_header,
         )
         self.samples.append(
             {
@@ -499,7 +549,20 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
                 "artifact_count": len(artifacts),
                 "first_artifact_bytes": len(content),
                 "first_artifact_sha256": digest,
+                "first_artifact_mime_type": artifact_mime_type,
             }
+        )
+
+    def verify_media_artifacts_verified(self) -> None:
+        required_labels = ("image-generation", "image-edit", "short-video")
+        missing = [label for label in required_labels if label not in self.media_artifact_proofs]
+        if missing:
+            raise AssertionError(f"missing artifact verification for media workflows: {missing}")
+        self.record_check(
+            "media_artifacts_verified",
+            workflow_labels=list(required_labels),
+            artifact_count=len(required_labels),
+            artifacts={label: self.media_artifact_proofs[label] for label in required_labels},
         )
 
     def wait_for_terminal_job(self, job: dict[str, Any]) -> dict[str, Any]:

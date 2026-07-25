@@ -284,6 +284,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "image_generation_completed",
                 "image_edit_completed",
                 "short_video_completed",
+                "media_artifacts_verified",
             ],
             "missing_checks": [],
             "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
@@ -304,6 +305,11 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "image_generation_completed": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
                 "image_edit_completed": {"status": "ok", "recorded_at": "2026-07-24T12:30:00+00:00"},
                 "short_video_completed": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
+                "media_artifacts_verified": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:30+00:00",
+                    "artifact_count": 3,
+                },
             },
             "sample_count": 7,
             "sample_labels": ["chat", "tts", "stt", "cpu-audio-no-gpu-lease", "image-generation", "image-edit", "short-video"],
@@ -1386,6 +1392,30 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_installed_workflow_snapshot_requires_artifact_verification_evidence(self) -> None:
+        snapshot = acceptance.installed_workflows_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-installed-workflows-acceptance/v1",
+                "generated_at": "2026-07-24T12:32:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "chat_completed": {"status": "ok"},
+                    "tts_completed": {"status": "ok"},
+                    "stt_completed": {"status": "ok"},
+                    "cpu_audio_does_not_take_gpu_lease": {"status": "ok"},
+                    "image_generation_completed": {"status": "ok"},
+                    "image_edit_completed": {"status": "ok"},
+                    "short_video_completed": {"status": "ok"},
+                },
+                "required_model_aliases": [],
+                "model_measurements": {},
+                "samples": [{"label": "image-generation"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], ["media_artifacts_verified"])
+
     def test_report_blocks_handoff_for_missing_installed_workflow_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["installed_workflows"] = {
@@ -2091,6 +2121,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "image_generation_completed": {"status": "ok"},
                             "image_edit_completed": {"status": "ok"},
                             "short_video_completed": {"status": "ok"},
+                            "media_artifacts_verified": {"status": "ok"},
                         },
                         "required_model_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
                         "model_measurements": {
