@@ -654,6 +654,63 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 401)
         self.assertEqual(fake.jobs, {})
 
+    def test_prompt_rejects_production_hardware_policy_before_job_creation(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        main.settings = replace(
+            main.settings,
+            runtime_deployment_mode="production",
+            gpu_total_vram_gib=12.0,
+            gpu_reserve_vram_gib=1.5,
+            host_total_ram_gib=32.0,
+            host_reserve_ram_gib=6.0,
+        )
+        original_runtime_agent_get = main.runtime_agent_get
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any], str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return (
+                {
+                    "gpu": {
+                        "available": True,
+                        "devices": [
+                            {
+                                "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+                                "memory_total_mib": 6144,
+                                "memory_free_mib": 4096,
+                            }
+                        ],
+                    },
+                    "memory": {
+                        "total_bytes": 31 * 1024**3,
+                        "available_bytes": 8 * 1024**3,
+                    },
+                },
+                None,
+            )
+
+        async def fail_proxy(*_: Any, **__: Any) -> Response:
+            raise AssertionError("hardware admission failure must not forward to ComfyUI")
+
+        main.runtime_agent_get = runtime_agent_get  # type: ignore[assignment]
+        main.proxy_http_bytes = fail_proxy  # type: ignore[assignment]
+        request = FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "KSampler", "inputs": {"seed": 1}}}})
+
+        try:
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main.comfy_prompt(request))
+        finally:
+            main.runtime_agent_get = original_runtime_agent_get
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["code"], "hardware_resource_policy")
+        check = caught.exception.detail["hardware_resource_policy"]
+        self.assertEqual(check["name"], "hardware:resource-policy")
+        self.assertEqual(check["status"], "failed")
+        self.assertIn("largest GPU VRAM is 6144 MiB", check["detail"])
+        self.assertEqual(fake.jobs, {})
+        self.assertEqual(fake.leases, [])
+
     def test_prompt_prepare_failure_fails_without_forwarding_to_comfyui(self) -> None:
         fake = FakeDatabase()
         main.database = fake
