@@ -120,7 +120,7 @@ def sync_plan_model_metadata(record: dict[str, Any] | None) -> dict[str, Any]:
             "resource_estimate": record.get("resource_estimate") or {},
             "resource_label": record.get("resource_label"),
             "downloadable": manifest_is_downloadable(record),
-            "requires_license_acceptance": bool(license_info.get("acceptance_required")),
+            "requires_license_acceptance": record_requires_license_acceptance(record),
             "aliases": list(record.get("aliases") or []),
         }
     )

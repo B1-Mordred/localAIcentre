@@ -908,6 +908,29 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(payload["changes"][0]["status"], "downloaded")
         self.assertTrue(seen["downloaded"])
 
+    def test_local_plan_surfaces_top_level_license_acceptance_requirement(self) -> None:
+        metadata = client.plan_action_metadata(
+            {
+                "id": "licenced-model",
+                "version": "1.0.0",
+                "downloadable": True,
+                "requires_license_acceptance": True,
+                "license": {"name": "Custom", "redistribution": "downloadable"},
+            }
+        )
+
+        action = {
+            "action": "download",
+            "model": "chat-default",
+            "blob": "7" * 64,
+            **metadata,
+        }
+
+        self.assertTrue(metadata["requires_license_acceptance"])
+        self.assertTrue(metadata["model_metadata"]["requires_license_acceptance"])
+        self.assertTrue(client.action_requires_license_acceptance(action))
+        self.assertEqual(client.accepted_license_refs_for_action(action), ["licenced-model@1.0.0"])
+
     def test_download_blob_validates_etag_content_length_and_range_metadata(self) -> None:
         payload = b"hello-world"
         digest = hashlib.sha256(payload).hexdigest()

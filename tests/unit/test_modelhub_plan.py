@@ -144,6 +144,29 @@ class ModelHubPlanTests(unittest.TestCase):
         self.assertEqual(response["actions"][0]["license"]["redistribution"], "inference-only")
         self.assertFalse(response["actions"][0]["requires_license_acceptance"])
 
+    def test_sync_plan_surfaces_top_level_license_acceptance_requirement(self) -> None:
+        record = {
+            "id": "downloadable-llm",
+            "version": "2.0.0",
+            "downloadable": True,
+            "requires_license_acceptance": True,
+            "files": [{"path": "model.gguf", "sha256": "f" * 64, "size_bytes": 12}],
+            "license": {"name": "Custom", "redistribution": "downloadable"},
+            "execution_modes": ["downloadable"],
+        }
+        catalog = SimpleNamespace(
+            model_or_alias_record=lambda model_id: record,
+            versions_for=lambda model_id: [record],
+        )
+
+        response = build_sync_plan(catalog, ["chat-default"], {})
+
+        action = response["actions"][0]
+        self.assertEqual(action["action"], "download")
+        self.assertTrue(action["requires_license_acceptance"])
+        self.assertTrue(action["model_metadata"]["requires_license_acceptance"])
+        self.assertEqual(action["model_metadata"]["id"], "downloadable-llm")
+
     def test_sync_plan_filters_versions_before_selecting_downloadable_manifest(self) -> None:
         admin_sha = "c" * 64
         service_sha = "d" * 64

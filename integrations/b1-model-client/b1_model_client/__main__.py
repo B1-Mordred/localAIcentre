@@ -368,6 +368,7 @@ def plan_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     model_id = record.get("id") or resolved.get("id") or record.get("root")
     version = record.get("version") or resolved.get("version")
     display_name = record.get("display_name") or resolved.get("display_name") or model_id
+    requires_license_acceptance = bool(record.get("requires_license_acceptance") or license_info.get("acceptance_required"))
     return without_none(
         {
             "id": model_id,
@@ -382,7 +383,7 @@ def plan_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
             "resource_estimate": record.get("resource_estimate") or {},
             "resource_label": record.get("resource_label"),
             "downloadable": bool(record.get("downloadable")),
-            "requires_license_acceptance": bool(license_info.get("acceptance_required")),
+            "requires_license_acceptance": requires_license_acceptance,
             "aliases": list(record.get("aliases") or []),
         }
     )
