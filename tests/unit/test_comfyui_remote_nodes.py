@@ -542,6 +542,95 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(second_byte_count, byte_count)
         self.assertEqual(second_digest, digest)
 
+    def test_artifact_download_accepts_record_json_and_verifies_metadata(self) -> None:
+        content = b"\x89PNG\r\n\x1a\nverified"
+        digest = nodes.hashlib.sha256(content).hexdigest()
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            calls.append({"path": path, **kwargs})
+            return content, {"content-type": "image/png"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        artifact = {
+            "url": "/artifacts/runtime/job/0.png",
+            "filename": "../server result.png",
+            "bytes": len(content),
+            "sha256": digest.upper(),
+        }
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, actual_digest = nodes.B1DownloadArtifact().run(json.dumps(artifact))
+            self.assertEqual(Path(file_path).name, "server_result.png")
+            self.assertEqual(Path(file_path).read_bytes(), content)
+
+        self.assertEqual(calls[0]["path"], "/artifacts/runtime/job/0.png")
+        self.assertEqual(byte_count, len(content))
+        self.assertEqual(actual_digest, digest)
+
+    def test_artifact_download_accepts_artifact_list_json_by_index(self) -> None:
+        content = b"RIFF....WEBP"
+        digest = nodes.hashlib.sha256(content).hexdigest()
+        seen_paths: list[str] = []
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            seen_paths.append(path)
+            return content, {"content-type": "image/webp"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        artifact_list = {
+            "artifacts": [
+                {"url": "/artifacts/runtime/job/0.png", "bytes": 99, "sha256": "0" * 64},
+                {"path": "runtime/job/1.webp", "bytes": len(content), "sha256": digest},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, actual_digest = nodes.B1DownloadArtifact().run(json.dumps(artifact_list), artifact_index=1)
+
+        self.assertEqual(seen_paths, ["/artifacts/runtime/job/1.webp"])
+        self.assertEqual(byte_count, len(content))
+        self.assertEqual(actual_digest, digest)
+        self.assertEqual(Path(file_path).suffix, ".webp")
+
+        for bad_index in [-1, 2]:
+            with self.subTest(bad_index=bad_index):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.artifact_reference(json.dumps(artifact_list), bad_index)
+
+    def test_artifact_download_rejects_metadata_mismatch_before_writing(self) -> None:
+        content = b"actual content"
+        artifact = {
+            "url": "/artifacts/runtime/job/0.bin",
+            "filename": "result.bin",
+            "bytes": len(content),
+            "sha256": "0" * 64,
+        }
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            return content, {"content-type": "application/octet-stream"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "SHA-256 mismatch"):
+                nodes.B1DownloadArtifact().run(json.dumps(artifact))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+            mismatched_size = {**artifact, "sha256": nodes.hashlib.sha256(content).hexdigest(), "bytes": len(content) + 1}
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "size mismatch"):
+                nodes.B1DownloadArtifact().run(json.dumps(mismatched_size))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_artifact_record_metadata_rejects_unsafe_values(self) -> None:
+        for payload in [
+            {"url": "https://api.test.local/artifacts/runtime/job/0.png"},
+            {"path": "/tmp/local-file.png"},
+            {"url": "/artifacts/runtime/job/0.png", "bytes": True},
+            {"url": "/artifacts/runtime/job/0.png", "bytes": -1},
+            {"url": "/artifacts/runtime/job/0.png", "sha256": ["bad"]},
+        ]:
+            with self.subTest(payload=payload):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.artifact_reference(json.dumps(payload))
+
     def test_media_references_reject_local_paths(self) -> None:
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.require_media_reference("/home/user/private.png", "image")

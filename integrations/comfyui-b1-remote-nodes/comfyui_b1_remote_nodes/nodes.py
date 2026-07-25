@@ -36,6 +36,7 @@ SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 MEDIA_JOB_ROUTE_PREFIX = "/v1/media/jobs/"
 MEDIA_JOB_LINK_SUFFIXES = {"self": "", "cancel": "", "events": "/events", "artifacts": "/artifacts"}
 MEDIA_KINDS = {"image", "audio", "video"}
+ARTIFACT_URL_KEYS = ("url", "artifact_url", "download_url")
 ALLOWED_UPLOAD_MIME_TYPES = {
     "image/png",
     "image/jpeg",
@@ -629,7 +630,91 @@ def require_internal_artifact_path(value: str) -> str:
     return parsed.path
 
 
-def write_download(content: bytes, headers: dict[str, str], preferred_name: str | None = None) -> tuple[str, int, str]:
+def expected_byte_count(value: Any, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise B1RemoteNodeError(f"{label} must be a non-negative integer")
+    return value
+
+
+def expected_sha256(value: Any, label: str) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value.lower()):
+        raise B1RemoteNodeError(f"{label} must be a SHA-256 hex digest")
+    return value.lower()
+
+
+def validate_download_integrity(content: bytes, expected_bytes: int | None = None, expected_digest: str | None = None) -> str:
+    if expected_bytes is not None and len(content) != expected_bytes:
+        raise B1RemoteNodeError(f"artifact download size mismatch: expected {expected_bytes} bytes, got {len(content)}")
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_digest is not None and digest != expected_digest:
+        raise B1RemoteNodeError("artifact download SHA-256 mismatch")
+    return digest
+
+
+def artifact_reference_path_from_record(record: dict[str, Any]) -> str:
+    for key in ARTIFACT_URL_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return require_internal_artifact_path(value)
+    path_value = record.get("path")
+    if isinstance(path_value, str) and path_value.strip():
+        raw = path_value.strip()
+        if raw.startswith("/artifacts/"):
+            return require_internal_artifact_path(raw)
+        parsed = urllib.parse.urlsplit(raw)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or raw.startswith("/"):
+            raise B1RemoteNodeError("artifact record path must be a relative artifact path")
+        return require_internal_artifact_path(f"/artifacts/{raw}")
+    raise B1RemoteNodeError("artifact record must include an internal artifact url or path")
+
+
+def artifact_reference_from_json(payload: dict[str, Any], artifact_index: int = 0) -> dict[str, Any]:
+    if isinstance(artifact_index, bool) or not isinstance(artifact_index, int):
+        raise B1RemoteNodeError("artifact index must be an integer")
+    artifacts = payload.get("artifacts")
+    if artifacts is None and isinstance(payload.get("data"), list):
+        artifacts = payload.get("data")
+    if artifacts is not None:
+        if not isinstance(artifacts, list):
+            raise B1RemoteNodeError("artifact list must be an array")
+        if artifact_index < 0 or artifact_index >= len(artifacts):
+            raise B1RemoteNodeError("artifact index is out of range")
+        selected = artifacts[artifact_index]
+        if not isinstance(selected, dict):
+            raise B1RemoteNodeError("selected artifact record must be an object")
+        return selected
+    return payload
+
+
+def artifact_reference(value: str, artifact_index: int = 0) -> tuple[str, int | None, str | None, str | None]:
+    raw = value.strip()
+    if not raw:
+        raise B1RemoteNodeError("artifact_url is required")
+    if raw.startswith("{"):
+        record = artifact_reference_from_json(parse_json_object(raw, "artifact_url"), artifact_index)
+        path = artifact_reference_path_from_record(record)
+        preferred_name = record.get("filename") if isinstance(record.get("filename"), str) else path.rsplit("/", 1)[-1]
+        return (
+            path,
+            expected_byte_count(record.get("bytes"), "artifact bytes"),
+            expected_sha256(record.get("sha256"), "artifact sha256"),
+            preferred_name,
+        )
+    return require_internal_artifact_path(raw), None, None, raw.rsplit("/", 1)[-1]
+
+
+def write_download(
+    content: bytes,
+    headers: dict[str, str],
+    preferred_name: str | None = None,
+    *,
+    expected_bytes: int | None = None,
+    expected_sha256: str | None = None,
+) -> tuple[str, int, str]:
     output_dir = configured_download_dir().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     extension = extension_for_content_type(headers.get("content-type"))
@@ -640,7 +725,7 @@ def write_download(content: bytes, headers: dict[str, str], preferred_name: str 
     target = (output_dir / filename).resolve()
     if output_dir not in target.parents and target != output_dir:
         raise B1RemoteNodeError("artifact download path escapes configured output directory")
-    digest = hashlib.sha256(content).hexdigest()
+    digest = validate_download_integrity(content, expected_bytes, expected_sha256)
     target = unique_download_target(target, digest)
     write_private_download_file(target, content)
     return str(target), len(content), digest
@@ -1153,7 +1238,10 @@ class B1DownloadArtifact:
             "required": {
                 "artifact_url": ("STRING", {"default": "/artifacts/"}),
                 "filename": ("STRING", {"default": ""}),
-            }
+            },
+            "optional": {
+                "artifact_index": ("INT", {"default": 0, "min": 0, "max": 1000}),
+            },
         }
 
     RETURN_TYPES = ("STRING", "INT", "STRING")
@@ -1161,11 +1249,11 @@ class B1DownloadArtifact:
     FUNCTION = "run"
     CATEGORY = "B1 AI Hub"
 
-    def run(self, artifact_url: str, filename: str = ""):
-        path = require_internal_artifact_path(artifact_url)
+    def run(self, artifact_url: str, filename: str = "", artifact_index: int = 0):
+        path, expected_bytes, expected_digest, record_name = artifact_reference(artifact_url, artifact_index)
         content, headers = request_bytes(path, method="GET", timeout_seconds=1800)
-        preferred = filename.strip() or path.rsplit("/", 1)[-1]
-        return write_download(content, headers, preferred)
+        preferred = filename.strip() or record_name or path.rsplit("/", 1)[-1]
+        return write_download(content, headers, preferred, expected_bytes=expected_bytes, expected_sha256=expected_digest)
 
 
 NODE_CLASS_MAPPINGS = {
