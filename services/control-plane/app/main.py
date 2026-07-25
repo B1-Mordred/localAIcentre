@@ -4761,6 +4761,9 @@ def public_model_download(row: dict[str, Any]) -> dict[str, Any]:
     public["file_count"] = len(manifest.get("files") or [])
     public["model_ref"] = f"{public.get('model_id')}@{public.get('model_version')}"
     public["authenticated"] = bool(public.get("credential_secret_name"))
+    license_info = manifest.get("license") if isinstance(manifest.get("license"), dict) else {}
+    public["requires_license_acceptance"] = bool(license_info.get("acceptance_required"))
+    public["license_accepted"] = bool(public.get("license_accepted"))
     public["install_ready"] = public.get("status") == "completed"
     return jsonable_encoder(public)
 
@@ -8148,6 +8151,7 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
             "stage": "already_available" if status == "completed" else "queued",
             "manifest": manifest.to_dict(),
             "credential_secret_name": credential_secret_name,
+            "license_accepted": bool(plan.get("license_accepted")),
         }
     )
     await record_audit_event(

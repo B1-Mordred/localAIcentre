@@ -127,6 +127,7 @@ model_downloads = Table(
     Column("stage", String(128), nullable=False),
     Column("manifest", JSONB, nullable=False, default=dict),
     Column("credential_secret_name", String(128), nullable=True),
+    Column("license_accepted", Boolean, nullable=False, default=False),
     Column("error_category", String(128), nullable=True),
     Column("error_message", Text, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -534,6 +535,7 @@ SCHEMA_COMPATIBILITY_SQL = [
     "CREATE INDEX IF NOT EXISTS b1_model_downloads_status_idx ON b1_model_downloads (status)",
     "CREATE INDEX IF NOT EXISTS b1_model_downloads_model_idx ON b1_model_downloads (model_id, model_version)",
     "ALTER TABLE b1_model_downloads ADD COLUMN IF NOT EXISTS credential_secret_name varchar(128)",
+    "ALTER TABLE b1_model_downloads ADD COLUMN IF NOT EXISTS license_accepted boolean NOT NULL DEFAULT false",
     (
         "CREATE TABLE IF NOT EXISTS b1_model_alias_policies ("
         "alias varchar(128) PRIMARY KEY, "
@@ -1412,6 +1414,7 @@ async def insert_model_download(payload: dict[str, Any]) -> dict[str, Any]:
         "bytes_downloaded": 0,
         "status": "queued",
         "stage": "queued",
+        "license_accepted": False,
         "error_category": None,
         "error_message": None,
         **payload,

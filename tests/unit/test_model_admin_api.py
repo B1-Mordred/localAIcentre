@@ -587,7 +587,9 @@ class ModelAdminApiTests(unittest.TestCase):
 
             self.assertEqual(result["download"]["credential_secret_name"], "model-download:hf")
             self.assertTrue(result["download"]["authenticated"])
+            self.assertFalse(result["download"]["license_accepted"])
             self.assertEqual(fake_database.model_downloads[0]["credential_secret_name"], "model-download:hf")
+            self.assertFalse(fake_database.model_downloads[0]["license_accepted"])
             self.assertTrue(audit_events[0]["metadata"]["authenticated"])
             self.assertNotIn("credential_secret_name", audit_events[0]["metadata"])
 
@@ -660,8 +662,11 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertIn("licence acceptance is required", str(raised.exception.detail))
         self.assertEqual(result["download"]["status"], "queued")
+        self.assertTrue(result["download"]["requires_license_acceptance"])
+        self.assertTrue(result["download"]["license_accepted"])
         self.assertTrue(result["plan"]["license_accepted"])
         self.assertEqual(len(fake_database.model_downloads), 1)
+        self.assertTrue(fake_database.model_downloads[0]["license_accepted"])
         self.assertEqual(audit_events[0]["event_type"], "model_download.created")
 
     def test_manifest_install_permissions_block_operator_install_planning(self) -> None:

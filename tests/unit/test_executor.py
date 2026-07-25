@@ -1929,6 +1929,78 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.model_download["stage"], "already_available")
             self.assertEqual(fake.model_download["bytes_downloaded"], len(payload))
 
+    def test_model_download_runner_uses_persisted_license_acceptance(self) -> None:
+        payload = b"licensed model already present"
+        digest = hashlib.sha256(payload).hexdigest()
+        manifest = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "display_name": "Chat Small",
+            "modality": "llm",
+            "operations": ["chat"],
+            "source": {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"},
+            "files": [{"path": "chat-small.gguf", "sha256": digest, "size_bytes": len(payload)}],
+            "runtimes": ["localai"],
+            "preferred_runtime": "localai",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+            "license": {"name": "test", "redistribution": "downloadable", "acceptance_required": True},
+            "execution_modes": ["hosted-inference", "downloadable"],
+            "aliases": ["chat-default"],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(payload)
+
+            rejected = FakeDatabase()
+            self.patch_database(rejected)
+            rejected.model_download = {
+                "id": "modeldl_unaccepted",
+                "status": "queued",
+                "stage": "queued",
+                "manifest": manifest,
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "bytes_downloaded": 0,
+                "license_accepted": False,
+            }
+
+            processed = asyncio.run(executor.ModelDownloadRunner(root).run_once())
+
+            self.assertTrue(processed)
+            self.assertEqual(rejected.model_download["status"], "failed")
+            self.assertEqual(rejected.model_download["stage"], "failed")
+            self.assertEqual(rejected.model_download["error_category"], "ModelLifecycleError")
+            self.assertIn("licence acceptance is required", rejected.model_download["error_message"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(payload)
+
+            accepted = FakeDatabase()
+            self.patch_database(accepted)
+            accepted.model_download = {
+                "id": "modeldl_accepted",
+                "status": "queued",
+                "stage": "queued",
+                "manifest": manifest,
+                "target_size_bytes": len(payload),
+                "target_sha256": digest,
+                "bytes_downloaded": 0,
+                "license_accepted": True,
+            }
+
+            processed = asyncio.run(executor.ModelDownloadRunner(root).run_once())
+
+            self.assertTrue(processed)
+            self.assertEqual(accepted.model_download["status"], "completed")
+            self.assertEqual(accepted.model_download["stage"], "already_available")
+            self.assertEqual(accepted.model_download["bytes_downloaded"], len(payload))
+
     def test_model_download_runner_counts_multi_file_verified_blobs(self) -> None:
         fake = FakeDatabase()
         self.patch_database(fake)

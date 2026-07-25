@@ -56,6 +56,7 @@ class DatabaseExportTests(unittest.TestCase):
                         "stage": "queued",
                         "manifest": {"id": "chat-small"},
                         "credential_secret_name": "model-download:hf",
+                        "license_accepted": True,
                         "created_at": created,
                         "updated_at": created,
                     }
@@ -248,7 +249,9 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertEqual(encrypted_secrets["rows"][0]["secret_envelope"]["key_id"], "abc")
         model_downloads = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_model_downloads")
         self.assertEqual(model_downloads["rows"][0]["credential_secret_name"], "model-download:hf")
+        self.assertTrue(model_downloads["rows"][0]["license_accepted"])
         self.assertIn("credential_secret_name", {column["name"] for column in model_downloads["schema"]["columns"]})
+        self.assertIn("license_accepted", {column["name"] for column in model_downloads["schema"]["columns"]})
         resource_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_resource_policies")
         self.assertEqual(resource_policies["rows"][0]["gpu_reserve_vram_gib"], 2.0)
         self.assertEqual(resource_policies["rows"][0]["cpu_resident_aliases"], ["embedding-default", "tts-fast", "stt-default"])

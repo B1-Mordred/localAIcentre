@@ -1758,7 +1758,9 @@ class ModelDownloadRunner:
             if await self.stop_if_requested(download_id):
                 return True
             manifest = model_lifecycle.parse_uploaded_manifest(download["manifest"])
-            plan = model_lifecycle.build_download_plan(manifest, self.data_root)
+            plan = model_lifecycle.build_download_plan(manifest, self.data_root, accept_license=bool(download.get("license_accepted")))
+            if not plan["can_download"]:
+                raise model_lifecycle.ModelLifecycleError("; ".join(plan["blockers"]) or "download is blocked")
             if plan["already_available"]:
                 await database.update_model_download(
                     download_id,
@@ -1769,8 +1771,6 @@ class ModelDownloadRunner:
                     error_message=None,
                 )
                 return True
-            if not plan["can_download"]:
-                raise model_lifecycle.ModelLifecycleError("; ".join(plan["blockers"]) or "download is blocked")
             auth_headers = await self.download_auth_headers(download)
             await self.download_plan(download_id, plan, auth_headers=auth_headers)
         except Exception as exc:
