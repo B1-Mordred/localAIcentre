@@ -73,7 +73,7 @@ Set `B1_MODELHUB_CA_FILE` when the test host does not already trust the Caddy in
 
 ## Voicebox Remote/Server Compatibility
 
-The Voicebox compatibility path verifies the public `voice.ai.b1.germering` gateway endpoint and the unified `api.ai.b1.germering` speech/profile APIs. It checks native HTTP proxying, Voicebox reference-sample upload protection, profile create/export/delete lifecycle, audit records for sample upload/export/delete, OpenAI-compatible speech through the scheduler, and native WebSocket connection behaviour where the pinned upstream supports it.
+The Voicebox compatibility path verifies the public `voice.ai.b1.germering` gateway endpoint and the unified `api.ai.b1.germering` speech/profile APIs. It first reads `/b1/runtime/build-info` through the Voicebox compatibility endpoint and checks the deployed B1 proxy version, Jamie Pine Voicebox version, pinned commit, and source archive SHA-256. It then checks native HTTP proxying, Voicebox reference-sample upload protection, profile create/export/delete lifecycle, audit records for sample upload/export/delete, OpenAI-compatible speech through the scheduler, and native WebSocket connection behaviour where the pinned upstream supports it.
 
 ```bash
 export B1_VOICEBOX_LIVE_TEST=1
@@ -81,6 +81,8 @@ export B1_VOICEBOX_BASE=https://voice.ai.b1.germering
 export B1_VOICEBOX_API_BASE=https://api.ai.b1.germering
 export B1_VOICEBOX_API_KEY=...
 export B1_VOICEBOX_SPEECH_MODEL=tts-quality
+export B1_VOICEBOX_EXPECTED_VERSION=v0.5.0
+export B1_VOICEBOX_EXPECTED_COMMIT=2bcb98d1a8b6fe05e15fbc1559e3085669e4035d
 export B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json
 make voicebox-compatibility
 ```
@@ -94,7 +96,7 @@ export B1_VOICEBOX_SKIP_WEBSOCKET=1
 export B1_VOICEBOX_WEBSOCKET_LIMITATION="Pinned Voicebox v0.5.0 does not expose a stable remote WebSocket route for this mode."
 ```
 
-`B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if native HTTP proxying, profile lifecycle validation, reference-sample artifact protection, profile export validation, delete audit proof, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete. The report also requires upstream version, profile ID/model/sample counts, protected sample URL and byte count, export format and sensitivity flag, delete status, and either generated speech bytes/hash/content type or a pinned-upstream limitation. WebSocket evidence likewise must include either a validated route/result type or a pinned-upstream limitation.
+`B1_VOICEBOX_SKIP_SPEECH=1` similarly requires `B1_VOICEBOX_SPEECH_LIMITATION`, but use it only when speech is blocked by a pinned upstream/version limitation rather than missing model installation or bad credentials. Limitation records must carry the same proxy version, upstream repository/version/commit, and source archive SHA-256 returned by `/b1/runtime/build-info`; the acceptance report rejects environment-only or mismatched limitation evidence. When `B1_VOICEBOX_EVIDENCE` is set, Control Center acceptance reports ingest the resulting evidence file and block handoff if proxy build-info proof, native HTTP proxying, profile lifecycle validation, reference-sample artifact protection, profile export validation, delete audit proof, speech-or-limitation proof, or WebSocket-or-limitation proof is absent or incomplete. The report also requires pinned proxy/upstream/source metadata, profile ID/model/sample counts, protected sample URL and byte count, export format and sensitivity flag, delete status, and either generated speech bytes/hash/content type or a pinned-upstream limitation tied to the deployed proxy. WebSocket evidence likewise must include either a validated route/result type or a pinned-upstream limitation tied to the deployed proxy.
 
 After the native ComfyUI prompt, remote-node credentials, Model Hub sync client, and Voicebox settings are configured, run the required external compatibility evidence group with:
 

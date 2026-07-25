@@ -116,6 +116,46 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertEqual(missing[1]["reason"], "runtime_control_token_required")
         self.assertIsNone(accepted)
 
+    def test_build_info_reports_pinned_upstream_and_proxy_identity(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "B1_VOICEBOX_PROXY_VERSION": "b1-voicebox-proxy/v0.5.0-b1",
+                "B1_VOICEBOX_UPSTREAM_VERSION": "v0.5.0",
+                "B1_VOICEBOX_UPSTREAM_COMMIT": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                "B1_VOICEBOX_SOURCE_ARCHIVE_SHA256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            },
+            clear=False,
+        ):
+            info = self.proxy.voicebox_build_info()
+
+        self.assertEqual(info["status"], "ok")
+        self.assertEqual(info["runtime"], "voicebox")
+        self.assertEqual(info["action"], "build-info")
+        self.assertEqual(info["proxy"], "b1-voicebox-proxy")
+        self.assertEqual(info["proxy_version"], "b1-voicebox-proxy/v0.5.0-b1")
+        self.assertEqual(info["upstream_repository"], "jamiepine/voicebox")
+        self.assertEqual(info["upstream_version"], "v0.5.0")
+        self.assertEqual(info["upstream_commit"], "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d")
+        self.assertEqual(info["source_archive_sha256"], "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083")
+        self.assertIs(info["pinned"], True)
+
+    def test_build_info_fails_closed_when_pinned_commit_is_invalid(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "B1_VOICEBOX_PROXY_VERSION": "b1-voicebox-proxy/v0.5.0-b1",
+                "B1_VOICEBOX_UPSTREAM_VERSION": "v0.5.0",
+                "B1_VOICEBOX_UPSTREAM_COMMIT": "not-a-commit",
+                "B1_VOICEBOX_SOURCE_ARCHIVE_SHA256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            },
+            clear=False,
+        ):
+            info = self.proxy.voicebox_build_info()
+
+        self.assertEqual(info["status"], "unconfigured")
+        self.assertEqual(info["upstream_commit"], "")
+
     def test_speech_profile_envelope_maps_to_upstream_fields_and_local_sample_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -25,6 +25,8 @@ Voicebox remains internal. External clients use `https://voice.ai.b1.germering/`
 
 The production image starts a B1 proxy on `:17493` and starts upstream Voicebox on loopback `127.0.0.1:17494` by default. The proxy forwards native REST, web, MCP HTTP, and WebSocket traffic to upstream Voicebox while handling B1 scheduler lifecycle routes itself. This avoids patching upstream Voicebox source and keeps raw upstream traffic inside the container.
 
+The proxy also serves read-only `GET /b1/runtime/build-info` with the B1 proxy version, Jamie Pine Voicebox version, pinned upstream commit, and source archive SHA-256. The Voicebox compatibility harness records this live endpoint and Control Center acceptance reports reject speech/WebSocket limitation evidence that does not match the deployed proxy metadata.
+
 ## Runtime Layout
 
 The production override resets the development placeholder environment and volume list. The Voicebox container receives only:
@@ -45,6 +47,7 @@ The control plane is still the only service that may submit managed inference wo
 
 The B1 proxy implements these runtime hooks:
 
+- `GET /b1/runtime/build-info`
 - `POST /b1/runtime/load`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`

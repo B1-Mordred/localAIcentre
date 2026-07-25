@@ -50,6 +50,13 @@ VOICE_PROFILE_UPSTREAM_FIELD_MAP = {
     "speed": "speed",
 }
 BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+GIT_SHA_RE = re.compile(r"^[a-f0-9]{40}$")
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+VOICEBOX_UPSTREAM_REPOSITORY = "jamiepine/voicebox"
+VOICEBOX_UPSTREAM_VERSION_DEFAULT = "v0.5.0"
+VOICEBOX_UPSTREAM_COMMIT_DEFAULT = "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d"
+VOICEBOX_SOURCE_ARCHIVE_SHA256_DEFAULT = "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083"
+VOICEBOX_PROXY_VERSION_DEFAULT = "b1-voicebox-proxy/v0.5.0-b1"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -131,6 +138,38 @@ def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"status": status, "runtime": "voicebox", "action": action}
     payload.update(extra)
     return payload
+
+
+def normalized_git_sha(value: str) -> str:
+    candidate = value.strip().lower()
+    return candidate if GIT_SHA_RE.fullmatch(candidate) else ""
+
+
+def normalized_sha256(value: str) -> str:
+    candidate = value.strip().lower()
+    return candidate if SHA256_RE.fullmatch(candidate) else ""
+
+
+def voicebox_build_info() -> dict[str, Any]:
+    upstream_version = os.getenv("B1_VOICEBOX_UPSTREAM_VERSION", VOICEBOX_UPSTREAM_VERSION_DEFAULT).strip()
+    upstream_commit = normalized_git_sha(os.getenv("B1_VOICEBOX_UPSTREAM_COMMIT", VOICEBOX_UPSTREAM_COMMIT_DEFAULT))
+    source_archive_sha256 = normalized_sha256(
+        os.getenv("B1_VOICEBOX_SOURCE_ARCHIVE_SHA256", VOICEBOX_SOURCE_ARCHIVE_SHA256_DEFAULT)
+    )
+    proxy_version = os.getenv("B1_VOICEBOX_PROXY_VERSION", VOICEBOX_PROXY_VERSION_DEFAULT).strip()
+    status = "ok" if upstream_version and upstream_commit and source_archive_sha256 and proxy_version else "unconfigured"
+    return {
+        "status": status,
+        "runtime": "voicebox",
+        "action": "build-info",
+        "proxy": "b1-voicebox-proxy",
+        "proxy_version": proxy_version,
+        "upstream_repository": VOICEBOX_UPSTREAM_REPOSITORY,
+        "upstream_version": upstream_version,
+        "upstream_commit": upstream_commit,
+        "source_archive_sha256": source_archive_sha256,
+        "pinned": True,
+    }
 
 
 def strip_model_version(value: str) -> str:
@@ -541,6 +580,11 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
             status, payload = auth_failure
             return JSONResponse(payload, status_code=status)
         return JSONResponse(json_response("healthy", "health", process=runtime_manager.status(), active_requests=request_tracker.active()))
+
+    @app.get("/b1/runtime/build-info")
+    async def b1_runtime_build_info() -> JSONResponse:
+        payload = voicebox_build_info()
+        return JSONResponse(payload, status_code=200 if payload["status"] == "ok" else 503)
 
     @app.post("/b1/runtime/{action}")
     async def b1_runtime_action(action: str, request: Request) -> JSONResponse:

@@ -19,6 +19,7 @@ from typing import Any
 
 VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"
 VOICEBOX_REQUIRED_CHECKS = (
+    "proxy_build_info_validated",
     "native_http_proxy_accessible",
     "profile_lifecycle_validated",
     "sample_artifact_protected",
@@ -71,11 +72,13 @@ def acceptance_wav_bytes() -> bytes:
 class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
+    build_info: dict[str, Any] = {}
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.checks = {}
         cls.samples = []
+        cls.build_info = {}
         cls.voice_base = os.getenv("B1_VOICEBOX_BASE", "https://voice.ai.b1.germering").rstrip("/")
         cls.api_base = os.getenv("B1_VOICEBOX_API_BASE", "https://api.ai.b1.germering").rstrip("/")
         cls.api_key = os.getenv("B1_VOICEBOX_API_KEY", "").strip()
@@ -83,10 +86,16 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         cls.voice_host_header = os.getenv("B1_VOICEBOX_HOST_HEADER", "").strip()
         cls.api_host_header = os.getenv("B1_VOICEBOX_API_HOST_HEADER", "").strip()
         cls.timeout_seconds = float(os.getenv("B1_VOICEBOX_TIMEOUT_SECONDS", "180"))
-        cls.upstream_version = os.getenv(
-            "B1_VOICEBOX_UPSTREAM_VERSION",
-            "Jamie Pine Voicebox v0.5.0 commit 2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
-        )
+        cls.expected_proxy_version = os.getenv("B1_VOICEBOX_EXPECTED_PROXY_VERSION", "b1-voicebox-proxy/v0.5.0-b1").strip()
+        cls.expected_upstream_version = os.getenv("B1_VOICEBOX_EXPECTED_VERSION", "v0.5.0").strip()
+        cls.expected_upstream_commit = os.getenv(
+            "B1_VOICEBOX_EXPECTED_COMMIT",
+            "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+        ).strip().lower()
+        cls.expected_source_archive_sha256 = os.getenv(
+            "B1_VOICEBOX_EXPECTED_SOURCE_ARCHIVE_SHA256",
+            "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+        ).strip().lower()
         cls.speech_limitation = bounded_text(os.getenv("B1_VOICEBOX_SPEECH_LIMITATION", ""))
         cls.websocket_limitation = bounded_text(os.getenv("B1_VOICEBOX_WEBSOCKET_LIMITATION", ""))
         if not cls.api_key:
@@ -237,11 +246,61 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             **data,
         }
 
+    def build_identity_fields(self) -> dict[str, str]:
+        return {
+            "proxy_version": str(self.build_info.get("proxy_version") or ""),
+            "upstream_repository": str(self.build_info.get("upstream_repository") or ""),
+            "upstream_version": str(self.build_info.get("upstream_version") or ""),
+            "upstream_commit": str(self.build_info.get("upstream_commit") or ""),
+            "source_archive_sha256": str(self.build_info.get("source_archive_sha256") or ""),
+        }
+
     def test_voicebox_remote_profile_speech_and_websocket(self) -> None:
+        self.verify_proxy_build_info()
         self.verify_native_http_proxy()
         self.verify_profile_lifecycle()
         self.verify_speech_or_limitation()
         self.verify_websocket_or_limitation()
+
+    def verify_proxy_build_info(self) -> None:
+        status, headers, body = self.request_raw(self.voice_base, "GET", "/b1/runtime/build-info", native=True)
+        self.assertGreaterEqual(status, 200)
+        self.assertLess(status, 300)
+        content_type = headers.get("Content-Type") or headers.get("content-type") or ""
+        decoded = json.loads(body.decode("utf-8"))
+        self.assertIsInstance(decoded, dict)
+        self.assertEqual(decoded.get("status"), "ok")
+        self.assertEqual(decoded.get("runtime"), "voicebox")
+        self.assertEqual(decoded.get("action"), "build-info")
+        self.assertEqual(decoded.get("proxy"), "b1-voicebox-proxy")
+        self.assertEqual(decoded.get("proxy_version"), self.expected_proxy_version)
+        self.assertEqual(decoded.get("upstream_repository"), "jamiepine/voicebox")
+        self.assertEqual(decoded.get("upstream_version"), self.expected_upstream_version)
+        self.assertEqual(decoded.get("upstream_commit"), self.expected_upstream_commit)
+        self.assertEqual(decoded.get("source_archive_sha256"), self.expected_source_archive_sha256)
+        self.assertIs(decoded.get("pinned"), True)
+        self.__class__.build_info = decoded
+        self.record_check(
+            "proxy_build_info_validated",
+            runtime=decoded.get("runtime"),
+            action=decoded.get("action"),
+            proxy=decoded.get("proxy"),
+            proxy_version=decoded.get("proxy_version"),
+            upstream_repository=decoded.get("upstream_repository"),
+            upstream_version=decoded.get("upstream_version"),
+            upstream_commit=decoded.get("upstream_commit"),
+            source_archive_sha256=decoded.get("source_archive_sha256"),
+            pinned=decoded.get("pinned"),
+            content_type=content_type.split(";", 1)[0],
+        )
+        self.samples.append(
+            {
+                "label": "voicebox-proxy-build-info",
+                "proxy_version": decoded.get("proxy_version"),
+                "upstream_version": decoded.get("upstream_version"),
+                "upstream_commit": decoded.get("upstream_commit"),
+            }
+        )
 
     def verify_native_http_proxy(self) -> None:
         path = os.getenv("B1_VOICEBOX_NATIVE_HTTP_PATH", "/")
@@ -254,7 +313,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             http_status=status,
             content_type=content_type.split(";", 1)[0],
             byte_count=len(body),
-            upstream_version=self.upstream_version,
+            **self.build_identity_fields(),
         )
         self.samples.append({"label": "voicebox-native-http", "path": path, "http_status": status, "byte_count": len(body)})
 
@@ -286,7 +345,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             "visibility_roles": ["admin", "operator"],
             "metadata": {
                 "acceptance": "voicebox-remote",
-                "upstream_version": self.upstream_version,
+                **self.build_identity_fields(),
             },
             "sample_artifacts": [sample_artifact],
         }
@@ -371,10 +430,10 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             self.record_check(
                 "speech_or_limitation_recorded",
                 mode="upstream_limitation",
-                upstream_version=self.upstream_version,
                 limitation=self.speech_limitation,
+                **self.build_identity_fields(),
             )
-            self.samples.append({"label": "voicebox-speech-limitation", "upstream_version": self.upstream_version})
+            self.samples.append({"label": "voicebox-speech-limitation", **self.build_identity_fields()})
             return
         payload = {
             "model": os.getenv("B1_VOICEBOX_SPEECH_MODEL", "tts-quality"),
@@ -390,10 +449,10 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             self.record_check(
                 "speech_or_limitation_recorded",
                 mode="upstream_limitation",
-                upstream_version=self.upstream_version,
                 limitation=self.speech_limitation,
+                **self.build_identity_fields(),
             )
-            self.samples.append({"label": "voicebox-speech-limitation", "upstream_version": self.upstream_version})
+            self.samples.append({"label": "voicebox-speech-limitation", **self.build_identity_fields()})
             return
         self.assertGreater(len(body), 0, "Voicebox speech returned an empty body")
         self.assertGreaterEqual(status, 200)
@@ -409,6 +468,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             content_type=content_type.split(";", 1)[0],
             byte_count=len(body),
             sha256=digest,
+            **self.build_identity_fields(),
         )
         self.samples.append(
             {
@@ -461,10 +521,10 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             self.record_check(
                 "websocket_or_limitation_recorded",
                 mode="upstream_limitation",
-                upstream_version=self.upstream_version,
                 limitation=self.websocket_limitation,
+                **self.build_identity_fields(),
             )
-            self.samples.append({"label": "voicebox-websocket-limitation", "upstream_version": self.upstream_version})
+            self.samples.append({"label": "voicebox-websocket-limitation", **self.build_identity_fields()})
             return
         try:
             result = asyncio.run(self.websocket_connect_once())
@@ -474,16 +534,17 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             self.record_check(
                 "websocket_or_limitation_recorded",
                 mode="upstream_limitation",
-                upstream_version=self.upstream_version,
                 limitation=self.websocket_limitation,
+                **self.build_identity_fields(),
             )
-            self.samples.append({"label": "voicebox-websocket-limitation", "upstream_version": self.upstream_version})
+            self.samples.append({"label": "voicebox-websocket-limitation", **self.build_identity_fields()})
             return
         self.record_check(
             "websocket_or_limitation_recorded",
             mode="websocket_validated",
             path=os.getenv("B1_VOICEBOX_WEBSOCKET_PATH", "/ws"),
             received_type=result["received_type"],
+            **self.build_identity_fields(),
         )
         self.samples.append(
             {

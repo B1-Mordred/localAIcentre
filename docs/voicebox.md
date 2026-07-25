@@ -30,6 +30,7 @@ Current implementation status:
 - administrators and operators can upload bounded audio reference samples through Control Center or `POST /admin/voicebox/sample-artifacts`; Storage can dry-run and clean unreferenced Voicebox samples without touching profile-referenced files
 - profile records are durable PostgreSQL rows included in the logical backup export; reference samples and cloned-voice material are stored only as artifact references, not inline profile payloads
 - the production image includes a B1 proxy that forwards native REST/web/MCP HTTP and WebSocket traffic to loopback upstream Voicebox while exposing scheduler lifecycle hooks on `/b1/runtime/*`
+- the B1 proxy exposes read-only `/b1/runtime/build-info` metadata with the proxy version, Jamie Pine Voicebox version, pinned commit, and source archive SHA-256 used by compatibility evidence
 - for `/v1/audio/speech`, that proxy consumes the B1 profile envelope, strips B1-only fields, maps safe upstream selector metadata such as `upstream_voice`, and translates validated `/artifacts/voicebox/...` sample references to read-only in-container paths for engines that support reference or cloned voices
 - target-host WebSocket and engine-specific speech compatibility are covered by the opt-in compatibility harness and must either pass against the pinned upstream route or record an explicit pinned-upstream limitation
 
@@ -47,8 +48,10 @@ B1_VOICEBOX_BASE=https://voice.ai.b1.germering \
 B1_VOICEBOX_API_BASE=https://api.ai.b1.germering \
 B1_VOICEBOX_API_KEY=... \
 B1_VOICEBOX_SPEECH_MODEL=tts-quality \
+B1_VOICEBOX_EXPECTED_VERSION=v0.5.0 \
+B1_VOICEBOX_EXPECTED_COMMIT=2bcb98d1a8b6fe05e15fbc1559e3085669e4035d \
 B1_VOICEBOX_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/voicebox-remote.json \
 make voicebox-compatibility
 ```
 
-If pinned upstream Voicebox lacks a stable remote WebSocket route or compatible speech mode for the selected profile, set `B1_VOICEBOX_SKIP_WEBSOCKET=1` with `B1_VOICEBOX_WEBSOCKET_LIMITATION=...` or `B1_VOICEBOX_SKIP_SPEECH=1` with `B1_VOICEBOX_SPEECH_LIMITATION=...`. Those limitation strings become machine-readable acceptance evidence; missing models, unhealthy containers, or credentials are not valid upstream limitations.
+If pinned upstream Voicebox lacks a stable remote WebSocket route or compatible speech mode for the selected profile, set `B1_VOICEBOX_SKIP_WEBSOCKET=1` with `B1_VOICEBOX_WEBSOCKET_LIMITATION=...` or `B1_VOICEBOX_SKIP_SPEECH=1` with `B1_VOICEBOX_SPEECH_LIMITATION=...`. Those limitation strings become machine-readable acceptance evidence only when they are tied to the same proxy version, upstream repository/version/commit, and source archive SHA-256 returned by `/b1/runtime/build-info`; missing models, unhealthy containers, or credentials are not valid upstream limitations.

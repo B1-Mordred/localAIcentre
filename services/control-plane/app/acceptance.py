@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
 REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
 SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+COMMIT_SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 REPORT_FILE_NAMES = frozenset({"report.json", "report.md", "SHA256SUMS"})
 SUMMARY_LIMIT = 200
 MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
@@ -328,6 +329,7 @@ LEGACY_COMFYUI_REQUIRED_CHECKS = (
 )
 VOICEBOX_EVIDENCE_FORMAT = "b1-ai-hub-voicebox-remote-compatibility/v1"
 VOICEBOX_REQUIRED_CHECKS = (
+    "proxy_build_info_validated",
     "native_http_proxy_accessible",
     "profile_lifecycle_validated",
     "sample_artifact_protected",
@@ -729,6 +731,11 @@ def _normalized_sha256(value: Any) -> str:
     return digest if SHA256_HEX_RE.fullmatch(digest) else ""
 
 
+def _normalized_commit_sha(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    return digest if COMMIT_SHA_RE.fullmatch(digest) else ""
+
+
 def _positive_int(value: Any) -> int:
     try:
         parsed = int(value)
@@ -1003,12 +1010,65 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
 
+    build = _check_record(checks, "proxy_build_info_validated")
+    proxy_version = _nonempty_text(build.get("proxy_version"))
+    upstream_repository = _nonempty_text(build.get("upstream_repository"))
+    upstream_version = _nonempty_text(build.get("upstream_version"))
+    upstream_commit = _normalized_commit_sha(build.get("upstream_commit"))
+    source_archive_sha256 = _normalized_sha256(build.get("source_archive_sha256"))
+    if build.get("status") != "ok":
+        missing.append("proxy_build_info_validated.status")
+    if build.get("runtime") != "voicebox":
+        missing.append("proxy_build_info_validated.runtime")
+    if build.get("action") != "build-info":
+        missing.append("proxy_build_info_validated.action")
+    if build.get("proxy") != "b1-voicebox-proxy":
+        missing.append("proxy_build_info_validated.proxy")
+    if not proxy_version:
+        missing.append("proxy_build_info_validated.proxy_version")
+    if upstream_repository != "jamiepine/voicebox":
+        missing.append("proxy_build_info_validated.upstream_repository")
+    if not upstream_version:
+        missing.append("proxy_build_info_validated.upstream_version")
+    if not upstream_commit:
+        missing.append("proxy_build_info_validated.upstream_commit")
+    if not source_archive_sha256:
+        missing.append("proxy_build_info_validated.source_archive_sha256")
+    if build.get("pinned") is not True:
+        missing.append("proxy_build_info_validated.pinned")
+
+    def require_build_identity(record: dict[str, Any], check_name: str) -> None:
+        record_proxy_version = _nonempty_text(record.get("proxy_version"))
+        record_repository = _nonempty_text(record.get("upstream_repository"))
+        record_upstream_version = _nonempty_text(record.get("upstream_version"))
+        record_upstream_commit = _normalized_commit_sha(record.get("upstream_commit"))
+        record_archive_sha256 = _normalized_sha256(record.get("source_archive_sha256"))
+        if not record_proxy_version:
+            missing.append(f"{check_name}.proxy_version")
+        elif proxy_version and record_proxy_version != proxy_version:
+            missing.append(f"{check_name}.proxy_version_matches_build_info")
+        if not record_repository:
+            missing.append(f"{check_name}.upstream_repository")
+        elif upstream_repository and record_repository != upstream_repository:
+            missing.append(f"{check_name}.upstream_repository_matches_build_info")
+        if not record_upstream_version:
+            missing.append(f"{check_name}.upstream_version")
+        elif upstream_version and record_upstream_version != upstream_version:
+            missing.append(f"{check_name}.upstream_version_matches_build_info")
+        if not record_upstream_commit:
+            missing.append(f"{check_name}.upstream_commit")
+        elif upstream_commit and record_upstream_commit != upstream_commit:
+            missing.append(f"{check_name}.upstream_commit_matches_build_info")
+        if not record_archive_sha256:
+            missing.append(f"{check_name}.source_archive_sha256")
+        elif source_archive_sha256 and record_archive_sha256 != source_archive_sha256:
+            missing.append(f"{check_name}.source_archive_sha256_matches_build_info")
+
     native = _check_record(checks, "native_http_proxy_accessible")
     http_status = _positive_int(native.get("http_status"))
     if http_status < 100 or http_status >= 500:
         missing.append("native_http_proxy_accessible.http_status")
-    if not _nonempty_text(native.get("upstream_version")):
-        missing.append("native_http_proxy_accessible.upstream_version")
+    require_build_identity(native, "native_http_proxy_accessible")
 
     lifecycle = _check_record(checks, "profile_lifecycle_validated")
     profile_id = _nonempty_text(lifecycle.get("profile_id"))
@@ -1057,11 +1117,11 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
             missing.append("speech_or_limitation_recorded.sha256")
         if not _nonempty_text(speech.get("content_type")):
             missing.append("speech_or_limitation_recorded.content_type")
+        require_build_identity(speech, "speech_or_limitation_recorded")
     elif speech_mode == "upstream_limitation":
-        if not _nonempty_text(speech.get("upstream_version")):
-            missing.append("speech_or_limitation_recorded.upstream_version")
         if not _nonempty_text(speech.get("limitation")):
             missing.append("speech_or_limitation_recorded.limitation")
+        require_build_identity(speech, "speech_or_limitation_recorded")
     else:
         missing.append("speech_or_limitation_recorded.mode")
 
@@ -1072,16 +1132,20 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
             missing.append("websocket_or_limitation_recorded.path")
         if _nonempty_text(websocket.get("received_type")) not in {"none", "text", "bytes"}:
             missing.append("websocket_or_limitation_recorded.received_type")
+        require_build_identity(websocket, "websocket_or_limitation_recorded")
     elif websocket_mode == "upstream_limitation":
-        if not _nonempty_text(websocket.get("upstream_version")):
-            missing.append("websocket_or_limitation_recorded.upstream_version")
         if not _nonempty_text(websocket.get("limitation")):
             missing.append("websocket_or_limitation_recorded.limitation")
+        require_build_identity(websocket, "websocket_or_limitation_recorded")
     else:
         missing.append("websocket_or_limitation_recorded.mode")
 
     return {
         "voicebox_profile_id": profile_id,
+        "voicebox_proxy_version": proxy_version,
+        "voicebox_upstream_repository": upstream_repository,
+        "voicebox_upstream_version": upstream_version,
+        "voicebox_upstream_commit": upstream_commit,
         "voicebox_speech_mode": speech_mode,
         "voicebox_websocket_mode": websocket_mode,
         "missing_compatibility_evidence": missing,
@@ -2154,7 +2218,13 @@ def _handoff_known_limitations(report: dict[str, Any], existing: list[dict[str, 
                 continue
             if check.get("limitation") or check.get("mode") == "upstream_limitation":
                 detail = check.get("limitation") or "Upstream limitation recorded"
-                upstream = f" ({check['upstream_version']})" if isinstance(check.get("upstream_version"), str) and check["upstream_version"] else ""
+                upstream_parts: list[str] = []
+                if isinstance(check.get("upstream_version"), str) and check["upstream_version"]:
+                    upstream_parts.append(check["upstream_version"])
+                upstream_commit = _normalized_commit_sha(check.get("upstream_commit"))
+                if upstream_commit:
+                    upstream_parts.append(upstream_commit[:12])
+                upstream = f" ({' '.join(upstream_parts)})" if upstream_parts else ""
                 add(f"{section}.{check_name}", f"{detail}{upstream}")
     if not limitations:
         add("operator_report", "No known limitations recorded in this acceptance report.")

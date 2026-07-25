@@ -171,6 +171,13 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     remote_artifact_sha = "b" * 64
     voicebox_profile_id = "vp_acceptance1"
     voicebox_speech_sha = "d" * 64
+    voicebox_identity = {
+        "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+        "upstream_repository": "jamiepine/voicebox",
+        "upstream_version": "v0.5.0",
+        "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+        "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+    }
     payload = {
         "live_stack_smoke": {
             "available": True,
@@ -607,6 +614,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "base_url": "https://voice.ai.b1.germering",
             "status": "ok",
             "required_checks": [
+                "proxy_build_info_validated",
                 "native_http_proxy_accessible",
                 "profile_lifecycle_validated",
                 "sample_artifact_protected",
@@ -617,15 +625,28 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             ],
             "missing_checks": [],
             "voicebox_profile_id": voicebox_profile_id,
+            "voicebox_proxy_version": voicebox_identity["proxy_version"],
+            "voicebox_upstream_repository": voicebox_identity["upstream_repository"],
+            "voicebox_upstream_version": voicebox_identity["upstream_version"],
+            "voicebox_upstream_commit": voicebox_identity["upstream_commit"],
             "voicebox_speech_mode": "speech_validated",
             "voicebox_websocket_mode": "websocket_validated",
             "missing_compatibility_evidence": [],
             "checks": {
+                "proxy_build_info_validated": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:40:30+00:00",
+                    "runtime": "voicebox",
+                    "action": "build-info",
+                    "proxy": "b1-voicebox-proxy",
+                    "pinned": True,
+                    **voicebox_identity,
+                },
                 "native_http_proxy_accessible": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:41:00+00:00",
                     "http_status": 200,
-                    "upstream_version": "Jamie Pine Voicebox v0.5.0 commit 2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                    **voicebox_identity,
                 },
                 "profile_lifecycle_validated": {
                     "status": "ok",
@@ -665,6 +686,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "byte_count": 4096,
                     "sha256": voicebox_speech_sha,
                     "content_type": "audio/wav",
+                    **voicebox_identity,
                 },
                 "websocket_or_limitation_recorded": {
                     "status": "ok",
@@ -672,10 +694,17 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "mode": "websocket_validated",
                     "path": "/ws",
                     "received_type": "none",
+                    **voicebox_identity,
                 },
             },
-            "sample_count": 4,
-            "sample_labels": ["voicebox-native-http", "voice-profile-lifecycle", "voice-sample-artifact", "voicebox-speech"],
+            "sample_count": 5,
+            "sample_labels": [
+                "voicebox-proxy-build-info",
+                "voicebox-native-http",
+                "voice-profile-lifecycle",
+                "voice-sample-artifact",
+                "voicebox-speech",
+            ],
         },
         "security_acceptance": {
             "available": True,
@@ -1163,7 +1192,11 @@ class AcceptanceReportTests(unittest.TestCase):
             "status": "ok",
             "recorded_at": "2026-07-24T12:44:00+00:00",
             "mode": "upstream_limitation",
-            "upstream_version": "Jamie Pine Voicebox v0.5.0",
+            "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+            "upstream_repository": "jamiepine/voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
             "limitation": "Pinned upstream exposes no stable WebSocket route for this profile.",
         }
 
@@ -1174,7 +1207,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn(
             {
                 "source": "voicebox_remote.websocket_or_limitation_recorded",
-                "detail": "Pinned upstream exposes no stable WebSocket route for this profile. (Jamie Pine Voicebox v0.5.0)",
+                "detail": "Pinned upstream exposes no stable WebSocket route for this profile. (v0.5.0 2bcb98d1a8b6)",
             },
             limitations,
         )
@@ -1199,7 +1232,7 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertEqual(
             snapshot["missing_checks"],
-            ["sample_artifact_protected", "profile_export_validated", "profile_delete_audited"],
+            ["proxy_build_info_validated", "sample_artifact_protected", "profile_export_validated", "profile_delete_audited"],
         )
 
     def test_voicebox_snapshot_requires_profile_sample_and_runtime_details(self) -> None:
@@ -1215,13 +1248,29 @@ class AcceptanceReportTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("proxy_build_info_validated.proxy_version", snapshot["missing_compatibility_evidence"])
+        self.assertIn("proxy_build_info_validated.upstream_commit", snapshot["missing_compatibility_evidence"])
         self.assertIn("native_http_proxy_accessible.http_status", snapshot["missing_compatibility_evidence"])
+        self.assertIn("native_http_proxy_accessible.upstream_commit", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_lifecycle_validated.profile_id", snapshot["missing_compatibility_evidence"])
         self.assertIn("sample_artifact_protected.sample_artifact_url", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_export_validated.export_format", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_delete_audited.deleted_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("speech_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
         self.assertIn("websocket_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
+
+    def test_voicebox_snapshot_rejects_limitations_without_proxy_build_match(self) -> None:
+        evidence = sample_live_evidence()["voicebox_remote"]
+        evidence["checks"]["speech_or_limitation_recorded"] = {
+            **evidence["checks"]["speech_or_limitation_recorded"],
+            "mode": "upstream_limitation",
+            "limitation": "Pinned upstream does not support this speech surface.",
+            "upstream_commit": "0" * 40,
+        }
+
+        snapshot = acceptance.voicebox_evidence_snapshot(evidence)
+
+        self.assertIn("speech_or_limitation_recorded.upstream_commit_matches_build_info", snapshot["missing_compatibility_evidence"])
 
     def test_report_blocks_handoff_for_degraded_development_snapshot(self) -> None:
         report = sample_report(
@@ -2684,6 +2733,13 @@ class AcceptanceReportTests(unittest.TestCase):
             remote_artifact_sha = "e" * 64
             voicebox_profile_id = "vp_disk1"
             voicebox_speech_sha = "f" * 64
+            voicebox_identity = {
+                "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+                "upstream_repository": "jamiepine/voicebox",
+                "upstream_version": "v0.5.0",
+                "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            }
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
             smoke = evidence_root / "live-smoke.json"
@@ -3018,10 +3074,18 @@ class AcceptanceReportTests(unittest.TestCase):
                         "base_url": "https://voice.ai.b1.germering",
                         "status": "ok",
                         "checks": {
+                            "proxy_build_info_validated": {
+                                "status": "ok",
+                                "runtime": "voicebox",
+                                "action": "build-info",
+                                "proxy": "b1-voicebox-proxy",
+                                "pinned": True,
+                                **voicebox_identity,
+                            },
                             "native_http_proxy_accessible": {
                                 "status": "ok",
                                 "http_status": 200,
-                                "upstream_version": "Jamie Pine Voicebox v0.5.0 commit 2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                                **voicebox_identity,
                             },
                             "profile_lifecycle_validated": {
                                 "status": "ok",
@@ -3052,15 +3116,18 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "byte_count": 4096,
                                 "sha256": voicebox_speech_sha,
                                 "content_type": "audio/wav",
+                                **voicebox_identity,
                             },
                             "websocket_or_limitation_recorded": {
                                 "status": "ok",
                                 "mode": "websocket_validated",
                                 "path": "/ws",
                                 "received_type": "none",
+                                **voicebox_identity,
                             },
                         },
                         "samples": [
+                            {"label": "voicebox-proxy-build-info"},
                             {"label": "voicebox-native-http"},
                             {"label": "voice-profile-lifecycle"},
                             {"label": "voice-sample-artifact"},
@@ -3241,9 +3308,11 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(voicebox_remote["missing_checks"], [])
         self.assertEqual(voicebox_remote["missing_compatibility_evidence"], [])
         self.assertEqual(voicebox_remote["voicebox_profile_id"], voicebox_profile_id)
+        self.assertEqual(voicebox_remote["voicebox_proxy_version"], "b1-voicebox-proxy/v0.5.0-b1")
+        self.assertEqual(voicebox_remote["voicebox_upstream_commit"], "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d")
         self.assertEqual(voicebox_remote["voicebox_speech_mode"], "speech_validated")
         self.assertEqual(voicebox_remote["voicebox_websocket_mode"], "websocket_validated")
-        self.assertEqual(voicebox_remote["sample_count"], 4)
+        self.assertEqual(voicebox_remote["sample_count"], 5)
         security_acceptance = snapshot["security_acceptance"]
         self.assertTrue(security_acceptance["available"])
         self.assertEqual(security_acceptance["source_path"], str(security.resolve()))
