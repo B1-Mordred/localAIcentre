@@ -462,11 +462,23 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
             file_path, byte_count, digest = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            second_path, second_byte_count, second_digest = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            first = Path(file_path)
+            second = Path(second_path)
+            self.assertEqual(first.parent, Path(tmp).resolve())
+            self.assertEqual(second.parent, Path(tmp).resolve())
+            self.assertNotEqual(first, second)
+            self.assertFalse(".." in first.name)
+            self.assertFalse(".." in second.name)
+            self.assertIn(digest[:12], second.name)
+            if os.name != "nt":
+                self.assertEqual(first.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(second.stat().st_mode & 0o777, 0o600)
 
         self.assertEqual(byte_count, len(b"\x89PNG\r\n\x1a\n"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"\x89PNG\r\n\x1a\n").hexdigest())
-        self.assertEqual(Path(file_path).parent, Path(tmp).resolve())
-        self.assertFalse(".." in Path(file_path).name)
+        self.assertEqual(second_byte_count, byte_count)
+        self.assertEqual(second_digest, digest)
 
     def test_media_references_reject_local_paths(self) -> None:
         with self.assertRaises(nodes.B1RemoteNodeError):

@@ -587,11 +587,36 @@ def write_download(content: bytes, headers: dict[str, str], preferred_name: str 
     if output_dir not in target.parents and target != output_dir:
         raise B1RemoteNodeError("artifact download path escapes configured output directory")
     digest = hashlib.sha256(content).hexdigest()
-    if target.exists():
-        stem = target.stem[:120] or "b1-artifact"
-        target = target.with_name(f"{stem}-{digest[:12]}{target.suffix}")
-    target.write_bytes(content)
+    target = unique_download_target(target, digest)
+    write_private_download_file(target, content)
     return str(target), len(content), digest
+
+
+def unique_download_target(target: Path, digest: str) -> Path:
+    if not target.exists() and not target.is_symlink():
+        return target
+    stem = target.stem[:120] or "b1-artifact"
+    suffix = target.suffix
+    for index in range(1, 1000):
+        serial = "" if index == 1 else f"-{index}"
+        candidate = target.with_name(f"{stem}-{digest[:12]}{serial}{suffix}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise B1RemoteNodeError("artifact download target already exists too many times")
+
+
+def write_private_download_file(target: Path, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(target, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(content)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if os.name != "nt":
+        target.chmod(0o600)
 
 
 def extract_chat_text(response: dict[str, Any]) -> str:
