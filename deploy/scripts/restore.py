@@ -178,6 +178,31 @@ def safe_member_target(member_name: str, target: Path) -> Path:
     return target_root.joinpath(*relative.parts)
 
 
+def validate_archive_member_tree(member_path: str, kind: str, seen_paths: dict[str, str]) -> None:
+    previous_kind = seen_paths.get(member_path)
+    if previous_kind == kind:
+        return
+    if previous_kind == "file":
+        raise RestoreError(f"archive directory member conflicts with existing file member: {member_path}")
+    if previous_kind == "directory" and kind == "file":
+        raise RestoreError(f"archive file member conflicts with existing directory member: {member_path}")
+
+    relative = PurePosixPath(member_path)
+    for parent in relative.parents:
+        if parent == PurePosixPath("."):
+            continue
+        if seen_paths.get(parent.as_posix()) == "file":
+            raise RestoreError(f"archive member path is below a file member: {member_path}")
+
+    if kind == "file":
+        child_prefix = f"{member_path}/"
+        for existing_path in seen_paths:
+            if existing_path.startswith(child_prefix):
+                raise RestoreError(f"archive file member conflicts with existing child member: {member_path}")
+
+    seen_paths[member_path] = kind
+
+
 def ensure_restore_directory(path: Path, target: Path) -> None:
     if target.is_symlink():
         raise RestoreError(f"restore target is a symlink: {target}")
@@ -204,23 +229,61 @@ def restore_file_mode(member_name: str, manifest: dict[str, Any]) -> int:
     return 0o600 if record.get("sensitive") else 0o644
 
 
+def verify_archive_members(archive_path: Path, manifest: dict[str, Any]) -> None:
+    expected = {item["path"]: item for item in manifest.get("files", [])}
+    seen: set[str] = set()
+    seen_paths: dict[str, str] = {}
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            member_path = safe_member_relative_path(member.name).as_posix()
+            if member.isdir():
+                validate_archive_member_tree(member_path, "directory", seen_paths)
+                continue
+            if not member.isfile():
+                raise RestoreError(f"unsupported archive member type: {member.name}")
+            safe_member_target(member.name, Path("/tmp/b1-archive-verify"))
+            validate_archive_member_tree(member_path, "file", seen_paths)
+            if member_path in seen:
+                raise RestoreError(f"archive contains duplicate file: {member.name}")
+            if member_path not in expected:
+                raise RestoreError(f"archive contains unmanifested file: {member.name}")
+            if member.size != expected[member_path]["size_bytes"]:
+                raise RestoreError(f"archive member size mismatch: {member.name}")
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise RestoreError(f"cannot read archive member: {member.name}")
+            digest = hashlib.sha256()
+            with handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected[member_path]["sha256"]:
+                raise RestoreError(f"archive member checksum mismatch: {member.name}")
+            seen.add(member_path)
+    missing = sorted(set(expected) - seen)
+    if missing:
+        raise RestoreError(f"archive missing manifest files: {', '.join(missing[:5])}")
+
+
 def extract_verified_archive(archive_path: Path, target: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
     if target.is_symlink():
         raise RestoreError(f"restore target is a symlink: {target}")
     target.mkdir(parents=True, exist_ok=True)
     expected = {item["path"]: item for item in manifest.get("files", [])}
     seen: set[str] = set()
+    seen_paths: dict[str, str] = {}
     extracted: list[dict[str, Any]] = []
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in archive.getmembers():
             member_path = safe_member_relative_path(member.name).as_posix()
             destination = safe_member_target(member.name, target)
             if member.isdir():
+                validate_archive_member_tree(member_path, "directory", seen_paths)
                 ensure_restore_directory(destination, target)
                 destination.chmod(0o755)
                 continue
             if not member.isfile():
                 raise RestoreError(f"unsupported archive member type: {member.name}")
+            validate_archive_member_tree(member_path, "file", seen_paths)
             if member_path in seen:
                 raise RestoreError(f"archive contains duplicate file: {member.name}")
             if member_path not in expected:
@@ -280,6 +343,7 @@ def readable_archive_path(backup_dir: Path, manifest: dict[str, Any], backup_enc
 
 def verify_archive(backup_dir: Path, manifest: dict[str, Any], backup_encryption_key: str | None = None) -> Path:
     with readable_archive_path(backup_dir, manifest, backup_encryption_key) as archive_path:
+        verify_archive_members(archive_path, manifest)
         return archive_path
 
 
@@ -305,6 +369,7 @@ def restore(backup_dir: Path, target: Path, force: bool = False, backup_encrypti
         raise RestoreError("target directory exists and is not empty; use --force only for an alternate test directory")
     target.mkdir(parents=True, exist_ok=True)
     with readable_archive_path(backup_dir, manifest, backup_encryption_key) as archive_path:
+        verify_archive_members(archive_path, manifest)
         extract_verified_archive(archive_path, target, manifest)
     verified = verify_restored_files(target, manifest)
     report = {

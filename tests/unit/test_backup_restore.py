@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -201,6 +203,47 @@ class BackupRestoreTests(unittest.TestCase):
 
             with self.assertRaisesRegex(restore_mod.RestoreError, "unsupported archive member type"):
                 restore_mod.restore(backup_dir, Path(tmp) / "restore")
+
+    def test_restore_rejects_archive_file_parent_conflicts_before_extracting(self) -> None:
+        cases = [
+            ("parent-first", [("data", b"parent"), ("data/open-webui/db.sqlite", b"child")], "below a file member"),
+            ("child-first", [("data/open-webui/db.sqlite", b"child"), ("data", b"parent")], "conflicts with existing child member"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for backup_name, members, expected in cases:
+                with self.subTest(backup_name=backup_name):
+                    backup_dir = root / backup_name
+                    backup_dir.mkdir()
+                    archive_path = backup_dir / "payload.tar.gz"
+                    files = []
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        for member_name, payload in members:
+                            info = tarfile.TarInfo(member_name)
+                            info.size = len(payload)
+                            archive.addfile(info, io.BytesIO(payload))
+                            files.append(
+                                {
+                                    "path": member_name,
+                                    "size_bytes": len(payload),
+                                    "sha256": hashlib.sha256(payload).hexdigest(),
+                                }
+                            )
+                    manifest = {
+                        "format": "b1-ai-hub-backup/v1",
+                        "archive": {
+                            "file": "payload.tar.gz",
+                            "size_bytes": archive_path.stat().st_size,
+                            "sha256": restore_mod.sha256_file(archive_path),
+                        },
+                        "files": files,
+                    }
+                    (backup_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                    target = root / f"restore-{backup_name}"
+
+                    with self.assertRaisesRegex(restore_mod.RestoreError, expected):
+                        restore_mod.restore(backup_dir, target)
+                    self.assertFalse((target / "data").exists())
 
     def test_restore_rejects_preexisting_symlink_in_target_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

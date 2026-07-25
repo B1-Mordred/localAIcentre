@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sys
@@ -270,6 +271,48 @@ class ControlPlaneBackupTests(unittest.TestCase):
 
             with self.assertRaisesRegex(backup_restore.RestoreError, "unsupported archive member type"):
                 backup_restore.restore_backup_to_alternate(root / "backups", "evil", root / "restore-tests")
+
+    def test_restore_rejects_archive_file_parent_conflicts_before_extracting(self) -> None:
+        cases = [
+            ("parent-first", [("data", b"parent"), ("data/open-webui/db.sqlite", b"child")], "below a file member"),
+            ("child-first", [("data/open-webui/db.sqlite", b"child"), ("data", b"parent")], "conflicts with existing child member"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for backup_name, members, expected in cases:
+                with self.subTest(backup_name=backup_name):
+                    backup_dir = root / "backups" / backup_name
+                    backup_dir.mkdir(parents=True)
+                    archive_path = backup_dir / "payload.tar.gz"
+                    files = []
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        for member_name, payload in members:
+                            info = tarfile.TarInfo(member_name)
+                            info.size = len(payload)
+                            archive.addfile(info, io.BytesIO(payload))
+                            files.append(
+                                {
+                                    "path": member_name,
+                                    "size_bytes": len(payload),
+                                    "sha256": hashlib.sha256(payload).hexdigest(),
+                                }
+                            )
+                    manifest = {
+                        "format": backup_restore.BACKUP_FORMAT,
+                        "name": backup_name,
+                        "created_at": "2026-07-22T00:00:00+00:00",
+                        "archive": {
+                            "file": "payload.tar.gz",
+                            "size_bytes": archive_path.stat().st_size,
+                            "sha256": backup_restore.sha256_file(archive_path),
+                        },
+                        "files": files,
+                    }
+                    (backup_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                    with self.assertRaisesRegex(backup_restore.RestoreError, expected):
+                        backup_restore.restore_backup_to_alternate(root / "backups", backup_name, root / "restore-tests")
+                    self.assertFalse((root / "restore-tests" / backup_name / "data").exists())
 
     def test_restore_rejects_preexisting_symlink_in_target_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
