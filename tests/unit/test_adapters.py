@@ -248,6 +248,10 @@ class RuntimeAdapterTests(unittest.TestCase):
             "https://api.example.com/v1/safe%2Fadmin",
             "https://api.example.com/v1/safe%5Cadmin",
             "https://api.example.com/v1/%00admin",
+            "https://api.example.com/v1/%",
+            "https://api.example.com/v1/%2",
+            "https://api.example.com/v1/%zz",
+            "https://api.example.com/v1/%ffadmin",
         ):
             with self.subTest(url=url):
                 normalized, error = validate_external_runtime_base_url(url)

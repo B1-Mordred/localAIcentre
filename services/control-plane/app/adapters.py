@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
@@ -23,6 +24,7 @@ PRIVATE_RUNTIME_NETS = [
     ipaddress.ip_network("fe80::/10"),
 ]
 HostnameResolver = Callable[[str, int | None], list[str]]
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 class RuntimeResolutionError(ValueError):
@@ -52,7 +54,12 @@ def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
 def external_runtime_path_is_safe(path: str) -> bool:
     path_parts = [part for part in path.rstrip("/").split("/") if part]
     for part in path_parts:
-        decoded = unquote(part)
+        if BAD_PERCENT_ESCAPE_RE.search(part):
+            return False
+        try:
+            decoded = unquote(part, errors="strict")
+        except UnicodeDecodeError:
+            return False
         if decoded in {".", ".."}:
             return False
         if "/" in decoded or "\\" in decoded:
