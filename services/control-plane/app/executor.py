@@ -1025,7 +1025,9 @@ class GpuJobRunner:
     async def run_comfyui_job(self, job: dict[str, Any]) -> None:
         payload = await self.comfyui_prompt_payload_for_job(job)
         await database.update_job(job["id"], state=JobState.RUNNING.value, stage="comfyui_submitting", progress=72)
-        prompt_id = await self.submit_comfyui_prompt(payload)
+        cancelled, prompt_id = await self.await_cancellable_runtime_call(job, self.submit_comfyui_prompt(payload))
+        if cancelled:
+            return
         await database.update_job(
             job["id"],
             state=JobState.RUNNING.value,

@@ -981,6 +981,78 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["artifacts"], [])
             self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
 
+    def test_gpu_runner_cancels_blocking_comfyui_prompt_submission_and_recovers_runtime(self) -> None:
+        class CancellingDatabase(FakeDatabase):
+            async def get_job(self, job_id: str) -> dict[str, Any]:
+                if self.job.get("stage") == "comfyui_submitting" and self.job.get("state") == "running":
+                    self.job["state"] = "cancelling"
+                return dict(self.job)
+
+        fake = CancellingDatabase(runtime="comfyui")
+        fake.job["request_params"] = {
+            "input": {
+                "comfyui_prompt": {
+                    "prompt": {
+                        "1": {
+                            "class_type": "KSampler",
+                            "inputs": {"seed": 7},
+                        }
+                    }
+                },
+            }
+        }
+        self.patch_database(fake)
+
+        class ComfyCancelRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    runtime_urls={"comfyui": "http://comfyui"},
+                    runtime_cancel_poll_seconds=0.05,
+                )
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+                self.runtime_call_cancelled = False
+                self.interrupts = 0
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                return None
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "action": path.rsplit("/", 1)[-1]}
+
+            async def interrupt_comfyui(self) -> None:
+                self.interrupts += 1
+
+            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    self.runtime_call_cancelled = True
+                    raise
+                raise AssertionError("ComfyUI prompt submission should be cancelled before it returns")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = ComfyCancelRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertTrue(runner.runtime_call_cancelled)
+        self.assertEqual(runner.interrupts, 1)
+        self.assertEqual(fake.job["state"], "cancelled")
+        self.assertEqual(fake.job["stage"], "cancelled")
+        self.assertEqual(fake.job["artifacts"], [])
+        self.assertIn("/v1/runtime-actions/comfyui/recover", [path for path, _ in runner.posts])
+        self.assertIn(
+            ("comfyui", "recover_ok", "cancel_recovery"),
+            [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
+        )
+        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+
     def test_gpu_runner_submits_localai_image_generation_and_stores_b64_artifact(self) -> None:
         fake = FakeDatabase(runtime="localai")
         fake.job["request_params"] = {
