@@ -194,7 +194,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "generated_at": "2026-07-24T12:30:00+00:00",
             "base_url": "https://api.ai.b1.germering",
             "status": "ok",
-            "required_checks": ["resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch"],
+            "required_checks": [
+                "resource_policy_and_runtime_readiness",
+                "localai_exclusive_gpu_residency",
+                "comfyui_switch_completed",
+                "voicebox_switch_completed",
+                "vram_reserve_enforced",
+                "bounded_runtime_recovery_action",
+            ],
             "missing_checks": [],
             "required_model_aliases": ["chat-default", "image-default", "tts-quality"],
             "model_measurements": {
@@ -205,6 +212,27 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_model_measurements": [],
             "checks": {
                 "resource_policy_and_runtime_readiness": {"status": "ok", "recorded_at": "2026-07-24T12:29:00+00:00"},
+                "localai_exclusive_gpu_residency": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:29:30+00:00",
+                    "chat_resolved_model_version": "b1-chat-default@1.0.0",
+                },
+                "comfyui_switch_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:00+00:00",
+                    "comfyui_resolved_model_version": "b1-image-default@1.0.0",
+                },
+                "voicebox_switch_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:30:30+00:00",
+                    "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
+                },
+                "vram_reserve_enforced": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00", "sample_count": 4},
+                "bounded_runtime_recovery_action": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:30+00:00",
+                    "runtime": "localai",
+                },
                 "localai_comfyui_voicebox_switch": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:00+00:00",
@@ -998,12 +1026,15 @@ class AcceptanceReportTests(unittest.TestCase):
                 gpu_acceptance={
                     **sample_live_evidence()["gpu_acceptance"],
                     "status": "incomplete",
-                    "missing_checks": ["localai_comfyui_voicebox_switch"],
+                    "missing_checks": ["voicebox_switch_completed", "bounded_runtime_recovery_action"],
                     "checks": {
                         "resource_policy_and_runtime_readiness": {
                             "status": "ok",
                             "recorded_at": "2026-07-24T12:29:00+00:00",
-                        }
+                        },
+                        "localai_exclusive_gpu_residency": {"status": "ok"},
+                        "comfyui_switch_completed": {"status": "ok"},
+                        "vram_reserve_enforced": {"status": "ok"},
                     },
                 }
             )
@@ -1014,7 +1045,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("RTX 3060 GPU acceptance evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "RTX 3060 GPU acceptance evidence is missing required checks: localai_comfyui_voicebox_switch",
+            "RTX 3060 GPU acceptance evidence is missing required checks: voicebox_switch_completed, bounded_runtime_recovery_action",
             report["acceptance_blockers"],
         )
 
@@ -1705,6 +1736,11 @@ class AcceptanceReportTests(unittest.TestCase):
                         "status": "ok",
                         "checks": {
                             "resource_policy_and_runtime_readiness": {"status": "ok"},
+                            "localai_exclusive_gpu_residency": {"status": "ok"},
+                            "comfyui_switch_completed": {"status": "ok"},
+                            "voicebox_switch_completed": {"status": "ok"},
+                            "vram_reserve_enforced": {"status": "ok"},
+                            "bounded_runtime_recovery_action": {"status": "ok"},
                             "localai_comfyui_voicebox_switch": {"status": "ok"},
                         },
                         "required_model_aliases": ["chat-default", "image-default", "tts-quality"],

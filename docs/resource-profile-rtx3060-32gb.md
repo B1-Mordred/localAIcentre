@@ -28,9 +28,10 @@ Target-host acceptance evidence is produced with:
 B1_GPU_ACCEPTANCE_LIVE_TEST=1 \
 B1_GPU_ACCEPTANCE_API_KEY=... \
 B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json \
+B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1 \
 make gpu-acceptance
 ```
 
-The acceptance suite samples `/admin/status`, `/admin/runtimes`, and `/admin/metrics` while running LocalAI chat, ComfyUI media generation, and Voicebox speech in sequence. It fails when more than one managed GPU runtime reports a resident model/pipeline or when runtime-agent GPU metrics show VRAM above the configured total-minus-reserve limit.
+The acceptance suite samples `/admin/status`, `/admin/runtimes`, and `/admin/metrics` while running LocalAI chat, ComfyUI media generation, Voicebox speech, and the predefined runtime recovery action in sequence. It fails when more than one managed GPU runtime reports a resident model/pipeline or when runtime-agent GPU metrics show VRAM above the configured total-minus-reserve limit. Final evidence requires runtime-agent recovery to return `status=ok`; dry-run recovery rehearsals do not satisfy the handoff gate.
 
 Recommended first hardware upgrade: system RAM from 32 GB to at least 64 GB.

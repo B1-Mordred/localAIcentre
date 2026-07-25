@@ -53,7 +53,7 @@ The API key must include chat/inference access plus `models:read`, `runtimes:rea
 
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
-Run the GPU acceptance suite only on the target host, or during an equivalent maintenance window with the real LocalAI, ComfyUI, and Voicebox runtime overlays enabled. It sends live inference work and may trigger bounded runtime recovery when explicitly requested.
+Run the GPU acceptance suite only on the target host, or during an equivalent maintenance window with the real LocalAI, ComfyUI, and Voicebox runtime overlays enabled. It sends live inference work and handoff evidence requires a bounded predefined runtime recovery probe.
 
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
@@ -63,11 +63,12 @@ export B1_GPU_ACCEPTANCE_CHAT_MODEL=chat-default
 export B1_GPU_ACCEPTANCE_COMFY_MODEL=image-default
 export B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
 export B1_GPU_ACCEPTANCE_VOICEBOX_MODEL=tts-quality
+export B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1
 export B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json
 make gpu-acceptance
 ```
 
-The suite verifies the persisted RTX 3060 resource policy, production runtime readiness when `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION` is left enabled, runtime-agent GPU/NVML metrics, persisted model-smoke measurements for the selected LocalAI, ComfyUI, and Voicebox aliases, and the live switch sequence LocalAI chat -> ComfyUI media job -> Voicebox speech. After each step it checks that at most one managed GPU runtime reports a resident model/pipeline, that physical GPU VRAM is at least the configured policy total, and that sampled VRAM stays within the configured total-minus-reserve policy. When `B1_GPU_ACCEPTANCE_EVIDENCE` is set, the output JSON includes `status`, `required_checks`, per-check records, runtime/metric samples, required model aliases, and compact measurement summaries; Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` file and block handoff if the required checks or measured model runs are absent or incomplete. Set `B1_GPU_ACCEPTANCE_SKIP_VOICEBOX=1` only for a documented no-Voicebox deployment. Set `B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1` only during a maintenance acceptance window to exercise the predefined runtime recovery endpoint.
+The suite verifies the persisted RTX 3060 resource policy, production runtime readiness when `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION` is left enabled, runtime-agent GPU/NVML metrics, persisted model-smoke measurements for the selected LocalAI, ComfyUI, and Voicebox aliases, and the live switch sequence LocalAI chat -> ComfyUI media job -> Voicebox speech. After each step it checks that at most one managed GPU runtime reports a resident model/pipeline, that physical GPU VRAM is at least the configured policy total, and that sampled VRAM stays within the configured total-minus-reserve policy. When `B1_GPU_ACCEPTANCE_EVIDENCE` is set, the output JSON includes `status`, `required_checks`, per-check records, runtime/metric samples, required model aliases, and compact measurement summaries; Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` file and block handoff if the resource-policy check, LocalAI exclusive residency, ComfyUI switch, Voicebox switch, VRAM-reserve proof, bounded runtime recovery action, or measured model runs are absent or incomplete. Set `B1_GPU_ACCEPTANCE_SKIP_VOICEBOX=1` only for a documented no-Voicebox dry run; handoff evidence remains incomplete without `voicebox_switch_completed`. Set `B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1` only during a maintenance acceptance window, and leave it enabled for final handoff evidence. Final handoff requires the recovery action to return runtime-agent `status=ok`; if the deployment intentionally keeps `B1_ENABLE_MUTATIONS=false`, set `B1_GPU_ACCEPTANCE_ALLOW_RECOVERY_DRY_RUN=1` only for a rehearsal and expect the evidence status to remain incomplete.
 
 ## Restart Reconciliation Acceptance
 

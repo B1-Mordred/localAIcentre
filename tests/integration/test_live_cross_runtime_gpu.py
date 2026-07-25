@@ -18,6 +18,14 @@ from test_live_stack import LiveApiClient, TERMINAL_STATES, measured_model_alias
 
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
+GPU_ACCEPTANCE_REQUIRED_CHECKS = (
+    "resource_policy_and_runtime_readiness",
+    "localai_exclusive_gpu_residency",
+    "comfyui_switch_completed",
+    "voicebox_switch_completed",
+    "vram_reserve_enforced",
+    "bounded_runtime_recovery_action",
+)
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -49,6 +57,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     model_measurements: dict[str, dict[str, Any]] = {}
     required_model_aliases: set[str] = set()
+    vram_samples: list[dict[str, Any]] = []
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -56,6 +65,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         cls.checks = {}
         cls.model_measurements = {}
         cls.required_model_aliases = set()
+        cls.vram_samples = []
         api_key = os.getenv("B1_GPU_ACCEPTANCE_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
         if not api_key:
             raise unittest.SkipTest("set B1_GPU_ACCEPTANCE_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY")
@@ -84,8 +94,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             return
         path = Path(evidence_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        required_checks = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
-        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in required_checks) else "incomplete"
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in GPU_ACCEPTANCE_REQUIRED_CHECKS) else "incomplete"
         path.write_text(
             json.dumps(
                 {
@@ -93,9 +102,10 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                     "generated_at": datetime.now(tz=UTC).isoformat(),
                     "base_url": cls.client.base_url,
                     "status": status,
-                    "required_checks": list(required_checks),
+                    "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
                     "checks": cls.checks,
                     "samples": cls.evidence,
+                    "vram_samples": cls.vram_samples,
                     "required_model_aliases": sorted(cls.required_model_aliases),
                     "model_measurements": cls.model_measurements,
                 },
@@ -199,6 +209,16 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                 usable_mib + self.vram_tolerance_mib,
                 f"{label}: sampled job peak VRAM exceeds usable VRAM policy",
             )
+        sample = {
+            "label": label,
+            "gpu_memory_used_mib": used,
+            "gpu_memory_total_mib": total,
+            "reserve_mib": reserve_mib,
+            "usable_mib": usable_mib,
+            "job_peak_vram_mib": peak_max,
+        }
+        self.__class__.vram_samples.append(sample)
+        self.record_check("vram_reserve_enforced", sample_count=len(self.__class__.vram_samples), latest_sample=sample)
 
     def wait_for_terminal_job(self, job_id: str) -> dict[str, Any]:
         deadline = time.monotonic() + self.job_timeout_seconds
@@ -272,6 +292,11 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.assertEqual(status, 200, chat)
         self.assert_single_gpu_runtime("localai", "after-localai-chat")
         self.assert_vram_within_policy("after-localai-chat")
+        self.record_check(
+            "localai_exclusive_gpu_residency",
+            chat_model=chat_model,
+            chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
+        )
 
         comfy_prompt = load_json_from_env("B1_GPU_ACCEPTANCE_COMFY_PROMPT_JSON", "B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE")
         if comfy_prompt is None:
@@ -290,6 +315,12 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.assertEqual(comfy_job.get("runtime"), "comfyui", comfy_job)
         self.assert_single_gpu_runtime("comfyui", "after-comfyui-job")
         self.assert_vram_within_policy("after-comfyui-job")
+        self.record_check(
+            "comfyui_switch_completed",
+            comfyui_model=image_model,
+            comfyui_resolved_model_version=comfyui_measurement.get("resolved_model_version"),
+            comfyui_job_id=comfy_job.get("id"),
+        )
 
         if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False):
             self.skipTest("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX requested")
@@ -312,6 +343,12 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         self.assert_single_gpu_runtime("voicebox", "after-voicebox-job")
         self.assert_vram_within_policy("after-voicebox-job")
         self.record_check(
+            "voicebox_switch_completed",
+            voicebox_model=voicebox_model,
+            voicebox_resolved_model_version=voicebox_measurement.get("resolved_model_version"),
+            voicebox_job_id=voicebox_job.get("id"),
+        )
+        self.record_check(
             "localai_comfyui_voicebox_switch",
             chat_model=chat_model,
             chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
@@ -330,7 +367,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
 
     def test_predefined_runtime_recovery_action_is_available_when_enabled(self) -> None:
         if not env_flag("B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION", False):
-            self.skipTest("set B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1 during a maintenance acceptance window")
+            self.skipTest("set B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1 during the handoff maintenance acceptance window")
         runtime = os.getenv("B1_GPU_ACCEPTANCE_RECOVERY_RUNTIME", "localai")
         self.assertIn(runtime, GPU_RUNTIMES)
         result = self.json_request(
@@ -339,8 +376,20 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             body={"reason": "cross-runtime GPU acceptance recovery probe", "timeout_seconds": 30},
         )
         self.evidence.append({"label": f"recover-{runtime}", "result": result})
-        self.assertIn(result.get("status"), {"ok", "dry_run", "skipped", "unsupported", "unconfirmed"}, result)
-        self.record_check("runtime_recovery_action", runtime=runtime, result_status=result.get("status"))
+        agent_result = result.get("runtime_agent")
+        self.assertIsInstance(agent_result, dict, result)
+        agent_status = str(agent_result.get("status") or "unknown")
+        allowed_statuses = {"ok"}
+        if env_flag("B1_GPU_ACCEPTANCE_ALLOW_RECOVERY_DRY_RUN", False):
+            allowed_statuses.add("dry_run")
+        self.assertIn(agent_status, allowed_statuses, result)
+        self.record_check(
+            "bounded_runtime_recovery_action",
+            status="ok" if agent_status == "ok" else agent_status,
+            runtime=runtime,
+            result_status=agent_status,
+            strategy=agent_result.get("strategy"),
+        )
 
 
 if __name__ == "__main__":

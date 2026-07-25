@@ -62,7 +62,14 @@ ADMIN_ONBOARDING_STEPS = (
 )
 RECOMMENDED_HARDWARE_UPGRADE = "Upgrade system RAM from 32 GB to at least 64 GB first; consider a larger VRAM GPU after RAM if video, large VLM, or higher-context workflows dominate."
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
-GPU_ACCEPTANCE_REQUIRED_CHECKS = ("resource_policy_and_runtime_readiness", "localai_comfyui_voicebox_switch")
+GPU_ACCEPTANCE_REQUIRED_CHECKS = (
+    "resource_policy_and_runtime_readiness",
+    "localai_exclusive_gpu_residency",
+    "comfyui_switch_completed",
+    "voicebox_switch_completed",
+    "vram_reserve_enforced",
+    "bounded_runtime_recovery_action",
+)
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",

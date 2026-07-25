@@ -83,11 +83,12 @@ export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...
 export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
 export B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
+export B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1
 export B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json
 make gpu-acceptance
 ```
 
-The test uses the configured aliases `B1_GPU_ACCEPTANCE_CHAT_MODEL`, `B1_GPU_ACCEPTANCE_COMFY_MODEL`, and `B1_GPU_ACCEPTANCE_VOICEBOX_MODEL`, defaulting to `chat-default`, `image-default`, and `tts-quality`. It verifies production readiness, runtime-agent GPU metrics, LocalAI -> ComfyUI -> Voicebox switching, one reported GPU-resident pipeline at a time, and sampled VRAM within the configured reserve. Leave `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION=true` for cutover evidence; disable it only for an explicitly labelled dry run.
+The test uses the configured aliases `B1_GPU_ACCEPTANCE_CHAT_MODEL`, `B1_GPU_ACCEPTANCE_COMFY_MODEL`, and `B1_GPU_ACCEPTANCE_VOICEBOX_MODEL`, defaulting to `chat-default`, `image-default`, and `tts-quality`. It verifies production readiness, runtime-agent GPU metrics, LocalAI exclusive residency, LocalAI -> ComfyUI -> Voicebox switching, one reported GPU-resident pipeline at a time, sampled VRAM within the configured reserve, and a bounded predefined runtime recovery action. Leave `B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION=true` and `B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1` for cutover evidence; disable either only for an explicitly labelled dry run. Final handoff requires runtime-agent recovery to return `status=ok`; with deployment mutations disabled, use `B1_GPU_ACCEPTANCE_ALLOW_RECOVERY_DRY_RUN=1` only for rehearsal evidence that should remain incomplete.
 
 ## Optional Monitoring Profile
 
