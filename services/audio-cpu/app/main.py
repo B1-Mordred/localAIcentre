@@ -168,6 +168,14 @@ def configured_cpu_residency_max_ram_gib() -> float:
     return float_env("B1_CPU_RESIDENCY_MAX_RAM_GIB", 2.0, 0.0, 256.0)
 
 
+def configured_host_total_ram_gib() -> float:
+    return float_env("B1_HOST_TOTAL_RAM_GIB", 32.0, 1.0, 4096.0)
+
+
+def configured_host_reserve_ram_gib() -> float:
+    return float_env("B1_HOST_RESERVE_RAM_GIB", 6.0, 0.0, configured_host_total_ram_gib())
+
+
 def configured_cpu_resident_aliases() -> tuple[str, ...]:
     return list_env("B1_CPU_RESIDENT_ALIASES", DEFAULT_CPU_RESIDENT_ALIASES)
 
@@ -197,10 +205,50 @@ def bool_from_payload(value: Any) -> bool | None:
 def cpu_residency_allowed(payload: dict[str, Any] | None) -> bool:
     if isinstance(payload, dict):
         explicit = bool_from_payload(payload.get("b1_cpu_residency_allowed"))
-        if explicit is not None:
-            return explicit
+        if explicit is False:
+            return False
+        if explicit is True:
+            return cpu_residency_headroom()["ok"]
     alias = payload_model_alias(payload)
-    return bool(configured_cpu_residency_enabled() and alias and alias in set(configured_cpu_resident_aliases()))
+    return bool(configured_cpu_residency_enabled() and alias and alias in set(configured_cpu_resident_aliases()) and cpu_residency_headroom()["ok"])
+
+
+def meminfo_available_ram_gib(path: str = "/proc/meminfo") -> float | None:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key != "MemAvailable":
+            continue
+        parts = value.strip().split()
+        if not parts:
+            return None
+        try:
+            kib = float(parts[0])
+        except ValueError:
+            return None
+        return max(0.0, kib / 1024.0 / 1024.0)
+    return None
+
+
+def cpu_residency_headroom() -> dict[str, Any]:
+    available_ram_gib = meminfo_available_ram_gib()
+    reserve_ram_gib = configured_host_reserve_ram_gib()
+    ok = available_ram_gib is None or available_ram_gib >= reserve_ram_gib
+    reason = "ok"
+    if available_ram_gib is None:
+        reason = "mem_available_unmeasured"
+    elif not ok:
+        reason = "host_ram_below_reserve"
+    return {
+        "ok": ok,
+        "reason": reason,
+        "available_ram_gib": round(available_ram_gib, 3) if available_ram_gib is not None else None,
+        "reserve_ram_gib": reserve_ram_gib,
+        "total_ram_gib": configured_host_total_ram_gib(),
+    }
 
 
 def cpu_residency_details() -> dict[str, Any]:
@@ -208,6 +256,7 @@ def cpu_residency_details() -> dict[str, Any]:
         "enabled": configured_cpu_residency_enabled(),
         "max_ram_gib": configured_cpu_residency_max_ram_gib(),
         "resident_aliases": list(configured_cpu_resident_aliases()),
+        "headroom": cpu_residency_headroom(),
         "cache": resident_cache_state(),
     }
 

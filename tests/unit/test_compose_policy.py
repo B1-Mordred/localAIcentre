@@ -447,6 +447,8 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_CPU_RESIDENCY_ENABLED"], "${B1_CPU_RESIDENCY_ENABLED:-true}")
         self.assertEqual(environment["B1_CPU_RESIDENCY_MAX_RAM_GIB"], "${B1_CPU_RESIDENCY_MAX_RAM_GIB:-2}")
         self.assertEqual(environment["B1_CPU_RESIDENT_ALIASES"], "${B1_CPU_RESIDENT_ALIASES:-embedding-default,tts-fast,stt-default}")
+        self.assertEqual(environment["B1_HOST_TOTAL_RAM_GIB"], "${B1_HOST_TOTAL_RAM_GIB:-32}")
+        self.assertEqual(environment["B1_HOST_RESERVE_RAM_GIB"], "${B1_HOST_RESERVE_RAM_GIB:-6}")
         self.assertEqual(environment["B1_PIPER_BINARY"], "${B1_PIPER_BINARY:-/opt/piper/piper}")
         self.assertEqual(environment["B1_PIPER_MODEL_PATH"], "${B1_PIPER_MODEL_PATH:-}")
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", service.get("volumes", []))

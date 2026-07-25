@@ -72,6 +72,8 @@ class AudioCpuRuntimeTests(unittest.TestCase):
                 "B1_CPU_RESIDENCY_ENABLED": None,
                 "B1_CPU_RESIDENCY_MAX_RAM_GIB": None,
                 "B1_CPU_RESIDENT_ALIASES": None,
+                "B1_HOST_TOTAL_RAM_GIB": None,
+                "B1_HOST_RESERVE_RAM_GIB": None,
             }
         )
         audio_cpu_main.clear_resident_caches()
@@ -135,16 +137,18 @@ with wave.open(str(output), "wb") as wav:
         self.assertTrue(health["placeholder"])
         self.assertTrue(health["placeholder_enabled"])
         self.assertEqual(health["capabilities"], {"speech": True, "transcription": True, "embeddings": True})
+        residency = health["details"]["cpu_residency"]
+        self.assertTrue(residency["enabled"])
+        self.assertEqual(residency["max_ram_gib"], 2.0)
+        self.assertEqual(residency["resident_aliases"], ["embedding-default", "tts-fast", "stt-default"])
+        self.assertEqual(residency["headroom"]["reserve_ram_gib"], 6.0)
+        self.assertEqual(residency["headroom"]["total_ram_gib"], 32.0)
+        self.assertIn(residency["headroom"]["reason"], {"ok", "mem_available_unmeasured", "host_ram_below_reserve"})
         self.assertEqual(
-            health["details"]["cpu_residency"],
+            residency["cache"],
             {
-                "enabled": True,
-                "max_ram_gib": 2.0,
-                "resident_aliases": ["embedding-default", "tts-fast", "stt-default"],
-                "cache": {
-                    "vosk": {"maxsize": 2, "currsize": 0},
-                    "onnx_embedding": {"maxsize": 4, "currsize": 0},
-                },
+                "vosk": {"maxsize": 2, "currsize": 0},
+                "onnx_embedding": {"maxsize": 4, "currsize": 0},
             },
         )
 
@@ -258,6 +262,7 @@ with wave.open(str(output), "wb") as wav:
                 "B1_CPU_RESIDENT_ALIASES": "embedding-default,tts-fast",
             }
         )
+        self.patch_attr("meminfo_available_ram_gib", lambda path="/proc/meminfo": 16.0)
 
         self.assertTrue(audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "embedding-default"}))
         self.assertFalse(audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "stt-default"}))
@@ -270,6 +275,18 @@ with wave.open(str(output), "wb") as wav:
             audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "unlisted", "b1_cpu_residency_allowed": "true"})
         )
 
+    def test_cpu_residency_denies_cache_when_host_ram_reserve_is_unavailable(self) -> None:
+        self.patch_env({"B1_HOST_TOTAL_RAM_GIB": "32", "B1_HOST_RESERVE_RAM_GIB": "6"})
+        self.patch_attr("meminfo_available_ram_gib", lambda path="/proc/meminfo": 5.5)
+
+        headroom = audio_cpu_main.cpu_residency_headroom()
+
+        self.assertFalse(headroom["ok"])
+        self.assertEqual(headroom["reason"], "host_ram_below_reserve")
+        self.assertFalse(
+            audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": True})
+        )
+
     def test_onnx_embedding_session_cache_is_used_only_for_cpu_resident_aliases(self) -> None:
         created: list[dict[str, Any]] = []
 
@@ -279,6 +296,7 @@ with wave.open(str(output), "wb") as wav:
             return session
 
         self.patch_attr("create_onnx_embedding_session", fake_create)
+        self.patch_attr("meminfo_available_ram_gib", lambda path="/proc/meminfo": 16.0)
         model_path = "/srv/b1-ai-hub/models/embedding/model.onnx"
 
         resident_1 = audio_cpu_main.onnx_embedding_session_for_payload(
