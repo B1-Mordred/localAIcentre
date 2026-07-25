@@ -18,7 +18,10 @@ B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env bootstrap validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke integration localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility security security-acceptance openapi openapi-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+
+prepare-production-env:
+	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"

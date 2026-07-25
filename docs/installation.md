@@ -17,7 +17,7 @@ nvidia-smi
 stat -c '%g' /var/run/docker.sock
 ```
 
-Set `B1_DOCKER_GID` in `.env` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
+For production, prefer `make prepare-production-env` instead of manually copying `.env.production.example`; it creates or updates `.env` and sets `B1_DOCKER_GID` from the host Docker socket GID. If you prepare `.env` manually, set `B1_DOCKER_GID` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
 The migration inventory records NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence.
 
 ## First Boot
@@ -32,11 +32,11 @@ docker compose up -d
 For the production appliance path on `ai.b1.germering`, start from the production template instead:
 
 ```bash
-cp .env.production.example .env
+make prepare-production-env
 docker compose up -d
 ```
 
-The production template sets `COMPOSE_FILE=compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml` and `COMPOSE_PROFILES=voicebox`, so Docker Compose selects the real-runtime overlays while the operator start command remains `docker compose up -d`. It also sets `B1_RUNTIME_DEPLOYMENT_MODE=production`, makes LocalAI, ComfyUI, Voicebox, and audio-cpu required for production readiness, disables CPU scaffold responses, and leaves external/cloud providers and Docker mutations disabled. Remove the Voicebox overlay/profile and remove `voicebox` from `B1_RUNTIME_PRODUCTION_REQUIRED` only when intentionally operating without managed Voicebox.
+The production template sets `COMPOSE_FILE=compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml` and `COMPOSE_PROFILES=voicebox`, so Docker Compose selects the real-runtime overlays while the operator start command remains `docker compose up -d`. The preparation helper copies that template when `.env` is missing, updates only the managed `B1_DOCKER_GID` key when `.env` already exists, writes the file privately, and refuses symlinked outputs. It also sets `B1_RUNTIME_DEPLOYMENT_MODE=production`, makes LocalAI, ComfyUI, Voicebox, and audio-cpu required for production readiness, disables CPU scaffold responses, and leaves external/cloud providers and Docker mutations disabled. Remove the Voicebox overlay/profile and remove `voicebox` from `B1_RUNTIME_PRODUCTION_REQUIRED` only when intentionally operating without managed Voicebox.
 
 The base Compose services and B1-owned Dockerfiles use explicit version tags plus immutable manifest-list digests for third-party images. The current non-runtime base pins are `python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7`, `caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d`, `postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3`, `redis:7.4.5-bookworm@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb`, `node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e`, and `nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8`. Runtime-specific upstream base pins are listed in the sections below. Dockerfiles avoid broad `apt-get upgrade`, `apk upgrade`, and unpinned `pip --upgrade pip` steps so rebuilds stay tied to the reviewed base image digests and locked dependency files.
 
