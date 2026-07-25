@@ -91,7 +91,14 @@ INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "short_video_completed",
 )
 REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1"
-REMOTE_NODES_REQUIRED_CHECKS = ("server_side_comfyui_stopped", "non_comfy_tts_completed", "artifact_downloaded")
+REMOTE_NODES_REQUIRED_CHECKS = (
+    "server_side_comfyui_stopped",
+    "remote_models_listed",
+    "model_alias_selected",
+    "credentials_externalized",
+    "non_comfy_tts_completed",
+    "artifact_downloaded",
+)
 MODELHUB_EVIDENCE_FORMAT = "b1-ai-hub-modelhub-client-sync/v1"
 MODELHUB_REQUIRED_CHECKS = (
     "catalog_visible",

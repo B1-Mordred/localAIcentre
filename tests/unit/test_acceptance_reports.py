@@ -369,15 +369,25 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "generated_at": "2026-07-24T12:35:00+00:00",
             "base_url": "https://api.ai.b1.germering",
             "status": "ok",
-            "required_checks": ["server_side_comfyui_stopped", "non_comfy_tts_completed", "artifact_downloaded"],
+            "required_checks": [
+                "server_side_comfyui_stopped",
+                "remote_models_listed",
+                "model_alias_selected",
+                "credentials_externalized",
+                "non_comfy_tts_completed",
+                "artifact_downloaded",
+            ],
             "missing_checks": [],
             "checks": {
                 "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "remote_models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:34:15+00:00"},
+                "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00"},
+                "credentials_externalized": {"status": "ok", "recorded_at": "2026-07-24T12:34:30+00:00"},
                 "non_comfy_tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
                 "artifact_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
             },
-            "sample_count": 1,
-            "sample_labels": ["tts-fast-non-comfy"],
+            "sample_count": 2,
+            "sample_labels": ["remote-node-model-list", "tts-fast-non-comfy"],
         },
         "modelhub_client_sync": {
             "available": True,
@@ -1354,6 +1364,27 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("remote-node non-Comfy compatibility evidence is unavailable", report["acceptance_blockers"])
 
+    def test_remote_node_snapshot_requires_model_listing_and_credential_evidence(self) -> None:
+        snapshot = acceptance.remote_nodes_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1",
+                "generated_at": "2026-07-24T12:35:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "server_side_comfyui_stopped": {"status": "ok"},
+                    "non_comfy_tts_completed": {"status": "ok"},
+                    "artifact_downloaded": {"status": "ok"},
+                },
+                "samples": [{"label": "tts-fast-non-comfy"}],
+            }
+        )
+
+        self.assertEqual(
+            snapshot["missing_checks"],
+            ["remote_models_listed", "model_alias_selected", "credentials_externalized"],
+        )
+
     def test_report_blocks_handoff_for_incomplete_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["remote_nodes_non_comfy"] = {
@@ -1362,6 +1393,9 @@ class AcceptanceReportTests(unittest.TestCase):
             "missing_checks": ["artifact_downloaded"],
             "checks": {
                 "server_side_comfyui_stopped": {"status": "ok", "recorded_at": "2026-07-24T12:34:00+00:00"},
+                "remote_models_listed": {"status": "ok", "recorded_at": "2026-07-24T12:34:15+00:00"},
+                "model_alias_selected": {"status": "ok", "recorded_at": "2026-07-24T12:34:20+00:00"},
+                "credentials_externalized": {"status": "ok", "recorded_at": "2026-07-24T12:34:30+00:00"},
                 "non_comfy_tts_completed": {"status": "ok", "recorded_at": "2026-07-24T12:35:00+00:00"},
             },
         }
@@ -1883,10 +1917,13 @@ class AcceptanceReportTests(unittest.TestCase):
                         "status": "ok",
                         "checks": {
                             "server_side_comfyui_stopped": {"status": "ok"},
+                            "remote_models_listed": {"status": "ok"},
+                            "model_alias_selected": {"status": "ok"},
+                            "credentials_externalized": {"status": "ok"},
                             "non_comfy_tts_completed": {"status": "ok"},
                             "artifact_downloaded": {"status": "ok"},
                         },
-                        "samples": [{"label": "tts-fast-non-comfy"}],
+                        "samples": [{"label": "remote-node-model-list"}, {"label": "tts-fast-non-comfy"}],
                     }
                 ),
                 encoding="utf-8",
@@ -2124,7 +2161,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(remote_nodes["source_path"], str(remote.resolve()))
         self.assertEqual(remote_nodes["status"], "ok")
         self.assertEqual(remote_nodes["missing_checks"], [])
-        self.assertEqual(remote_nodes["sample_count"], 1)
+        self.assertEqual(remote_nodes["sample_count"], 2)
         modelhub_sync = snapshot["modelhub_client_sync"]
         self.assertTrue(modelhub_sync["available"])
         self.assertEqual(modelhub_sync["source_path"], str(modelhub.resolve()))

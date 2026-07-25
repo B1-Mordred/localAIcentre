@@ -34,7 +34,7 @@ The legacy harness intentionally sends no bearer token. It verifies that `/objec
 
 ## Remote Nodes Without Server-Side ComfyUI
 
-The first concrete remote-node scenario is the non-Comfy smoke path: run `integrations/comfyui-b1-remote-nodes/examples/tts-fast.non-comfy.workflow.json` from an external ComfyUI while the server-side B1 `comfyui` container is stopped. The workflow must complete through the unified API and the `audio-cpu`/`tts-fast` path.
+The first concrete remote-node scenario is the non-Comfy smoke path: run `integrations/comfyui-b1-remote-nodes/examples/tts-fast.non-comfy.workflow.json` from an external ComfyUI while the server-side B1 `comfyui` container is stopped. The workflow must list/select B1 models through the unified API, keep credentials external to workflow JSON, and complete through the `audio-cpu`/`tts-fast` path.
 
 The same path has an opt-in Python compatibility test:
 
@@ -50,7 +50,7 @@ python3 -m unittest tests.compatibility.test_remote_nodes_non_comfy
 
 `B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose` makes the test stop the local Compose `comfyui` service before running the remote-node operation and restore it afterward if it was previously running. Use this only during an explicit compatibility window. If the service has already been stopped by another runbook, set `B1_REMOTE_NODES_COMFYUI_STOP_MODE=manual`; the test then relies on that operator-controlled state and does not mutate Compose.
 
-When `B1_REMOTE_NODES_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and a redacted artifact sample. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` remote-node evidence file and block handoff if the server-side ComfyUI stop, non-Comfy TTS completion, or artifact download checks are absent or incomplete.
+When `B1_REMOTE_NODES_EVIDENCE` is set, the test writes a machine-readable evidence file with `status`, `required_checks`, per-check records, and redacted model/artifact samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` remote-node evidence file and block handoff if the server-side ComfyUI stop, remote model listing, model-alias selection, credential-externalization, non-Comfy TTS completion, or artifact download checks are absent or incomplete.
 
 ## Model Hub Client Sync
 
