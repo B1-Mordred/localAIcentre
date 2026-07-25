@@ -46,10 +46,16 @@ def resolve_inside(root: Path, relative: str) -> Path:
         raise BlobStoreError("path must be a non-empty relative path")
     if relative.startswith("/") or "\\" in relative:
         raise BlobStoreError("path must be relative")
-    for segment in relative.split("/"):
+    segments = relative.split("/")
+    for segment in segments:
         _validate_relative_segment(segment)
     resolved_root = root.resolve()
-    candidate = (resolved_root / relative).resolve()
+    current = resolved_root
+    for segment in segments:
+        current = current / segment
+        if current.is_symlink():
+            raise BlobStoreError("path contains symlink")
+    candidate = current.resolve()
     if resolved_root not in candidate.parents and candidate != resolved_root:
         raise BlobStoreError("path escapes configured root")
     return candidate

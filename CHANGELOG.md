@@ -22,6 +22,7 @@
 - Hardened model manifest and archive member path validation so malformed percent escapes and invalid percent-encoded UTF-8 are rejected before runtime views, archive extraction, direct-url expansion, or Hugging Face file URL generation.
 - Hardened artifact, staged-upload, Model Hub client, and remote-node artifact path validation so malformed percent escapes and invalid percent-encoded UTF-8 fail closed before authorization, request building, or downloads.
 - Hardened internal artifact-server path and blob-name validation so storage requests repeat decoded path-control checks and reject newline-extended or otherwise non-exact SHA-256 blob IDs before file access.
+- Hardened artifact-server artifact and Model Hub blob resolution so symlinked path components are refused before file access.
 - Added `Idempotency-Key` handling for native ComfyUI `POST /prompt` so exact replays return the stored native prompt ID after acceptance and conflicting or still-pending replays do not submit duplicate GPU work.
 - Added live native ComfyUI acceptance coverage and handoff gating for same-body `POST /prompt` idempotency replay.
 - Changed ComfyUI-backed media jobs to enter `recovery_required` when native history contains no image, video, GIF, or audio outputs instead of completing without downloadable artifacts.

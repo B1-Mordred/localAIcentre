@@ -86,6 +86,27 @@ class BlobStoreTests(unittest.TestCase):
                     with self.assertRaises(BlobStoreError):
                         resolve_inside(root, relative)
 
+    def test_resolve_inside_rejects_symlink_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "target.bin"
+            target.write_bytes(b"payload")
+
+            file_link = root / "file-link"
+            dir_link = root / "dir-link"
+            try:
+                file_link.symlink_to(target)
+                dir_link.symlink_to(real_dir, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            for relative in ("file-link", "dir-link/target.bin"):
+                with self.subTest(relative=relative):
+                    with self.assertRaisesRegex(BlobStoreError, "symlink"):
+                        resolve_inside(root, relative)
+
 
 if __name__ == "__main__":
     unittest.main()
