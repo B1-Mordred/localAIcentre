@@ -13,11 +13,46 @@ from urllib.parse import quote, urlencode
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SHA256_DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:$|[/?#])")
 DEFAULT_RUNTIME_ACTION_SERVICES = frozenset({"localai", "comfyui", "voicebox", "audio-cpu"})
+REDACTED = "<redacted>"
 SECRET_PATTERNS = [
     re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
+    re.compile(r"(\bBearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
     re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]+\b"),
+    re.compile(
+        r"([?&](?:[^=&\s]*(?:api[_-]?key|authorization|bearer|credential|password|secret|token)[^=&\s]*)=)[^&#\s]+",
+        re.IGNORECASE,
+    ),
 ]
+SENSITIVE_KEY_FRAGMENTS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "document",
+    "file",
+    "image",
+    "input",
+    "key_hash",
+    "key_salt",
+    "media",
+    "messages",
+    "password",
+    "prompt",
+    "sample",
+    "secret",
+    "session",
+    "token",
+    "audio",
+    "video",
+    "voice",
+}
+SENSITIVE_EXACT_KEYS = {"content", "input_text", "text"}
+MAX_JSON_DEPTH = 6
+MAX_JSON_LIST_ITEMS = 50
 
 
 class DockerApiError(RuntimeError):
@@ -221,10 +256,50 @@ def bound_log_lines(lines: int, maximum: int = 500) -> int:
 
 
 def redact_line(line: str) -> str:
-    redacted = line
+    redacted = redact_json_fragment(line)
     for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(lambda match: match.group(1) + "<redacted>" if match.lastindex else "<redacted>", redacted)
+        redacted = pattern.sub(lambda match: match.group(1) + REDACTED if match.lastindex else REDACTED, redacted)
     return redacted
+
+
+def sensitive_json_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return normalized in SENSITIVE_EXACT_KEYS or any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS)
+
+
+def redact_json_fragment(line: str) -> str:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(line):
+        if character not in "{[":
+            continue
+        try:
+            payload, end = decoder.raw_decode(line[index:])
+        except ValueError:
+            continue
+        redacted = redact_json_value(payload)
+        encoded = json.dumps(redacted, ensure_ascii=False, separators=(",", ":"))
+        return line[:index] + encoded + line[index + end :]
+    return line
+
+
+def redact_json_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    if key and sensitive_json_key(key):
+        return REDACTED
+    if depth > MAX_JSON_DEPTH:
+        return "<truncated>"
+    if isinstance(value, dict):
+        return {str(item_key): redact_json_value(item_value, key=str(item_key), depth=depth + 1) for item_key, item_value in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        output = [redact_json_value(item, depth=depth + 1) for item in items[:MAX_JSON_LIST_ITEMS]]
+        if len(items) > MAX_JSON_LIST_ITEMS:
+            output.append({"truncated_items": len(items) - MAX_JSON_LIST_ITEMS})
+        return output
+    if isinstance(value, str):
+        return redact_line(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_line(str(value))
 
 
 def strip_docker_stream_headers(payload: bytes) -> bytes:
@@ -263,15 +338,8 @@ def parse_docker_json_stream(payload: bytes) -> list[dict[str, Any]]:
 
 
 def redact_json_event(event: dict[str, Any]) -> dict[str, Any]:
-    redacted: dict[str, Any] = {}
-    for key, value in event.items():
-        if isinstance(value, str):
-            redacted[key] = redact_line(value)
-        elif isinstance(value, dict):
-            redacted[key] = redact_json_event(value)
-        else:
-            redacted[key] = value
-    return redacted
+    redacted = redact_json_value(event)
+    return redacted if isinstance(redacted, dict) else {}
 
 
 def summarize_pull_events(events: list[dict[str, Any]], maximum: int = 25) -> dict[str, Any]:

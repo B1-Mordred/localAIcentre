@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,7 +102,20 @@ class FakeDockerEngineClient(DockerEngineClient):
         if path.startswith("/images/create?"):
             return b'{"status":"Pulling from b1/control-plane"}\n{"status":"Digest: sha256:' + b"a" * 64 + b'"}\n'
         if "/logs?" in path:
-            line = b"2026-07-22T09:00:00Z Authorization: Bearer b1k_public.secret\n"
+            line = "\n".join(
+                [
+                    "2026-07-22T09:00:00Z Authorization: Bearer b1k_public.secret",
+                    json.dumps(
+                        {
+                            "event": "request",
+                            "prompt": "secret prompt",
+                            "safe": "Authorization: Bearer provider-token",
+                            "nested": {"messages": [{"role": "user", "content": "private chat"}]},
+                        }
+                    ),
+                    '2026-07-22T09:00:01Z {"voice_sample":"private voice bytes","model":"chat-default"}',
+                ]
+            ).encode("utf-8") + b"\n"
             return b"\x01\x00\x00\x00" + len(line).to_bytes(4, "big") + line
         return b""
 
@@ -143,6 +157,10 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertNotIn("b1adm_secret", redacted)
         self.assertNotIn("b1k_public.secret", redacted)
         self.assertIn("<redacted>", redacted)
+        structured = redact_line('2026-07-22T09:00:00Z {"prompt":"secret prompt","safe":"Bearer provider-token"}')
+        self.assertNotIn("secret prompt", structured)
+        self.assertNotIn("provider-token", structured)
+        self.assertIn('"prompt":"<redacted>"', structured)
 
     def test_strips_docker_multiplex_headers(self) -> None:
         payload = b"hello\n"
@@ -170,9 +188,15 @@ class RuntimeAgentTests(unittest.TestCase):
     def test_docker_client_logs_are_bounded_and_redacted(self) -> None:
         client = FakeDockerEngineClient()
         entries = client.service_logs("control-plane", 10, "b1-ai-hub")
-        self.assertEqual(len(entries), 1)
-        self.assertNotIn("b1k_public.secret", entries[0])
-        self.assertIn("<redacted>", entries[0])
+        self.assertEqual(len(entries), 3)
+        joined = "\n".join(entries)
+        self.assertNotIn("b1k_public.secret", joined)
+        self.assertNotIn("secret prompt", joined)
+        self.assertNotIn("provider-token", joined)
+        self.assertNotIn("private chat", joined)
+        self.assertNotIn("private voice bytes", joined)
+        self.assertIn('"prompt":"<redacted>"', joined)
+        self.assertIn('"voice_sample":"<redacted>"', joined)
 
     def test_docker_client_inspects_and_pulls_pinned_images(self) -> None:
         client = FakeDockerEngineClient()
