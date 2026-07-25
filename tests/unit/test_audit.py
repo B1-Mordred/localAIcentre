@@ -75,6 +75,38 @@ class AuditTests(unittest.TestCase):
         public = audit.public_audit_event(event)
         self.assertEqual(public["created_at"], created.isoformat())
 
+    def test_audit_metadata_redacts_token_like_safe_strings(self) -> None:
+        redacted = audit.redact_audit_metadata(
+            {
+                "reason": "operator note Authorization: Bearer secret-value",
+                "upstream_url": "https://example.invalid/path?token=secret-token&api_key=secret-key",
+                "safe": "github_pat_secretvalue",
+            }
+        )
+
+        encoded = json.dumps(redacted)
+        self.assertNotIn("secret-value", encoded)
+        self.assertNotIn("secret-token", encoded)
+        self.assertNotIn("secret-key", encoded)
+        self.assertNotIn("github_pat_secretvalue", encoded)
+        self.assertIn(audit.REDACTED, encoded)
+
+    def test_audit_metadata_redacts_token_like_object_strings(self) -> None:
+        class TokenLikeObject:
+            def __str__(self) -> str:
+                return "object Bearer secret-value"
+
+        redacted = audit.redact_audit_metadata({"safe_object": TokenLikeObject()})
+
+        self.assertNotIn("secret-value", json.dumps(redacted))
+        self.assertEqual(redacted["safe_object"], "object Bearer <redacted>")
+
+    def test_freeform_audit_field_summary_omits_value(self) -> None:
+        self.assertEqual(audit.freeform_audit_field_summary("reason", "pasted prompt with secret"), {"reason_provided": True})
+        self.assertEqual(audit.freeform_audit_field_summary("reason", "   "), {"reason_provided": False})
+        with self.assertRaises(ValueError):
+            audit.freeform_audit_field_summary("prompt", "private prompt")
+
     def test_event_type_is_required(self) -> None:
         with self.assertRaises(ValueError):
             audit.make_audit_event(event_type="", actor_id="admin", actor_role="admin")

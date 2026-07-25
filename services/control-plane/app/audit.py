@@ -56,6 +56,27 @@ def is_sensitive_key(key: str) -> bool:
     return any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS)
 
 
+def redact_sensitive_string_patterns(value: str) -> str:
+    redacted = value
+    for pattern in SECRET_STRING_PATTERNS:
+        redacted = pattern.sub(lambda match: match.group(1) + REDACTED if match.lastindex else REDACTED, redacted)
+    return redacted
+
+
+def freeform_audit_field_summary(field_name: str, value: str | None) -> dict[str, bool]:
+    normalized = field_name.strip().lower().replace("-", "_")
+    if not normalized or is_sensitive_key(normalized):
+        raise ValueError("field_name must be a non-sensitive audit metadata key")
+    return {f"{normalized}_provided": bool((value or "").strip())}
+
+
+def redact_audit_string(value: str) -> str:
+    redacted = redact_sensitive_string_patterns(value)
+    if len(redacted) > MAX_STRING_LENGTH:
+        return redacted[:MAX_STRING_LENGTH] + "...<truncated>"
+    return redacted
+
+
 def redact_audit_metadata(value: Any, *, _depth: int = 0) -> Any:
     if _depth > MAX_DEPTH:
         return "<truncated>"
@@ -76,18 +97,14 @@ def redact_audit_metadata(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, bytes):
         return f"<{len(value)} bytes>"
     if isinstance(value, str):
-        if len(value) > MAX_STRING_LENGTH:
-            return value[:MAX_STRING_LENGTH] + "...<truncated>"
-        return value
+        return redact_audit_string(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return str(value)
+    return redact_audit_string(str(value))
 
 
 def redact_log_string(value: str) -> str:
-    redacted = value
-    for pattern in SECRET_STRING_PATTERNS:
-        redacted = pattern.sub(lambda match: match.group(1) + REDACTED if match.lastindex else REDACTED, redacted)
+    redacted = redact_sensitive_string_patterns(value)
     if len(redacted) > LOG_MAX_STRING_LENGTH:
         return redacted[:LOG_MAX_STRING_LENGTH] + "...<truncated>"
     return redacted

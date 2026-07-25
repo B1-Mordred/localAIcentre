@@ -267,7 +267,10 @@ class AdminJobsApiTests(unittest.TestCase):
         result = asyncio.run(
             main.admin_job_priority_update(
                 "job_1",
-                main.JobPriorityUpdateRequest(priority=main.PriorityClass.VIDEO, reason="raise video test"),
+                main.JobPriorityUpdateRequest(
+                    priority=main.PriorityClass.VIDEO,
+                    reason="raise video test with pasted prompt: secret image and Authorization: Bearer secret-token",
+                ),
             )
         )
 
@@ -277,7 +280,10 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertEqual(fake_database.priority_updates, [("job_1", "video")])
         self.assertEqual(audit_events[0]["event_type"], "job.priority_updated")
         self.assertEqual(audit_events[0]["metadata"]["previous_priority"], "single_image")
-        self.assertEqual(audit_events[0]["metadata"]["reason"], "raise video test")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", audit_events[0]["metadata"])
+        self.assertNotIn("secret image", str(audit_events[0]["metadata"]))
+        self.assertNotIn("secret-token", str(audit_events[0]["metadata"]))
 
     def test_admin_retry_requeues_retryable_job(self) -> None:
         fake_database = FakeJobsDatabase(job_row(state="failed", stage="failed", retry_count=2, failure_category="runtime_error", artifacts=[{"url": "/artifacts/old"}]))
@@ -294,6 +300,8 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertEqual(result["artifacts"], [])
         self.assertEqual(fake_database.retried, ["job_1"])
         self.assertEqual(audit_events[0]["event_type"], "job.retried")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", audit_events[0]["metadata"])
 
     def test_admin_retry_rejects_active_job(self) -> None:
         self.patch_attr("database", FakeJobsDatabase(job_row(state="running", stage="running")))
@@ -319,6 +327,21 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", result)
         self.assertEqual(fake_database.cancelled, ["job_1"])
         self.assertEqual(audit_events[0]["event_type"], "job.cancelled")
+
+    def test_admin_cancel_records_reason_presence_without_reason_text(self) -> None:
+        fake_database = FakeJobsDatabase()
+        audit_events: list[dict[str, Any]] = []
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="operator_1", role=Role.OPERATOR, scopes=frozenset({"jobs:write"})))
+        self.patch_audit(audit_events)
+
+        result = asyncio.run(main.admin_job_cancel("job_1", main.JobMutationRequest(reason="cancel pasted prompt secret")))
+
+        self.assertEqual(result["state"], "cancelled")
+        self.assertEqual(audit_events[0]["event_type"], "job.cancelled")
+        self.assertTrue(audit_events[0]["metadata"]["reason_provided"])
+        self.assertNotIn("reason", audit_events[0]["metadata"])
+        self.assertNotIn("pasted prompt secret", str(audit_events[0]["metadata"]))
 
     def test_admin_cancel_terminal_job_is_idempotent_without_audit(self) -> None:
         fake_database = FakeJobsDatabase(job_row(state="completed", stage="completed", progress=100))

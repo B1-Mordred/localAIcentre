@@ -6920,7 +6920,7 @@ async def admin_job_priority_update(
             "state": updated.get("state"),
             "runtime": updated.get("runtime"),
             "model_alias": updated.get("model_alias"),
-            "reason": payload.reason,
+            **audit_policy.freeform_audit_field_summary("reason", payload.reason),
         },
         correlation_id=updated.get("correlation_id"),
     )
@@ -6954,7 +6954,7 @@ async def admin_job_cancel(
                 "state": updated.get("state"),
                 "runtime": updated.get("runtime"),
                 "model_alias": updated.get("model_alias"),
-                "reason": payload.reason,
+                **audit_policy.freeform_audit_field_summary("reason", payload.reason),
             },
             correlation_id=updated.get("correlation_id"),
         )
@@ -6992,7 +6992,7 @@ async def admin_job_retry(
             "retry_count": updated.get("retry_count"),
             "runtime": updated.get("runtime"),
             "model_alias": updated.get("model_alias"),
-            "reason": payload.reason,
+            **audit_policy.freeform_audit_field_summary("reason", payload.reason),
         },
         correlation_id=updated.get("correlation_id"),
     )
