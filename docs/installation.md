@@ -92,7 +92,7 @@ export B1_ACCEPTANCE_API_KEY=...
 make acceptance-preflight
 ```
 
-The generated file contains no secrets by default. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`. `make acceptance-preflight` does not call the deployed APIs; it only validates the local handoff environment, output paths, TLS CA file, safety gates, and edited workflow/prompt JSON so the live suite does not spend time on a run that would skip or produce incomplete evidence. It writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json`, and `make operator-live-acceptance` runs that preflight first.
+The generated file contains no secrets by default. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE=https://$B1_HOST_CHAT` for the chat-host smoke proof. For temporary IP validation, edit `B1_SMOKE_OPEN_WEBUI_BASE` and `B1_SMOKE_OPEN_WEBUI_HOST_HEADER` in the generated file before preflight. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`. `make acceptance-preflight` does not call the deployed APIs; it only validates the local handoff environment, output paths, TLS CA file, safety gates, and edited workflow/prompt JSON so the live suite does not spend time on a run that would skip or produce incomplete evidence. It writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json`, and `make operator-live-acceptance` runs that preflight first.
 
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering

@@ -15,6 +15,7 @@ class AcceptanceEnvError(RuntimeError):
 
 DEFAULT_DATA_ROOT = "/srv/b1-ai-hub"
 DEFAULT_HOSTS = {
+    "chat": "ai.b1.germering",
     "api": "api.ai.b1.germering",
     "comfy": "comfy.ai.b1.germering",
     "voice": "voice.ai.b1.germering",
@@ -53,6 +54,7 @@ EVIDENCE_FILES = {
 class AcceptanceEnvConfig:
     data_root: Path = Path(DEFAULT_DATA_ROOT)
     output: Path | None = None
+    host_chat: str = DEFAULT_HOSTS["chat"]
     host_api: str = DEFAULT_HOSTS["api"]
     host_comfy: str = DEFAULT_HOSTS["comfy"]
     host_voice: str = DEFAULT_HOSTS["voice"]
@@ -90,6 +92,7 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     acceptance_root = backup_root / "acceptance"
     workflows_root = data_root / "workflows" / "acceptance"
     ca_file = data_root / "data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+    chat_base = f"https://{config.host_chat}"
     api_base = f"https://{config.host_api}"
     comfy_base = f"https://{config.host_comfy}"
     voice_base = f"https://{config.host_voice}"
@@ -162,6 +165,8 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
         "B1_VOICEBOX_API_BASE",
     ):
         lines.append(shell_default_expression(key, "$B1_ACCEPTANCE_API_BASE"))
+    lines.append(shell_default_literal("B1_SMOKE_OPEN_WEBUI_BASE", chat_base))
+    lines.append(shell_default_expression("B1_SMOKE_OPEN_WEBUI_HOST_HEADER", ""))
     lines.append(shell_default_literal("B1_NATIVE_COMFYUI_BASE", comfy_base))
     lines.append(shell_default_literal("B1_SECURITY_COMFY_BASE", comfy_base))
     lines.append(shell_default_literal("B1_VOICEBOX_BASE", voice_base))
@@ -281,6 +286,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a sourceable B1 AI Hub live-acceptance environment file.")
     parser.add_argument("--data-root", "--root", dest="data_root", default=os.getenv("B1_DATA_ROOT", DEFAULT_DATA_ROOT))
     parser.add_argument("--output", default="", help="File to create. Defaults to $B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env.")
+    parser.add_argument("--host-chat", default=os.getenv("B1_HOST_CHAT", DEFAULT_HOSTS["chat"]))
     parser.add_argument("--host-api", default=os.getenv("B1_HOST_API", DEFAULT_HOSTS["api"]))
     parser.add_argument("--host-comfy", default=os.getenv("B1_HOST_COMFY", DEFAULT_HOSTS["comfy"]))
     parser.add_argument("--host-voice", default=os.getenv("B1_HOST_VOICE", DEFAULT_HOSTS["voice"]))
@@ -297,6 +303,7 @@ def config_from_args(args: argparse.Namespace) -> AcceptanceEnvConfig:
     return AcceptanceEnvConfig(
         data_root=data_root,
         output=output,
+        host_chat=str(args.host_chat).strip() or DEFAULT_HOSTS["chat"],
         host_api=str(args.host_api).strip() or DEFAULT_HOSTS["api"],
         host_comfy=str(args.host_comfy).strip() or DEFAULT_HOSTS["comfy"],
         host_voice=str(args.host_voice).strip() or DEFAULT_HOSTS["voice"],

@@ -150,7 +150,7 @@ Generate a sourceable live-acceptance environment file with all default URLs, CA
 make acceptance-env
 ```
 
-The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. Review it, fill the blank API-key, Model Hub, browser-session, and restart-drill values, then source it before running the live acceptance targets:
+The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE` for the Open WebUI chat-host proof. Review it, fill the blank API-key, Model Hub, browser-session, and restart-drill values, then source it before running the live acceptance targets:
 
 ```bash
 export B1_ACCEPTANCE_API_KEY=...

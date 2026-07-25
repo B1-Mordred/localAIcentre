@@ -261,6 +261,18 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(api_keys["status"], "fail")
         self.assertIn("wrong_type", api_keys["data"])
 
+    def test_preflight_rejects_plain_http_open_webui_smoke_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file, {"B1_SMOKE_OPEN_WEBUI_BASE": "http://ai.b1.germering"})
+
+        self.assertEqual(report["status"], "fail")
+        urls = self.check_by_name(report, "urls")
+        self.assertEqual(urls["status"], "fail")
+        self.assertIn("B1_SMOKE_OPEN_WEBUI_BASE", urls["data"]["insecure"])
+
 
 if __name__ == "__main__":
     unittest.main()

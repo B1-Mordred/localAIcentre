@@ -35,6 +35,8 @@ class AcceptanceEnvTests(unittest.TestCase):
             text,
         )
         self.assertIn('export B1_ACCEPTANCE_API_KEY="${B1_ACCEPTANCE_API_KEY:-}"', text)
+        self.assertIn('export B1_SMOKE_OPEN_WEBUI_BASE="${B1_SMOKE_OPEN_WEBUI_BASE:-https://ai.b1.germering}"', text)
+        self.assertIn('export B1_SMOKE_OPEN_WEBUI_HOST_HEADER="${B1_SMOKE_OPEN_WEBUI_HOST_HEADER:-}"', text)
         self.assertIn('export B1_ACCEPTANCE_ALLOW_INSECURE_HTTP="false"', text)
         self.assertIn('export B1_SMOKE_ALLOW_PLACEHOLDER="false"', text)
         self.assertIn('export B1_WORKFLOWS_ALLOW_PLACEHOLDER="false"', text)
@@ -50,6 +52,12 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertNotIn("b1k_", text)
         self.assertNotIn("Bearer ", text)
 
+    def test_render_uses_configured_chat_host_for_open_webui_smoke(self) -> None:
+        config = acceptance_env.AcceptanceEnvConfig(data_root=Path("/srv/example"), host_chat="chat.test.lan")
+        text = acceptance_env.render_acceptance_env(config)
+
+        self.assertIn('export B1_SMOKE_OPEN_WEBUI_BASE="${B1_SMOKE_OPEN_WEBUI_BASE:-https://chat.test.lan}"', text)
+
     def test_generated_file_is_sourceable_and_preserves_preexisting_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "acceptance.env"
@@ -60,7 +68,7 @@ class AcceptanceEnvTests(unittest.TestCase):
                 "unset B1_SMOKE_EVIDENCE B1_BACKUP_ROOT; "
                 "B1_ACCEPTANCE_API_KEY=test-token; "
                 f'. "{output}"; '
-                'printf "%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE"'
+                'printf "%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE"'
             )
             result = subprocess.run(["bash", "-c", command], check=True, text=True, stdout=subprocess.PIPE)
             lines = result.stdout.splitlines()
@@ -68,6 +76,7 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertEqual(lines[0], "test-token")
         self.assertEqual(lines[1], "test-token")
         self.assertEqual(lines[2], "/srv/example/backups/acceptance/live-smoke.json")
+        self.assertEqual(lines[3], "https://ai.b1.germering")
 
     def test_generate_writes_private_file_and_refuses_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
