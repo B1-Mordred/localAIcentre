@@ -243,7 +243,7 @@ Control Center acceptance reports require machine-readable evidence that B1 back
 - a B1 backup was created and verified
 - that B1 backup was restored to an alternate directory and produced `restore-report.json`
 - the old-stack inventory, old-stack backup, Open WebUI migration plan, and cutover plan were reviewed
-- the cutover plan has no unresolved warnings and its core virtual-host DNS readiness is accepted
+- the cutover plan has no unresolved warnings, its core virtual-host DNS readiness is accepted, its hardware readiness is accepted, and Open WebUI preservation no longer requires operator review
 - rollback commands/actions were rehearsed and old resources remain preserved
 
 Create the rollback rehearsal report after reviewing the rollback phase in the cutover plan and verifying that old-stack resources are still present:
@@ -285,4 +285,4 @@ make backup-migration-rollback-evidence \
   ROLLBACK_REPORT=/srv/b1-ai-hub/backups/rollback-rehearsal.json
 ```
 
-This writes `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` in the `b1-ai-hub-backup-migration-rollback-acceptance/v1` format. The generator verifies the B1 backup archive and PostgreSQL dump coverage, matches the restore report to that backup, verifies the old-stack backup archive, checks that the Open WebUI and cutover plans reference the same inventory and old-stack backup, rejects unresolved plan warnings, requires accepted core virtual-host DNS readiness, and refuses to emit green evidence without the rollback rehearsal checks.
+This writes `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json` in the `b1-ai-hub-backup-migration-rollback-acceptance/v1` format. The generator verifies the B1 backup archive and PostgreSQL dump coverage, matches the restore report to that backup, verifies the old-stack backup archive, checks that the Open WebUI and cutover plans reference the same inventory and old-stack backup, rejects unresolved plan warnings, requires accepted core virtual-host DNS readiness, accepted hardware readiness, and resolved Open WebUI preservation, and refuses to emit green evidence without the rollback rehearsal checks.

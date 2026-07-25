@@ -114,6 +114,25 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "optional_missing_hosts": ["monitoring.ai.b1.germering"],
                     "optional_divergent_hosts": [],
                 },
+                "hardware_readiness": {
+                    "available": True,
+                    "profile": "rtx3060-32gb-initial",
+                    "accepted": True,
+                    "largest_gpu_vram_mib": 12288,
+                    "minimum_gpu_vram_mib": 12288,
+                    "host_total_ram_mib": 32168,
+                    "minimum_host_ram_mib": 32000,
+                    "operator_must_review_hardware": False,
+                    "warnings": [],
+                },
+                "open_webui_preservation": {
+                    "plan_supplied": True,
+                    "operator_must_review_open_webui": False,
+                    "recommended_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
+                    "compatibility_status": "source-version-recorded-temporary-validation-required",
+                    "requires_temporary_instance_validation": True,
+                    "plan_warnings": [],
+                },
                 "phases": [
                     {
                         "name": "rollback",
@@ -163,6 +182,8 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
             ["monitoring.ai.b1.germering"],
         )
+        self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
+        self.assertFalse(payload["checks"]["cutover_plan_reviewed"]["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual([sample["label"] for sample in payload["samples"]], ["b1-backup", "restore-test", "old-stack-backup", "rollback-runbook"])
 
     def test_build_evidence_rejects_cutover_dns_requiring_review(self) -> None:
@@ -201,6 +222,51 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(cutover_plan, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "cutover DNS readiness requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_hardware_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["hardware_readiness"]["accepted"] = False
+            payload["hardware_readiness"]["operator_must_review_hardware"] = True
+            payload["hardware_readiness"]["warnings"] = ["largest detected GPU VRAM is below the initial profile"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover hardware readiness requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_open_webui_preservation_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["open_webui_preservation"]["operator_must_review_open_webui"] = True
+            payload["open_webui_preservation"]["plan_warnings"] = ["readable Open WebUI database was not preserved"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover Open WebUI preservation requires operator review"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

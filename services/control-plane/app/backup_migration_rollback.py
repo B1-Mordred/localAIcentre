@@ -251,6 +251,47 @@ def verify_cutover_dns_readiness(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def verify_cutover_hardware_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    hardware = payload.get("hardware_readiness") if isinstance(payload.get("hardware_readiness"), dict) else {}
+    if not hardware:
+        raise EvidenceError("cutover hardware readiness is missing")
+    warnings = _string_list(hardware.get("warnings"))
+    if hardware.get("available") is not True:
+        raise EvidenceError("cutover hardware readiness is unavailable")
+    if hardware.get("accepted") is not True or hardware.get("operator_must_review_hardware") is True or warnings:
+        raise EvidenceError("cutover hardware readiness requires operator review")
+    return {
+        "available": True,
+        "accepted": True,
+        "operator_must_review_hardware": False,
+        "profile": hardware.get("profile") or "",
+        "largest_gpu_vram_mib": hardware.get("largest_gpu_vram_mib"),
+        "minimum_gpu_vram_mib": hardware.get("minimum_gpu_vram_mib"),
+        "host_total_ram_mib": hardware.get("host_total_ram_mib"),
+        "minimum_host_ram_mib": hardware.get("minimum_host_ram_mib"),
+        "warnings": [],
+    }
+
+
+def verify_cutover_open_webui_preservation(payload: dict[str, Any]) -> dict[str, Any]:
+    preservation = payload.get("open_webui_preservation") if isinstance(payload.get("open_webui_preservation"), dict) else {}
+    if not preservation:
+        raise EvidenceError("cutover Open WebUI preservation is missing")
+    plan_warnings = _string_list(preservation.get("plan_warnings"))
+    if preservation.get("plan_supplied") is not True:
+        raise EvidenceError("cutover Open WebUI preservation plan is missing")
+    if preservation.get("operator_must_review_open_webui") is True or plan_warnings:
+        raise EvidenceError("cutover Open WebUI preservation requires operator review")
+    return {
+        "plan_supplied": True,
+        "operator_must_review_open_webui": False,
+        "recommended_strategy": preservation.get("recommended_strategy") or "",
+        "compatibility_status": preservation.get("compatibility_status") or "",
+        "requires_temporary_instance_validation": preservation.get("requires_temporary_instance_validation"),
+        "plan_warnings": [],
+    }
+
+
 def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path: Path, open_webui_plan_path: Path) -> dict[str, Any]:
     payload = load_json_file(path)
     validate_format(payload, CUTOVER_PLAN_FORMAT, "cutover plan")
@@ -266,6 +307,8 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
     if payload.get("warnings"):
         raise EvidenceError("cutover plan still has warnings")
     dns_readiness = verify_cutover_dns_readiness(payload)
+    hardware_readiness = verify_cutover_hardware_readiness(payload)
+    open_webui_preservation = verify_cutover_open_webui_preservation(payload)
     safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
     if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
         raise EvidenceError("cutover plan safety invariants are incomplete")
@@ -283,6 +326,8 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "resources": resources,
         "resource_count": resource_count,
         "dns_readiness": dns_readiness,
+        "hardware_readiness": hardware_readiness,
+        "open_webui_preservation": open_webui_preservation,
         "reviewed_by": old_scope.get("reviewed_by"),
     }
 
