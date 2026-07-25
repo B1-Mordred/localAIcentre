@@ -5324,6 +5324,46 @@ def model_allowed_by_auth_permissions(auth: AuthContext | None, model_id: str, r
     return any(modelhub_policy.role_allowed_by_manifest_permissions(version, auth.role.value, action) for version in versions)
 
 
+def modelhub_record_is_alias(record: dict[str, Any]) -> bool:
+    return record.get("object") == "model" and isinstance(record.get("resolved_model"), dict) and "root" in record
+
+
+def modelhub_record_allowed(auth: AuthContext, client: dict[str, Any] | None, model_id: str, record: dict[str, Any], action: str) -> bool:
+    if client is not None and not model_allowed_by_client(client, model_id, record):
+        return False
+    return model_allowed_by_auth_permissions(auth, model_id, record, action)
+
+
+async def authorized_modelhub_model_view(
+    auth: AuthContext,
+    model_id: str,
+    *,
+    for_download: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
+    model_id = validate_modelhub_model_identifier(model_id)
+    client = await modelhub_client_for_auth(auth)
+    if client is not None and for_download and not client.get("allow_downloads", True):
+        raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download blobs")
+    catalog = catalog_snapshot()
+    model_record = catalog.model_or_alias_record(model_id)
+    if model_record is None:
+        raise HTTPException(status_code=404, detail="model not found")
+    action = "download" if for_download else "read"
+    model_record_allowed = modelhub_record_allowed(auth, client, model_id, model_record, action)
+    version_records = catalog.versions_for(model_id)
+    if modelhub_record_is_alias(model_record):
+        if not model_record_allowed:
+            raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
+        allowed_versions = [record for record in version_records if modelhub_record_allowed(auth, client, model_id, record, action)]
+        return model_record, allowed_versions, client
+    candidate_records = version_records or [model_record]
+    allowed_versions = [record for record in candidate_records if modelhub_record_allowed(auth, client, model_id, record, action)]
+    if not allowed_versions:
+        raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
+    selected_record = model_record if model_record_allowed else allowed_versions[0]
+    return selected_record, allowed_versions, client
+
+
 def modelhub_catalog_for_client(client: dict[str, Any] | None, auth: AuthContext | None = None) -> dict[str, Any]:
     catalog = catalog_snapshot().to_catalog()
     if client is None:
@@ -5381,16 +5421,7 @@ async def modelhub_client_for_auth(auth: AuthContext) -> dict[str, Any] | None:
 
 
 async def require_modelhub_model_authorized(auth: AuthContext, model_id: str, *, for_download: bool) -> dict[str, Any] | None:
-    model_id = validate_modelhub_model_identifier(model_id)
-    client = await modelhub_client_for_auth(auth)
-    if client is not None and for_download and not client.get("allow_downloads", True):
-        raise HTTPException(status_code=403, detail="Model Hub client is not permitted to download blobs")
-    if client is not None and not model_allowed_by_client(client, model_id):
-        raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
-    action = "download" if for_download else "read"
-    records = catalog_snapshot().versions_for(model_id) or [modelhub_model_record(model_id)]
-    if not any(model_allowed_by_auth_permissions(auth, model_id, record, action) for record in records):
-        raise HTTPException(status_code=403, detail=f"Model Hub client is not permitted to access {model_id}")
+    _, _, client = await authorized_modelhub_model_view(auth, model_id, for_download=for_download)
     return client
 
 
@@ -9268,17 +9299,16 @@ def modelhub_model_record(model_id: str) -> dict[str, Any]:
 async def modelhub_model(model_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
-    await require_modelhub_model_authorized(auth, model_id, for_download=False)
-    return modelhub_policy.public_modelhub_metadata(modelhub_model_record(model_id))
+    record, _, _ = await authorized_modelhub_model_view(auth, model_id, for_download=False)
+    return modelhub_policy.public_modelhub_metadata(record)
 
 
 @app.get("/modelhub/v1/models/{id}/versions")
 async def modelhub_versions(model_id: str = ApiPath(alias="id"), authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "modelhub:read")
-    await require_modelhub_model_authorized(auth, model_id, for_download=False)
-    _ = modelhub_model_record(model_id)
-    return modelhub_policy.public_modelhub_metadata({"model_id": model_id, "versions": catalog_snapshot().versions_for(model_id)})
+    _, records, _ = await authorized_modelhub_model_view(auth, model_id, for_download=False)
+    return modelhub_policy.public_modelhub_metadata({"model_id": model_id, "versions": records})
 
 
 @app.get("/modelhub/v1/blobs/{sha256}")

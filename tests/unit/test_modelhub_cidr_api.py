@@ -280,6 +280,102 @@ class ModelHubCidrApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public_versions["versions"][0]["source"]["url"], "https://downloads.example.test/model.gguf")
         self.assertEqual(model_record["source"]["url"], "https://downloads.example.test/model.gguf?token=secret")
 
+    async def test_modelhub_model_and_versions_filter_mixed_visibility_records(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:read"}))
+        admin_only = {
+            "id": "downloadable-llm",
+            "version": "2.0.0",
+            "downloadable": True,
+            "source": {"url": "https://downloads.example.test/admin.gguf?token=secret", "revision": "2.0.0"},
+            "permissions": {"visible_to": ["admin"]},
+        }
+        service_allowed = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "source": {"url": "https://downloads.example.test/service.gguf?token=secret", "revision": "1.0.0"},
+            "permissions": {"visible_to": ["service"]},
+        }
+
+        class FakeCatalog:
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any] | None:
+                return admin_only if model_id == "downloadable-llm" else None
+
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return [admin_only, service_allowed] if model_id == "downloadable-llm" else []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+
+        public_model = await main.modelhub_model("downloadable-llm")
+        public_versions = await main.modelhub_versions("downloadable-llm")
+
+        self.assertEqual(public_model["version"], "1.0.0")
+        self.assertEqual(public_model["source"]["url"], "https://downloads.example.test/service.gguf")
+        self.assertEqual([record["version"] for record in public_versions["versions"]], ["1.0.0"])
+        self.assertNotIn("2.0.0", str(public_versions))
+        self.assertNotIn("admin.gguf", str(public_versions))
+
+    async def test_modelhub_hidden_alias_does_not_leak_visible_underlying_versions(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"modelhub:read"}))
+        alias_record = {
+            "id": "chat-default",
+            "object": "model",
+            "root": "downloadable-llm",
+            "resolved_model": {"id": "downloadable-llm", "version": "1.0.0"},
+            "permissions": {"visible_to": ["admin"]},
+        }
+        service_allowed = {
+            "id": "downloadable-llm",
+            "version": "1.0.0",
+            "downloadable": True,
+            "permissions": {"visible_to": ["service"]},
+        }
+
+        class FakeCatalog:
+            def model_or_alias_record(self, model_id: str) -> dict[str, Any] | None:
+                return alias_record if model_id == "chat-default" else None
+
+            def versions_for(self, model_id: str) -> list[dict[str, Any]]:
+                return [service_allowed] if model_id == "chat-default" else []
+
+        async def authenticate(authorization: str | None = None) -> AuthContext:
+            return auth
+
+        async def no_dedicated_modelhub_client(api_client_id: str) -> dict[str, Any] | None:
+            return None
+
+        original_authenticate = main.authenticate
+        original_catalog = main.catalog_snapshot
+        original_lookup = main.database.get_modelhub_client_by_api_client
+        main.authenticate = authenticate  # type: ignore[assignment]
+        main.catalog_snapshot = lambda: FakeCatalog()  # type: ignore[assignment]
+        main.database.get_modelhub_client_by_api_client = no_dedicated_modelhub_client
+        self.addCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addCleanup(lambda: setattr(main, "catalog_snapshot", original_catalog))
+        self.addCleanup(lambda: setattr(main.database, "get_modelhub_client_by_api_client", original_lookup))
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.modelhub_model("chat-default")
+        self.assertEqual(raised.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as raised:
+            await main.modelhub_versions("chat-default")
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_modelhub_model_rejects_invalid_identifier_before_catalog_lookup(self) -> None:
         async def authenticate(authorization: str | None = None) -> AuthContext:
             return AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"*"}))

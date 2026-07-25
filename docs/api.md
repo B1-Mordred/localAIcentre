@@ -214,7 +214,7 @@ curl -X PUT https://models.ai.b1.germering/modelhub/v1/clients/mhc_123/policy \
   -d '{"allowed_models":["image-default","image-upscale"],"allow_downloads":true}'
 ```
 
-`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Explicit entries must use the same safe B1 identifier rule as sync-plan requests and are rejected before catalog lookup when they contain path separators, encoded separators, whitespace, or other unsafe characters. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, sync-plan, and blob access. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
+`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Explicit entries must use the same safe B1 identifier rule as sync-plan requests and are rejected before catalog lookup when they contain path separators, encoded separators, whitespace, or other unsafe characters. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, version listing, sync-plan, and blob access. `GET /modelhub/v1/models/{id}/versions` returns only versions visible to the caller; when a root model's newest manifest is hidden but an older version is permitted, `GET /modelhub/v1/models/{id}` returns the permitted manifest instead of the hidden newest one. Hidden aliases remain hidden even when their underlying model version is visible through another permitted identifier. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
 
 ## Maintenance Mode
 
@@ -578,7 +578,7 @@ Supported blob response behaviour:
 
 Inference-only model manifests remain visible in the catalog but are not downloadable. The Model Hub blob endpoint rejects unknown or non-downloadable catalog blobs before proxying to storage, returns `404` for allowed-but-absent blobs, and returns `409` if an on-disk blob checksum does not match its content-address.
 
-Model Hub catalog, model, version, and sync-plan responses redact manifest `source.url` fields before returning them to external consumers. The public value keeps only scheme, host, optional port, and path; usernames, passwords, query strings, fragments, signed URLs, and credential parameters are omitted and `url_redacted=true` is included when the URL changed. Administrators can still inspect the authoritative manifest source through the admin model-management APIs.
+Model Hub catalog, model, version, and sync-plan responses redact manifest `source.url` fields before returning them to external consumers. The public value keeps only scheme, host, optional port, and path; usernames, passwords, query strings, fragments, signed URLs, and credential parameters are omitted and `url_redacted=true` is included when the URL changed. Model and version responses are also filtered through the caller's dedicated-client allowlist and manifest `visible_to` permissions before redaction. Administrators can still inspect the authoritative manifest source through the admin model-management APIs.
 
 ## Model Hub Sync Plans
 
