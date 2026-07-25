@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app.catalog import CatalogError, load_catalog  # noqa: E402
+from app.catalog import CatalogError, load_catalog, parse_manifest_payload  # noqa: E402
 from app.scheduler import ResourcePolicy  # noqa: E402
 
 
@@ -93,6 +93,7 @@ class CatalogTests(unittest.TestCase):
             "companion_files",
             "permissions",
             "deprecation",
+            "runtime_smoke",
             "measurements",
         }
 
@@ -377,6 +378,67 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(record["companion_files"][0]["path"], "tokenizer.json")
             self.assertEqual(record["permissions"]["downloadable_by"], ["admin", "service"])
             self.assertEqual(record["deprecation"]["replacement_model"], "chat-next")
+
+    def test_manifest_runtime_smoke_contract_round_trips_and_validates_comfyui_prompt(self) -> None:
+        prompt = {
+            "1": {
+                "class_type": "B1RuntimeTinyImage",
+                "inputs": {"width": 64, "height": 64},
+            }
+        }
+        manifest = parse_manifest_payload(
+            {
+                "id": "image-small",
+                "version": "1.0.0",
+                "display_name": "Image Small",
+                "modality": "image",
+                "operations": ["image-generation"],
+                "source": {"type": "catalog", "url": "https://models.ai.b1.germering/image", "revision": "1.0.0"},
+                "files": [{"path": "image-small.safetensors", "sha256": "1" * 64, "size_bytes": 12}],
+                "runtimes": ["comfyui"],
+                "preferred_runtime": "comfyui",
+                "resource_estimate": {"vram_gib": 6, "ram_gib": 5, "disk_gib": 4},
+                "license": {"name": "test", "redistribution": "downloadable"},
+                "execution_modes": ["hosted-inference"],
+                "aliases": ["image-default"],
+                "runtime_smoke": {
+                    "schema": "b1-ai-hub-runtime-smoke/v1",
+                    "description": "Tiny native queue prompt for model installation smoke.",
+                    "comfyui": {"prompt": prompt, "timeout_seconds": 90},
+                },
+            }
+        )
+
+        self.assertEqual(manifest.runtime_smoke["comfyui"]["prompt"], prompt)
+        self.assertEqual(manifest.to_dict()["runtime_smoke"]["comfyui"]["timeout_seconds"], 90)
+
+    def test_manifest_runtime_smoke_contract_is_validated(self) -> None:
+        base_manifest = {
+            "id": "image-small",
+            "version": "1.0.0",
+            "display_name": "Image Small",
+            "modality": "image",
+            "operations": ["image-generation"],
+            "source": {"type": "catalog", "url": "https://models.ai.b1.germering/image", "revision": "1.0.0"},
+            "files": [{"path": "image-small.safetensors", "sha256": "1" * 64, "size_bytes": 12}],
+            "runtimes": ["comfyui"],
+            "preferred_runtime": "comfyui",
+            "resource_estimate": {"vram_gib": 6, "ram_gib": 5, "disk_gib": 4},
+            "license": {"name": "test", "redistribution": "downloadable"},
+            "execution_modes": ["hosted-inference"],
+            "aliases": ["image-default"],
+        }
+        cases = [
+            ({"schema": "wrong", "comfyui": {"prompt": {"1": {"class_type": "B1RuntimeTinyImage", "inputs": {}}}}}, "schema is unsupported"),
+            ({"schema": "b1-ai-hub-runtime-smoke/v1"}, "must configure at least one runtime"),
+            ({"schema": "b1-ai-hub-runtime-smoke/v1", "localai": {"request": {}}}, "must also be listed in runtimes"),
+            ({"schema": "b1-ai-hub-runtime-smoke/v1", "comfyui": {"request": {}}}, "prompt must be a non-empty ComfyUI prompt object"),
+            ({"schema": "b1-ai-hub-runtime-smoke/v1", "comfyui": {"prompt": {"1": {"inputs": {}}}}}, "class_type must be a non-empty string"),
+            ({"schema": "b1-ai-hub-runtime-smoke/v1", "comfyui": {"prompt": {"1": {"class_type": "B1RuntimeTinyImage"}}, "timeout_seconds": 0}}, "timeout_seconds"),
+        ]
+        for runtime_smoke, message in cases:
+            with self.subTest(runtime_smoke=runtime_smoke), self.assertRaisesRegex(CatalogError, message):
+                parse_manifest_payload({**base_manifest, "runtime_smoke": runtime_smoke})
 
     def test_manifest_governance_metadata_is_validated(self) -> None:
         base_manifest = {

@@ -199,6 +199,57 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertIsInstance(queued, tuple)
         self.assertEqual(queued[2], {"1": {"class_type": "B1RuntimeSmoke", "inputs": {}}})
 
+    def test_enabled_smoke_runs_manifest_native_prompt_through_queue(self) -> None:
+        hooks, _routes, queue = load_hooks()
+        queue.history_status = "success"
+        prompt = {
+            "42": {
+                "class_type": "B1RuntimeTinyImage",
+                "inputs": {"width": 32, "height": 32},
+            }
+        }
+
+        with patch.dict("os.environ", {"B1_COMFYUI_HOOK_SMOKE_ENABLED": "true"}, clear=False):
+            result = asyncio.run(
+                hooks.handle_smoke(
+                    {
+                        "model": "base",
+                        "runtime_smoke": {
+                            "schema": "b1-ai-hub-runtime-smoke/v1",
+                            "comfyui": {"prompt": prompt, "timeout_seconds": 5},
+                        },
+                    }
+                )
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["strategy"], "b1_native_prompt")
+        self.assertEqual(result["measurements"]["prompt_node_count"], 1)
+        self.assertEqual(len(queue.queued), 1)
+        queued = queue.queued[0]
+        self.assertIsInstance(queued, tuple)
+        self.assertEqual(queued[2], prompt)
+        self.assertEqual(queued[3]["strategy"], "b1_native_prompt")
+
+    def test_enabled_smoke_rejects_invalid_native_prompt_before_queueing(self) -> None:
+        hooks, _routes, queue = load_hooks()
+
+        with patch.dict("os.environ", {"B1_COMFYUI_HOOK_SMOKE_ENABLED": "true"}, clear=False):
+            result = asyncio.run(
+                hooks.handle_smoke(
+                    {
+                        "model": "base",
+                        "runtime_smoke_config": {
+                            "prompt": {"42": {"inputs": {"width": 32}}},
+                        },
+                    }
+                )
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "native_prompt_invalid")
+        self.assertEqual(queue.queued, [])
+
     def test_enabled_warm_reports_ready_after_noop_prompt(self) -> None:
         hooks, _routes, queue = load_hooks()
         queue.history_status = "success"

@@ -663,15 +663,24 @@ class GpuJobRunner:
         return results
 
     def runtime_control_payload(self, job: dict[str, Any]) -> dict[str, Any]:
-        return {
+        runtime = str(job.get("runtime") or "")
+        payload = {
             "job_id": str(job["id"]),
-            "runtime": str(job.get("runtime") or ""),
+            "runtime": runtime,
             "model": self.resolved_model_id(job),
             "model_alias": str(job.get("model_alias") or ""),
             "resolved_model_version": str(job.get("resolved_model_version") or ""),
             "modality": str(job.get("modality") or ""),
             "operation": str(job.get("operation") or ""),
         }
+        request_params = job.get("request_params")
+        runtime_smoke = request_params.get("runtime_smoke") if isinstance(request_params, dict) else None
+        if isinstance(runtime_smoke, dict):
+            payload["runtime_smoke"] = runtime_smoke
+            runtime_config = runtime_smoke.get(runtime)
+            if isinstance(runtime_config, dict):
+                payload["runtime_smoke_config"] = runtime_config
+        return payload
 
     def compact_hook_result(self, result: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(result, dict):

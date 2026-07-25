@@ -4903,6 +4903,10 @@ def parse_download_manifest(row: dict[str, Any]) -> Any:
 
 def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> dict[str, Any]:
     model_alias = manifest.aliases[0] if manifest.aliases else manifest.id
+    request_params: dict[str, Any] = {"source": "admin_model_smoke_test"}
+    runtime_smoke = getattr(manifest, "runtime_smoke", None)
+    if isinstance(runtime_smoke, dict) and runtime_smoke:
+        request_params["runtime_smoke"] = runtime_smoke
     return {
         "id": f"modelsmoke_{uuid.uuid4().hex}",
         "runtime": manifest.preferred_runtime,
@@ -4910,7 +4914,7 @@ def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> d
         "resolved_model_version": f"{manifest.id}@{manifest.version}",
         "modality": manifest.modality,
         "operation": "model-smoke",
-        "request_params": {"source": "admin_model_smoke_test"},
+        "request_params": request_params,
         "artifacts": [],
         "owner_id": auth.subject_id if auth is not None else "",
         "durable_job": False,
@@ -5066,15 +5070,24 @@ async def post_cpu_runtime_smoke(runtime: str, job: dict[str, Any]) -> dict[str,
 def runtime_control_payload_for_smoke(job: dict[str, Any]) -> dict[str, Any]:
     resolved = str(job.get("resolved_model_version") or "")
     model = resolved.split("@", 1)[0] if "@" in resolved else str(job.get("model_alias") or resolved)
-    return {
+    runtime = str(job.get("runtime") or "")
+    payload = {
         "job_id": str(job["id"]),
-        "runtime": str(job.get("runtime") or ""),
+        "runtime": runtime,
         "model": model,
         "model_alias": str(job.get("model_alias") or ""),
         "resolved_model_version": resolved,
         "modality": str(job.get("modality") or ""),
         "operation": str(job.get("operation") or ""),
     }
+    request_params = job.get("request_params")
+    runtime_smoke = request_params.get("runtime_smoke") if isinstance(request_params, dict) else None
+    if isinstance(runtime_smoke, dict):
+        payload["runtime_smoke"] = runtime_smoke
+        runtime_config = runtime_smoke.get(runtime)
+        if isinstance(runtime_config, dict):
+            payload["runtime_smoke_config"] = runtime_config
+    return payload
 
 
 async def run_model_runtime_smoke(manifest: Any, auth: AuthContext) -> dict[str, Any]:

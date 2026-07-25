@@ -196,6 +196,32 @@ class ExecutorTests(unittest.TestCase):
         executor.database = fake
         self.addCleanup(lambda: setattr(executor, "database", original))
 
+    def test_runtime_control_payload_carries_selected_runtime_smoke_config(self) -> None:
+        prompt = {"1": {"class_type": "B1RuntimeTinyImage", "inputs": {}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            payload = runner.runtime_control_payload(
+                {
+                    "id": "job_smoke",
+                    "runtime": "comfyui",
+                    "model_alias": "image-default",
+                    "resolved_model_version": "image-small@1.0.0",
+                    "modality": "image",
+                    "operation": "model-smoke",
+                    "request_params": {
+                        "runtime_smoke": {
+                            "schema": "b1-ai-hub-runtime-smoke/v1",
+                            "localai": {"request": {"messages": [{"role": "user", "content": "ping"}]}},
+                            "comfyui": {"prompt": prompt},
+                        }
+                    },
+                }
+            )
+
+        self.assertEqual(payload["runtime_smoke"]["schema"], "b1-ai-hub-runtime-smoke/v1")
+        self.assertEqual(payload["runtime_smoke_config"], {"prompt": prompt})
+        self.assertEqual(payload["model"], "image-small")
+
     def test_cpu_runner_pause_hook_skips_claiming_work(self) -> None:
         fake = FakeDatabase(runtime="audio-cpu")
         self.patch_database(fake)

@@ -20,6 +20,7 @@ REDISTRIBUTION_POLICIES = {"downloadable", "inference-only", "restricted"}
 SOURCE_TYPES = {"catalog", "huggingface", "direct-url", "upload"}
 DEPRECATION_STATUSES = {"active", "deprecated", "replaced", "removed"}
 MEASUREMENT_SCHEMA = "b1-ai-hub-model-measurements/v1"
+RUNTIME_SMOKE_SCHEMA = "b1-ai-hub-runtime-smoke/v1"
 MEASUREMENT_RUN_STATUSES = {"ok", "warning", "failed", "skipped", "unconfirmed"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
@@ -210,6 +211,7 @@ class ModelManifest:
     runtime_adapter_versions: dict[str, str] = field(default_factory=dict)
     companion_files: list[ModelCompanionFile] = field(default_factory=list)
     deprecation: ModelDeprecation = field(default_factory=ModelDeprecation)
+    runtime_smoke: dict[str, Any] = field(default_factory=dict)
     measurements: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -237,6 +239,7 @@ class ModelManifest:
                 "runtime_adapter_versions": dict(self.runtime_adapter_versions) if self.runtime_adapter_versions else None,
                 "companion_files": [item.to_dict() for item in self.companion_files] if self.companion_files else None,
                 "deprecation": deprecation if deprecation else None,
+                "runtime_smoke": dict(self.runtime_smoke) if self.runtime_smoke else None,
                 "measurements": dict(self.measurements) if self.measurements else None,
             }
         )
@@ -704,6 +707,71 @@ def _parse_deprecation(data: Any, context: str) -> ModelDeprecation:
     )
 
 
+def _validate_runtime_smoke_runtime_config(data: dict[str, Any], runtime: str, context: str) -> dict[str, Any]:
+    allowed = {"prompt", "request", "payload", "timeout_seconds"}
+    _forbid_extra_keys(data, allowed, context)
+    if not any(key in data for key in ("prompt", "request", "payload")):
+        raise CatalogError(f"{context} must include prompt, request, or payload")
+    timeout_seconds = data.get("timeout_seconds")
+    if timeout_seconds is not None and (not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0):
+        raise CatalogError(f"{context}.timeout_seconds must be a positive number")
+    if runtime == "comfyui":
+        prompt = data.get("prompt")
+        if not isinstance(prompt, dict) or not prompt:
+            raise CatalogError(f"{context}.prompt must be a non-empty ComfyUI prompt object")
+        for node_id, node in prompt.items():
+            if not isinstance(node_id, str) or not node_id.strip():
+                raise CatalogError(f"{context}.prompt node ids must be non-empty strings")
+            if not isinstance(node, dict):
+                raise CatalogError(f"{context}.prompt.{node_id} must be an object")
+            if not isinstance(node.get("class_type"), str) or not node["class_type"].strip():
+                raise CatalogError(f"{context}.prompt.{node_id}.class_type must be a non-empty string")
+            if "inputs" in node and not isinstance(node["inputs"], dict):
+                raise CatalogError(f"{context}.prompt.{node_id}.inputs must be an object")
+    for key in ("prompt", "request", "payload"):
+        if key in data and not isinstance(data[key], dict):
+            raise CatalogError(f"{context}.{key} must be an object")
+    return dict(data)
+
+
+def _parse_runtime_smoke(data: Any, context: str, runtimes: list[str]) -> dict[str, Any]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    allowed = {"schema", "description"} | RUNTIME_NAMES
+    _forbid_extra_keys(data, allowed, context)
+    _require_keys(data, {"schema"}, context)
+    schema = _string(data, "schema", context)
+    if schema != RUNTIME_SMOKE_SCHEMA:
+        raise CatalogError(f"{context}.schema is unsupported: {schema}")
+    description = data.get("description")
+    if description is not None and (not isinstance(description, str) or not description.strip()):
+        raise CatalogError(f"{context}.description must be a non-empty string")
+    parsed: dict[str, Any] = {"schema": schema}
+    if description is not None:
+        parsed["description"] = description
+    runtime_set = set(runtimes)
+    for runtime in sorted(RUNTIME_NAMES):
+        if runtime not in data:
+            continue
+        if runtime not in runtime_set:
+            raise CatalogError(f"{context}.{runtime} must also be listed in runtimes")
+        config = data[runtime]
+        if not isinstance(config, dict):
+            raise CatalogError(f"{context}.{runtime} must be an object")
+        parsed[runtime] = _validate_runtime_smoke_runtime_config(config, runtime, f"{context}.{runtime}")
+    if not any(runtime in parsed for runtime in RUNTIME_NAMES):
+        raise CatalogError(f"{context} must configure at least one runtime")
+    try:
+        encoded = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise CatalogError(f"{context} must be JSON serializable") from exc
+    if len(encoded.encode("utf-8")) > 1048576:
+        raise CatalogError(f"{context} exceeds 1048576 bytes")
+    return parsed
+
+
 def _validate_timestamp(value: str, context: str) -> None:
     try:
         datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -855,6 +923,7 @@ def _parse_manifest(
         "runtime_adapter_versions",
         "companion_files",
         "deprecation",
+        "runtime_smoke",
         "measurements",
     }
     _require_keys(data, required, context)
@@ -915,6 +984,7 @@ def _parse_manifest(
         runtime_adapter_versions=_parse_runtime_adapter_versions(data.get("runtime_adapter_versions"), runtimes, f"{context}.runtime_adapter_versions"),
         companion_files=_parse_companion_files(data.get("companion_files"), f"{context}.companion_files"),
         deprecation=_parse_deprecation(data.get("deprecation"), f"{context}.deprecation"),
+        runtime_smoke=_parse_runtime_smoke(data.get("runtime_smoke"), f"{context}.runtime_smoke", runtimes),
         measurements=measurements,
     )
 

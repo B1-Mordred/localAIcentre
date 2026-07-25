@@ -1529,6 +1529,23 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(audit_events[0]["event_type"], "model.smoke_tested")
             self.assertTrue(audit_events[0]["metadata"]["persisted"])
 
+    def test_model_smoke_runtime_job_forwards_manifest_runtime_smoke_payload(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        runtime_smoke = {
+            "schema": "b1-ai-hub-runtime-smoke/v1",
+            "localai": {"request": {"messages": [{"role": "user", "content": "ping"}]}},
+        }
+        manifest = main.model_lifecycle.parse_uploaded_manifest({**manifest_payload(digest, len(data)), "runtime_smoke": runtime_smoke})
+        auth = AuthContext(subject_id="test-admin", role=Role.ADMIN, scopes=frozenset({"*"}))
+
+        job = main.model_smoke_runtime_job(manifest, auth)
+        payload = main.runtime_control_payload_for_smoke(job)
+
+        self.assertEqual(job["request_params"]["runtime_smoke"], runtime_smoke)
+        self.assertEqual(payload["runtime_smoke"], runtime_smoke)
+        self.assertEqual(payload["runtime_smoke_config"], runtime_smoke["localai"])
+
     def test_model_runtime_smoke_uses_gpu_preparation_and_records_peak_metrics(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()

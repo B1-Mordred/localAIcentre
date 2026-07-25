@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import hmac
+import json
 import os
 import time
 import uuid
@@ -46,6 +47,12 @@ def env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def bounded_positive_number(value: Any, default: float, maximum: float) -> float:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return default
+    return min(float(value), maximum)
 
 
 def read_secret_file(path: str) -> str:
@@ -100,6 +107,11 @@ def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"status": status, "runtime": "comfyui", "action": action}
     payload.update(extra)
     return payload
+
+
+def prompt_max_bytes() -> int:
+    configured = env_float("B1_COMFYUI_HOOK_SMOKE_PROMPT_MAX_BYTES", 1048576.0)
+    return max(1024, int(configured))
 
 
 def strip_model_version(value: str) -> str:
@@ -223,6 +235,11 @@ async def handle_warm(payload: dict[str, Any]) -> dict[str, Any]:
         return list_result
     if not env_bool("B1_COMFYUI_HOOK_WARM_ENABLED", False):
         return json_response("unconfirmed", "warm", reason="warm_disabled", queue=queue_counts(), memory=memory_snapshot())
+    prompt, error, timeout_seconds = configured_comfyui_prompt(payload, "warm")
+    if error is not None:
+        return error
+    if prompt is not None:
+        return await run_queue_prompt_smoke("warm", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds)
     return await run_noop_queue_smoke("warm")
 
 
@@ -232,6 +249,11 @@ async def handle_smoke(payload: dict[str, Any]) -> dict[str, Any]:
         return list_result
     if not env_bool("B1_COMFYUI_HOOK_SMOKE_ENABLED", False):
         return json_response("unconfirmed", "smoke", reason="smoke_disabled", queue=queue_counts(), memory=memory_snapshot())
+    prompt, error, timeout_seconds = configured_comfyui_prompt(payload, "smoke")
+    if error is not None:
+        return error
+    if prompt is not None:
+        return await run_queue_prompt_smoke("smoke", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds)
     return await run_noop_queue_smoke("smoke")
 
 
@@ -257,32 +279,135 @@ def handle_unload(payload: dict[str, Any]) -> dict[str, Any]:
     return unload_idle_now()
 
 
+def selected_runtime_smoke_configs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    configs: list[dict[str, Any]] = []
+    direct = payload.get("runtime_smoke_config")
+    if isinstance(direct, dict):
+        configs.append(direct)
+    runtime_smoke = payload.get("runtime_smoke")
+    if isinstance(runtime_smoke, dict):
+        comfyui = runtime_smoke.get("comfyui")
+        if isinstance(comfyui, dict) and comfyui not in configs:
+            configs.append(comfyui)
+    return configs
+
+
+def prompt_from_runtime_config(config: dict[str, Any]) -> dict[str, Any] | None:
+    prompt = config.get("prompt")
+    if isinstance(prompt, dict):
+        return prompt
+    for key in ("request", "payload"):
+        wrapper = config.get(key)
+        if isinstance(wrapper, dict) and isinstance(wrapper.get("prompt"), dict):
+            return wrapper["prompt"]
+    return None
+
+
+def validate_comfyui_prompt(prompt: Any, action: str) -> dict[str, Any] | None:
+    if not isinstance(prompt, dict) or not prompt:
+        return json_response("failed", action, reason="native_prompt_invalid")
+    try:
+        encoded = json.dumps(prompt, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        return json_response("failed", action, reason="native_prompt_not_json", error=exc.__class__.__name__)
+    if len(encoded.encode("utf-8")) > prompt_max_bytes():
+        return json_response("failed", action, reason="native_prompt_too_large")
+    for node_id, node in prompt.items():
+        if not isinstance(node_id, str) or not node_id.strip() or not isinstance(node, dict):
+            return json_response("failed", action, reason="native_prompt_invalid")
+        class_type = node.get("class_type")
+        if not isinstance(class_type, str) or not class_type.strip():
+            return json_response("failed", action, reason="native_prompt_invalid")
+        inputs = node.get("inputs", {})
+        if inputs is not None and not isinstance(inputs, dict):
+            return json_response("failed", action, reason="native_prompt_invalid")
+    return None
+
+
+def configured_comfyui_prompt(payload: dict[str, Any], action: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, float | None]:
+    maximum_timeout = env_float("B1_COMFYUI_HOOK_MAX_SMOKE_TIMEOUT_SECONDS", 1800.0)
+    default_timeout = env_float("B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS", 30.0)
+    for config in selected_runtime_smoke_configs(payload):
+        prompt = prompt_from_runtime_config(config)
+        if prompt is None:
+            return None, json_response("failed", action, reason="native_prompt_missing"), None
+        error = validate_comfyui_prompt(prompt, action)
+        if error is not None:
+            return None, error, None
+        timeout_seconds = bounded_positive_number(config.get("timeout_seconds"), default_timeout, maximum_timeout)
+        return prompt, None, timeout_seconds
+    for key in ("comfyui_prompt", "native_prompt"):
+        prompt = payload.get(key)
+        if isinstance(prompt, dict):
+            error = validate_comfyui_prompt(prompt, action)
+            if error is not None:
+                return None, error, None
+            return prompt, None, default_timeout
+    return None, None, None
+
+
+def prompt_measurements(prompt: dict[str, Any], elapsed_ms: int, memory: dict[str, Any]) -> dict[str, Any]:
+    measurements: dict[str, Any] = {
+        "prompt_node_count": len(prompt),
+        "run_time_ms": elapsed_ms,
+    }
+    loaded_model_count = memory.get("loaded_model_count")
+    if isinstance(loaded_model_count, int) and loaded_model_count >= 0:
+        measurements["loaded_model_count"] = loaded_model_count
+    total = memory.get("vram_total_mib")
+    free = memory.get("vram_free_mib")
+    if isinstance(total, int) and isinstance(free, int) and total >= free >= 0:
+        measurements["peak_vram_mib"] = total - free
+    return measurements
+
+
 async def run_noop_queue_smoke(action: str) -> dict[str, Any]:
+    prompt = {"1": {"class_type": "B1RuntimeSmoke", "inputs": {}}}
+    return await run_queue_prompt_smoke(action, prompt, "b1_noop_queue", "noop_prompt")
+
+
+async def run_queue_prompt_smoke(
+    action: str,
+    prompt: dict[str, Any],
+    strategy: str,
+    failure_prefix: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     counts = queue_counts()
     if counts["tasks_remaining"] > 0:
         return json_response("unconfirmed", action, reason="queue_busy", queue=counts)
 
     prompt_id = f"b1-runtime-smoke-{uuid.uuid4()}"
-    prompt = {"1": {"class_type": "B1RuntimeSmoke", "inputs": {}}}
     try:
         valid = await execution.validate_prompt(prompt_id, prompt, None)
     except Exception as exc:
-        return json_response("failed", action, reason="noop_prompt_validation_failed", error=exc.__class__.__name__)
+        return json_response("failed", action, reason=f"{failure_prefix}_validation_failed", error=exc.__class__.__name__, strategy=strategy)
     if not valid[0]:
-        return json_response("failed", action, reason="noop_prompt_invalid")
+        return json_response("failed", action, reason=f"{failure_prefix}_invalid", strategy=strategy)
 
     queue = PromptServer.instance.prompt_queue
-    queue.put((0.0, prompt_id, prompt, {"b1_runtime_smoke": True, "create_time": int(time.time() * 1000)}, valid[2], {}))
-    deadline = time.monotonic() + env_float("B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS", 30.0)
+    start = time.monotonic()
+    queue.put((0.0, prompt_id, prompt, {"b1_runtime_smoke": True, "strategy": strategy, "create_time": int(time.time() * 1000)}, valid[2], {}))
+    deadline = time.monotonic() + (timeout_seconds if timeout_seconds is not None else env_float("B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS", 30.0))
     while time.monotonic() < deadline:
         history = queue.get_history(prompt_id=prompt_id)
         if prompt_id in history:
             status = ((history[prompt_id] or {}).get("status") or {}).get("status_str")
             if status == "success":
-                return json_response("ready" if action == "warm" else "ok", action, strategy="b1_noop_queue", memory=memory_snapshot())
-            return json_response("failed", action, reason="noop_prompt_failed", strategy="b1_noop_queue")
+                memory = memory_snapshot()
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                return json_response(
+                    "ready" if action == "warm" else "ok",
+                    action,
+                    strategy=strategy,
+                    prompt_id=prompt_id,
+                    measurements=prompt_measurements(prompt, elapsed_ms, memory),
+                    memory=memory,
+                )
+            return json_response("failed", action, reason=f"{failure_prefix}_failed", strategy=strategy, prompt_id=prompt_id)
         await asyncio.sleep(0.2)
-    return json_response("failed", action, reason="noop_prompt_timeout", strategy="b1_noop_queue")
+    return json_response("failed", action, reason=f"{failure_prefix}_timeout", strategy=strategy, prompt_id=prompt_id)
 
 
 async def runtime_action(request: web.Request) -> web.Response:
