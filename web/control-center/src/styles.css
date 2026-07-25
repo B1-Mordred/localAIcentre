@@ -413,10 +413,31 @@ td small {
   padding: 6px 8px;
 }
 
+.acceptance-evidence-item {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.evidence-check {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
 .evidence-item input {
   width: 16px;
   min-height: 16px;
   margin: 0;
+}
+
+.evidence-item .evidence-note {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid #cfd7cf;
+  background: #ffffff;
+  padding: 6px 8px;
+  font: inherit;
 }
 
 .evidence-item span {

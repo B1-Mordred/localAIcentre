@@ -611,9 +611,13 @@ const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
 
 type AcceptanceEvidenceKey = typeof ACCEPTANCE_EVIDENCE_ITEMS[number][0];
 type AcceptanceEvidenceState = Record<AcceptanceEvidenceKey, boolean>;
+type AcceptanceEvidenceNoteState = Record<AcceptanceEvidenceKey, string>;
 const EMPTY_ACCEPTANCE_EVIDENCE: AcceptanceEvidenceState = Object.fromEntries(
   ACCEPTANCE_EVIDENCE_ITEMS.map(([key]) => [key, false])
 ) as AcceptanceEvidenceState;
+const EMPTY_ACCEPTANCE_EVIDENCE_NOTES: AcceptanceEvidenceNoteState = Object.fromEntries(
+  ACCEPTANCE_EVIDENCE_ITEMS.map(([key]) => [key, ""])
+) as AcceptanceEvidenceNoteState;
 
 type AuditEvent = {
   id: string;
@@ -4088,6 +4092,7 @@ function System() {
   const [acceptanceLabel, setAcceptanceLabel] = useState("");
   const [acceptanceNotes, setAcceptanceNotes] = useState("");
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidenceState>({ ...EMPTY_ACCEPTANCE_EVIDENCE });
+  const [acceptanceEvidenceNotes, setAcceptanceEvidenceNotes] = useState<AcceptanceEvidenceNoteState>({ ...EMPTY_ACCEPTANCE_EVIDENCE_NOTES });
   const [rollbackRehearsal, setRollbackRehearsal] = useState<RollbackRehearsalStatus | null>(null);
   const [openWebUiPlan, setOpenWebUiPlan] = useState<OpenWebUiMigrationPlanStatus | null>(null);
   const [openWebUiPlanNotes, setOpenWebUiPlanNotes] = useState("");
@@ -4256,7 +4261,8 @@ function System() {
       body: JSON.stringify({
         label: acceptanceLabel.trim(),
         notes: acceptanceNotes.trim(),
-        operator_evidence: acceptanceEvidence
+        operator_evidence: acceptanceEvidence,
+        operator_evidence_notes: acceptanceEvidenceNotes
       })
     })
       .then((payload) => {
@@ -4277,7 +4283,8 @@ function System() {
       body: JSON.stringify({
         label: acceptanceLabel.trim(),
         notes: acceptanceNotes.trim(),
-        operator_evidence: acceptanceEvidence
+        operator_evidence: acceptanceEvidence,
+        operator_evidence_notes: acceptanceEvidenceNotes
       })
     })
       .then((payload) => {
@@ -4893,14 +4900,24 @@ function System() {
         <label>Notes<textarea rows={3} value={acceptanceNotes} onChange={(event) => setAcceptanceNotes(event.target.value)} maxLength={4000} /></label>
         <div className="evidence-grid">
           {ACCEPTANCE_EVIDENCE_ITEMS.map(([key, label]) => (
-            <label key={key} className="evidence-item">
+            <div key={key} className="evidence-item acceptance-evidence-item">
+              <label className="evidence-check">
+                <input
+                  type="checkbox"
+                  checked={acceptanceEvidence[key]}
+                  onChange={(event) => setAcceptanceEvidence((current) => ({ ...current, [key]: event.target.checked }))}
+                />
+                <span>{label}</span>
+              </label>
               <input
-                type="checkbox"
-                checked={acceptanceEvidence[key]}
-                onChange={(event) => setAcceptanceEvidence((current) => ({ ...current, [key]: event.target.checked }))}
+                aria-label={`${label} evidence note`}
+                className="evidence-note"
+                value={acceptanceEvidenceNotes[key]}
+                onChange={(event) => setAcceptanceEvidenceNotes((current) => ({ ...current, [key]: event.target.value }))}
+                maxLength={1000}
+                placeholder="source, run ID, or limitation"
               />
-              <span>{label}</span>
-            </label>
+            </div>
           ))}
         </div>
       </div>
