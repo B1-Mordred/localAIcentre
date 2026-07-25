@@ -96,8 +96,21 @@ class RuntimeAdapterTests(unittest.TestCase):
         adapter = self.registry().adapter("audio-cpu")
         self.assertEqual(resolution.runtime, "audio-cpu")
         self.assertFalse(resolution.requires_gpu)
+        self.assertTrue(resolution.cpu_resident_allowed)
         self.assertIsNotNone(adapter)
         self.assertTrue(adapter.openai_compatible)
+        payload = adapter.openai_payload(
+            {
+                "model": "tts-fast",
+                "input": "hello",
+                "b1_model_alias": "client-spoof",
+                "b1_cpu_residency_allowed": False,
+            },
+            resolution,
+        )
+        self.assertEqual(payload["model"], "b1-cpu-placeholder-tts")
+        self.assertEqual(payload["b1_model_alias"], "tts-fast")
+        self.assertTrue(payload["b1_cpu_residency_allowed"])
         self.assertEqual(
             resolution.to_job_fields(),
             {"resolved_model_version": "b1-cpu-placeholder-tts@0.1.0", "runtime": "audio-cpu"},

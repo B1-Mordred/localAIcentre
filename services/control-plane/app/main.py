@@ -3554,6 +3554,7 @@ async def startup() -> None:
             settings_for_startup.job_runner_interval_seconds,
             audio_cpu_url=settings_for_startup.audio_cpu_url,
             pause_check=queued_runner_pause_active,
+            resource_policy_provider=resource_policy,
         )
         job_runners.append(cpu_runner)
         job_runner_tasks.append(asyncio.create_task(cpu_runner.run_forever(), name="b1-cpu-job-runner"))
@@ -8606,6 +8607,8 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     forwarded = apply_voice_profile_to_runtime_payload(forwarded, voice_profile)
     if resolution.runtime == "audio-cpu":
         forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
+        forwarded["b1_model_alias"] = resolution.public_alias
+        forwarded["b1_cpu_residency_allowed"] = resolution.cpu_resident_allowed
         forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return await proxy_http_bytes(settings.audio_cpu_url, "/v1/audio/speech", request, body=forwarded_body)
     adapter = runtime_registry_snapshot().adapter(resolution.runtime)
@@ -8654,6 +8657,8 @@ async def audio_transcriptions(request: Request, authorization: str | None = Hea
     forwarded = {key: value for key, value in payload.items() if key != "runtime_policy" and not key.startswith("b1_") and value is not None}
     forwarded["model"] = resolution.model_id
     forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
+    forwarded["b1_model_alias"] = resolution.public_alias
+    forwarded["b1_cpu_residency_allowed"] = resolution.cpu_resident_allowed
     forwarded_body = json.dumps(forwarded, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return await proxy_http_bytes(
         settings.audio_cpu_url,

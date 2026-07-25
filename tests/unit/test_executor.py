@@ -295,6 +295,8 @@ class ExecutorTests(unittest.TestCase):
                 [
                     {
                         "model": "b1-cpu-placeholder-tts",
+                        "b1_cpu_residency_allowed": True,
+                        "b1_model_alias": "tts-fast",
                         "b1_resolved_model_version": "b1-cpu-placeholder-tts@0.1.0",
                         "text": "hello",
                         "voice": "default",
@@ -397,6 +399,8 @@ class ExecutorTests(unittest.TestCase):
                 [
                     {
                         "model": "b1-cpu-placeholder-stt",
+                        "b1_cpu_residency_allowed": True,
+                        "b1_model_alias": "stt-default",
                         "b1_resolved_model_version": "b1-cpu-placeholder-stt@0.1.0",
                         "audio": "UklGRg==",
                         "language": "en",
@@ -409,6 +413,24 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(artifact["text"], "hello transcript")
             self.assertEqual(artifact["mime_type"], "application/json")
             self.assertIn(b"hello transcript", (Path(tmp) / "audio-cpu" / "job_gpu" / "0.json").read_bytes())
+
+    def test_cpu_runner_marks_audio_payload_not_resident_when_policy_disables_alias(self) -> None:
+        job = {
+            "model_alias": "tts-fast",
+            "resolved_model_version": "b1-cpu-placeholder-tts@0.1.0",
+            "request_params": {"input": {"parameters": {"text": "hello"}}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.CpuJobRunner(
+                Path(tmp),
+                audio_cpu_url="http://audio-cpu",
+                resource_policy_provider=lambda: executor.ResourcePolicy(cpu_residency_enabled=False),
+            )
+            payload = runner.audio_payload_for_job(job)
+
+        self.assertEqual(payload["model"], "b1-cpu-placeholder-tts")
+        self.assertEqual(payload["b1_model_alias"], "tts-fast")
+        self.assertFalse(payload["b1_cpu_residency_allowed"])
 
     def test_cpu_runner_expands_staged_audio_upload_for_transcription(self) -> None:
         fake = FakeDatabase(runtime="audio-cpu")

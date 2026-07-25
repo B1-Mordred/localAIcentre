@@ -28,6 +28,7 @@ PIPER_ENGINE = "piper"
 ONNX_EMBEDDING_ENGINE = "onnx"
 VOSK_STT_ENGINE = "vosk"
 DEFAULT_PIPER_BINARY = "/opt/piper/piper"
+DEFAULT_CPU_RESIDENT_ALIASES = ("embedding-default", "tts-fast", "stt-default")
 SUPPORTED_ENGINES = {*PLACEHOLDER_ENGINES, PIPER_ENGINE, ONNX_EMBEDDING_ENGINE, VOSK_STT_ENGINE}
 SAFE_REF_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 
@@ -132,8 +133,83 @@ def int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(str(os.getenv(name, str(default))).strip())
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    aliases = []
+    seen = set()
+    for item in raw.split(","):
+        alias = item.strip()
+        if not alias or alias in seen:
+            continue
+        aliases.append(alias)
+        seen.add(alias)
+    return tuple(aliases)
+
+
 def placeholder_enabled() -> bool:
     return bool_env("B1_CPU_AUDIO_ENABLE_PLACEHOLDER", True)
+
+
+def configured_cpu_residency_enabled() -> bool:
+    return bool_env("B1_CPU_RESIDENCY_ENABLED", True)
+
+
+def configured_cpu_residency_max_ram_gib() -> float:
+    return float_env("B1_CPU_RESIDENCY_MAX_RAM_GIB", 2.0, 0.0, 256.0)
+
+
+def configured_cpu_resident_aliases() -> tuple[str, ...]:
+    return list_env("B1_CPU_RESIDENT_ALIASES", DEFAULT_CPU_RESIDENT_ALIASES)
+
+
+def payload_model_alias(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("b1_model_alias", "model_alias", "b1_public_model"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def bool_from_payload(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def cpu_residency_allowed(payload: dict[str, Any] | None) -> bool:
+    if isinstance(payload, dict):
+        explicit = bool_from_payload(payload.get("b1_cpu_residency_allowed"))
+        if explicit is not None:
+            return explicit
+    alias = payload_model_alias(payload)
+    return bool(configured_cpu_residency_enabled() and alias and alias in set(configured_cpu_resident_aliases()))
+
+
+def cpu_residency_details() -> dict[str, Any]:
+    return {
+        "enabled": configured_cpu_residency_enabled(),
+        "max_ram_gib": configured_cpu_residency_max_ram_gib(),
+        "resident_aliases": list(configured_cpu_resident_aliases()),
+        "cache": resident_cache_state(),
+    }
 
 
 def configured_model_root() -> Path:
@@ -621,6 +697,7 @@ def engine_details() -> dict[str, Any]:
         "supported": engine in SUPPORTED_ENGINES,
         "embedding_engine": embedding_engine or "disabled",
         "stt_engine": stt_engine or "disabled",
+        "cpu_residency": cpu_residency_details(),
     }
     if engine == PIPER_ENGINE:
         status = piper_status()
@@ -666,6 +743,29 @@ async def healthz() -> dict[str, Any]:
         "placeholder_enabled": placeholder_enabled(),
         "capabilities": capabilities,
         "details": engine_details(),
+    }
+
+
+@app.post("/b1/runtime/unload")
+async def runtime_unload(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
+    payload = await json_body(request)
+    cache = clear_resident_caches()
+    return {
+        "status": "ok",
+        "runtime": "audio-cpu",
+        "action": "unload",
+        "gpu_lease_required": False,
+        "model": payload.get("model"),
+        "model_alias": payload.get("model_alias") or payload.get("b1_model_alias"),
+        "resolved_model_version": payload.get("resolved_model_version") or payload.get("b1_resolved_model_version"),
+        "details": {
+            "cpu_residency": cpu_residency_details(),
+            "cache": cache,
+        },
     }
 
 
@@ -937,12 +1037,23 @@ def pcm16_mono_wav_from_bytes(content: bytes, *, max_audio_seconds: int) -> tupl
     return pcm, sample_rate, duration
 
 
-@lru_cache(maxsize=2)
-def vosk_model(model_path: str) -> Any:
+def create_vosk_model(model_path: str) -> Any:
     from vosk import Model, SetLogLevel
 
     SetLogLevel(-1)
     return Model(model_path)
+
+
+@lru_cache(maxsize=2)
+def vosk_model(model_path: str) -> Any:
+    return create_vosk_model(model_path)
+
+
+def vosk_model_for_payload(model_path: str, payload: dict[str, Any] | None) -> Any:
+    if cpu_residency_allowed(payload):
+        return vosk_model(model_path)
+    clear_resident_caches()
+    return create_vosk_model(model_path)
 
 
 def vosk_result_parts(raw: str) -> tuple[str, list[dict[str, Any]]]:
@@ -963,7 +1074,7 @@ def vosk_transcription(payload: dict[str, Any]) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         raise AudioCpuError("Vosk dependency is missing", code="b1_audio_cpu_stt_dependency_missing") from exc
 
-    recognizer = KaldiRecognizer(vosk_model(str(status["model_path"])), float(sample_rate))
+    recognizer = KaldiRecognizer(vosk_model_for_payload(str(status["model_path"]), payload), float(sample_rate))
     recognizer.SetWords(bool(status["words"]))
     text_parts: list[str] = []
     word_results: list[dict[str, Any]] = []
@@ -1064,11 +1175,38 @@ def hashed_embedding(text: str, dimensions: int) -> list[float]:
     return [round(value / norm, 8) for value in vector]
 
 
-@lru_cache(maxsize=4)
-def onnx_embedding_session(model_path: str) -> Any:
+def create_onnx_embedding_session(model_path: str) -> Any:
     import onnxruntime as ort
 
     return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+
+
+@lru_cache(maxsize=4)
+def onnx_embedding_session(model_path: str) -> Any:
+    return create_onnx_embedding_session(model_path)
+
+
+def onnx_embedding_session_for_payload(model_path: str, payload: dict[str, Any] | None) -> Any:
+    if cpu_residency_allowed(payload):
+        return onnx_embedding_session(model_path)
+    clear_resident_caches()
+    return create_onnx_embedding_session(model_path)
+
+
+def resident_cache_state() -> dict[str, dict[str, int]]:
+    vosk_info = vosk_model.cache_info()
+    embedding_info = onnx_embedding_session.cache_info()
+    return {
+        "vosk": {"maxsize": int(vosk_info.maxsize or 0), "currsize": int(vosk_info.currsize)},
+        "onnx_embedding": {"maxsize": int(embedding_info.maxsize or 0), "currsize": int(embedding_info.currsize)},
+    }
+
+
+def clear_resident_caches() -> dict[str, Any]:
+    before = resident_cache_state()
+    vosk_model.cache_clear()
+    onnx_embedding_session.cache_clear()
+    return {"before": before, "after": resident_cache_state()}
 
 
 def onnx_input_array(name: str, input_type: str, encodings: list[Any]) -> Any:
@@ -1145,7 +1283,7 @@ def onnx_embedding_vectors(texts: list[str], payload: dict[str, Any] | None = No
     tokenizer.enable_truncation(max_length=int(status["max_tokens"]))
     tokenizer.enable_padding()
     encodings = tokenizer.encode_batch(texts)
-    session = onnx_embedding_session(str(status["model_path"]))
+    session = onnx_embedding_session_for_payload(str(status["model_path"]), payload)
     feed: dict[str, Any] = {}
     for item in session.get_inputs():
         feed[item.name] = onnx_input_array(item.name, item.type, encodings)

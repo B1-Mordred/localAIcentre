@@ -69,8 +69,12 @@ class AudioCpuRuntimeTests(unittest.TestCase):
                 "B1_RUNTIME_CONTROL_TOKEN": None,
                 "B1_RUNTIME_CONTROL_TOKEN_FILE": None,
                 "B1_RUNTIME_CONTROL_REQUIRE_AUTH": None,
+                "B1_CPU_RESIDENCY_ENABLED": None,
+                "B1_CPU_RESIDENCY_MAX_RAM_GIB": None,
+                "B1_CPU_RESIDENT_ALIASES": None,
             }
         )
+        audio_cpu_main.clear_resident_caches()
 
     def patch_env(self, values: dict[str, str | None]) -> None:
         original = {key: os.environ.get(key) for key in values}
@@ -131,6 +135,18 @@ with wave.open(str(output), "wb") as wav:
         self.assertTrue(health["placeholder"])
         self.assertTrue(health["placeholder_enabled"])
         self.assertEqual(health["capabilities"], {"speech": True, "transcription": True, "embeddings": True})
+        self.assertEqual(
+            health["details"]["cpu_residency"],
+            {
+                "enabled": True,
+                "max_ram_gib": 2.0,
+                "resident_aliases": ["embedding-default", "tts-fast", "stt-default"],
+                "cache": {
+                    "vosk": {"maxsize": 2, "currsize": 0},
+                    "onnx_embedding": {"maxsize": 4, "currsize": 0},
+                },
+            },
+        )
 
     def test_speech_marks_scaffold_output_as_placeholder(self) -> None:
         self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
@@ -234,6 +250,91 @@ with wave.open(str(output), "wb") as wav:
         self.assertEqual(smoke["status"], "unconfigured")
         self.assertEqual(smoke["reason"], "engine_unavailable")
         self.assertFalse(smoke["gpu_lease_required"])
+
+    def test_cpu_residency_policy_uses_forwarded_decision_over_env_default(self) -> None:
+        self.patch_env(
+            {
+                "B1_CPU_RESIDENCY_ENABLED": "true",
+                "B1_CPU_RESIDENT_ALIASES": "embedding-default,tts-fast",
+            }
+        )
+
+        self.assertTrue(audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "embedding-default"}))
+        self.assertFalse(audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "stt-default"}))
+        self.assertFalse(
+            audio_cpu_main.cpu_residency_allowed(
+                {"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": False}
+            )
+        )
+        self.assertTrue(
+            audio_cpu_main.cpu_residency_allowed({"b1_model_alias": "unlisted", "b1_cpu_residency_allowed": "true"})
+        )
+
+    def test_onnx_embedding_session_cache_is_used_only_for_cpu_resident_aliases(self) -> None:
+        created: list[dict[str, Any]] = []
+
+        def fake_create(model_path: str) -> dict[str, Any]:
+            session = {"model_path": model_path, "index": len(created)}
+            created.append(session)
+            return session
+
+        self.patch_attr("create_onnx_embedding_session", fake_create)
+        model_path = "/srv/b1-ai-hub/models/embedding/model.onnx"
+
+        resident_1 = audio_cpu_main.onnx_embedding_session_for_payload(
+            model_path,
+            {"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": True},
+        )
+        resident_2 = audio_cpu_main.onnx_embedding_session_for_payload(
+            model_path,
+            {"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": True},
+        )
+        one_shot_1 = audio_cpu_main.onnx_embedding_session_for_payload(
+            model_path,
+            {"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": False},
+        )
+        one_shot_2 = audio_cpu_main.onnx_embedding_session_for_payload(
+            model_path,
+            {"b1_model_alias": "embedding-default", "b1_cpu_residency_allowed": False},
+        )
+
+        self.assertIs(resident_1, resident_2)
+        self.assertIsNot(one_shot_1, one_shot_2)
+        self.assertEqual([item["index"] for item in created], [0, 1, 2])
+        self.assertEqual(audio_cpu_main.resident_cache_state()["onnx_embedding"]["currsize"], 0)
+
+    def test_runtime_unload_clears_cpu_resident_caches(self) -> None:
+        created: list[dict[str, Any]] = []
+
+        def fake_create(model_path: str) -> dict[str, Any]:
+            session = {"model_path": model_path, "index": len(created)}
+            created.append(session)
+            return session
+
+        self.patch_env({"B1_RUNTIME_CONTROL_TOKEN": "hook-token", "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true"})
+        self.patch_attr("create_onnx_embedding_session", fake_create)
+        audio_cpu_main.onnx_embedding_session("/srv/b1-ai-hub/models/embedding/model.onnx")
+
+        result = asyncio.run(
+            audio_cpu_main.runtime_unload(
+                FakeRequest(
+                    {
+                        "model": "b1-cpu-embedding",
+                        "model_alias": "embedding-default",
+                        "resolved_model_version": "b1-cpu-embedding@0.1.0",
+                    },
+                    headers={"Authorization": "Bearer hook-token"},
+                )
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["runtime"], "audio-cpu")
+        self.assertEqual(result["action"], "unload")
+        self.assertFalse(result["gpu_lease_required"])
+        self.assertEqual(result["details"]["cache"]["before"]["onnx_embedding"]["currsize"], 1)
+        self.assertEqual(result["details"]["cache"]["after"]["onnx_embedding"]["currsize"], 0)
+        self.assertEqual(audio_cpu_main.resident_cache_state()["onnx_embedding"]["currsize"], 0)
 
     def test_piper_engine_exposes_real_tts_without_placeholder_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

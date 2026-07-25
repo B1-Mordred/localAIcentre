@@ -87,6 +87,7 @@ class AudioSpeechApiTests(unittest.TestCase):
             requires_gpu=requires_gpu,
             resource_label="expected",
             runtime_policy="any",
+            cpu_resident_allowed=runtime == "audio-cpu",
         )
 
     def patch_auth(self) -> None:
@@ -125,6 +126,8 @@ class AudioSpeechApiTests(unittest.TestCase):
                     "base_url": "http://audio-cpu",
                     "path": "/v1/audio/speech",
                     "payload": {
+                        "b1_cpu_residency_allowed": True,
+                        "b1_model_alias": "tts-fast",
                         "b1_resolved_model_version": "b1-cpu-placeholder-tts@1.0.0",
                         "input": "hello",
                         "model": "b1-cpu-placeholder-tts",
@@ -414,6 +417,7 @@ class AudioSpeechApiTests(unittest.TestCase):
                 requires_gpu=False,
                 resource_label="expected",
                 runtime_policy="any",
+                cpu_resident_allowed=True,
             )
 
         async def proxy_http_bytes(
@@ -462,6 +466,8 @@ class AudioSpeechApiTests(unittest.TestCase):
                     "path": "/v1/audio/transcriptions",
                     "payload": {
                         "audio": "UklGRg==",
+                        "b1_cpu_residency_allowed": True,
+                        "b1_model_alias": "stt-default",
                         "b1_resolved_model_version": "b1-vosk-small-en-us-0.15@0.15",
                         "model": "b1-vosk-small-en-us-0.15",
                     },

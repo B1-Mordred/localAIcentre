@@ -24,7 +24,7 @@ from . import model_lifecycle
 from . import secret_store
 from . import voice_profiles as voice_profile_policy
 from .runtime_agent_http import runtime_agent_httpx_kwargs
-from .scheduler import JobState
+from .scheduler import JobState, ResourcePolicy
 
 import httpx
 
@@ -144,12 +144,14 @@ class CpuJobRunner:
         audio_cpu_url: str = "",
         pause_check: PauseCheck | None = None,
         runtime_cancel_poll_seconds: float = 1.0,
+        resource_policy_provider: Callable[[], ResourcePolicy] | None = None,
     ) -> None:
         self.artifact_root = artifact_root
         self.interval_seconds = max(1, interval_seconds)
         self.audio_cpu_url = audio_cpu_url.rstrip("/")
         self.pause_check = pause_check
         self.runtime_cancel_poll_seconds = max(0.05, float(runtime_cancel_poll_seconds))
+        self.resource_policy_provider = resource_policy_provider or ResourcePolicy
         self._stopped = asyncio.Event()
         self.startup_reconciliation = pending_startup_reconciliation(CPU_RUNTIMES)
 
@@ -199,6 +201,13 @@ class CpuJobRunner:
             return resolved.split("@", 1)[0]
         return str(job.get("model_alias") or resolved)
 
+    def cpu_residency_allowed(self, job: dict[str, Any]) -> bool:
+        alias = str(job.get("model_alias") or "").strip()
+        if not alias:
+            return False
+        policy = self.resource_policy_provider()
+        return bool(policy.cpu_residency_enabled and alias in set(policy.cpu_resident_aliases))
+
     def audio_payload_for_job(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(self.request_input(job))
         parameters = payload.pop("parameters", None)
@@ -210,6 +219,9 @@ class CpuJobRunner:
         payload["model"] = self.resolved_model_id(job)
         if job.get("resolved_model_version"):
             payload["b1_resolved_model_version"] = str(job["resolved_model_version"])
+        if job.get("model_alias"):
+            payload["b1_model_alias"] = str(job["model_alias"])
+            payload["b1_cpu_residency_allowed"] = self.cpu_residency_allowed(job)
         self.expand_staged_audio_inputs(payload)
         return payload
 

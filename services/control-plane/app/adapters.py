@@ -268,6 +268,9 @@ class RuntimeAdapter:
         forwarded["model"] = resolution.model_id
         if not self.external:
             forwarded["b1_resolved_model_version"] = resolution.resolved_model_version
+            if self.name == "audio-cpu":
+                forwarded["b1_model_alias"] = resolution.public_alias
+                forwarded["b1_cpu_residency_allowed"] = resolution.cpu_resident_allowed
         return forwarded
 
     async def post_openai_json(self, path: str, payload: dict[str, Any], timeout_seconds: float = 120.0) -> tuple[int, dict[str, str], Any]:
@@ -299,6 +302,7 @@ class RuntimeResolution:
     requires_gpu: bool
     resource_label: str
     runtime_policy: str
+    cpu_resident_allowed: bool = False
 
     def to_job_fields(self) -> dict[str, str]:
         return {
@@ -361,6 +365,7 @@ class RuntimeRegistry:
             requires_gpu=selected.requires_gpu and alias.manifest.resource_estimate.vram_gib > 0,
             resource_label=alias.decision.label,
             runtime_policy=runtime_policy,
+            cpu_resident_allowed=alias.cpu_residency.allowed,
         )
 
 
