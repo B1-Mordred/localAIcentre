@@ -102,6 +102,9 @@ class DatabaseExportTests(unittest.TestCase):
                         "llm_default_parallel_requests": 1,
                         "comfyui_maximum_parallel_jobs": 1,
                         "comfyui_maximum_batch_size": 1,
+                        "cpu_residency_enabled": True,
+                        "cpu_residency_max_ram_gib": 2.0,
+                        "cpu_resident_aliases": ["embedding-default", "tts-fast", "stt-default"],
                         "updated_by": "admin_1",
                         "created_at": created,
                         "updated_at": created,
@@ -248,6 +251,7 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertIn("credential_secret_name", {column["name"] for column in model_downloads["schema"]["columns"]})
         resource_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_resource_policies")
         self.assertEqual(resource_policies["rows"][0]["gpu_reserve_vram_gib"], 2.0)
+        self.assertEqual(resource_policies["rows"][0]["cpu_resident_aliases"], ["embedding-default", "tts-fast", "stt-default"])
         admission_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_admission_policies")
         self.assertEqual(admission_policies["rows"][0]["artifact_storage_reserve_bytes"], 10 * 1024**3)
         backup_schedules = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_backup_schedules")

@@ -58,6 +58,8 @@ class CatalogTests(unittest.TestCase):
 
         for alias in ("embedding-default", "tts-fast", "stt-default"):
             self.assertTrue(aliases[alias]["cpu_resident_candidate"], alias)
+            self.assertTrue(aliases[alias]["cpu_resident_allowed"], alias)
+            self.assertIn("eligible", aliases[alias]["cpu_resident_reason"])
             self.assertEqual(aliases[alias]["preferred_runtime"], "audio-cpu")
             self.assertEqual(aliases[alias]["status"], "cpu-placeholder")
             self.assertIsNotNone(aliases[alias]["resolved_model"])
@@ -74,6 +76,14 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog_models["b1-vosk-small-en-us-0.15"]["installation_status"], "available")
         self.assertFalse(catalog_models["b1-vosk-small-en-us-0.15"]["downloadable"])
         self.assertIn("stt-default", catalog_models["b1-vosk-small-en-us-0.15"]["aliases"])
+
+    def test_cpu_residency_policy_controls_alias_projection(self) -> None:
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy(cpu_residency_enabled=False))
+        aliases = {model["id"]: model for model in catalog.to_openai_list()["data"]}
+
+        self.assertTrue(aliases["tts-fast"]["cpu_resident_candidate"])
+        self.assertFalse(aliases["tts-fast"]["cpu_resident_allowed"])
+        self.assertEqual(aliases["tts-fast"]["cpu_resident_reason"], "CPU residency is disabled by policy")
 
     def test_manifest_schema_declares_seed_and_governance_fields(self) -> None:
         schema = json.loads((ROOT / "model-catalog" / "schemas" / "model-manifest.schema.json").read_text(encoding="utf-8"))

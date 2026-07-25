@@ -15,6 +15,7 @@ from app.scheduler import (  # noqa: E402
     QueueItem,
     ResourceEstimate,
     ResourcePolicy,
+    classify_cpu_residency,
     classify_resource_fit,
     select_next_job,
     validate_transition,
@@ -66,6 +67,21 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(classify_resource_fit(policy, ResourceEstimate(vram_gib=6, ram_gib=8)).label, "recommended")
         self.assertEqual(classify_resource_fit(policy, ResourceEstimate(vram_gib=11, ram_gib=8)).label, "offload-required")
         self.assertFalse(classify_resource_fit(policy, ResourceEstimate(vram_gib=13, ram_gib=8)).accepted)
+
+    def test_cpu_residency_respects_policy_allowlist_and_host_reserve(self) -> None:
+        policy = ResourcePolicy()
+        allowed = classify_cpu_residency(policy, "tts-fast", ResourceEstimate(vram_gib=0, ram_gib=0.4, requires_gpu=False))
+        self.assertTrue(allowed.candidate)
+        self.assertTrue(allowed.allowed)
+
+        not_listed = classify_cpu_residency(policy, "custom-cpu-tts", ResourceEstimate(vram_gib=0, ram_gib=0.4, requires_gpu=False))
+        self.assertTrue(not_listed.candidate)
+        self.assertFalse(not_listed.allowed)
+        self.assertIn("allowlist", not_listed.reason)
+
+        too_large = classify_cpu_residency(policy, "tts-fast", ResourceEstimate(vram_gib=0, ram_gib=30, requires_gpu=False))
+        self.assertFalse(too_large.allowed)
+        self.assertIn("protected host reserve", too_large.reason)
 
     def test_priority_aging_prevents_permanent_starvation(self) -> None:
         now = datetime.now(tz=UTC)

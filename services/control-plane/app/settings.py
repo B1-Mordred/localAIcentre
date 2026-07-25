@@ -145,6 +145,9 @@ class Settings:
     llm_default_parallel_requests: int
     comfyui_maximum_parallel_jobs: int
     comfyui_maximum_batch_size: int
+    cpu_residency_enabled: bool
+    cpu_residency_max_ram_gib: float
+    cpu_resident_aliases: tuple[str, ...]
     session_cookie_name: str
     session_cookie_secure: bool
     session_ttl_seconds: int
@@ -270,6 +273,9 @@ def load_settings() -> Settings:
         llm_default_parallel_requests=_int("B1_LLM_DEFAULT_PARALLEL_REQUESTS", 1),
         comfyui_maximum_parallel_jobs=_int("B1_COMFYUI_MAXIMUM_PARALLEL_JOBS", 1),
         comfyui_maximum_batch_size=_int("B1_COMFYUI_MAXIMUM_BATCH_SIZE", 1),
+        cpu_residency_enabled=_bool("B1_CPU_RESIDENCY_ENABLED", True),
+        cpu_residency_max_ram_gib=_float("B1_CPU_RESIDENCY_MAX_RAM_GIB", 2.0),
+        cpu_resident_aliases=_words("B1_CPU_RESIDENT_ALIASES", "embedding-default tts-fast stt-default"),
         session_cookie_name=os.getenv("B1_SESSION_COOKIE_NAME", "b1_ai_hub_session"),
         session_cookie_secure=_bool("B1_SESSION_COOKIE_SECURE", True),
         session_ttl_seconds=_int("B1_SESSION_TTL_SECONDS", 8 * 60 * 60),

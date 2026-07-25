@@ -51,6 +51,9 @@ class ResourcePolicyApiTests(unittest.TestCase):
             "llm_default_parallel_requests": 1,
             "comfyui_maximum_parallel_jobs": 1,
             "comfyui_maximum_batch_size": 1,
+            "cpu_residency_enabled": True,
+            "cpu_residency_max_ram_gib": 2.0,
+            "cpu_resident_aliases": ["embedding-default", "tts-fast", "stt-default"],
             **overrides,
         }
         return main.ResourcePolicyUpdateRequest(**values)
@@ -117,6 +120,7 @@ class ResourcePolicyApiTests(unittest.TestCase):
         updated = asyncio.run(main.admin_resource_policy_update(self.policy_request()))
         self.assertEqual(updated["source"], "database")
         self.assertEqual(store["default"]["updated_by"], "admin_1")
+        self.assertEqual(store["default"]["cpu_resident_aliases"], ["embedding-default", "tts-fast", "stt-default"])
         self.assertEqual(runner.reserve_vram_mib, 2048)
 
         rejected = asyncio.run(main.admin_resource_policy_validate(self.policy_request(gpu_total_vram_gib=13.0)))
@@ -126,6 +130,14 @@ class ResourcePolicyApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as exc:
             asyncio.run(main.admin_resource_policy_update(self.policy_request(gpu_max_active_pipelines=2)))
         self.assertEqual(exc.exception.status_code, 422)
+
+        duplicate_cpu_aliases = asyncio.run(main.admin_resource_policy_validate(self.policy_request(cpu_resident_aliases=["tts-fast", "tts-fast"])))
+        self.assertFalse(duplicate_cpu_aliases["accepted"])
+        self.assertTrue(any("cpu_resident_aliases" in error for error in duplicate_cpu_aliases["errors"]))
+
+        host_reserve_violation = asyncio.run(main.admin_resource_policy_validate(self.policy_request(cpu_residency_max_ram_gib=30.0)))
+        self.assertFalse(host_reserve_violation["accepted"])
+        self.assertTrue(any("cpu_residency_max_ram_gib" in error for error in host_reserve_violation["errors"]))
 
         reset = asyncio.run(main.admin_resource_policy_reset())
         self.assertEqual(reset["source"], "environment")

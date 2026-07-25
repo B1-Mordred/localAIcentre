@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote
 
-from .scheduler import AdmissionDecision, ResourceEstimate, ResourcePolicy, classify_resource_fit
+from .scheduler import AdmissionDecision, CpuResidencyDecision, ResourceEstimate, ResourcePolicy, classify_cpu_residency, classify_resource_fit
 
 
 RUNTIME_NAMES = {"localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"}
@@ -261,6 +261,7 @@ class CatalogAlias:
     alias: AliasDefinition
     manifest: ModelManifest | None
     decision: AdmissionDecision
+    cpu_residency: CpuResidencyDecision
 
     @property
     def status(self) -> str:
@@ -313,7 +314,9 @@ class CatalogAlias:
             "resource_label": self.decision.label,
             "resource_decision": asdict(self.decision),
             "resolved_model": resolved,
-            "cpu_resident_candidate": self.preferred_runtime == "audio-cpu",
+            "cpu_resident_candidate": self.cpu_residency.candidate,
+            "cpu_resident_allowed": self.cpu_residency.allowed,
+            "cpu_resident_reason": self.cpu_residency.reason,
             "preferred_runtime_override": self.alias.preferred_runtime_override,
             "idle_timeout_seconds": self.alias.idle_timeout_seconds,
             "visibility_roles": list(self.alias.visibility_roles),
@@ -345,13 +348,32 @@ class ModelCatalog:
             manifest = manifest_by_alias.get(alias.alias)
             if manifest is not None and manifest.modality != alias.modality:
                 raise CatalogError(f"manifest {manifest.id} modality {manifest.modality} does not match alias {alias.alias} modality {alias.modality}")
-            self.aliases[alias.alias] = CatalogAlias(alias=alias, manifest=manifest, decision=self._decision_for(manifest))
+            self.aliases[alias.alias] = CatalogAlias(
+                alias=alias,
+                manifest=manifest,
+                decision=self._decision_for(manifest),
+                cpu_residency=self._cpu_residency_for(alias, manifest),
+            )
 
     def _decision_for(self, manifest: ModelManifest | None) -> AdmissionDecision:
         if manifest is None:
             return AdmissionDecision(False, "uninstalled", "alias has no installed model manifest")
         estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
         return classify_resource_fit(self.policy, estimate)
+
+    def _cpu_residency_for(self, alias: AliasDefinition, manifest: ModelManifest | None) -> CpuResidencyDecision:
+        preferred_runtime = alias.preferred_runtime_override if alias.preferred_runtime_override else alias.preferred_runtime
+        if manifest is not None:
+            preferred_runtime = manifest.preferred_runtime
+            if alias.preferred_runtime_override and alias.preferred_runtime_override in manifest.runtimes:
+                preferred_runtime = alias.preferred_runtime_override
+        requires_gpu = preferred_runtime != "audio-cpu"
+        estimate = (
+            manifest.resource_estimate.to_scheduler_estimate(requires_gpu=requires_gpu)
+            if manifest is not None
+            else ResourceEstimate(vram_gib=0.0, ram_gib=0.0, disk_gib=0.0, requires_gpu=requires_gpu)
+        )
+        return classify_cpu_residency(self.policy, alias.alias, estimate)
 
     def list_aliases(self) -> list[CatalogAlias]:
         return [self.aliases[name] for name in sorted(self.aliases)]

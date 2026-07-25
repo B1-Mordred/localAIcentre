@@ -61,7 +61,7 @@ type AdmissionPolicyValues = {
 
 type AdminStatus = {
   service: string;
-  resource_policy: Record<string, number>;
+  resource_policy: ResourcePolicyValues;
   resource_policy_source?: string;
   admission?: AdmissionReport;
   maintenance?: MaintenanceState;
@@ -194,13 +194,18 @@ type ResourcePolicyValues = {
   llm_default_parallel_requests: number;
   comfyui_maximum_parallel_jobs: number;
   comfyui_maximum_batch_size: number;
+  cpu_residency_enabled: boolean;
+  cpu_residency_max_ram_gib: number;
+  cpu_resident_aliases: string[];
 };
+
+type ResourcePolicyBounds = Partial<Record<keyof ResourcePolicyValues, { minimum?: number; maximum?: number; type?: string; max_items?: number; pattern?: string }>>;
 
 type ResourcePolicyPayload = {
   source: string;
   effective: ResourcePolicyValues;
   default: ResourcePolicyValues;
-  bounds: Record<keyof ResourcePolicyValues, { minimum: number; maximum: number }>;
+  bounds: ResourcePolicyBounds;
 };
 
 type AdmissionPolicyPayload = {
@@ -712,6 +717,8 @@ type ModelAlias = {
   notes?: string;
   resource_label: string;
   cpu_resident_candidate?: boolean;
+  cpu_resident_allowed?: boolean;
+  cpu_resident_reason?: string;
   resolved_model?: { id: string; version: string; display_name: string } | null;
 };
 
@@ -1417,13 +1424,16 @@ function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string })
   );
 }
 
-const RESOURCE_POLICY_FIELDS: { key: keyof ResourcePolicyValues; label: string; step: string }[] = [
+type NumericResourcePolicyKey = Exclude<keyof ResourcePolicyValues, "cpu_residency_enabled" | "cpu_resident_aliases">;
+
+const RESOURCE_POLICY_FIELDS: { key: NumericResourcePolicyKey; label: string; step: string }[] = [
   { key: "gpu_total_vram_gib", label: "GPU total", step: "0.1" },
   { key: "gpu_usable_vram_gib", label: "GPU usable", step: "0.1" },
   { key: "gpu_reserve_vram_gib", label: "GPU reserve", step: "0.1" },
   { key: "gpu_max_active_pipelines", label: "GPU pipelines", step: "1" },
   { key: "host_total_ram_gib", label: "RAM total", step: "0.5" },
   { key: "host_reserve_ram_gib", label: "RAM reserve", step: "0.5" },
+  { key: "cpu_residency_max_ram_gib", label: "CPU resident RAM", step: "0.1" },
   { key: "llm_default_context", label: "LLM context", step: "512" },
   { key: "llm_maximum_context", label: "LLM max context", step: "512" },
   { key: "llm_default_parallel_requests", label: "LLM parallel", step: "1" },
@@ -1431,7 +1441,7 @@ const RESOURCE_POLICY_FIELDS: { key: keyof ResourcePolicyValues; label: string; 
   { key: "comfyui_maximum_batch_size", label: "Comfy batch", step: "1" }
 ];
 
-const INTEGER_POLICY_FIELDS = new Set<keyof ResourcePolicyValues>([
+const INTEGER_POLICY_FIELDS = new Set<NumericResourcePolicyKey>([
   "gpu_max_active_pipelines",
   "llm_default_context",
   "llm_maximum_context",
@@ -1463,9 +1473,10 @@ const UPDATE_IMAGE_REFS_TEMPLATE = JSON.stringify(
 const SERVICE_LOG_OPTIONS = ["control-plane", "localai", "comfyui", "voicebox", "audio-cpu", "artifact-server", "open-webui", "gateway"];
 const RUNTIME_OPTIONS = ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"];
 const ROLE_OPTIONS = ["admin", "operator", "creator", "user", "service"];
+const DEFAULT_CPU_RESIDENT_ALIASES = ["embedding-default", "tts-fast", "stt-default"];
 
 function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: AdminMetrics | null }) {
-  const policy = status?.resource_policy ?? {};
+  const policy: Partial<ResourcePolicyValues> = status?.resource_policy ?? {};
   const lease = status?.scheduler_lease;
   const leaseOwner = lease?.owner ?? "idle";
   const leaseDetail = lease?.lease_expires_at ? `expires ${new Date(lease.lease_expires_at).toLocaleTimeString()}` : "one pipeline policy active";
@@ -1497,6 +1508,7 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
           <Metric label="Peak VRAM" value={formatGibFromMib(metrics?.jobs.peak_vram_mib.max)} detail={`peak RAM ${formatGibFromMib(metrics?.jobs.peak_ram_mib.max)}`} />
           <Metric label="Host memory" value={hostMemory?.available ? `${formatHostBytes(hostMemory.used_bytes)} used` : "unavailable"} detail={hostMemoryDetail} />
           <Metric label="VRAM usable" value={`${policy.gpu_usable_vram_gib ?? 10.5} GiB`} detail={`${policy.gpu_reserve_vram_gib ?? 1.5} GiB reserved`} />
+          <Metric label="CPU residency" value={policy.cpu_residency_enabled ? "enabled" : "disabled"} detail={`${policy.cpu_resident_aliases?.length ?? 0} aliases, ${policy.cpu_residency_max_ram_gib ?? 2} GiB cap`} />
           <Metric label="Admission" value={`${formatCount(admission?.queue?.owner_queued_jobs)} queued`} detail={`${formatCount(admission?.queue?.owner_jobs_last_hour)} jobs/hour, ${formatCount(admission?.queue?.global_queued_jobs)} global`} />
           <Metric label="Artifact headroom" value={formatHostBytes(admission?.storage.disk_free_bytes)} detail={`${formatHostBytes(admission?.policy.artifact_storage_reserve_bytes)} reserved`} />
           <Metric label="Idle unload" value={`${status?.gpu_default_idle_timeout_seconds ?? 300}s`} detail="blank alias policy uses this default" />
@@ -2005,7 +2017,12 @@ function Models() {
                       ))}
                     </div>
                   </div>
-                  <small>{alias.resource_label}{alias.cpu_resident_candidate ? " / CPU" : ""} / {alias.alias_policy_source ?? "seed"}</small>
+                  <small title={alias.cpu_resident_reason ?? ""}>
+                    {alias.resource_label}
+                    {alias.cpu_resident_candidate ? ` / ${alias.cpu_resident_allowed ? "CPU resident" : "CPU on-demand"}` : ""}
+                    {" / "}
+                    {alias.alias_policy_source ?? "seed"}
+                  </small>
                 </td>
                 <td>
                   <div className="table-actions">
@@ -4121,7 +4138,11 @@ function System() {
 
   const setPolicyPayload = (payload: ResourcePolicyPayload) => {
     setResourcePolicy(payload);
-    setPolicyForm(Object.fromEntries(RESOURCE_POLICY_FIELDS.map((field) => [field.key, String(payload.effective[field.key])])));
+    setPolicyForm({
+      ...Object.fromEntries(RESOURCE_POLICY_FIELDS.map((field) => [field.key, String(payload.effective[field.key])])),
+      cpu_residency_enabled: payload.effective.cpu_residency_enabled ? "true" : "false",
+      cpu_resident_aliases: (payload.effective.cpu_resident_aliases ?? DEFAULT_CPU_RESIDENT_ALIASES).join(", ")
+    });
   };
 
   const loadResourcePolicy = () => {
@@ -4358,12 +4379,16 @@ function System() {
   };
 
   const resourcePolicyBody = (): ResourcePolicyValues => {
-    const entries = RESOURCE_POLICY_FIELDS.map((field) => {
+    const entries = RESOURCE_POLICY_FIELDS.map<[NumericResourcePolicyKey, number]>((field) => {
       const raw = policyForm[field.key] ?? "";
       const parsed = Number.parseFloat(raw);
       return [field.key, INTEGER_POLICY_FIELDS.has(field.key) ? Math.trunc(parsed) : parsed];
     });
-    return Object.fromEntries(entries) as ResourcePolicyValues;
+    return {
+      ...(Object.fromEntries(entries) as Pick<ResourcePolicyValues, NumericResourcePolicyKey>),
+      cpu_residency_enabled: (policyForm.cpu_residency_enabled ?? "true") === "true",
+      cpu_resident_aliases: parseCsv(policyForm.cpu_resident_aliases ?? "", DEFAULT_CPU_RESIDENT_ALIASES)
+    };
   };
 
   const runPolicyAction = (action: "validate" | "save" | "reset") => {
@@ -4572,22 +4597,39 @@ function System() {
       {resourcePolicy && (
         <div className="policy-grid">
           {RESOURCE_POLICY_FIELDS.map((field) => {
-            const bounds = resourcePolicy.bounds[field.key];
+            const bounds = resourcePolicy.bounds[field.key] ?? {};
             return (
               <label key={field.key}>
                 {field.label}
                 <input
                   type="number"
-                  min={bounds.minimum}
+                  min={bounds.minimum ?? 0}
                   max={bounds.maximum}
                   step={field.step}
                   value={policyForm[field.key] ?? ""}
                   onChange={(event) => setPolicyForm((current) => ({ ...current, [field.key]: event.target.value }))}
                 />
-                <small>{bounds.minimum}..{bounds.maximum}</small>
+                <small>{bounds.minimum ?? 0}..{bounds.maximum ?? "unbounded"}</small>
               </label>
             );
           })}
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              checked={(policyForm.cpu_residency_enabled ?? "true") === "true"}
+              onChange={(event) => setPolicyForm((current) => ({ ...current, cpu_residency_enabled: event.target.checked ? "true" : "false" }))}
+            />
+            <span>CPU residency</span>
+            <small>{(policyForm.cpu_residency_enabled ?? "true") === "true" ? "enabled" : "disabled"}</small>
+          </label>
+          <label>
+            CPU resident aliases
+            <input
+              value={policyForm.cpu_resident_aliases ?? ""}
+              onChange={(event) => setPolicyForm((current) => ({ ...current, cpu_resident_aliases: event.target.value }))}
+            />
+            <small>{resourcePolicy.bounds.cpu_resident_aliases?.max_items ?? 32} max</small>
+          </label>
         </div>
       )}
       <div className="subsection-title">

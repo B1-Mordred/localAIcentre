@@ -337,6 +337,9 @@ resource_policies = Table(
     Column("llm_default_parallel_requests", Integer, nullable=False),
     Column("comfyui_maximum_parallel_jobs", Integer, nullable=False),
     Column("comfyui_maximum_batch_size", Integer, nullable=False),
+    Column("cpu_residency_enabled", Boolean, nullable=False, default=True),
+    Column("cpu_residency_max_ram_gib", Float, nullable=False, default=2.0),
+    Column("cpu_resident_aliases", JSONB, nullable=False, default=list),
     Column("updated_by", String(128), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -552,6 +555,9 @@ SCHEMA_COMPATIBILITY_SQL = [
     "CREATE INDEX IF NOT EXISTS b1_voice_profiles_owner_idx ON b1_voice_profiles (owner_id)",
     "CREATE INDEX IF NOT EXISTS b1_voice_profiles_runtime_idx ON b1_voice_profiles (runtime)",
     "CREATE INDEX IF NOT EXISTS b1_workflows_status_idx ON b1_workflows (status)",
+    "ALTER TABLE b1_resource_policies ADD COLUMN IF NOT EXISTS cpu_residency_enabled boolean NOT NULL DEFAULT true",
+    "ALTER TABLE b1_resource_policies ADD COLUMN IF NOT EXISTS cpu_residency_max_ram_gib double precision NOT NULL DEFAULT 2.0",
+    "ALTER TABLE b1_resource_policies ADD COLUMN IF NOT EXISTS cpu_resident_aliases jsonb NOT NULL DEFAULT '[\"embedding-default\", \"tts-fast\", \"stt-default\"]'::jsonb",
     (
         "CREATE TABLE IF NOT EXISTS b1_comfyui_node_pins ("
         "node_id varchar(128) NOT NULL, "
@@ -1078,6 +1084,9 @@ async def upsert_resource_policy_record(payload: dict[str, Any], policy_id: str 
             "llm_default_parallel_requests": stmt.excluded.llm_default_parallel_requests,
             "comfyui_maximum_parallel_jobs": stmt.excluded.comfyui_maximum_parallel_jobs,
             "comfyui_maximum_batch_size": stmt.excluded.comfyui_maximum_batch_size,
+            "cpu_residency_enabled": stmt.excluded.cpu_residency_enabled,
+            "cpu_residency_max_ram_gib": stmt.excluded.cpu_residency_max_ram_gib,
+            "cpu_resident_aliases": stmt.excluded.cpu_resident_aliases,
             "updated_by": stmt.excluded.updated_by,
             "updated_at": now,
         },

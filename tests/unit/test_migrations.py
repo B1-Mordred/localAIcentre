@@ -65,6 +65,8 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertIn("b1_network_policies", snapshot)
         self.assertIn("cors_allow_origins", snapshot["b1_network_policies"])
         self.assertIn("trusted_proxy_cidrs", snapshot["b1_network_policies"])
+        self.assertIn("cpu_residency_enabled", snapshot["b1_resource_policies"])
+        self.assertIn("cpu_resident_aliases", snapshot["b1_resource_policies"])
 
     def test_schema_compatibility_sql_is_shared_with_initial_revision(self) -> None:
         revision_source = (APP_ROOT / "alembic" / "versions" / "202607230001_initial_control_plane_schema.py").read_text(encoding="utf-8")
@@ -78,6 +80,7 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_network_policies" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE UNIQUE INDEX IF NOT EXISTS b1_jobs_owner_idempotency_key_uq" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS cidr_allowlist" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
+        self.assertTrue(any("ALTER TABLE b1_resource_policies ADD COLUMN IF NOT EXISTS cpu_residency_enabled" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
 
 
 try:
@@ -102,7 +105,7 @@ class AlembicConfigTests(unittest.TestCase):
         self.assertEqual(config.get_main_option("sqlalchemy.url"), "postgresql+asyncpg://user:pass@postgres:5432/b1_ai_hub")
         self.assertEqual(Path(config.get_main_option("script_location")), APP_ROOT / "alembic")
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_current_head(), "202607230008")
+        self.assertEqual(scripts.get_current_head(), "202607230009")
 
 
 if __name__ == "__main__":

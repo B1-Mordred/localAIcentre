@@ -1257,6 +1257,25 @@
             "title": "Comfyui Maximum Parallel Jobs",
             "type": "integer"
           },
+          "cpu_residency_enabled": {
+            "default": true,
+            "title": "Cpu Residency Enabled",
+            "type": "boolean"
+          },
+          "cpu_residency_max_ram_gib": {
+            "default": 2.0,
+            "minimum": 0.0,
+            "title": "Cpu Residency Max Ram Gib",
+            "type": "number"
+          },
+          "cpu_resident_aliases": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Cpu Resident Aliases",
+            "type": "array"
+          },
           "gpu_max_active_pipelines": {
             "minimum": 1.0,
             "title": "Gpu Max Active Pipelines",

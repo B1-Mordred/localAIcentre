@@ -76,7 +76,7 @@ from .executor import (
 )
 from .observability import build_observability_report, observability_report_to_prometheus
 from .runtime_agent_http import runtime_agent_httpx_kwargs
-from .scheduler import JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
+from .scheduler import CPU_RESIDENT_DEFAULT_ALIASES, JobState, PriorityClass, ResourceEstimate, ResourcePolicy, classify_resource_fit
 from .settings import Settings, load_settings
 from .workflows import ApprovedNodePin, WorkflowError, load_node_pins, load_workflows, parse_node_pin, parse_workflow, validate_workflow_job_request, visible_to_role, workflow_record
 
@@ -534,6 +534,9 @@ class ResourcePolicyUpdateRequest(BaseModel):
     llm_default_parallel_requests: int = Field(ge=1)
     comfyui_maximum_parallel_jobs: int = Field(ge=1)
     comfyui_maximum_batch_size: int = Field(ge=1)
+    cpu_residency_enabled: bool = True
+    cpu_residency_max_ram_gib: float = Field(default=2.0, ge=0)
+    cpu_resident_aliases: list[str] = Field(default_factory=lambda: list(CPU_RESIDENT_DEFAULT_ALIASES), max_length=32)
 
 
 class AdmissionPolicyUpdateRequest(BaseModel):
@@ -1874,6 +1877,9 @@ def base_resource_policy() -> ResourcePolicy:
         llm_default_parallel_requests=settings.llm_default_parallel_requests,
         comfyui_maximum_parallel_jobs=settings.comfyui_maximum_parallel_jobs,
         comfyui_maximum_batch_size=settings.comfyui_maximum_batch_size,
+        cpu_residency_enabled=settings.cpu_residency_enabled,
+        cpu_residency_max_ram_gib=settings.cpu_residency_max_ram_gib,
+        cpu_resident_aliases=tuple(settings.cpu_resident_aliases),
     )
 
 
@@ -1883,11 +1889,20 @@ def resource_policy() -> ResourcePolicy:
 
 def resource_policy_from_record(row: dict[str, Any]) -> ResourcePolicy:
     fields = ResourcePolicy.__dataclass_fields__
-    return ResourcePolicy(**{name: row[name] for name in fields})
+    defaults = base_resource_policy()
+    values: dict[str, Any] = {}
+    for name in fields:
+        value = row.get(name, getattr(defaults, name))
+        if name == "cpu_resident_aliases":
+            value = tuple(str(item) for item in (value or ()))
+        values[name] = value
+    return ResourcePolicy(**values)
 
 
 def resource_policy_dict(policy: ResourcePolicy) -> dict[str, Any]:
-    return {name: getattr(policy, name) for name in ResourcePolicy.__dataclass_fields__}
+    payload = {name: getattr(policy, name) for name in ResourcePolicy.__dataclass_fields__}
+    payload["cpu_resident_aliases"] = list(policy.cpu_resident_aliases)
+    return payload
 
 
 def resource_policy_hard_bounds() -> dict[str, dict[str, Any]]:
@@ -1904,6 +1919,9 @@ def resource_policy_hard_bounds() -> dict[str, dict[str, Any]]:
         "llm_default_parallel_requests": {"minimum": 1, "maximum": max(1, base.llm_default_parallel_requests)},
         "comfyui_maximum_parallel_jobs": {"minimum": 1, "maximum": 1},
         "comfyui_maximum_batch_size": {"minimum": 1, "maximum": 1},
+        "cpu_residency_enabled": {"type": "boolean"},
+        "cpu_residency_max_ram_gib": {"minimum": 0.0, "maximum": max(0.0, base.host_usable_ram_gib)},
+        "cpu_resident_aliases": {"type": "string-list", "max_items": 32, "pattern": r"^[a-z0-9][a-z0-9._-]{1,127}$"},
     }
 
 
@@ -1912,6 +1930,8 @@ def validate_resource_policy_candidate(policy: ResourcePolicy) -> list[str]:
     errors: list[str] = []
     values = resource_policy_dict(policy)
     for field, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
         minimum = bounds[field]["minimum"]
         maximum = bounds[field]["maximum"]
         if value < minimum or value > maximum:
@@ -1928,11 +1948,22 @@ def validate_resource_policy_candidate(policy: ResourcePolicy) -> list[str]:
         errors.append("comfyui_maximum_parallel_jobs must remain 1 for the RTX 3060 safety profile")
     if policy.comfyui_maximum_batch_size != 1:
         errors.append("comfyui_maximum_batch_size must remain 1 for the RTX 3060 safety profile")
+    if policy.cpu_residency_max_ram_gib > policy.host_usable_ram_gib:
+        errors.append("cpu_residency_max_ram_gib must fit outside the protected host RAM reserve")
+    if len(policy.cpu_resident_aliases) > 32:
+        errors.append("cpu_resident_aliases must contain at most 32 aliases")
+    if len(policy.cpu_resident_aliases) != len(set(policy.cpu_resident_aliases)):
+        errors.append("cpu_resident_aliases must not contain duplicates")
+    alias_pattern = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
+    if any(not alias_pattern.match(alias) for alias in policy.cpu_resident_aliases):
+        errors.append("cpu_resident_aliases must contain only model-alias identifiers")
     return errors
 
 
 def resource_policy_from_update(payload: ResourcePolicyUpdateRequest) -> ResourcePolicy:
-    return ResourcePolicy(**payload.model_dump())
+    values = payload.model_dump()
+    values["cpu_resident_aliases"] = tuple(values.get("cpu_resident_aliases") or ())
+    return ResourcePolicy(**values)
 
 
 def apply_resource_policy_to_live_runners(policy: ResourcePolicy) -> None:
