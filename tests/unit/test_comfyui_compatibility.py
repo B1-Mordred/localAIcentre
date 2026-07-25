@@ -505,7 +505,11 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
 
         result = asyncio.run(main.resume_comfyui_native_prompt_trackers())
 
-        self.assertEqual(result, {"checked": 2, "resumed": 2, "skipped": 0})
+        self.assertEqual(result["checked"], 2)
+        self.assertEqual(result["resumed"], 2)
+        self.assertEqual(result["skipped"], 0)
+        self.assertEqual(result["resumed_job_ids"], ["job_1", "job_2"])
+        self.assertEqual(result["native_prompt_ids"], ["prompt_native_1", "prompt_native_2"])
         self.assertEqual(
             scheduled,
             [

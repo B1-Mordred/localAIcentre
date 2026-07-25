@@ -123,6 +123,8 @@ COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
 COMFYUI_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 COMFYUI_NODE_PIN_LOCK_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+RUNTIME_RESERVATION_RUNTIME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+RUNTIME_RESERVATION_REASON_MAX_LENGTH = 500
 COMFYUI_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 COMFYUI_MUTATING_CORE_ROUTES: dict[str, set[str]] = {
     "interrupt": {"POST"},
@@ -233,10 +235,10 @@ class MediaJobCreate(BaseModel):
 
 
 class RuntimeReservationCreate(BaseModel):
-    runtime: str
-    model: str
+    runtime: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=128)
     duration_seconds: int = Field(default=300, ge=30, le=7200)
-    reason: str = Field(default="")
+    reason: str = Field(default="", max_length=RUNTIME_RESERVATION_REASON_MAX_LENGTH)
 
 
 class AcceptanceReportCreate(BaseModel):
@@ -3435,17 +3437,37 @@ def ensure_existing_job_endpoint(existing: dict[str, Any], *, modality: str, ope
 
 
 def expected_runtime_reservation_identity(payload: RuntimeReservationCreate) -> dict[str, Any]:
+    runtime = payload.runtime.strip()
+    model_alias = payload.model.strip()
+    reason = payload.reason.strip()
+    if not runtime or not RUNTIME_RESERVATION_RUNTIME_PATTERN.fullmatch(runtime):
+        raise HTTPException(status_code=422, detail="runtime must be a safe runtime adapter identifier")
+    if not model_alias:
+        raise HTTPException(status_code=422, detail="model must be a safe model alias")
+    if len(reason) > RUNTIME_RESERVATION_REASON_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail=f"reason must be at most {RUNTIME_RESERVATION_REASON_MAX_LENGTH} characters")
+    model_alias = validate_modelhub_model_identifier(model_alias)
     return {
-        "runtime": payload.runtime,
-        "model_alias": payload.model,
+        "runtime": runtime,
+        "model_alias": model_alias,
         "duration_seconds": payload.duration_seconds,
-        "reason": payload.reason,
+        "reason": reason,
+    }
+
+
+def stored_runtime_reservation_identity(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "runtime": str(row.get("runtime") or "").strip(),
+        "model_alias": str(row.get("model_alias") or "").strip(),
+        "duration_seconds": row.get("duration_seconds"),
+        "reason": str(row.get("reason") or "").strip(),
     }
 
 
 def ensure_idempotent_runtime_reservation_matches(existing: dict[str, Any], payload: RuntimeReservationCreate) -> None:
     expected = expected_runtime_reservation_identity(payload)
-    mismatched_fields = [field for field, value in expected.items() if existing.get(field) != value]
+    stored = stored_runtime_reservation_identity(existing)
+    mismatched_fields = [field for field, value in expected.items() if stored.get(field) != value]
     if not mismatched_fields:
         return
     raise HTTPException(
@@ -9180,35 +9202,39 @@ async def runtime_reservation_create(
         if existing is not None:
             ensure_idempotent_runtime_reservation_matches(existing, payload)
             return public_runtime_reservation(existing)
+    identity = expected_runtime_reservation_identity(payload)
+    runtime = identity["runtime"]
+    model_alias = identity["model_alias"]
+    reason = identity["reason"]
     require_not_in_maintenance("runtime/reservation")
-    alias = require_catalog_alias(payload.model, auth=auth)
+    alias = require_catalog_alias(model_alias, auth=auth)
     registry = runtime_registry_snapshot()
-    if payload.runtime not in registry.adapters:
-        raise HTTPException(status_code=422, detail=f"unknown runtime adapter: {payload.runtime}")
-    adapter = registry.adapters[payload.runtime]
+    if runtime not in registry.adapters:
+        raise HTTPException(status_code=422, detail=f"unknown runtime adapter: {runtime}")
+    adapter = registry.adapters[runtime]
     if not adapter.configured:
-        raise HTTPException(status_code=422, detail=f"runtime adapter {payload.runtime} is not configured")
-    if payload.runtime not in GPU_RUNTIMES or not adapter.requires_gpu:
-        raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} does not participate in GPU scheduler reservations")
-    if payload.runtime not in alias.runtimes:
-        raise HTTPException(status_code=422, detail=f"model alias {payload.model} is not compatible with runtime {payload.runtime}")
+        raise HTTPException(status_code=422, detail=f"runtime adapter {runtime} is not configured")
+    if runtime not in GPU_RUNTIMES or not adapter.requires_gpu:
+        raise HTTPException(status_code=422, detail=f"runtime {runtime} does not participate in GPU scheduler reservations")
+    if runtime not in alias.runtimes:
+        raise HTTPException(status_code=422, detail=f"model alias {model_alias} is not compatible with runtime {runtime}")
     if adapter.external and not settings.allow_external_providers:
-        raise HTTPException(status_code=422, detail=f"runtime {payload.runtime} is external and external providers are disabled")
+        raise HTTPException(status_code=422, detail=f"runtime {runtime} is external and external providers are disabled")
     resolved_model_version = f"{alias.manifest.id}@{alias.manifest.version}"
     await enforce_gpu_hardware_admission(
         RuntimeResolution(
-            public_alias=payload.model,
+            public_alias=model_alias,
             model_id=alias.manifest.id,
             model_version=alias.manifest.version,
             resolved_model_version=resolved_model_version,
-            runtime=payload.runtime,
-            preferred_runtime=getattr(alias, "preferred_runtime", payload.runtime),
+            runtime=runtime,
+            preferred_runtime=getattr(alias, "preferred_runtime", runtime),
             requires_gpu=True,
             resource_label=getattr(getattr(alias, "decision", None), "label", "unknown"),
             runtime_policy="reservation",
         )
     )
-    gate = await database.runtime_reservation_gate(auth.subject_id, payload.runtime, resolved_model_version, GPU_RUNTIMES)
+    gate = await database.runtime_reservation_gate(auth.subject_id, runtime, resolved_model_version, GPU_RUNTIMES)
     if not gate.get("allowed"):
         active = gate.get("active_reservation") or {}
         raise HTTPException(
@@ -9230,16 +9256,16 @@ async def runtime_reservation_create(
         {
             "id": reservation_id,
             "owner_id": auth.subject_id,
-            "runtime": payload.runtime,
-            "model_alias": payload.model,
+            "runtime": runtime,
+            "model_alias": model_alias,
             "resolved_model_version": resolved_model_version,
             "duration_seconds": payload.duration_seconds,
-            "reason": payload.reason,
+            "reason": reason,
             "idempotency_key": normalized_idempotency_key,
             "expires_at": datetime.now(tz=UTC) + timedelta(seconds=payload.duration_seconds),
         }
     )
-    log_event("runtime_reservation_created", reservation_id=reservation_id, runtime=payload.runtime, model=payload.model)
+    log_event("runtime_reservation_created", reservation_id=reservation_id, runtime=runtime, model=model_alias)
     await record_audit_event(
         auth,
         "runtime_reservation.created",
@@ -9247,12 +9273,12 @@ async def runtime_reservation_create(
         target_id=reservation_id,
         summary=f"Created runtime reservation {reservation_id}",
         metadata={
-            "runtime": payload.runtime,
-            "model": payload.model,
+            "runtime": runtime,
+            "model": model_alias,
             "resolved_model_version": row["resolved_model_version"],
             "duration_seconds": payload.duration_seconds,
             "expires_at": row["expires_at"],
-            **freeform_reason_metadata(payload.reason),
+            **freeform_reason_metadata(reason),
         },
     )
     return public_runtime_reservation(row)

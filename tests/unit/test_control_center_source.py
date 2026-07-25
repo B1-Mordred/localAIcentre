@@ -49,6 +49,12 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("downloadSelectedArtifact(artifact, index)", self.source)
         self.assertIn('title={`Download artifact ${index + 1}`}', self.source)
 
+    def test_jobs_tab_uses_redacted_runtime_reservation_reason_contract(self) -> None:
+        self.assertRegex(self.source, r"type RuntimeReservationRecord = \{[^}]+reason_provided\?: boolean;")
+        self.assertIn('reservation.reason_provided ? "reason recorded" : "no reason recorded"', self.source)
+        self.assertNotRegex(self.source, r"type RuntimeReservationRecord = \{[^}]+reason\?: string;")
+        self.assertNotIn("reservation.reason ??", self.source)
+
     def test_external_access_surfaces_client_snippets(self) -> None:
         self.assertIn("function accessSnippets", self.source)
         self.assertIn("Client Snippets", self.source)

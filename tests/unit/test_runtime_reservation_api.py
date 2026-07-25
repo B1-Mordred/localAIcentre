@@ -195,7 +195,7 @@ class RuntimeReservationApiTests(unittest.TestCase):
                     runtime="localai",
                     model="chat-default",
                     duration_seconds=600,
-                    reason="batch window pasted prompt secret",
+                    reason="  batch window pasted prompt secret  ",
                 ),
                 idempotency_key="reservation-key-1",
             )
@@ -217,7 +217,7 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertNotIn("pasted prompt secret", str(audit_events[0]["metadata"]))
 
     def test_create_reservation_idempotency_returns_existing_before_mutable_checks(self) -> None:
-        existing = reservation_row(idempotency_key="reservation-key-1", reason="batch window")
+        existing = reservation_row(idempotency_key="reservation-key-1", reason=" batch window ")
         fake_database = FakeReservationDatabase(existing)
         self.patch_attr("database", fake_database)
         self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
@@ -233,7 +233,7 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         result = asyncio.run(
             main.runtime_reservation_create(
-                main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=300, reason="batch window"),
+                main.RuntimeReservationCreate(runtime=" localai ", model=" chat-default ", duration_seconds=300, reason=" batch window "),
                 idempotency_key="reservation-key-1",
             )
         )
@@ -273,6 +273,28 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertNotIn("original sensitive reason", str(caught.exception.detail))
         self.assertNotIn("new sensitive reason", str(caught.exception.detail))
         self.assertEqual(fake_database.inserted, [])
+
+    def test_create_reservation_rejects_unsafe_identifiers_before_catalog_lookup(self) -> None:
+        fake_database = FakeReservationDatabase(row=None)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
+
+        def forbidden_catalog(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("catalog must not be consulted for an unsafe reservation identifier")
+
+        self.patch_attr("require_catalog_alias", forbidden_catalog)
+
+        for payload in (
+            main.RuntimeReservationCreate(runtime="../localai", model="chat-default", duration_seconds=300),
+            main.RuntimeReservationCreate(runtime="localai", model="../chat-default", duration_seconds=300),
+            main.RuntimeReservationCreate(runtime=" ", model="chat-default", duration_seconds=300),
+        ):
+            with self.subTest(runtime=payload.runtime, model=payload.model):
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(main.runtime_reservation_create(payload))
+
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertEqual(fake_database.inserted, [])
 
     def test_create_reservation_rejects_gpu_when_production_hardware_policy_fails(self) -> None:
         self.patch_settings(

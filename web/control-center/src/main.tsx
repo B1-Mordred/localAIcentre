@@ -1125,7 +1125,7 @@ type RuntimeReservationRecord = {
   model_alias: string;
   resolved_model_version: string;
   duration_seconds: number;
-  reason?: string;
+  reason_provided?: boolean;
   status: string;
   created_at?: string;
   updated_at?: string;
@@ -3092,7 +3092,7 @@ function Jobs() {
           {reservations.map((reservation) => (
             <tr key={reservation.id}>
               <td><code>{reservation.id}</code><small>owner {reservation.owner_id}</small></td>
-              <td><span className={`status-pill ${reservation.status}`}>{reservation.status}</span><small>{reservation.reason ?? ""}</small></td>
+              <td><span className={`status-pill ${reservation.status}`}>{reservation.status}</span><small>{reservation.reason_provided ? "reason recorded" : "no reason recorded"}</small></td>
               <td>{reservation.runtime}</td>
               <td>{reservation.model_alias}<small>{reservation.resolved_model_version}</small></td>
               <td>{formatDateTime(reservation.expires_at)}<small>{reservation.duration_seconds}s</small></td>

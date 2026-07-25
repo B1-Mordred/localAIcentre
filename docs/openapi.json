@@ -1461,15 +1461,20 @@
             "type": "integer"
           },
           "model": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Model",
             "type": "string"
           },
           "reason": {
             "default": "",
+            "maxLength": 500,
             "title": "Reason",
             "type": "string"
           },
           "runtime": {
+            "maxLength": 64,
+            "minLength": 1,
             "title": "Runtime",
             "type": "string"
           }
