@@ -24,6 +24,7 @@ SMOKE_REQUIRED_CHECKS = (
     "models_listed",
     "tts_media_job_completed",
     "tts_media_job_resolved_model_recorded",
+    "tts_media_job_not_placeholder",
     "job_events_streamed",
     "job_events_terminal_state_observed",
     "artifact_downloaded",
@@ -310,6 +311,7 @@ class LiveStackSmokeTests(unittest.TestCase):
             ca_file=os.getenv("B1_SMOKE_CA_FILE", ""),
         )
         cls.job_timeout_seconds = float(os.getenv("B1_SMOKE_JOB_TIMEOUT_SECONDS", "120"))
+        cls.allow_placeholder = env_flag("B1_SMOKE_ALLOW_PLACEHOLDER", False)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -449,6 +451,38 @@ class LiveStackSmokeTests(unittest.TestCase):
         self.assertGreater(artifact_bytes, 0, artifact)
         self.assertIsInstance(artifact_sha256, str, artifact)
         self.assertRegex(artifact_sha256, SHA256_RE, artifact)
+        artifact_placeholder = artifact.get("b1_placeholder")
+        cpu_audio_engine = artifact.get("b1_cpu_audio_engine")
+        placeholder_failure = artifact_placeholder is True or (
+            runtime == "audio-cpu" and (artifact_placeholder is not False or cpu_audio_engine == "scaffold")
+        )
+        if placeholder_failure:
+            self.record_check(
+                "tts_media_job_not_placeholder",
+                "incomplete",
+                job_id=job_id,
+                model=model,
+                runtime=runtime,
+                resolved_model_version=resolved_model_version,
+                placeholder=artifact_placeholder,
+                placeholder_allowed=self.allow_placeholder,
+                cpu_audio_engine=cpu_audio_engine,
+            )
+            if not self.allow_placeholder:
+                raise AssertionError(
+                    "live smoke TTS returned placeholder or unproven audio-cpu output; install a real TTS model/runtime before handoff "
+                    "or set B1_SMOKE_ALLOW_PLACEHOLDER=1 only for a labelled development dry run"
+                )
+        else:
+            self.record_check(
+                "tts_media_job_not_placeholder",
+                job_id=job_id,
+                model=model,
+                runtime=runtime,
+                resolved_model_version=resolved_model_version,
+                placeholder=artifact_placeholder,
+                cpu_audio_engine=cpu_audio_engine,
+            )
 
         status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
         self.assertEqual(status, 200, content[:200])

@@ -260,6 +260,7 @@ SMOKE_REQUIRED_CHECKS = (
     "models_listed",
     "tts_media_job_completed",
     "tts_media_job_resolved_model_recorded",
+    "tts_media_job_not_placeholder",
     "job_events_streamed",
     "job_events_terminal_state_observed",
     "artifact_downloaded",

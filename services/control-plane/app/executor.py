@@ -40,6 +40,8 @@ LOCALAI_IMAGE_EDIT_OPERATIONS = {"edit", "image-edit", "image-to-image", "inpain
 LOCALAI_VIDEO_GENERATION_OPERATIONS = {"generation", "video-generation", "text-to-video"}
 LOCALAI_VIDEO_IMAGE_OPERATIONS = {"image-to-video", "video-image", "image-video"}
 
+AudioCpuSpeechResult = tuple[bytes, str] | tuple[bytes, str, dict[str, Any]]
+
 GPU_STATE_STEPS = [
     (JobState.UNLOADING, "unloading", 25),
     (JobState.VERIFYING_VRAM, "verifying_vram", 35),
@@ -240,14 +242,39 @@ class CpuJobRunner:
                 payload.pop(key, None)
             return
 
-    async def post_audio_cpu_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+    async def post_audio_cpu_speech(self, payload: dict[str, Any]) -> AudioCpuSpeechResult:
         if not self.audio_cpu_url:
             raise RuntimeError("audio-cpu runtime URL is not configured")
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(f"{self.audio_cpu_url}/v1/audio/speech", json=payload)
         if response.status_code >= 400:
             raise RuntimeError(f"audio-cpu speech returned HTTP {response.status_code}")
-        return response.content, response.headers.get("content-type", "audio/wav").split(";")[0]
+        metadata: dict[str, Any] = {}
+        placeholder_header = response.headers.get("x-b1-placeholder")
+        if placeholder_header is not None:
+            metadata["b1_placeholder"] = placeholder_header.strip().lower() == "true"
+        cpu_audio_engine = response.headers.get("x-b1-cpu-audio-engine", "").strip()
+        if cpu_audio_engine:
+            metadata["b1_cpu_audio_engine"] = cpu_audio_engine
+        return response.content, response.headers.get("content-type", "audio/wav").split(";")[0], {
+            key: value for key, value in metadata.items() if value != ""
+        }
+
+    def unpack_audio_cpu_speech_result(self, result: AudioCpuSpeechResult) -> tuple[bytes, str, dict[str, Any]]:
+        content = result[0]
+        mime_type = result[1]
+        metadata = result[2] if len(result) > 2 and isinstance(result[2], dict) else {}
+        return content, mime_type, metadata
+
+    def audio_cpu_transcription_metadata(self, body: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        if isinstance(body.get("b1_placeholder"), bool):
+            metadata["b1_placeholder"] = body["b1_placeholder"]
+        for key in ("b1_engine", "b1_stt_engine"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                metadata[key] = value.strip()
+        return metadata
 
     async def post_audio_cpu_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.audio_cpu_url:
@@ -274,7 +301,7 @@ class CpuJobRunner:
             cancelled, result = await self.await_cancellable_runtime_call(job, self.post_audio_cpu_speech(self.audio_payload_for_job(job)))
             if cancelled:
                 return True
-            content, mime_type = result
+            content, mime_type, runtime_metadata = self.unpack_audio_cpu_speech_result(result)
             if not content:
                 await database.update_job(
                     job["id"],
@@ -293,7 +320,12 @@ class CpuJobRunner:
                 content=content,
                 mime_type=mime_type,
                 source="audio_cpu_runtime",
-                metadata={"runtime": "audio-cpu", "model": self.resolved_model_id(job), "operation": operation},
+                metadata={
+                    "runtime": "audio-cpu",
+                    "model": self.resolved_model_id(job),
+                    "operation": operation,
+                    **runtime_metadata,
+                },
             )
             await database.update_job(job["id"], state=JobState.SAVING.value, stage="saving", progress=90, artifacts=[artifact])
             await database.update_job(job["id"], state=JobState.COMPLETED.value, stage="completed", progress=100, artifacts=[artifact])
@@ -329,6 +361,7 @@ class CpuJobRunner:
                     "model": self.resolved_model_id(job),
                     "operation": operation,
                     "text": body["text"],
+                    **self.audio_cpu_transcription_metadata(body),
                 },
             )
             await database.update_job(job["id"], state=JobState.SAVING.value, stage="saving", progress=90, artifacts=[artifact])

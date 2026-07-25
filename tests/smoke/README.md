@@ -46,6 +46,7 @@ The live suite currently checks:
 - async TTS media-job creation through `tts-fast`
 - advertised media-job `self`, `events`, `artifacts`, and `cancel` links
 - final job runtime and immutable resolved model version
+- non-placeholder TTS artifact proof; scaffold or unmarked audio-cpu output fails by default
 - terminal job polling
 - SSE job event delivery
 - terminal completed job state observed in the SSE stream
@@ -53,13 +54,14 @@ The live suite currently checks:
 - artifact metadata integrity against the downloaded bytes, including SHA-256, size, ETag, and range support
 - optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` has sufficient scope
 
-When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete.
+When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if health, model listing, async TTS completion, non-placeholder TTS proof, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete.
 
 Useful knobs:
 
 - `B1_SMOKE_TTS_MODEL`, default `tts-fast`
 - `B1_SMOKE_TTS_RUNTIME_POLICY`, default `non_comfy_only`
 - `B1_SMOKE_TTS_VOICE`, default `default`
+- `B1_SMOKE_ALLOW_PLACEHOLDER=1`, development-only; lets the unittest finish against scaffold audio but records incomplete evidence
 - `B1_SMOKE_EVIDENCE`, optional machine-readable handoff evidence path
 - `B1_SMOKE_JOB_TIMEOUT_SECONDS`, default `120`
 - `B1_SMOKE_HTTP_TIMEOUT_SECONDS`, default `10`

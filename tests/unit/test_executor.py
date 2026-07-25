@@ -281,9 +281,9 @@ class ExecutorTests(unittest.TestCase):
                 super().__init__(artifact_root, audio_cpu_url="http://audio-cpu")
                 self.payloads: list[dict[str, Any]] = []
 
-            async def post_audio_cpu_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
+            async def post_audio_cpu_speech(self, payload: dict[str, Any]) -> executor.AudioCpuSpeechResult:
                 self.payloads.append(payload)
-                return b"wav-bytes", "audio/wav"
+                return b"wav-bytes", "audio/wav", {"b1_placeholder": True, "b1_cpu_audio_engine": "scaffold"}
 
         with tempfile.TemporaryDirectory() as tmp:
             runner = AudioRunner(Path(tmp))
@@ -311,6 +311,8 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(artifact["source"], "audio_cpu_runtime")
             self.assertEqual(artifact["kind"], "audio")
             self.assertEqual(artifact["mime_type"], "audio/wav")
+            self.assertTrue(artifact["b1_placeholder"])
+            self.assertEqual(artifact["b1_cpu_audio_engine"], "scaffold")
             self.assertEqual(artifact["sha256"], hashlib.sha256(b"wav-bytes").hexdigest())
             self.assertEqual((Path(tmp) / "audio-cpu" / "job_gpu" / "0.wav").read_bytes(), b"wav-bytes")
 
@@ -387,7 +389,12 @@ class ExecutorTests(unittest.TestCase):
 
             async def post_audio_cpu_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
                 self.payloads.append(payload)
-                return {"text": "hello transcript", "language": "en"}
+                return {
+                    "text": "hello transcript",
+                    "language": "en",
+                    "b1_engine": "scaffold",
+                    "b1_placeholder": True,
+                }
 
         with tempfile.TemporaryDirectory() as tmp:
             runner = AudioRunner(Path(tmp))
@@ -411,6 +418,8 @@ class ExecutorTests(unittest.TestCase):
             artifact = fake.job["artifacts"][0]
             self.assertEqual(artifact["runtime"], "audio-cpu")
             self.assertEqual(artifact["text"], "hello transcript")
+            self.assertTrue(artifact["b1_placeholder"])
+            self.assertEqual(artifact["b1_engine"], "scaffold")
             self.assertEqual(artifact["mime_type"], "application/json")
             self.assertIn(b"hello transcript", (Path(tmp) / "audio-cpu" / "job_gpu" / "0.json").read_bytes())
 
