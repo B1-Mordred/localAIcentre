@@ -8494,7 +8494,7 @@ async def audio_transcriptions(request: Request, authorization: str | None = Hea
     )
 
 
-@app.post("/v1/images/generations")
+@app.post("/v1/images/generations", status_code=202)
 async def image_generations(
     payload: dict[str, Any],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -8530,7 +8530,7 @@ async def image_generations(
     return openai_image_job_response(job)
 
 
-@app.post("/v1/images/edits")
+@app.post("/v1/images/edits", status_code=202)
 async def image_edits(
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -8580,7 +8580,7 @@ async def media_upload_create(
     return {"input": reference, "reference": reference}
 
 
-@app.post("/v1/media/jobs")
+@app.post("/v1/media/jobs", status_code=202)
 async def media_job_create(
     payload: MediaJobCreate,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),

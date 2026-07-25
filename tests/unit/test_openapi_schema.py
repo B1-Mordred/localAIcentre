@@ -38,6 +38,11 @@ REQUIRED_PUBLIC_ROUTE_METHODS = {
     "/modelhub/v1/clients/{id}": {"delete"},
 }
 COMFYUI_PASSTHROUGH_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+ASYNC_MEDIA_POST_ROUTES = {
+    "/v1/images/generations",
+    "/v1/images/edits",
+    "/v1/media/jobs",
+}
 
 try:
     spec = importlib.util.spec_from_file_location("generate_openapi", SCRIPT)
@@ -120,6 +125,36 @@ class ApiRouteSourceTests(unittest.TestCase):
         self.assertIn("/{path:path}", websocket_paths)
         self.assertEqual(passthrough_methods.get("/{path:path}"), COMFYUI_PASSTHROUGH_METHODS)
 
+    def test_source_marks_async_media_creation_routes_accepted(self) -> None:
+        statuses: dict[str, int | None] = {}
+        for node in ast.walk(self.tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                func = decorator.func
+                if not (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "app"
+                    and func.attr == "post"
+                ):
+                    continue
+                if not decorator.args or not isinstance(decorator.args[0], ast.Constant) or not isinstance(decorator.args[0].value, str):
+                    continue
+                path = decorator.args[0].value
+                if path not in ASYNC_MEDIA_POST_ROUTES:
+                    continue
+                status_code = None
+                for keyword in decorator.keywords:
+                    if keyword.arg == "status_code" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, int):
+                        status_code = keyword.value.value
+                        break
+                statuses[path] = status_code
+
+        self.assertEqual(statuses, {path: 202 for path in sorted(ASYNC_MEDIA_POST_ROUTES)})
+
     def test_committed_openapi_documents_job_events_as_sse(self) -> None:
         schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
         for path in ("/v1/media/jobs/{job_id}/events", "/admin/jobs/{job_id}/events"):
@@ -144,6 +179,18 @@ class ApiRouteSourceTests(unittest.TestCase):
             if missing_methods:
                 missing.append(f"{path}: missing {', '.join(missing_methods)}")
         self.assertEqual(missing, [])
+
+    def test_committed_openapi_documents_async_media_creation_as_accepted(self) -> None:
+        schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        responses = {
+            path: sorted(schema["paths"][path]["post"]["responses"])
+            for path in ASYNC_MEDIA_POST_ROUTES
+        }
+
+        self.assertEqual(
+            responses,
+            {path: ["202", "422"] for path in sorted(ASYNC_MEDIA_POST_ROUTES)},
+        )
 
 
 @unittest.skipIf(GENERATED is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
