@@ -3085,6 +3085,21 @@ def schedule_comfyui_prompt_tracker(job_id: str, prompt_id: str, lease_owner: st
     task.add_done_callback(discard)
 
 
+async def resume_comfyui_native_prompt_trackers(limit: int = 500) -> dict[str, int]:
+    rows = await database.list_resumable_comfyui_native_jobs(limit=limit)
+    resumed = 0
+    skipped = 0
+    for row in rows:
+        job_id = str(row.get("id") or "")
+        prompt_id = row.get("native_prompt_id")
+        if not job_id or not isinstance(prompt_id, str) or not prompt_id.strip():
+            skipped += 1
+            continue
+        schedule_comfyui_prompt_tracker(job_id, prompt_id.strip(), f"comfyui-prompt-{job_id}")
+        resumed += 1
+    return {"checked": len(rows), "resumed": resumed, "skipped": skipped}
+
+
 def annotate_runtime_response(body: Any, resolution: RuntimeResolution) -> Any:
     if isinstance(body, dict):
         body = dict(body)
@@ -3454,6 +3469,7 @@ async def startup() -> None:
     database.configure_scheduler_redis(redis_client)
     job_runners = []
     job_runner_tasks = []
+    resumed_comfyui_native = await resume_comfyui_native_prompt_trackers()
     if settings_for_startup.job_runner_enabled:
         cpu_runner = CpuJobRunner(
             Path(settings_for_startup.artifact_root),
@@ -3506,6 +3522,8 @@ async def startup() -> None:
         workflows_seeded=seeded_workflows["count"],
         expired_browser_sessions_revoked=expired_sessions,
         open_webui_client_ready=bool(open_webui_client),
+        resumed_comfyui_native_prompts=resumed_comfyui_native["resumed"],
+        skipped_comfyui_native_prompts=resumed_comfyui_native["skipped"],
         backup_scheduler_enabled=settings_for_startup.backup_scheduler_enabled,
     )
 

@@ -280,6 +280,18 @@ class FakeDatabase:
                 rows = [row for row in rows if row.get(key) == value]
         return [dict(row) for row in rows[:limit]]
 
+    async def list_resumable_comfyui_native_jobs(self, limit: int = 500) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in self.jobs.values()
+            if row.get("runtime") == "comfyui"
+            and row.get("model_alias") == "comfyui-native"
+            and isinstance(row.get("native_prompt_id"), str)
+            and row.get("native_prompt_id")
+            and row.get("state") in {"running", "saving", "cancelling"}
+        ]
+        return [dict(row) for row in rows[:limit]]
+
     async def request_job_cancel(self, job_id: str) -> dict[str, Any] | None:
         row = self.jobs.get(job_id)
         if row is None:
@@ -378,6 +390,62 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         main.comfyui_history_contains_prompt = self.original_history
         main.runtime_control_runner = self.original_runtime_control_runner
         main.approved_node_pins = self.original_approved_node_pins
+
+    def test_resume_comfyui_native_prompt_trackers_restarts_persisted_native_jobs(self) -> None:
+        fake = FakeDatabase()
+        fake.jobs["job_1"] = {
+            "id": "job_1",
+            "runtime": "comfyui",
+            "model_alias": "comfyui-native",
+            "state": "running",
+            "native_prompt_id": "prompt_native_1",
+        }
+        fake.jobs["job_2"] = {
+            "id": "job_2",
+            "runtime": "comfyui",
+            "model_alias": "comfyui-native",
+            "state": "cancelling",
+            "native_prompt_id": "prompt_native_2",
+        }
+        fake.jobs["job_3"] = {
+            "id": "job_3",
+            "runtime": "comfyui",
+            "model_alias": "image-default",
+            "state": "running",
+            "native_prompt_id": "prompt_native_3",
+        }
+        fake.jobs["job_4"] = {
+            "id": "job_4",
+            "runtime": "comfyui",
+            "model_alias": "comfyui-native",
+            "state": "completed",
+            "native_prompt_id": "prompt_native_4",
+        }
+        main.database = fake
+        scheduled: list[dict[str, str]] = []
+
+        def schedule(job_id: str, prompt_id: str, lease_owner: str) -> None:
+            scheduled.append({"job_id": job_id, "prompt_id": prompt_id, "lease_owner": lease_owner})
+
+        main.schedule_comfyui_prompt_tracker = schedule  # type: ignore[assignment]
+
+        result = asyncio.run(main.resume_comfyui_native_prompt_trackers())
+
+        self.assertEqual(result, {"checked": 2, "resumed": 2, "skipped": 0})
+        self.assertEqual(
+            scheduled,
+            [
+                {"job_id": "job_1", "prompt_id": "prompt_native_1", "lease_owner": "comfyui-prompt-job_1"},
+                {"job_id": "job_2", "prompt_id": "prompt_native_2", "lease_owner": "comfyui-prompt-job_2"},
+            ],
+        )
+
+    def test_interrupted_gpu_sweep_exempts_resumable_native_comfyui_prompts(self) -> None:
+        source = (ROOT / "services" / "control-plane" / "app" / "database.py").read_text(encoding="utf-8")
+
+        self.assertIn("COMFYUI_NATIVE_RESUMABLE_STATES", source)
+        self.assertIn("list_resumable_comfyui_native_jobs", source)
+        self.assertIn("~resumable_comfyui_native", source)
 
     def test_prompt_acquires_lease_forwards_native_body_and_records_prompt_id(self) -> None:
         fake = FakeDatabase()

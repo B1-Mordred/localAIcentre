@@ -27,6 +27,8 @@ engine: AsyncEngine | None = None
 scheduler_redis_client: Any | None = None
 SCHEDULER_REDIS_LEASE_KEY = "b1-ai-hub:scheduler:gpu"
 VALID_JOB_PRIORITIES = {priority.value for priority in PriorityClass}
+COMFYUI_NATIVE_MODEL_ALIAS = "comfyui-native"
+COMFYUI_NATIVE_RESUMABLE_STATES = ("running", "saving", "cancelling")
 
 jobs = Table(
     "b1_jobs",
@@ -1901,6 +1903,30 @@ async def list_jobs(
     return [dict(row) for row in rows]
 
 
+async def list_resumable_comfyui_native_jobs(limit: int = 500) -> list[dict[str, Any]]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    bounded_limit = max(1, min(int(limit), 500))
+    query = (
+        select(jobs)
+        .where(
+            and_(
+                jobs.c.runtime == "comfyui",
+                jobs.c.model_alias == COMFYUI_NATIVE_MODEL_ALIAS,
+                jobs.c.native_prompt_id.is_not(None),
+                jobs.c.native_prompt_id != "",
+                jobs.c.state.in_(COMFYUI_NATIVE_RESUMABLE_STATES),
+            )
+        )
+        .order_by(jobs.c.updated_at.asc(), jobs.c.created_at.asc())
+        .limit(bounded_limit)
+    )
+    async with engine.connect() as conn:
+        result = await conn.execute(query)
+        rows = result.mappings().all()
+    return [dict(row) for row in rows]
+
+
 async def count_jobs(
     *,
     owner_id: str | None = None,
@@ -2159,12 +2185,20 @@ async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> i
     if not runtime_names:
         return 0
     now = datetime.now(tz=UTC)
+    resumable_comfyui_native = and_(
+        jobs.c.runtime == "comfyui",
+        jobs.c.model_alias == COMFYUI_NATIVE_MODEL_ALIAS,
+        jobs.c.native_prompt_id.is_not(None),
+        jobs.c.native_prompt_id != "",
+        jobs.c.state.in_(COMFYUI_NATIVE_RESUMABLE_STATES),
+    )
     async with engine.begin() as conn:
         result = await conn.execute(
             update(jobs)
             .where(
                 and_(
                     jobs.c.runtime.in_(runtime_names),
+                    ~resumable_comfyui_native,
                     jobs.c.state.in_(
                         [
                             "unloading",
