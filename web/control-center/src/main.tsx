@@ -295,6 +295,23 @@ type ArtifactRetentionPlan = {
   job_update_count?: number;
 };
 
+type VoiceboxSampleRetentionPlan = {
+  status: string;
+  root: string;
+  policy: { delete_older_than_days: number; cutoff?: string | null; limit?: number };
+  candidate_count: number;
+  kept_count: number;
+  invalid_preserved_count: number;
+  total_reclaimable_bytes: number;
+  total_reclaimed_bytes?: number;
+  truncated?: boolean;
+  candidates: { path: string; url?: string; size_bytes?: number; modified_at?: string | null; reason: string }[];
+  kept: { path?: string; url?: string; reason: string }[];
+  invalid_preserved: { path?: string; reason: string }[];
+  deleted?: { path: string; size_bytes?: number; status?: string }[];
+  deleted_count?: number;
+};
+
 type ModelQuarantineRetentionPlan = {
   status: string;
   policy: { delete_older_than_days: number; cutoff?: string | null; limit?: number };
@@ -3431,6 +3448,7 @@ function Storage() {
   const [selectedBackupManifest, setSelectedBackupManifest] = useState<BackupManifest | null>(null);
   const [retentionPlan, setRetentionPlan] = useState<BackupRetentionPlan | null>(null);
   const [artifactRetentionPlan, setArtifactRetentionPlan] = useState<ArtifactRetentionPlan | null>(null);
+  const [voiceboxSampleRetentionPlan, setVoiceboxSampleRetentionPlan] = useState<VoiceboxSampleRetentionPlan | null>(null);
   const [modelQuarantinePlan, setModelQuarantinePlan] = useState<ModelQuarantineRetentionPlan | null>(null);
   const [admissionReport, setAdmissionReport] = useState<AdmissionReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
@@ -3442,6 +3460,8 @@ function Storage() {
   const [artifactDeleteOlderThanDays, setArtifactDeleteOlderThanDays] = useState("30");
   const [artifactNamespaces, setArtifactNamespaces] = useState("");
   const [artifactLimit, setArtifactLimit] = useState("5000");
+  const [voiceboxSampleDeleteOlderThanDays, setVoiceboxSampleDeleteOlderThanDays] = useState("30");
+  const [voiceboxSampleLimit, setVoiceboxSampleLimit] = useState("5000");
   const [modelQuarantineDeleteOlderThanDays, setModelQuarantineDeleteOlderThanDays] = useState("30");
   const [modelQuarantineLimit, setModelQuarantineLimit] = useState("5000");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
@@ -3590,6 +3610,34 @@ function Storage() {
       .then((payload: ArtifactRetentionPlan) => {
         setArtifactRetentionPlan(payload);
         setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} artifact candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
+        loadAdmission();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const voiceboxSampleRetentionPayload = (confirm: boolean) => {
+    const age = Number.parseInt(voiceboxSampleDeleteOlderThanDays, 10);
+    const limit = Number.parseInt(voiceboxSampleLimit, 10);
+    return {
+      delete_older_than_days: Number.isFinite(age) ? age : 30,
+      limit: Number.isFinite(limit) ? limit : 5000,
+      confirm
+    };
+  };
+
+  const runVoiceboxSampleRetention = (apply: boolean) => {
+    setBusy(true);
+    setMessage(apply ? "Voicebox sample cleanup" : "Voicebox sample retention plan");
+    apiFetch(`/admin/voicebox/sample-artifacts/${apply ? "cleanup" : "retention-plan"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(voiceboxSampleRetentionPayload(apply))
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload: VoiceboxSampleRetentionPlan) => {
+        setVoiceboxSampleRetentionPlan(payload);
+        setMessage(`${payload.status} ${payload.candidate_count ?? payload.deleted_count ?? 0} Voicebox sample candidate${(payload.candidate_count ?? payload.deleted_count) === 1 ? "" : "s"}`);
         loadAdmission();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -3757,6 +3805,27 @@ function Storage() {
           {Boolean(artifactRetentionPlan.deleted?.length) && <small>{artifactRetentionPlan.deleted?.slice(0, 6).map((item) => `deleted ${item.path}`).join(" / ")}</small>}
           {artifactRetentionPlan.invalid_preserved_count > 0 && <small>{artifactRetentionPlan.invalid_preserved_count} invalid artifact entr{artifactRetentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
           {artifactRetentionPlan.job_update_count !== undefined && <small>{artifactRetentionPlan.job_update_count} job record{artifactRetentionPlan.job_update_count === 1 ? "" : "s"} updated</small>}
+        </div>
+      )}
+      <div className="subsection-title">
+        <Trash2 size={16} />
+        <h3>Voicebox Samples</h3>
+      </div>
+      <div className="toolbar job-filters">
+        <label>Older than<input aria-label="Delete Voicebox samples older than days" inputMode="numeric" value={voiceboxSampleDeleteOlderThanDays} onChange={(event) => setVoiceboxSampleDeleteOlderThanDays(event.target.value)} /></label>
+        <label>Scan<input aria-label="Voicebox sample cleanup scan limit" inputMode="numeric" value={voiceboxSampleLimit} onChange={(event) => setVoiceboxSampleLimit(event.target.value)} /></label>
+        <button title="Plan Voicebox sample cleanup" onClick={() => runVoiceboxSampleRetention(false)} disabled={busy}><ListChecks size={16} />Plan</button>
+        <button title="Apply Voicebox sample cleanup" onClick={() => runVoiceboxSampleRetention(true)} disabled={busy || voiceboxSampleRetentionPlan?.status !== "planned" || !voiceboxSampleRetentionPlan?.candidate_count}><Trash2 size={16} />Cleanup</button>
+      </div>
+      {voiceboxSampleRetentionPlan && (
+        <div className="one-time-key">
+          <strong>Voicebox sample retention {voiceboxSampleRetentionPlan.status}</strong>
+          <span>{voiceboxSampleRetentionPlan.candidate_count} candidate{voiceboxSampleRetentionPlan.candidate_count === 1 ? "" : "s"} / {formatBytes(voiceboxSampleRetentionPlan.total_reclaimable_bytes)} reclaimable</span>
+          <small>Older than {voiceboxSampleRetentionPlan.policy.delete_older_than_days} days / root {voiceboxSampleRetentionPlan.root}</small>
+          {voiceboxSampleRetentionPlan.candidates.length > 0 && <small>{voiceboxSampleRetentionPlan.candidates.slice(0, 6).map((candidate) => `${candidate.path}: ${formatBytes(candidate.size_bytes)}`).join(" / ")}</small>}
+          {Boolean(voiceboxSampleRetentionPlan.deleted?.length) && <small>{voiceboxSampleRetentionPlan.deleted?.slice(0, 6).map((item) => `deleted ${item.path}`).join(" / ")}</small>}
+          {voiceboxSampleRetentionPlan.invalid_preserved_count > 0 && <small>{voiceboxSampleRetentionPlan.invalid_preserved_count} invalid Voicebox sample entr{voiceboxSampleRetentionPlan.invalid_preserved_count === 1 ? "y" : "ies"} preserved</small>}
+          {voiceboxSampleRetentionPlan.truncated && <small>Scan limit reached; increase the limit and plan again for remaining entries</small>}
         </div>
       )}
       <div className="subsection-title">

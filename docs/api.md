@@ -42,6 +42,8 @@ POST /admin/runtimes/{runtime}/recover
 POST /admin/runtimes/{runtime}/unload
 GET  /admin/voicebox/profiles
 POST /admin/voicebox/sample-artifacts
+POST /admin/voicebox/sample-artifacts/retention-plan
+POST /admin/voicebox/sample-artifacts/cleanup
 POST /admin/voicebox/profiles
 GET  /admin/voicebox/profiles/{profile_id}
 PATCH /admin/voicebox/profiles/{profile_id}
@@ -279,6 +281,8 @@ curl -s https://api.ai.b1.germering/admin/voicebox/sample-artifacts \
 ```
 
 `GET /admin/voicebox/profiles` requires `runtimes:read` and an `admin` or `operator` role. It supports `include_deleted`, `runtime`, `status`, and `owner_id` filters. `POST` and `PATCH` require `runtimes:write`; `DELETE` soft-deletes the profile by marking it `deleted` and setting `deleted_at`, so backups and audits can still recover the record. `POST /admin/voicebox/profiles/{profile_id}/export` returns a portable profile metadata bundle and writes an audit event. `POST /admin/voicebox/sample-artifacts` accepts a bounded raw audio upload, stores it under `/artifacts/voicebox/references/...`, writes an audit event, and returns a `sample_artifacts[]` entry containing the internal URL, SHA-256, MIME type, and byte count.
+
+`POST /admin/voicebox/sample-artifacts/retention-plan` requires `storage:read` plus an administrator or operator role and dry-runs cleanup of unreferenced files under `/artifacts/voicebox/references`. `POST /admin/voicebox/sample-artifacts/cleanup` requires `storage:write`, `confirm=true`, and the same role check. Referenced samples from any Voicebox profile row, including deleted rows retained for recovery, are preserved. Symlinked paths, malformed artifact paths, new files, and non-file entries are reported but not deleted.
 
 Profile creation validates that `model_alias` is a TTS alias compatible with `runtime`, which is currently either `voicebox` or `audio-cpu`. `metadata` is capped and may not contain inline audio, base64, local file paths, prompts, secrets, or voice sample fields. Reference samples and cloned-voice material must be stored as normal artifacts and linked through `sample_artifacts`; the profile table stores only artifact URLs, SHA-256 values, MIME type, and byte count.
 

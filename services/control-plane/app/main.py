@@ -48,6 +48,7 @@ from . import secret_store
 from . import selftest as selftest_policy
 from . import update_policy
 from . import voice_profiles as voice_profile_policy
+from . import voicebox_samples
 from .adapters import RuntimeAdapter, RuntimeRegistry, RuntimeResolution, RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url
 from .auth import (
     AuthContext,
@@ -455,6 +456,12 @@ class BackupRetentionRequest(BaseModel):
 class ArtifactRetentionRequest(BaseModel):
     delete_older_than_days: int = Field(default=30, ge=1, le=3650)
     namespaces: list[str] = Field(default_factory=list, max_length=16)
+    limit: int = Field(default=5000, ge=1, le=50000)
+    confirm: bool = False
+
+
+class VoiceboxSampleRetentionRequest(BaseModel):
+    delete_older_than_days: int = Field(default=30, ge=1, le=3650)
     limit: int = Field(default=5000, ge=1, le=50000)
     confirm: bool = False
 
@@ -5161,6 +5168,10 @@ def artifact_retention_error_response(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def voicebox_sample_retention_error_response(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(exc))
+
+
 def model_lifecycle_error_response(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -6092,6 +6103,54 @@ async def admin_voicebox_sample_artifact_upload(
         },
     )
     return {"object": "voicebox.sample_artifact", "artifact": artifact}
+
+
+@app.post("/admin/voicebox/sample-artifacts/retention-plan")
+async def admin_voicebox_sample_retention_plan(payload: VoiceboxSampleRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:read")
+    require_runtime_admin(auth)
+    try:
+        return await asyncio.to_thread(
+            voicebox_samples.build_voicebox_sample_retention_plan,
+            artifact_root_path(),
+            delete_older_than_days=payload.delete_older_than_days,
+            protected_urls=await protected_artifact_urls(),
+            limit=payload.limit,
+        )
+    except voicebox_samples.VoiceboxSampleRetentionError as exc:
+        raise voicebox_sample_retention_error_response(exc) from exc
+
+
+@app.post("/admin/voicebox/sample-artifacts/cleanup")
+async def admin_voicebox_sample_cleanup(payload: VoiceboxSampleRetentionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "storage:write")
+    require_runtime_admin(auth)
+    try:
+        report = await asyncio.to_thread(
+            voicebox_samples.apply_voicebox_sample_retention_plan,
+            artifact_root_path(),
+            delete_older_than_days=payload.delete_older_than_days,
+            protected_urls=await protected_artifact_urls(),
+            limit=payload.limit,
+            confirmed=payload.confirm,
+        )
+    except voicebox_samples.VoiceboxSampleRetentionError as exc:
+        raise voicebox_sample_retention_error_response(exc) from exc
+    await record_audit_event(
+        auth,
+        "voice_profile.sample_cleanup",
+        target_type="voice_profile_sample",
+        summary="Applied Voicebox reference sample cleanup",
+        metadata={
+            "deleted_count": report.get("deleted_count"),
+            "candidate_count": report.get("candidate_count"),
+            "total_reclaimed_bytes": report.get("total_reclaimed_bytes"),
+            "deleted_paths": [item.get("path") for item in (report.get("deleted") or [])[:50]],
+        },
+    )
+    return report
 
 
 @app.post("/admin/voicebox/profiles")

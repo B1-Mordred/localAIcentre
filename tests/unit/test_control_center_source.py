@@ -206,7 +206,9 @@ class ControlCenterSourceTests(unittest.TestCase):
     def test_storage_tab_inspects_backup_manifests(self) -> None:
         self.assertIn("type BackupManifest", self.source)
         self.assertIn("type BackupManifestFile", self.source)
+        self.assertIn("type VoiceboxSampleRetentionPlan", self.source)
         self.assertIn("const [selectedBackupManifest, setSelectedBackupManifest]", self.source)
+        self.assertIn("const [voiceboxSampleRetentionPlan, setVoiceboxSampleRetentionPlan]", self.source)
         self.assertIn("inspectBackupManifest", self.source)
         self.assertIn("/admin/backups/${encodeURIComponent(backup.name)}/manifest", self.source)
         self.assertIn("Inspect manifest", self.source)
@@ -223,6 +225,11 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("<h3>PostgreSQL Import</h3>", self.source)
         self.assertIn("Raw Import JSON", self.source)
         self.assertIn("postgresImportConfirm !== postgresImportBackup", self.source)
+        self.assertIn("runVoiceboxSampleRetention", self.source)
+        self.assertIn("/admin/voicebox/sample-artifacts/${apply ? \"cleanup\" : \"retention-plan\"}", self.source)
+        self.assertIn("<h3>Voicebox Samples</h3>", self.source)
+        self.assertIn("Plan Voicebox sample cleanup", self.source)
+        self.assertIn("Apply Voicebox sample cleanup", self.source)
 
     def test_models_tab_supports_remote_manifest_url(self) -> None:
         self.assertIn('const [manifestUrl, setManifestUrl] = useState("");', self.source)

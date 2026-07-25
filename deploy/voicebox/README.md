@@ -77,3 +77,5 @@ The sample path mapping is controlled by:
 - `B1_VOICEBOX_SAMPLE_LIST_FIELD`, defaulting to `reference_audio_paths`
 
 Adjust the sample field names only if the pinned upstream Voicebox route for the selected engine expects different JSON keys. Unsafe artifact URLs, traversal, malformed percent escapes, and missing mounted samples are rejected with HTTP 422 before upstream Voicebox sees the request.
+
+Control Center uploads reference samples through `POST /admin/voicebox/sample-artifacts`, which writes bounded audio files under `/artifacts/voicebox/references/...` and returns a profile-ready `sample_artifacts[]` entry. Storage cleanup for these samples uses `POST /admin/voicebox/sample-artifacts/retention-plan` and `POST /admin/voicebox/sample-artifacts/cleanup`; it only deletes old unreferenced files and preserves every sample still referenced by a Voicebox profile row, including deleted rows retained for recovery.

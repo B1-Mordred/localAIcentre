@@ -26,6 +26,7 @@ Current implementation status:
 - queued Voicebox speech jobs revalidate the referenced profile before submission, then forward the same bounded profile envelope under the GPU lease
 - empty speech responses are treated as `recovery_required`, not successful placeholder output
 - administrators and operators can list, create, update, export, and soft-delete Voicebox profiles through Control Center and `/admin/voicebox/profiles`
+- administrators and operators can upload bounded audio reference samples through Control Center or `POST /admin/voicebox/sample-artifacts`; Storage can dry-run and clean unreferenced Voicebox samples without touching profile-referenced files
 - profile records are durable PostgreSQL rows included in the logical backup export; reference samples and cloned-voice material are stored only as artifact references, not inline profile payloads
 - the production image includes a B1 proxy that forwards native REST/web/MCP HTTP and WebSocket traffic to loopback upstream Voicebox while exposing scheduler lifecycle hooks on `/b1/runtime/*`
 - for `/v1/audio/speech`, that proxy consumes the B1 profile envelope, strips B1-only fields, maps safe upstream selector metadata such as `upstream_voice`, and translates validated `/artifacts/voicebox/...` sample references to read-only in-container paths for engines that support reference or cloned voices

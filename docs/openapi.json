@@ -1901,6 +1901,31 @@
         "title": "VoiceSampleArtifactUploadResponse",
         "type": "object"
       },
+      "VoiceboxSampleRetentionRequest": {
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "delete_older_than_days": {
+            "default": 30,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Delete Older Than Days",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 5000,
+            "maximum": 50000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "VoiceboxSampleRetentionRequest",
+        "type": "object"
+      },
       "WorkflowPublishRequest": {
         "properties": {
           "workflow": {
@@ -8306,6 +8331,122 @@
           }
         },
         "summary": "Admin Voicebox Sample Artifact Upload"
+      }
+    },
+    "/admin/voicebox/sample-artifacts/cleanup": {
+      "post": {
+        "operationId": "admin_voicebox_sample_cleanup_admin_voicebox_sample_artifacts_cleanup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceboxSampleRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Voicebox Sample Cleanup Admin Voicebox Sample Artifacts Cleanup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Voicebox Sample Cleanup"
+      }
+    },
+    "/admin/voicebox/sample-artifacts/retention-plan": {
+      "post": {
+        "operationId": "admin_voicebox_sample_retention_plan_admin_voicebox_sample_artifacts_retention_plan_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceboxSampleRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Voicebox Sample Retention Plan Admin Voicebox Sample Artifacts Retention Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Voicebox Sample Retention Plan"
       }
     },
     "/artifacts/{artifact_path}": {
