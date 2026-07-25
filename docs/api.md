@@ -434,7 +434,9 @@ Browser clients use `/auth/status`, `/auth/setup`, `/auth/login`, and `/auth/log
 
 Control-plane administrative, unified inference, job, reservation, and Model Hub routes also accept bearer tokens. Bootstrap still creates `/srv/b1-ai-hub/secrets/admin_bootstrap_key`; use that key only for first setup or emergency API-client creation, then rotate to scoped clients.
 
-Open WebUI uses a generated internal service key from `/srv/b1-ai-hub/secrets/open_webui_api_key`. The B1 wrapper image mounts that file at `/run/secrets/open_webui_api_key`, exports it as `OPENAI_API_KEY` at container startup, and then starts Open WebUI. On startup, the control plane upserts `client_open_webui_internal` with the key prefix and only `models:read`, `inference:write`, `jobs:read`, `jobs:write`, and `workflows:read`. The raw key is not stored in PostgreSQL.
+Open WebUI uses a generated internal service key from `/srv/b1-ai-hub/secrets/open_webui_api_key`. The B1 wrapper image mounts that file at `/run/secrets/open_webui_api_key`, exports it as the OpenAI-compatible key for chat, RAG embeddings, TTS, and STT, pins those base URLs to `B1_OPEN_WEBUI_API_BASE_URL`, and then starts Open WebUI. Open WebUI global config persistence is disabled in this profile so preserved or imported provider/search settings cannot override those defaults. On startup, the control plane upserts `client_open_webui_internal` with the key prefix and only `models:read`, `inference:write`, `jobs:read`, `jobs:write`, and `workflows:read`. The raw key is not stored in PostgreSQL.
+
+The default Open WebUI model aliases are `chat-default`, `embedding-default`, `tts-fast`, and `stt-default`. The built-in Open WebUI image generator remains disabled because `/v1/images/generations` and `/v1/images/edits` return B1 async job handles; Media Studio and `/v1/media/jobs` are the supported image/video user interfaces until a synchronous Open WebUI compatibility mode is added.
 
 API clients are created with:
 

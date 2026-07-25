@@ -2,6 +2,8 @@
 
 B1 AI Hub is a LAN-internal Docker Compose appliance. Caddy is the sole normal edge entry point. Open WebUI, Control Center, Media Studio, Model Hub, native ComfyUI compatibility, Voicebox compatibility, and the unified API are routed by hostname.
 
+Open WebUI is the ordinary chat/RAG/voice surface. Its wrapper reads the generated internal service key from `/run/secrets/open_webui_api_key` and applies it to Open WebUI's OpenAI-compatible chat, RAG embedding, TTS, and STT settings, all pointing at the internal control-plane `/v1` API. Open WebUI global config persistence is disabled in this profile so migrated provider/search settings remain on disk but cannot override the LAN-only wrapper policy. Async image and video workflows are surfaced through Media Studio instead of Open WebUI's synchronous image plugin.
+
 ```text
 LAN clients
   -> Caddy gateway

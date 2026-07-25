@@ -133,13 +133,48 @@ class ComposePolicyTests(unittest.TestCase):
         open_webui = self.compose["services"]["open-webui"]
         control_plane = self.compose["services"]["control-plane"]
         self.assertNotIn("OPENAI_API_KEY", open_webui.get("environment", {}))
+        self.assertNotIn("OPENAI_API_KEYS", open_webui.get("environment", {}))
         self.assertEqual(open_webui["build"]["context"], "./deploy/open-webui")
+        self.assertEqual(open_webui["environment"]["B1_OPEN_WEBUI_API_BASE_URL"], "${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}")
         self.assertEqual(open_webui["environment"]["B1_OPEN_WEBUI_API_KEY_FILE"], "/run/secrets/open_webui_api_key")
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", open_webui.get("volumes", []))
         self.assertIn("bootstrap", open_webui.get("depends_on", {}))
         self.assertEqual(control_plane["environment"]["B1_OPEN_WEBUI_API_KEY_FILE"], "/run/secrets/open_webui_api_key")
         dockerfile = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4", dockerfile)
+
+    def test_open_webui_is_local_only_by_default(self) -> None:
+        environment = self.compose["services"]["open-webui"]["environment"]
+        self.assertEqual(environment["ENABLE_OPENAI_API"], "true")
+        self.assertEqual(environment["ENABLE_PERSISTENT_CONFIG"], "false")
+        self.assertEqual(environment["ENABLE_OAUTH_PERSISTENT_CONFIG"], "false")
+        self.assertEqual(environment["B1_OPEN_WEBUI_API_BASE_URL"], "${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}")
+        self.assertEqual(environment["ENABLE_OLLAMA_API"], "false")
+        self.assertEqual(environment["OLLAMA_BASE_URL"], "http://127.0.0.1:9")
+        self.assertEqual(environment["OLLAMA_BASE_URLS"], "http://127.0.0.1:9")
+        self.assertEqual(environment["RAG_EMBEDDING_ENGINE"], "openai")
+        self.assertEqual(environment["RAG_EMBEDDING_MODEL"], "${B1_OPEN_WEBUI_RAG_EMBEDDING_MODEL:-embedding-default}")
+        self.assertEqual(environment["RAG_EMBEDDING_MODEL_AUTO_UPDATE"], "false")
+        self.assertEqual(environment["RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE"], "false")
+        self.assertEqual(environment["RAG_RERANKING_MODEL_AUTO_UPDATE"], "false")
+        self.assertEqual(environment["RAG_RERANKING_MODEL_TRUST_REMOTE_CODE"], "false")
+        self.assertEqual(environment["AUDIO_TTS_ENGINE"], "openai")
+        self.assertEqual(environment["AUDIO_TTS_MODEL"], "${B1_OPEN_WEBUI_TTS_MODEL:-tts-fast}")
+        self.assertEqual(environment["AUDIO_STT_ENGINE"], "openai")
+        self.assertEqual(environment["AUDIO_STT_MODEL"], "${B1_OPEN_WEBUI_STT_MODEL:-stt-default}")
+        self.assertEqual(environment["AUDIO_STT_OPENAI_API_REQUEST_FORMAT"], "multipart")
+        self.assertEqual(environment["ENABLE_IMAGE_GENERATION"], "false")
+        self.assertEqual(environment["ENABLE_IMAGE_EDIT"], "false")
+        self.assertEqual(environment["USER_PERMISSIONS_FEATURES_IMAGE_GENERATION"], "false")
+        self.assertEqual(environment["ENABLE_WEB_SEARCH"], "false")
+        self.assertEqual(environment["ENABLE_LOCAL_WEB_FETCH"], "false")
+        self.assertEqual(environment["WEB_SEARCH_TRUST_ENV"], "false")
+        self.assertEqual(environment["USER_PERMISSIONS_FEATURES_WEB_SEARCH"], "false")
+        self.assertEqual(environment["ENABLE_COMMUNITY_SHARING"], "false")
+        self.assertEqual(environment["ENABLE_EVALUATION_ARENA_MODELS"], "false")
+        self.assertEqual(environment["ENABLE_VERSION_UPDATE_CHECK"], "false")
+        self.assertEqual(environment["OFFLINE_MODE"], "true")
+        self.assertEqual(environment["ENABLE_OTEL"], "false")
 
     def test_no_latest_image_tags(self) -> None:
         for name, service in self.compose["services"].items():

@@ -131,11 +131,48 @@ services:
       - ALL
     environment:
       WEBUI_NAME: B1 AI Hub
-      OPENAI_API_BASE_URL: http://control-plane:8000/v1
+      WEBUI_URL: ${B1_OPEN_WEBUI_PUBLIC_URL:-https://ai.b1.germering}
+      B1_OPEN_WEBUI_API_BASE_URL: ${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
+      ENABLE_OPENAI_API: "true"
+      ENABLE_PERSISTENT_CONFIG: "false"
+      ENABLE_OAUTH_PERSISTENT_CONFIG: "false"
       ENABLE_OLLAMA_API: "false"
+      OLLAMA_BASE_URL: http://127.0.0.1:9
+      OLLAMA_BASE_URLS: http://127.0.0.1:9
       WEBUI_AUTH: "true"
       ENABLE_SIGNUP: "false"
+      DEFAULT_MODELS: ${B1_OPEN_WEBUI_DEFAULT_MODELS:-chat-default}
+      DEFAULT_PINNED_MODELS: ${B1_OPEN_WEBUI_DEFAULT_PINNED_MODELS:-chat-default}
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_EMBEDDING_MODEL: ${B1_OPEN_WEBUI_RAG_EMBEDDING_MODEL:-embedding-default}
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "false"
+      RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE: "false"
+      RAG_RERANKING_MODEL_AUTO_UPDATE: "false"
+      RAG_RERANKING_MODEL_TRUST_REMOTE_CODE: "false"
+      RAG_EMBEDDING_BATCH_SIZE: "1"
+      RAG_EMBEDDING_CONCURRENT_REQUESTS: "1"
+      AUDIO_TTS_ENGINE: openai
+      AUDIO_TTS_MODEL: ${B1_OPEN_WEBUI_TTS_MODEL:-tts-fast}
+      AUDIO_TTS_VOICE: ${B1_OPEN_WEBUI_TTS_VOICE:-alloy}
+      AUDIO_STT_ENGINE: openai
+      AUDIO_STT_MODEL: ${B1_OPEN_WEBUI_STT_MODEL:-stt-default}
+      AUDIO_STT_OPENAI_API_REQUEST_FORMAT: multipart
+      ENABLE_IMAGE_GENERATION: "false"
+      ENABLE_IMAGE_EDIT: "false"
+      USER_PERMISSIONS_FEATURES_IMAGE_GENERATION: "false"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_LOCAL_WEB_FETCH: "false"
+      WEB_SEARCH_TRUST_ENV: "false"
+      USER_PERMISSIONS_FEATURES_WEB_SEARCH: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_EVALUATION_ARENA_MODELS: "false"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      OFFLINE_MODE: "true"
+      ENABLE_OTEL: "false"
+      ENABLE_OTEL_TRACES: "false"
+      ENABLE_OTEL_METRICS: "false"
+      ENABLE_OTEL_LOGS: "false"
     volumes:
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/open-webui:/app/backend/data
       - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
