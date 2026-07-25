@@ -428,6 +428,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "generated_at": "2026-07-24T12:40:00+00:00",
             "base_url": "https://models.ai.b1.germering",
             "status": "ok",
+            "verified_blob": "a" * 64,
+            "verified_size_bytes": 12,
             "required_checks": [
                 "catalog_visible",
                 "download_plan_created",
@@ -439,15 +441,46 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "inference_only_download_blocked",
             ],
             "missing_checks": [],
+            "missing_integrity_evidence": [],
             "checks": {
                 "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
-                "download_plan_created": {"status": "ok", "recorded_at": "2026-07-24T12:37:00+00:00"},
-                "head_metadata_validated": {"status": "ok", "recorded_at": "2026-07-24T12:37:30+00:00"},
-                "etag_if_none_match_validated": {"status": "ok", "recorded_at": "2026-07-24T12:37:45+00:00"},
-                "range_resume_downloaded": {"status": "ok", "recorded_at": "2026-07-24T12:38:00+00:00"},
-                "cache_state_managed": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
-                "dry_run_prune_safe": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00"},
-                "inference_only_download_blocked": {"status": "ok", "recorded_at": "2026-07-24T12:40:00+00:00"},
+                "download_plan_created": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:37:00+00:00",
+                    "blob": "a" * 64,
+                    "expected_size": 12,
+                },
+                "head_metadata_validated": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:37:30+00:00",
+                    "blob": "a" * 64,
+                    "expected_size": 12,
+                    "etag": '"sha256:' + "a" * 64 + '"',
+                    "checksum": "a" * 64,
+                    "accept_ranges": "bytes",
+                },
+                "etag_if_none_match_validated": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:37:45+00:00",
+                    "blob": "a" * 64,
+                    "etag": '"sha256:' + "a" * 64 + '"',
+                    "checksum": "a" * 64,
+                },
+                "range_resume_downloaded": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:38:00+00:00",
+                    "blob": "a" * 64,
+                    "expected_size": 12,
+                    "partial_size": 5,
+                    "final_size": 12,
+                },
+                "cache_state_managed": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00", "managed_blob_count": 1},
+                "dry_run_prune_safe": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00", "unmanaged_files_ignored": True},
+                "inference_only_download_blocked": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:40:00+00:00",
+                    "action_count": 1,
+                },
             },
             "sample_count": 1,
             "sample_labels": ["modelhub-client-sync"],
@@ -1743,6 +1776,47 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_modelhub_snapshot_requires_blob_integrity_metadata(self) -> None:
+        payload = {
+            "format": "b1-ai-hub-modelhub-client-sync/v1",
+            "generated_at": "2026-07-24T12:40:00+00:00",
+            "base_url": "https://models.ai.b1.germering",
+            "status": "ok",
+            "checks": {
+                name: {"status": "ok", "recorded_at": "2026-07-24T12:40:00+00:00"}
+                for name in acceptance.MODELHUB_REQUIRED_CHECKS
+            },
+            "samples": [{"label": "modelhub-client-sync"}],
+        }
+        snapshot = acceptance.modelhub_evidence_snapshot(payload)
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertIn("download_plan_created.blob", snapshot["missing_integrity_evidence"])
+        self.assertIn("head_metadata_validated.etag", snapshot["missing_integrity_evidence"])
+        self.assertIn("range_resume_downloaded.final_size", snapshot["missing_integrity_evidence"])
+
+        live_evidence = sample_live_evidence(modelhub_client_sync=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["modelhub_evidence_ready"])
+        self.assertIn(
+            "Model Hub client sync evidence is missing integrity evidence: "
+            + ", ".join(str(item) for item in snapshot["missing_integrity_evidence"]),
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_when_modelhub_integrity_summary_is_absent(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["modelhub_client_sync"].pop("missing_integrity_evidence", None)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["modelhub_evidence_ready"])
+        self.assertIn("Model Hub client sync evidence lacks integrity validation summary", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_without_voicebox_evidence(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["voicebox_remote"] = {"available": False, "reason": "missing"}
@@ -2332,15 +2406,33 @@ class AcceptanceReportTests(unittest.TestCase):
                         "status": "ok",
                         "checks": {
                             "catalog_visible": {"status": "ok"},
-                            "download_plan_created": {"status": "ok"},
-                            "head_metadata_validated": {"status": "ok"},
-                            "etag_if_none_match_validated": {"status": "ok"},
-                            "range_resume_downloaded": {"status": "ok"},
-                            "cache_state_managed": {"status": "ok"},
-                            "dry_run_prune_safe": {"status": "ok"},
-                            "inference_only_download_blocked": {"status": "ok"},
+                            "download_plan_created": {"status": "ok", "blob": "a" * 64, "expected_size": 12},
+                            "head_metadata_validated": {
+                                "status": "ok",
+                                "blob": "a" * 64,
+                                "expected_size": 12,
+                                "etag": '"sha256:' + "a" * 64 + '"',
+                                "checksum": "a" * 64,
+                                "accept_ranges": "bytes",
+                            },
+                            "etag_if_none_match_validated": {
+                                "status": "ok",
+                                "blob": "a" * 64,
+                                "etag": '"sha256:' + "a" * 64 + '"',
+                                "checksum": "a" * 64,
+                            },
+                            "range_resume_downloaded": {
+                                "status": "ok",
+                                "blob": "a" * 64,
+                                "expected_size": 12,
+                                "partial_size": 5,
+                                "final_size": 12,
+                            },
+                            "cache_state_managed": {"status": "ok", "managed_blob_count": 1},
+                            "dry_run_prune_safe": {"status": "ok", "unmanaged_files_ignored": True},
+                            "inference_only_download_blocked": {"status": "ok", "action_count": 1},
                         },
-                        "samples": [{"label": "modelhub-client-sync"}],
+                        "samples": [{"label": "modelhub-client-sync", "synced_blob": "a" * 64, "synced_size": 12}],
                     }
                 ),
                 encoding="utf-8",

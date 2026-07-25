@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 REPORT_FORMAT = "b1-ai-hub-acceptance-report/v1"
 REPORT_ID_RE = re.compile(r"acceptance-[0-9]{8}t[0-9]{6}z-[a-f0-9]{8}")
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 REPORT_FILE_NAMES = frozenset({"report.json", "report.md", "SHA256SUMS"})
 SUMMARY_LIMIT = 200
 MAX_CUTOVER_PLAN_BYTES = 2 * 1024 * 1024
@@ -541,6 +542,117 @@ def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalized_sha256(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    return digest if SHA256_HEX_RE.fullmatch(digest) else ""
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _modelhub_expected_etag(blob: str) -> str:
+    return f'"sha256:{blob}"'
+
+
+def _modelhub_integrity_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    samples = payload.get("samples") if isinstance(payload.get("samples"), list) else []
+    missing: list[str] = []
+
+    plan = checks.get("download_plan_created") if isinstance(checks.get("download_plan_created"), dict) else {}
+    plan_blob = _normalized_sha256(plan.get("blob"))
+    plan_size = _positive_int(plan.get("expected_size"))
+    if not plan_blob:
+        missing.append("download_plan_created.blob")
+    if not plan_size:
+        missing.append("download_plan_created.expected_size")
+
+    head = checks.get("head_metadata_validated") if isinstance(checks.get("head_metadata_validated"), dict) else {}
+    head_blob = _normalized_sha256(head.get("blob"))
+    head_size = _positive_int(head.get("expected_size"))
+    head_etag = str(head.get("etag") or "").strip()
+    head_checksum = str(head.get("checksum") or "").strip().lower()
+    if not head_blob:
+        missing.append("head_metadata_validated.blob")
+    elif plan_blob and head_blob != plan_blob:
+        missing.append("head_metadata_validated.blob_matches_plan")
+    if not head_size:
+        missing.append("head_metadata_validated.expected_size")
+    elif plan_size and head_size != plan_size:
+        missing.append("head_metadata_validated.size_matches_plan")
+    if not head_blob or head_etag != _modelhub_expected_etag(head_blob):
+        missing.append("head_metadata_validated.etag")
+    if not head_blob or head_checksum != head_blob:
+        missing.append("head_metadata_validated.checksum")
+
+    conditional = checks.get("etag_if_none_match_validated") if isinstance(checks.get("etag_if_none_match_validated"), dict) else {}
+    conditional_blob = _normalized_sha256(conditional.get("blob"))
+    conditional_etag = str(conditional.get("etag") or "").strip()
+    if not conditional_blob:
+        missing.append("etag_if_none_match_validated.blob")
+    elif plan_blob and conditional_blob != plan_blob:
+        missing.append("etag_if_none_match_validated.blob_matches_plan")
+    if not conditional_blob or conditional_etag != _modelhub_expected_etag(conditional_blob):
+        missing.append("etag_if_none_match_validated.etag")
+
+    range_check = checks.get("range_resume_downloaded") if isinstance(checks.get("range_resume_downloaded"), dict) else {}
+    range_blob = _normalized_sha256(range_check.get("blob"))
+    range_size = _positive_int(range_check.get("expected_size"))
+    partial_size = _positive_int(range_check.get("partial_size"))
+    final_size = _positive_int(range_check.get("final_size"))
+    if not range_blob:
+        missing.append("range_resume_downloaded.blob")
+    elif plan_blob and range_blob != plan_blob:
+        missing.append("range_resume_downloaded.blob_matches_plan")
+    if not range_size:
+        missing.append("range_resume_downloaded.expected_size")
+    elif plan_size and range_size != plan_size:
+        missing.append("range_resume_downloaded.size_matches_plan")
+    if not partial_size:
+        missing.append("range_resume_downloaded.partial_size")
+    elif range_size and partial_size >= range_size:
+        missing.append("range_resume_downloaded.partial_size_less_than_expected_size")
+    if not final_size:
+        missing.append("range_resume_downloaded.final_size")
+    elif range_size and final_size != range_size:
+        missing.append("range_resume_downloaded.final_size_matches_expected_size")
+
+    cache_state = checks.get("cache_state_managed") if isinstance(checks.get("cache_state_managed"), dict) else {}
+    if _positive_int(cache_state.get("managed_blob_count")) < 1:
+        missing.append("cache_state_managed.managed_blob_count")
+
+    prune = checks.get("dry_run_prune_safe") if isinstance(checks.get("dry_run_prune_safe"), dict) else {}
+    if prune.get("unmanaged_files_ignored") is not True:
+        missing.append("dry_run_prune_safe.unmanaged_files_ignored")
+
+    inference_only = checks.get("inference_only_download_blocked") if isinstance(checks.get("inference_only_download_blocked"), dict) else {}
+    if _positive_int(inference_only.get("action_count")) < 1:
+        missing.append("inference_only_download_blocked.action_count")
+
+    sample_ok = False
+    for sample in samples:
+        if not isinstance(sample, dict) or sample.get("label") != "modelhub-client-sync":
+            continue
+        sample_blob = _normalized_sha256(sample.get("synced_blob"))
+        sample_size = _positive_int(sample.get("synced_size"))
+        if sample_blob and sample_size and (not plan_blob or sample_blob == plan_blob) and (not plan_size or sample_size == plan_size):
+            sample_ok = True
+            break
+    if not sample_ok:
+        missing.append("samples.modelhub-client-sync.synced_blob_and_size")
+
+    return {
+        "verified_blob": plan_blob,
+        "verified_size_bytes": plan_size,
+        "missing_integrity_evidence": missing,
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -721,6 +833,7 @@ def modelhub_evidence_snapshot(payload: dict[str, Any], source_path: Path | None
         expected_format=MODELHUB_EVIDENCE_FORMAT,
         unsupported_reason="unsupported Model Hub client sync evidence format",
         required_checks=MODELHUB_REQUIRED_CHECKS,
+        extra_fields=_modelhub_integrity_summary(payload),
     )
 
 
@@ -1095,6 +1208,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = modelhub_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("Model Hub client sync evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_integrity = modelhub_evidence.get("missing_integrity_evidence")
+        if not isinstance(missing_integrity, list):
+            blockers.append("Model Hub client sync evidence lacks integrity validation summary")
+        elif missing_integrity:
+            blockers.append("Model Hub client sync evidence is missing integrity evidence: " + ", ".join(str(item) for item in missing_integrity))
     voicebox_evidence = live_evidence.get("voicebox_remote") if isinstance(live_evidence.get("voicebox_remote"), dict) else {}
     if voicebox_evidence.get("available") is not True:
         blockers.append("Voicebox remote compatibility evidence is unavailable")
@@ -1400,6 +1518,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_models = evidence.get("missing_model_measurements")
     if isinstance(missing_models, list) and missing_models:
         summary_rows.append(["missing_model_measurements", ", ".join(str(item) for item in missing_models)])
+    missing_integrity = evidence.get("missing_integrity_evidence")
+    if isinstance(missing_integrity, list) and missing_integrity:
+        summary_rows.append(["missing_integrity_evidence", ", ".join(str(item) for item in missing_integrity)])
     check_rows = [["Check", "Status", "Recorded"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
@@ -1905,6 +2026,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         modelhub_evidence.get("available") is True
         and modelhub_evidence.get("status") == "ok"
         and not modelhub_evidence.get("missing_checks")
+        and modelhub_evidence.get("missing_integrity_evidence") == []
         and "modelhub_client_sync" not in freshness_failures
     )
     voicebox_evidence_ready = (
