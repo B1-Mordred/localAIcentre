@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
+import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +120,15 @@ class FakeVoiceProfileDatabase:
         return dict(row)
 
 
+class FakeRawRequest:
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    async def stream(self):
+        yield self._body
+
+
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class VoiceboxProfilesApiTests(unittest.TestCase):
     def patch_attr(self, name: str, value: Any) -> None:
@@ -138,6 +150,11 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.patch_attr("authenticate", fake_authenticate)
         self.patch_attr("record_audit_event", fake_record_audit_event)
         return audit_events
+
+    def patch_settings(self, **changes: Any) -> None:
+        original = main.settings
+        main.settings = replace(main.settings, **changes)
+        self.addCleanup(lambda: setattr(main, "settings", original))
 
     def test_create_voice_profile_records_safe_artifact_references(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
@@ -163,6 +180,47 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.assertEqual(audit_events[0]["event_type"], "voice_profile.created")
         self.assertEqual(audit_events[0]["metadata"]["sample_artifact_count"], 1)
         self.assertNotIn("sample_artifacts", audit_events[0]["metadata"])
+
+    def test_upload_voice_profile_sample_stores_voicebox_artifact(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        audit_events = self.patch_common(fake_database)
+        wav = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00"
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
+            result = asyncio.run(
+                main.admin_voicebox_sample_artifact_upload(
+                    FakeRawRequest(wav, {"content-type": "audio/wav"}),
+                    x_b1_filename="../narrator.wav",
+                )
+            )
+
+            artifact = result["artifact"]
+            self.assertEqual(result["object"], "voicebox.sample_artifact")
+            self.assertTrue(artifact["url"].startswith("/artifacts/voicebox/references/operator_1/sample_"))
+            self.assertEqual(artifact["mime_type"], "audio/wav")
+            self.assertEqual(artifact["bytes"], len(wav))
+            self.assertEqual(artifact["sha256"], hashlib.sha256(wav).hexdigest())
+            stored = Path(tmp) / artifact["url"].removeprefix("/artifacts/")
+            self.assertEqual(stored.read_bytes(), wav)
+
+        self.assertEqual(audit_events[0]["event_type"], "voice_profile.sample_uploaded")
+        self.assertEqual(audit_events[0]["target_type"], "voice_profile_sample")
+
+    def test_upload_voice_profile_sample_rejects_non_audio(self) -> None:
+        fake_database = FakeVoiceProfileDatabase()
+        self.patch_common(fake_database)
+        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024, artifact_storage_reserve_bytes=0)
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(
+                    main.admin_voicebox_sample_artifact_upload(
+                        FakeRawRequest(png, {"content-type": "image/png"}),
+                        x_b1_filename="reference.png",
+                    )
+                )
+
+        self.assertEqual(caught.exception.status_code, 415)
 
     def test_create_rejects_encoded_voice_sample_artifact_escape(self) -> None:
         fake_database = FakeVoiceProfileDatabase()

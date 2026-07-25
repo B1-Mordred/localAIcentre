@@ -334,6 +334,20 @@ class VoiceProfileSampleArtifact(BaseModel):
     bytes: int = Field(ge=0)
 
 
+class VoiceSampleArtifactUpload(BaseModel):
+    url: str = Field(min_length=1, max_length=512)
+    sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    mime_type: str = Field(pattern=r"^audio/[A-Za-z0-9.+-]+$")
+    bytes: int = Field(ge=0)
+    filename: str = Field(min_length=1, max_length=256)
+    sample_id: str = Field(pattern=r"^sample_[a-f0-9]{32}$")
+
+
+class VoiceSampleArtifactUploadResponse(BaseModel):
+    object: Literal["voicebox.sample_artifact"]
+    artifact: VoiceSampleArtifactUpload
+
+
 class VoiceProfileCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=256)
     runtime: Literal["voicebox", "audio-cpu"] = "voicebox"
@@ -4225,6 +4239,41 @@ def validate_voice_profile_artifacts(artifacts: list[VoiceProfileSampleArtifact]
     return normalized
 
 
+def write_voice_profile_sample_artifact(
+    *,
+    owner_id: str,
+    content: bytes,
+    declared_mime_type: str | None,
+    filename: str | None,
+) -> dict[str, Any]:
+    if not content:
+        raise ValueError("media input is empty")
+    mime_type = media_artifacts.require_allowed_input_mime_type(content, declared_mime_type)
+    if not mime_type.startswith("audio/"):
+        raise ValueError(f"unsupported media input type: {mime_type}")
+    owner_segment = media_artifacts.safe_artifact_segment(owner_id, "owner")
+    sample_id = f"sample_{uuid.uuid4().hex}"
+    extension = media_artifacts.extension_for_mime_type(mime_type, ".audio")
+    stored_name = media_artifacts.safe_filename(filename, f"voice-sample{extension}")
+    if not stored_name.endswith(extension):
+        stored_name = f"{stored_name}{extension}"
+    relative = f"voicebox/references/{owner_segment}/{sample_id}/{stored_name}"
+    target = media_artifacts.artifact_store_path(Path(settings.artifact_root), relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    digest = hashlib.sha256(content).hexdigest()
+    temporary.write_bytes(content)
+    temporary.replace(target)
+    return {
+        "url": f"/artifacts/{relative}",
+        "sha256": digest,
+        "mime_type": mime_type,
+        "bytes": len(content),
+        "filename": stored_name,
+        "sample_id": sample_id,
+    }
+
+
 def validate_voice_profile_alias(model_alias: str, runtime: str) -> CatalogAlias:
     try:
         alias = catalog_snapshot().require_alias(model_alias)
@@ -5995,6 +6044,54 @@ async def admin_voice_profiles(
     require_runtime_admin(auth)
     rows = await database.list_voice_profiles(include_deleted=include_deleted, owner_id=owner_id, runtime=runtime, status=status)
     return {"object": "list", "data": [public_voice_profile(row) for row in rows]}
+
+
+@app.post(
+    "/admin/voicebox/sample-artifacts",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "audio/wav": {"schema": {"type": "string", "format": "binary"}},
+                "audio/mpeg": {"schema": {"type": "string", "format": "binary"}},
+                "audio/ogg": {"schema": {"type": "string", "format": "binary"}},
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
+            },
+        }
+    },
+)
+async def admin_voicebox_sample_artifact_upload(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_b1_filename: str | None = Header(default=None),
+) -> VoiceSampleArtifactUploadResponse:
+    auth = await authenticate(authorization)
+    require_scope(auth, "runtimes:write")
+    require_runtime_admin(auth)
+    body = await read_bounded_request_body(request, settings.upload_max_bytes)
+    enforce_artifact_storage_headroom(len(body))
+    try:
+        artifact = write_voice_profile_sample_artifact(
+            owner_id=auth.subject_id,
+            content=body,
+            declared_mime_type=request.headers.get("content-type"),
+            filename=x_b1_filename,
+        )
+    except ValueError as exc:
+        raise staged_input_error(exc) from exc
+    await record_audit_event(
+        auth,
+        "voice_profile.sample_uploaded",
+        target_type="voice_profile_sample",
+        target_id=artifact["sample_id"],
+        summary="Uploaded Voicebox reference sample",
+        metadata={
+            "mime_type": artifact["mime_type"],
+            "bytes": artifact["bytes"],
+            "sha256": artifact["sha256"],
+        },
+    )
+    return {"object": "voicebox.sample_artifact", "artifact": artifact}
 
 
 @app.post("/admin/voicebox/profiles")

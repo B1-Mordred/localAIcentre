@@ -1837,6 +1837,70 @@
         "title": "VoiceProfileUpdate",
         "type": "object"
       },
+      "VoiceSampleArtifactUpload": {
+        "properties": {
+          "bytes": {
+            "minimum": 0.0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "filename": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "mime_type": {
+            "pattern": "^audio/[A-Za-z0-9.+-]+$",
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "sample_id": {
+            "pattern": "^sample_[a-f0-9]{32}$",
+            "title": "Sample Id",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "sha256",
+          "mime_type",
+          "bytes",
+          "filename",
+          "sample_id"
+        ],
+        "title": "VoiceSampleArtifactUpload",
+        "type": "object"
+      },
+      "VoiceSampleArtifactUploadResponse": {
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/VoiceSampleArtifactUpload"
+          },
+          "object": {
+            "const": "voicebox.sample_artifact",
+            "title": "Object",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object",
+          "artifact"
+        ],
+        "title": "VoiceSampleArtifactUploadResponse",
+        "type": "object"
+      },
       "WorkflowPublishRequest": {
         "properties": {
           "workflow": {
@@ -8151,6 +8215,97 @@
           }
         },
         "summary": "Admin Voice Profile Export"
+      }
+    },
+    "/admin/voicebox/sample-artifacts": {
+      "post": {
+        "operationId": "admin_voicebox_sample_artifact_upload_admin_voicebox_sample_artifacts_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-b1-filename",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-B1-Filename"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/mpeg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/ogg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/wav": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSampleArtifactUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Voicebox Sample Artifact Upload"
       }
     },
     "/artifacts/{artifact_path}": {

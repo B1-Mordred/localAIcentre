@@ -108,17 +108,23 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn('capabilities.external ? "external data" : "local LAN"', self.source)
 
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:
+        self.assertIn("type VoiceSampleArtifact", self.source)
         self.assertIn("type VoiceProfileForm", self.source)
         self.assertIn("const [selectedProfileId, setSelectedProfileId]", self.source)
+        self.assertIn("const [profileSampleFile, setProfileSampleFile]", self.source)
         self.assertIn("const editVoiceProfile = (profile: VoiceProfile)", self.source)
         self.assertIn("const updateVoiceProfile = ()", self.source)
+        self.assertIn("const uploadVoiceSampleArtifact = ()", self.source)
         self.assertIn('method: profileId ? "PATCH" : "POST"', self.source)
         self.assertIn("/admin/voicebox/profiles/${encodeURIComponent(profileId)}", self.source)
+        self.assertIn("/admin/voicebox/sample-artifacts", self.source)
+        self.assertIn('headers.set("X-B1-Filename"', self.source)
         self.assertIn("setProfileMetadata(JSON.stringify(profile.metadata ?? {}, null, 2))", self.source)
         self.assertIn("setProfileArtifacts(JSON.stringify(profile.sample_artifacts ?? [], null, 2))", self.source)
         self.assertIn("Save voice profile ${selectedProfileId}", self.source)
         self.assertIn("Cancel voice profile edit", self.source)
         self.assertIn("Edit ${profile.id}", self.source)
+        self.assertIn("Upload voice reference sample", self.source)
 
     def test_system_tab_surfaces_acceptance_reports(self) -> None:
         self.assertIn("type AcceptanceReportSummary", self.source)

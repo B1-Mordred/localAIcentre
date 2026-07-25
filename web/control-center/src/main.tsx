@@ -894,6 +894,15 @@ type VoiceProfile = {
   deleted_at?: string | null;
 };
 
+type VoiceSampleArtifact = {
+  url: string;
+  sha256: string;
+  mime_type: string;
+  bytes: number;
+  filename?: string;
+  sample_id?: string;
+};
+
 type VoiceProfileForm = {
   display_name: string;
   runtime: "voicebox" | "audio-cpu";
@@ -2073,6 +2082,8 @@ function Runtimes() {
   const [profileForm, setProfileForm] = useState<VoiceProfileForm>(defaultVoiceProfileForm);
   const [profileMetadata, setProfileMetadata] = useState("{}");
   const [profileArtifacts, setProfileArtifacts] = useState("[]");
+  const [profileSampleFile, setProfileSampleFile] = useState<File | null>(null);
+  const [profileSampleInputKey, setProfileSampleInputKey] = useState(0);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
 
@@ -2216,11 +2227,25 @@ function Runtimes() {
     };
   };
 
+  const appendProfileSampleArtifact = (artifact: VoiceSampleArtifact) => {
+    const sample_artifacts = profileArtifacts.trim() ? JSON.parse(profileArtifacts) : [];
+    if (!Array.isArray(sample_artifacts)) throw new Error("sample artifacts must be an array");
+    sample_artifacts.push({
+      url: artifact.url,
+      sha256: artifact.sha256,
+      mime_type: artifact.mime_type,
+      bytes: artifact.bytes
+    });
+    setProfileArtifacts(JSON.stringify(sample_artifacts, null, 2));
+  };
+
   const resetVoiceProfileForm = () => {
     setSelectedProfileId(null);
     setProfileForm(defaultVoiceProfileForm());
     setProfileMetadata("{}");
     setProfileArtifacts("[]");
+    setProfileSampleFile(null);
+    setProfileSampleInputKey((current) => current + 1);
   };
 
   const editVoiceProfile = (profile: VoiceProfile) => {
@@ -2262,6 +2287,30 @@ function Runtimes() {
 
   const updateVoiceProfile = () => {
     saveVoiceProfile(selectedProfileId);
+  };
+
+  const uploadVoiceSampleArtifact = () => {
+    if (!profileSampleFile) return;
+    const file = profileSampleFile;
+    setBusy(true);
+    setProfileMessage(`uploading ${file.name}`);
+    const headers = new Headers();
+    headers.set("Content-Type", file.type || "application/octet-stream");
+    headers.set("X-B1-Filename", file.name.replace(/[^\x20-\x7e]/g, "_"));
+    apiFetch(`/admin/voicebox/sample-artifacts`, {
+      method: "POST",
+      headers,
+      body: file
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
+      .then((payload: { artifact: VoiceSampleArtifact }) => {
+        appendProfileSampleArtifact(payload.artifact);
+        setProfileMessage(`uploaded ${payload.artifact.filename ?? file.name}`);
+        setProfileSampleFile(null);
+        setProfileSampleInputKey((current) => current + 1);
+      })
+      .catch((error: Error) => setProfileMessage(error.message))
+      .finally(() => setBusy(false));
   };
 
   const exportVoiceProfile = (profile: VoiceProfile) => {
@@ -2439,6 +2488,8 @@ function Runtimes() {
             </label>
             <label>Visibility roles<input value={profileForm.visibility_roles} onChange={(event) => updateProfileForm("visibility_roles", event.target.value)} /></label>
             <label>Metadata JSON<textarea value={profileMetadata} onChange={(event) => setProfileMetadata(event.target.value)} /></label>
+            <label>Sample upload<input key={profileSampleInputKey} type="file" accept="audio/wav,audio/mpeg,audio/ogg,audio/*" onChange={(event) => setProfileSampleFile(event.target.files?.[0] ?? null)} /></label>
+            <button title="Upload voice reference sample" onClick={uploadVoiceSampleArtifact} disabled={busy || !profileSampleFile}><Upload size={16} />Upload Sample</button>
             <label>Sample artifacts JSON<textarea value={profileArtifacts} onChange={(event) => setProfileArtifacts(event.target.value)} /></label>
             <div className="table-actions">
               {selectedProfileId ? (
