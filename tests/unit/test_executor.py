@@ -115,11 +115,28 @@ class FakeDatabase:
     async def mark_interrupted_jobs_recovery_required(self, runtime_names: list[str]) -> int:
         return 2
 
+    async def mark_interrupted_jobs_recovery_required_report(self, runtime_names: list[str]) -> dict[str, Any]:
+        return {"marked_recovery_required": 2, "recovery_required_job_ids": ["job_active_1", "job_active_2"]}
+
     async def requeue_interrupted_waiting_jobs(self, runtime_names: list[str]) -> int:
         return self.waiting_requeues
 
-    async def reconcile_interrupted_model_downloads(self) -> dict[str, int]:
-        return {"marked_recovery_required": 0, "requeued": 3, "paused": 1, "cancelled": 2}
+    async def requeue_interrupted_waiting_jobs_report(self, runtime_names: list[str]) -> dict[str, Any]:
+        return {
+            "requeued": self.waiting_requeues,
+            "requeued_job_ids": [f"job_waiting_{index}" for index in range(1, self.waiting_requeues + 1)],
+        }
+
+    async def reconcile_interrupted_model_downloads(self) -> dict[str, Any]:
+        return {
+            "marked_recovery_required": 0,
+            "requeued": 3,
+            "paused": 1,
+            "cancelled": 2,
+            "requeued_download_ids": ["modeldl_running_1", "modeldl_running_2", "modeldl_running_3"],
+            "paused_download_ids": ["modeldl_pausing_1"],
+            "cancelled_download_ids": ["modeldl_cancelling_1", "modeldl_cancelling_2"],
+        }
 
     async def claim_next_model_download(self) -> dict[str, Any] | None:
         self.model_download_claims += 1
@@ -1719,7 +1736,10 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             runner = executor.GpuJobRunner(Path(tmp))
             result = asyncio.run(runner.reconcile_startup())
-            self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 1})
+            self.assertEqual(result["marked_recovery_required"], 2)
+            self.assertEqual(result["requeued"], 1)
+            self.assertEqual(result["recovery_required_job_ids"], ["job_active_1", "job_active_2"])
+            self.assertEqual(result["requeued_job_ids"], ["job_waiting_1"])
 
     def test_gpu_runner_records_startup_reconciliation(self) -> None:
         fake = FakeDatabase()
@@ -1732,6 +1752,8 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result["runtime_names"], executor.GPU_RUNTIMES)
         self.assertEqual(result["marked_recovery_required"], 2)
         self.assertEqual(result["requeued"], 1)
+        self.assertEqual(result["recovery_required_job_ids"], ["job_active_1", "job_active_2"])
+        self.assertEqual(result["requeued_job_ids"], ["job_waiting_1"])
         self.assertTrue(result["started_at"])
         self.assertTrue(result["completed_at"])
         self.assertEqual(runner.startup_reconciliation, result)
@@ -1749,6 +1771,9 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result["requeued"], 3)
         self.assertEqual(result["paused"], 1)
         self.assertEqual(result["cancelled"], 2)
+        self.assertEqual(result["requeued_download_ids"], ["modeldl_running_1", "modeldl_running_2", "modeldl_running_3"])
+        self.assertEqual(result["paused_download_ids"], ["modeldl_pausing_1"])
+        self.assertEqual(result["cancelled_download_ids"], ["modeldl_cancelling_1", "modeldl_cancelling_2"])
         self.assertTrue(result["started_at"])
         self.assertTrue(result["completed_at"])
         self.assertEqual(runner.startup_reconciliation, result)
@@ -1761,7 +1786,10 @@ class ExecutorTests(unittest.TestCase):
             runner = executor.CpuJobRunner(Path(tmp))
             result = asyncio.run(runner.reconcile_startup())
 
-        self.assertEqual(result, {"marked_recovery_required": 2, "requeued": 3})
+        self.assertEqual(result["marked_recovery_required"], 2)
+        self.assertEqual(result["requeued"], 3)
+        self.assertEqual(result["recovery_required_job_ids"], ["job_active_1", "job_active_2"])
+        self.assertEqual(result["requeued_job_ids"], ["job_waiting_1", "job_waiting_2", "job_waiting_3"])
 
     def test_gpu_runner_recovers_when_vram_exceeds_reserve(self) -> None:
         fake = FakeDatabase(runtime="localai")

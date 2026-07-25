@@ -178,6 +178,7 @@ RESTART_RECONCILIATION_REQUIRED_CHECKS = (
     "gpu_runner_reconciled",
     "waiting_jobs_requeued",
     "active_jobs_marked_recovery_required",
+    "interrupted_job_ids_recorded",
     "resumable_comfyui_native_prompts_reattached",
 )
 BACKUP_MIGRATION_ROLLBACK_EVIDENCE_FORMAT = "b1-ai-hub-backup-migration-rollback-acceptance/v1"

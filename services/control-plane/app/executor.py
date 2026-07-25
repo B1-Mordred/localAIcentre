@@ -89,6 +89,12 @@ def pending_startup_reconciliation(runtime_names: list[str]) -> dict[str, Any]:
     }
 
 
+def compact_reconciliation_id_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value[:50] if isinstance(item, (str, int, float)) and str(item)]
+
+
 async def record_runner_startup_reconciliation(runner: Any, runtime_names: list[str]) -> dict[str, Any]:
     started_at = datetime.now(tz=UTC)
     runner.startup_reconciliation = {
@@ -117,6 +123,15 @@ async def record_runner_startup_reconciliation(runner: Any, runtime_names: list[
     for key in ("paused", "cancelled"):
         if key in result:
             runner.startup_reconciliation[key] = int(result.get(key) or 0)
+    for key in (
+        "requeued_job_ids",
+        "recovery_required_job_ids",
+        "requeued_download_ids",
+        "paused_download_ids",
+        "cancelled_download_ids",
+    ):
+        if key in result:
+            runner.startup_reconciliation[key] = compact_reconciliation_id_list(result.get(key))
     return runner.startup_reconciliation
 
 
@@ -137,10 +152,10 @@ class CpuJobRunner:
         self._stopped = asyncio.Event()
         self.startup_reconciliation = pending_startup_reconciliation(CPU_RUNTIMES)
 
-    async def reconcile_startup(self) -> dict[str, int]:
-        requeued = await database.requeue_interrupted_waiting_jobs(CPU_RUNTIMES)
-        marked = await database.mark_interrupted_jobs_recovery_required(CPU_RUNTIMES)
-        return {"marked_recovery_required": marked, "requeued": requeued}
+    async def reconcile_startup(self) -> dict[str, Any]:
+        requeued = await database.requeue_interrupted_waiting_jobs_report(CPU_RUNTIMES)
+        marked = await database.mark_interrupted_jobs_recovery_required_report(CPU_RUNTIMES)
+        return {**marked, **requeued}
 
     async def cancel_if_requested(self, job_id: str) -> bool:
         current = await database.get_job(job_id)
@@ -407,10 +422,10 @@ class GpuJobRunner:
         self._stopped = asyncio.Event()
         self.startup_reconciliation = pending_startup_reconciliation(GPU_RUNTIMES)
 
-    async def reconcile_startup(self) -> dict[str, int]:
-        requeued = await database.requeue_interrupted_waiting_jobs(GPU_RUNTIMES)
-        marked = await database.mark_interrupted_jobs_recovery_required(GPU_RUNTIMES)
-        return {"marked_recovery_required": marked, "requeued": requeued}
+    async def reconcile_startup(self) -> dict[str, Any]:
+        requeued = await database.requeue_interrupted_waiting_jobs_report(GPU_RUNTIMES)
+        marked = await database.mark_interrupted_jobs_recovery_required_report(GPU_RUNTIMES)
+        return {**marked, **requeued}
 
     async def acquire_gpu_lease(self) -> bool:
         lease = await database.acquire_scheduler_owner(self.lease_owner, self.lease_ttl_seconds)
@@ -1694,7 +1709,7 @@ class ModelDownloadRunner:
         partial.replace(target)
         target.chmod(0o644)
 
-    async def reconcile_startup(self) -> dict[str, int]:
+    async def reconcile_startup(self) -> dict[str, Any]:
         return await database.reconcile_interrupted_model_downloads()
 
     async def stop_if_requested(self, download_id: str) -> bool:

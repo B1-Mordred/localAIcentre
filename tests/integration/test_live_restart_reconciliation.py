@@ -22,6 +22,7 @@ RESTART_RECONCILIATION_REQUIRED_CHECKS = (
     "gpu_runner_reconciled",
     "waiting_jobs_requeued",
     "active_jobs_marked_recovery_required",
+    "interrupted_job_ids_recorded",
     "resumable_comfyui_native_prompts_reattached",
 )
 
@@ -180,6 +181,31 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
             observed=total_marked_recovery,
             minimum=self.minimum_marked_recovery_required,
         )
+        requeued_job_ids = [
+            str(job_id)
+            for record in typed_records
+            for job_id in (record.get("requeued_job_ids") if isinstance(record.get("requeued_job_ids"), list) else [])
+            if str(job_id)
+        ]
+        recovery_required_job_ids = [
+            str(job_id)
+            for record in typed_records
+            for job_id in (
+                record.get("recovery_required_job_ids") if isinstance(record.get("recovery_required_job_ids"), list) else []
+            )
+            if str(job_id)
+        ]
+        if self.minimum_requeued:
+            self.assertGreaterEqual(len(requeued_job_ids), min(self.minimum_requeued, 50), typed_records)
+        if self.minimum_marked_recovery_required:
+            self.assertGreaterEqual(len(recovery_required_job_ids), min(self.minimum_marked_recovery_required, 50), typed_records)
+        self.record_check(
+            "interrupted_job_ids_recorded",
+            requeued_job_ids=requeued_job_ids[:50],
+            recovery_required_job_ids=recovery_required_job_ids[:50],
+            requeued_sample_count=len(requeued_job_ids),
+            recovery_required_sample_count=len(recovery_required_job_ids),
+        )
         resume = payload.get("comfyui_native_prompt_resume")
         self.assertIsInstance(resume, dict, payload)
         resumed_comfyui_native = int(resume.get("resumed") or 0)
@@ -199,6 +225,8 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
                 "required_runners": required_runners,
                 "comfyui_native_prompt_resume": resume,
                 "records": typed_records,
+                "requeued_job_ids": requeued_job_ids[:50],
+                "recovery_required_job_ids": recovery_required_job_ids[:50],
             }
         )
         self.samples.append(

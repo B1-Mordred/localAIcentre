@@ -555,6 +555,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "gpu_runner_reconciled",
                 "waiting_jobs_requeued",
                 "active_jobs_marked_recovery_required",
+                "interrupted_job_ids_recorded",
                 "resumable_comfyui_native_prompts_reattached",
             ],
             "missing_checks": [],
@@ -564,6 +565,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "gpu_runner_reconciled": {"status": "ok", "recorded_at": "2026-07-24T12:52:00+00:00"},
                 "waiting_jobs_requeued": {"status": "ok", "recorded_at": "2026-07-24T12:53:00+00:00"},
                 "active_jobs_marked_recovery_required": {"status": "ok", "recorded_at": "2026-07-24T12:54:00+00:00"},
+                "interrupted_job_ids_recorded": {"status": "ok", "recorded_at": "2026-07-24T12:54:10+00:00"},
                 "resumable_comfyui_native_prompts_reattached": {"status": "ok", "recorded_at": "2026-07-24T12:54:30+00:00"},
             },
             "sample_count": 2,
@@ -1843,6 +1845,7 @@ class AcceptanceReportTests(unittest.TestCase):
             "missing_checks": [
                 "waiting_jobs_requeued",
                 "active_jobs_marked_recovery_required",
+                "interrupted_job_ids_recorded",
                 "resumable_comfyui_native_prompts_reattached",
             ],
             "checks": {
@@ -1859,9 +1862,30 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_ready"])
         self.assertIn("restart reconciliation evidence status is incomplete", report["acceptance_blockers"])
         self.assertIn(
-            "restart reconciliation evidence is missing required checks: waiting_jobs_requeued, active_jobs_marked_recovery_required, resumable_comfyui_native_prompts_reattached",
+            "restart reconciliation evidence is missing required checks: waiting_jobs_requeued, active_jobs_marked_recovery_required, interrupted_job_ids_recorded, resumable_comfyui_native_prompts_reattached",
             report["acceptance_blockers"],
         )
+
+    def test_restart_reconciliation_snapshot_requires_interrupted_job_id_evidence(self) -> None:
+        snapshot = acceptance.restart_reconciliation_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-restart-reconciliation-acceptance/v1",
+                "generated_at": "2026-07-24T12:55:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "control_plane_restarted": {"status": "ok"},
+                    "cpu_runner_reconciled": {"status": "ok"},
+                    "gpu_runner_reconciled": {"status": "ok"},
+                    "waiting_jobs_requeued": {"status": "ok"},
+                    "active_jobs_marked_recovery_required": {"status": "ok"},
+                    "resumable_comfyui_native_prompts_reattached": {"status": "ok"},
+                },
+                "samples": [{"label": "startup-reconciliation"}],
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], ["interrupted_job_ids_recorded"])
 
     def test_report_blocks_handoff_without_backup_migration_rollback_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -2408,6 +2432,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "gpu_runner_reconciled": {"status": "ok"},
                             "waiting_jobs_requeued": {"status": "ok"},
                             "active_jobs_marked_recovery_required": {"status": "ok"},
+                            "interrupted_job_ids_recorded": {"status": "ok"},
                             "resumable_comfyui_native_prompts_reattached": {"status": "ok"},
                         },
                         "samples": [

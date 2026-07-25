@@ -72,7 +72,7 @@ The suite verifies the persisted RTX 3060 resource policy, production runtime re
 
 ## Restart Reconciliation Acceptance
 
-Run the restart reconciliation suite during a maintenance validation window after deliberately creating at least one interrupted `waiting_for_gpu` job, one interrupted active preparation/execution job without a resumable native prompt, and one native ComfyUI compatibility `POST /prompt` job that has already persisted its native `prompt_id`. The recommended drill is to enable maintenance mode immediately after those states are present, capture the timestamp, restart only `control-plane`, and then run the harness before clearing or retrying the drill jobs. The harness reads `GET /admin/scheduler/reconciliation` and writes evidence proving that the restarted control plane requeued waiting jobs, marked non-resumable active jobs `recovery_required` for explicit operator retry, and reattached resumable native ComfyUI prompt trackers.
+Run the restart reconciliation suite during a maintenance validation window after deliberately creating at least one interrupted `waiting_for_gpu` job, one interrupted active preparation/execution job without a resumable native prompt, and one native ComfyUI compatibility `POST /prompt` job that has already persisted its native `prompt_id`. The recommended drill is to enable maintenance mode immediately after those states are present, capture the timestamp, restart only `control-plane`, and then run the harness before clearing or retrying the drill jobs. The harness reads `GET /admin/scheduler/reconciliation` and writes evidence proving that the restarted control plane requeued waiting jobs, marked non-resumable active jobs `recovery_required` for explicit operator retry, recorded bounded sampled durable job IDs for those interrupted rows, and reattached resumable native ComfyUI prompt trackers.
 
 ```bash
 export B1_RESTART_RECONCILIATION_API_BASE=https://api.ai.b1.germering
@@ -84,7 +84,7 @@ export B1_RESTART_RECONCILIATION_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/rest
 make restart-reconciliation-acceptance
 ```
 
-By default the harness requires at least one requeued waiting job, at least one active job marked `recovery_required`, and at least one native ComfyUI prompt tracker reattached. Override `B1_RESTART_RECONCILIATION_MIN_REQUEUED`, `B1_RESTART_RECONCILIATION_MIN_MARKED_RECOVERY_REQUIRED`, or `B1_RESTART_RECONCILIATION_MIN_RESUMED_COMFYUI_NATIVE` only for a labelled development dry run; production handoff should keep all three at their default value of `1`.
+By default the harness requires at least one requeued waiting job, at least one sampled requeued job ID, at least one active job marked `recovery_required`, at least one sampled recovery-required job ID, and at least one native ComfyUI prompt tracker reattached. Override `B1_RESTART_RECONCILIATION_MIN_REQUEUED`, `B1_RESTART_RECONCILIATION_MIN_MARKED_RECOVERY_REQUIRED`, or `B1_RESTART_RECONCILIATION_MIN_RESUMED_COMFYUI_NATIVE` only for a labelled development dry run; production handoff should keep all three at their default value of `1`.
 
 ## Backup, Migration, and Rollback Evidence
 

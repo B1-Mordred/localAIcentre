@@ -29,6 +29,12 @@ SCHEDULER_REDIS_LEASE_KEY = "b1-ai-hub:scheduler:gpu"
 VALID_JOB_PRIORITIES = {priority.value for priority in PriorityClass}
 COMFYUI_NATIVE_MODEL_ALIAS = "comfyui-native"
 COMFYUI_NATIVE_RESUMABLE_STATES = ("running", "saving", "cancelling")
+RECONCILIATION_SAMPLE_LIMIT = 50
+
+
+def _sample_ids(ids: list[str]) -> list[str]:
+    return [str(item) for item in ids[:RECONCILIATION_SAMPLE_LIMIT]]
+
 
 jobs = Table(
     "b1_jobs",
@@ -1581,7 +1587,7 @@ async def retry_model_download(download_id: str) -> dict[str, Any] | None:
         }
 
 
-async def reconcile_interrupted_model_downloads() -> dict[str, int]:
+async def reconcile_interrupted_model_downloads() -> dict[str, Any]:
     if engine is None:
         raise RuntimeError("database engine is not configured")
     now = datetime.now(tz=UTC)
@@ -1615,6 +1621,9 @@ async def reconcile_interrupted_model_downloads() -> dict[str, int]:
         "requeued": len(running_ids),
         "paused": len(pausing_ids),
         "cancelled": len(cancelling_ids),
+        "requeued_download_ids": _sample_ids(running_ids),
+        "paused_download_ids": _sample_ids(pausing_ids),
+        "cancelled_download_ids": _sample_ids(cancelling_ids),
     }
 
 
@@ -2182,11 +2191,11 @@ async def claim_next_job(
         return {**row, **values}
 
 
-async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> int:
+async def mark_interrupted_jobs_recovery_required_report(runtime_names: list[str]) -> dict[str, Any]:
     if engine is None:
         raise RuntimeError("database engine is not configured")
     if not runtime_names:
-        return 0
+        return {"marked_recovery_required": 0, "recovery_required_job_ids": []}
     now = datetime.now(tz=UTC)
     resumable_comfyui_native = and_(
         jobs.c.runtime == "comfyui",
@@ -2195,26 +2204,29 @@ async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> i
         jobs.c.native_prompt_id != "",
         jobs.c.state.in_(COMFYUI_NATIVE_RESUMABLE_STATES),
     )
+    predicate = and_(
+        jobs.c.runtime.in_(runtime_names),
+        ~resumable_comfyui_native,
+        jobs.c.state.in_(
+            [
+                "unloading",
+                "verifying_vram",
+                "loading",
+                "warming",
+                "running",
+                "saving",
+                "cancelling",
+            ]
+        ),
+    )
     async with engine.begin() as conn:
+        id_result = await conn.execute(select(jobs.c.id).where(predicate).with_for_update())
+        job_ids = [str(row[0]) for row in id_result.all()]
+        if not job_ids:
+            return {"marked_recovery_required": 0, "recovery_required_job_ids": []}
         result = await conn.execute(
             update(jobs)
-            .where(
-                and_(
-                    jobs.c.runtime.in_(runtime_names),
-                    ~resumable_comfyui_native,
-                    jobs.c.state.in_(
-                        [
-                            "unloading",
-                            "verifying_vram",
-                            "loading",
-                            "warming",
-                            "running",
-                            "saving",
-                            "cancelling",
-                        ]
-                    ),
-                )
-            )
+            .where(jobs.c.id.in_(job_ids))
             .values(
                 state="recovery_required",
                 stage="recovery_required",
@@ -2225,19 +2237,29 @@ async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> i
                 updated_at=now,
             )
         )
-    return int(result.rowcount or 0)
+    return {"marked_recovery_required": int(result.rowcount or 0), "recovery_required_job_ids": _sample_ids(job_ids)}
 
 
-async def requeue_interrupted_waiting_jobs(runtime_names: list[str]) -> int:
+async def mark_interrupted_jobs_recovery_required(runtime_names: list[str]) -> int:
+    report = await mark_interrupted_jobs_recovery_required_report(runtime_names)
+    return int(report.get("marked_recovery_required") or 0)
+
+
+async def requeue_interrupted_waiting_jobs_report(runtime_names: list[str]) -> dict[str, Any]:
     if engine is None:
         raise RuntimeError("database engine is not configured")
     if not runtime_names:
-        return 0
+        return {"requeued": 0, "requeued_job_ids": []}
     now = datetime.now(tz=UTC)
+    predicate = and_(jobs.c.runtime.in_(runtime_names), jobs.c.state == "waiting_for_gpu")
     async with engine.begin() as conn:
+        id_result = await conn.execute(select(jobs.c.id).where(predicate).with_for_update())
+        job_ids = [str(row[0]) for row in id_result.all()]
+        if not job_ids:
+            return {"requeued": 0, "requeued_job_ids": []}
         result = await conn.execute(
             update(jobs)
-            .where(and_(jobs.c.runtime.in_(runtime_names), jobs.c.state == "waiting_for_gpu"))
+            .where(jobs.c.id.in_(job_ids))
             .values(
                 state="queued",
                 stage="queued",
@@ -2248,7 +2270,12 @@ async def requeue_interrupted_waiting_jobs(runtime_names: list[str]) -> int:
                 updated_at=now,
             )
         )
-    return int(result.rowcount or 0)
+    return {"requeued": int(result.rowcount or 0), "requeued_job_ids": _sample_ids(job_ids)}
+
+
+async def requeue_interrupted_waiting_jobs(runtime_names: list[str]) -> int:
+    report = await requeue_interrupted_waiting_jobs_report(runtime_names)
+    return int(report.get("requeued") or 0)
 
 async def job_counts_by_state() -> list[dict[str, Any]]:
     if engine is None:

@@ -59,6 +59,8 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
                 "completed_at": "2026-07-24T12:00:01+00:00",
                 "marked_recovery_required": 1,
                 "requeued": 2,
+                "recovery_required_job_ids": ["job_cpu_active"],
+                "requeued_job_ids": ["job_cpu_waiting_1", "job_cpu_waiting_2"],
             }
             gpu_runner.startup_reconciliation = {
                 "status": "ok",
@@ -67,6 +69,8 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
                 "completed_at": "2026-07-24T12:00:02+00:00",
                 "marked_recovery_required": 3,
                 "requeued": 4,
+                "recovery_required_job_ids": ["job_gpu_active_1", "job_gpu_active_2", "job_gpu_active_3"],
+                "requeued_job_ids": ["job_gpu_waiting_1", "job_gpu_waiting_2", "job_gpu_waiting_3", "job_gpu_waiting_4"],
             }
             download_runner.startup_reconciliation = {
                 "status": "ok",
@@ -77,6 +81,9 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
                 "requeued": 5,
                 "paused": 1,
                 "cancelled": 2,
+                "requeued_download_ids": ["modeldl_running_1"],
+                "paused_download_ids": ["modeldl_pausing_1"],
+                "cancelled_download_ids": ["modeldl_cancelling_1", "modeldl_cancelling_2"],
             }
             self.patch_attr(
                 "settings",
@@ -96,10 +103,13 @@ class SchedulerReconciliationApiTests(unittest.TestCase):
         self.assertEqual(result["comfyui_native_prompt_resume"], {"checked": 2, "resumed": 2, "skipped": 0})
         records = {record["runner"]: record for record in result["records"]}
         self.assertEqual(records["cpu-job-runner"]["requeued"], 2)
+        self.assertEqual(records["cpu-job-runner"]["requeued_job_ids"], ["job_cpu_waiting_1", "job_cpu_waiting_2"])
         self.assertEqual(records["gpu-job-runner"]["marked_recovery_required"], 3)
+        self.assertEqual(records["gpu-job-runner"]["recovery_required_job_ids"], ["job_gpu_active_1", "job_gpu_active_2", "job_gpu_active_3"])
         self.assertEqual(records["model-download-runner"]["requeued"], 5)
         self.assertEqual(records["model-download-runner"]["paused"], 1)
         self.assertEqual(records["model-download-runner"]["cancelled"], 2)
+        self.assertEqual(records["model-download-runner"]["cancelled_download_ids"], ["modeldl_cancelling_1", "modeldl_cancelling_2"])
 
     def test_scheduler_reconciliation_endpoint_reports_missing_required_runner(self) -> None:
         self.patch_attr(
