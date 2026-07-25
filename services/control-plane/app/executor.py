@@ -1681,6 +1681,18 @@ class ModelDownloadRunner:
         file_stat = self.regular_file_stat(path, description, missing_ok=True)
         return int(file_stat.st_size) if file_stat is not None else 0
 
+    def validate_content_addressed_download_paths(self, target: Path, partial: Path, expected_sha256: str) -> str:
+        digest = expected_sha256.strip().lower()
+        if not model_lifecycle.SHA256_RE.fullmatch(digest):
+            raise model_lifecycle.ModelLifecycleError("target blob SHA-256 is invalid")
+        expected_target = model_lifecycle.blob_path_for(self.data_root, digest).absolute()
+        expected_partial = model_lifecycle.blob_partial_path_for(self.data_root, digest).absolute()
+        if target.absolute() != expected_target:
+            raise model_lifecycle.ModelLifecycleError("target blob path does not match target SHA-256")
+        if partial.absolute() != expected_partial:
+            raise model_lifecycle.ModelLifecycleError("partial blob path does not match target SHA-256")
+        return digest
+
     @staticmethod
     def open_partial_file(path: Path, mode: str) -> Any:
         if mode not in {"ab", "wb"}:
@@ -1867,7 +1879,7 @@ class ModelDownloadRunner:
         target = Path(file_plan["target_path"])
         partial = Path(file_plan["partial_path"])
         expected_size = int(file_plan["target_size_bytes"])
-        expected_sha256 = str(file_plan["target_sha256"])
+        expected_sha256 = self.validate_content_addressed_download_paths(target, partial, str(file_plan["target_sha256"]))
         self.ensure_download_parent_tree(target, "target blob path", partial=False, allow_missing=True)
         self.ensure_download_parent_tree(partial, "partial blob path", partial=True, allow_missing=True)
         target.parent.mkdir(parents=True, exist_ok=True)

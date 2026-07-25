@@ -2226,6 +2226,60 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, "partial blob path is not a regular file"):
                 asyncio.run(runner.download_file("modeldl_partial_dir", file_plan, 0, "file_1"))
 
+    def test_model_download_runner_rejects_tampered_content_addressed_paths(self) -> None:
+        fake = FakeDatabase()
+        self.patch_database(fake)
+        payload = b"target digest"
+        digest = hashlib.sha256(payload).hexdigest()
+        other_digest = hashlib.sha256(b"other digest").hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = executor.ModelDownloadRunner(root)
+            canonical_target = root / "models" / "blobs" / digest
+            canonical_partial = root / "models" / "blobs" / ".partial" / f"{digest}.partial"
+
+            cases = [
+                (
+                    {
+                        "target_path": str(root / "models" / "blobs" / other_digest),
+                        "partial_path": str(canonical_partial),
+                    },
+                    "target blob path does not match target SHA-256",
+                ),
+                (
+                    {
+                        "target_path": str(canonical_target),
+                        "partial_path": str(root / "models" / "blobs" / ".partial" / f"{other_digest}.partial"),
+                    },
+                    "partial blob path does not match target SHA-256",
+                ),
+                (
+                    {
+                        "target_path": str(canonical_target),
+                        "partial_path": str(canonical_partial),
+                        "target_sha256": "not-a-sha",
+                    },
+                    "target blob SHA-256 is invalid",
+                ),
+            ]
+            for override, expected in cases:
+                with self.subTest(expected=expected):
+                    file_plan = {
+                        "source_type": "direct-url",
+                        "source_url": "https://downloads.example.org/model.gguf",
+                        "target_size_bytes": len(payload),
+                        "target_sha256": digest,
+                        "target_path": str(canonical_target),
+                        "partial_path": str(canonical_partial),
+                        **override,
+                    }
+
+                    with self.assertRaisesRegex(executor.model_lifecycle.ModelLifecycleError, expected):
+                        asyncio.run(runner.download_file("modeldl_tampered", file_plan, 0, "file_1"))
+
+            self.assertFalse((root / "models").exists())
+
     def test_model_download_runner_validates_resumed_content_range(self) -> None:
         fake = FakeDatabase()
         self.patch_database(fake)
