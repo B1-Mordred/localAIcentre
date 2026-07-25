@@ -3400,6 +3400,97 @@ def media_job_links(job_id: str) -> dict[str, str]:
     }
 
 
+def is_native_comfyui_job(job: dict[str, Any]) -> bool:
+    return (
+        job.get("runtime") == "comfyui"
+        and (
+            job.get("operation") == "comfyui-prompt"
+            or job.get("model_alias") == "comfyui-native"
+            or isinstance(job.get("native_prompt_id"), str)
+        )
+    )
+
+
+def public_native_prompt_summary(raw_request: Any) -> dict[str, Any]:
+    if not isinstance(raw_request, dict):
+        return {"available": False}
+    request_input = raw_request.get("input")
+    if not isinstance(request_input, dict):
+        return {"available": False}
+    prompt_summary = request_input.get("prompt_summary")
+    if not isinstance(prompt_summary, dict):
+        return {
+            "available": True,
+            "client_id_present": isinstance(request_input.get("client_id"), str) and bool(str(request_input.get("client_id")).strip()),
+            "body_hash_present": isinstance(request_input.get("native_prompt_hash"), str) and bool(str(request_input.get("native_prompt_hash")).strip()),
+        }
+    safe_summary: dict[str, Any] = {
+        "available": True,
+        "client_id_present": isinstance(request_input.get("client_id"), str) and bool(str(request_input.get("client_id")).strip()),
+        "body_hash_present": isinstance(request_input.get("native_prompt_hash"), str) and bool(str(request_input.get("native_prompt_hash")).strip()),
+    }
+    for key in (
+        "has_prompt",
+        "has_client_id",
+        "node_count",
+        "class_type_count",
+        "malformed_node_count",
+        "unknown_top_level_key_count",
+        "prompt_shape",
+        "payload_type",
+    ):
+        value = prompt_summary.get(key)
+        if isinstance(value, (str, bool, int, float)) or value is None:
+            safe_summary[key] = value
+    known_keys = prompt_summary.get("known_top_level_keys")
+    if isinstance(known_keys, list):
+        safe_summary["known_top_level_keys"] = sorted(str(item) for item in known_keys if isinstance(item, str))[:20]
+    safe_summary["class_type_digest_present"] = isinstance(prompt_summary.get("class_type_digest"), str) and bool(prompt_summary.get("class_type_digest"))
+    safe_summary["node_id_digest_present"] = isinstance(prompt_summary.get("node_id_digest"), str) and bool(prompt_summary.get("node_id_digest"))
+    return safe_summary
+
+
+def public_native_comfyui_artifact_summary(job: dict[str, Any]) -> dict[str, Any]:
+    artifacts = [artifact for artifact in job.get("artifacts") or [] if isinstance(artifact, dict)]
+    stored = [artifact for artifact in artifacts if artifact.get("source") == "artifact_store" or artifact.get("ingest_status") == "stored"]
+    failed = [artifact for artifact in artifacts if artifact.get("ingest_status") == "failed"]
+    view_pending = [artifact for artifact in artifacts if artifact.get("source") == "comfyui_view" and artifact.get("ingest_status") not in {"stored", "failed"}]
+    kinds = sorted({str(artifact.get("kind")) for artifact in artifacts if isinstance(artifact.get("kind"), str) and artifact.get("kind")})
+    total_bytes = sum(int(artifact["bytes"]) for artifact in stored if isinstance(artifact.get("bytes"), int) and artifact["bytes"] >= 0)
+    return {
+        "artifact_count": len(artifacts),
+        "stored_artifact_count": len(stored),
+        "failed_ingest_count": len(failed),
+        "pending_view_artifact_count": len(view_pending),
+        "artifact_kinds": kinds,
+        "stored_bytes": total_bytes,
+    }
+
+
+def native_comfyui_public_job_summary(job: dict[str, Any], raw_request: Any) -> dict[str, Any] | None:
+    if not is_native_comfyui_job(job):
+        return None
+    native_prompt_id = job.get("native_prompt_id") if isinstance(job.get("native_prompt_id"), str) else None
+    summary = {
+        "compatibility_job": True,
+        "native_prompt_id": native_prompt_id,
+        "native_prompt_recorded": bool(native_prompt_id),
+        "tracker_terminal": job.get("state") in TERMINAL_JOB_STATES,
+        "state": job.get("state"),
+        "stage": job.get("stage"),
+        "progress": job.get("progress"),
+        "prompt": public_native_prompt_summary(raw_request),
+        "artifacts": public_native_comfyui_artifact_summary(job),
+    }
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def redact_native_comfyui_public_request(redacted_request: dict[str, Any], raw_request: Any) -> dict[str, Any]:
+    request = dict(redacted_request)
+    request["input"] = {"native_comfyui": public_native_prompt_summary(raw_request)}
+    return request
+
+
 def public_job(row: dict[str, Any]) -> dict[str, Any]:
     job = dict(row)
     raw_request = job.pop("request_params", None)
@@ -3407,7 +3498,12 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
     redacted_request = job.get("redacted_request")
     if not isinstance(redacted_request, dict):
         redacted_request = redact_request(raw_request) if isinstance(raw_request, dict) else {}
+    if is_native_comfyui_job(job):
+        redacted_request = redact_native_comfyui_public_request(redacted_request, raw_request)
     job["redacted_request"] = redacted_request
+    native_comfyui = native_comfyui_public_job_summary(job, raw_request)
+    if native_comfyui is not None:
+        job["native_comfyui"] = native_comfyui
     if job.get("id"):
         job["links"] = media_job_links(str(job["id"]))
     return jsonable_encoder(job)

@@ -250,6 +250,66 @@ class AdminJobsApiTests(unittest.TestCase):
             },
         )
 
+    def test_public_native_comfyui_job_includes_redacted_compatibility_summary(self) -> None:
+        result = main.public_job(
+            job_row(
+                operation="comfyui-prompt",
+                model_alias="comfyui-native",
+                native_prompt_id="prompt_native_1",
+                state="completed",
+                stage="completed",
+                progress=100,
+                request_params={
+                    "input": {
+                        "client_id": "native-client-1",
+                        "native_prompt_hash": "f" * 64,
+                        "prompt_summary": {
+                            "known_top_level_keys": ["client_id", "prompt"],
+                            "unknown_top_level_key_count": 1,
+                            "has_client_id": True,
+                            "has_prompt": True,
+                            "node_count": 3,
+                            "class_type_count": 2,
+                            "class_type_digest": "a" * 64,
+                            "node_id_digest": "b" * 64,
+                            "malformed_node_count": 0,
+                        },
+                    }
+                },
+                redacted_request=None,
+                artifacts=[
+                    {"kind": "image", "source": "artifact_store", "ingest_status": "stored", "bytes": 12, "url": "/artifacts/comfyui/prompt_native_1/0.png"},
+                    {"kind": "video", "source": "comfyui_view", "ingest_status": "failed", "bytes": None, "url": "/artifacts/comfyui/prompt_native_1/1.mp4"},
+                    {"kind": "audio", "source": "comfyui_view", "url": "/artifacts/comfyui/prompt_native_1/2.wav"},
+                ],
+            )
+        )
+
+        self.assertNotIn("request_params", result)
+        self.assertNotIn("idempotency_key", result)
+        self.assertEqual(
+            result["redacted_request"]["input"]["native_comfyui"]["known_top_level_keys"],
+            ["client_id", "prompt"],
+        )
+        self.assertEqual(result["native_comfyui"]["native_prompt_id"], "prompt_native_1")
+        self.assertTrue(result["native_comfyui"]["native_prompt_recorded"])
+        self.assertTrue(result["native_comfyui"]["tracker_terminal"])
+        self.assertTrue(result["native_comfyui"]["prompt"]["body_hash_present"])
+        self.assertTrue(result["native_comfyui"]["prompt"]["class_type_digest_present"])
+        self.assertTrue(result["native_comfyui"]["prompt"]["node_id_digest_present"])
+        self.assertEqual(result["native_comfyui"]["prompt"]["node_count"], 3)
+        self.assertEqual(result["native_comfyui"]["prompt"]["known_top_level_keys"], ["client_id", "prompt"])
+        self.assertEqual(result["native_comfyui"]["artifacts"]["artifact_count"], 3)
+        self.assertEqual(result["native_comfyui"]["artifacts"]["stored_artifact_count"], 1)
+        self.assertEqual(result["native_comfyui"]["artifacts"]["failed_ingest_count"], 1)
+        self.assertEqual(result["native_comfyui"]["artifacts"]["pending_view_artifact_count"], 1)
+        self.assertEqual(result["native_comfyui"]["artifacts"]["artifact_kinds"], ["audio", "image", "video"])
+        self.assertEqual(result["native_comfyui"]["artifacts"]["stored_bytes"], 12)
+        self.assertNotIn("f" * 64, str(result))
+        self.assertNotIn("a" * 64, str(result))
+        self.assertNotIn("b" * 64, str(result))
+        self.assertNotIn("native-client-1", str(result))
+
     def test_admin_job_listing_requires_admin_or_operator_role(self) -> None:
         fake_database = FakeJobsDatabase()
         self.patch_attr("database", fake_database)

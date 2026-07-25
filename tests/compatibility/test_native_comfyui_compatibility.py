@@ -31,6 +31,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "history_listing_accessible",
     "history_available",
     "durable_job_observable",
+    "native_summary_observable",
     "durable_artifacts_observable",
     "queue_delete_accessible",
     "interrupt_accessible",
@@ -619,6 +620,29 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             stage=job.get("stage"),
             progress=job.get("progress"),
             artifact_count=len(job.get("artifacts") or []) if isinstance(job.get("artifacts"), list) else 0,
+        )
+        native_summary = job.get("native_comfyui")
+        self.assertIsInstance(native_summary, dict, f"durable job {job_id} did not expose native_comfyui summary: {job}")
+        prompt_summary = native_summary.get("prompt")
+        artifact_summary = native_summary.get("artifacts")
+        self.assertIsInstance(prompt_summary, dict)
+        self.assertIsInstance(artifact_summary, dict)
+        self.assertTrue(native_summary.get("native_prompt_recorded"), f"native_comfyui summary did not record native prompt: {native_summary}")
+        self.assertEqual(native_summary.get("native_prompt_id"), prompt_id)
+        self.assertIsInstance(prompt_summary.get("node_count"), int)
+        self.assertGreater(prompt_summary.get("node_count"), 0)
+        self.assertTrue(prompt_summary.get("body_hash_present"))
+        self.assertNotIn("native_prompt_hash", json.dumps(native_summary))
+        self.record_check(
+            "native_summary_observable",
+            prompt_id=prompt_id,
+            job_id=job_id,
+            node_count=prompt_summary.get("node_count"),
+            class_type_count=prompt_summary.get("class_type_count"),
+            stored_artifact_count=artifact_summary.get("stored_artifact_count"),
+            failed_ingest_count=artifact_summary.get("failed_ingest_count"),
+            body_hash_present=prompt_summary.get("body_hash_present"),
+            client_id_present=prompt_summary.get("client_id_present"),
         )
         artifacts_payload = self.request_api_json("GET", f"/v1/media/jobs/{urllib.parse.quote(job_id, safe='')}/artifacts", timeout=60)
         self.assertIsInstance(artifacts_payload, dict)

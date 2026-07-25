@@ -127,6 +127,7 @@ type MediaJob = {
   links?: MediaJobLinks;
   failure_category?: string | null;
   failure_message?: string | null;
+  native_comfyui?: NativeComfyUiJobSummary | null;
   redacted_request?: Record<string, JsonValue>;
 };
 
@@ -135,6 +136,27 @@ type MediaJobLinks = {
   events?: string;
   artifacts?: string;
   cancel?: string;
+};
+
+type NativeComfyUiJobSummary = {
+  compatibility_job?: boolean;
+  native_prompt_id?: string | null;
+  native_prompt_recorded?: boolean;
+  tracker_terminal?: boolean;
+  prompt?: {
+    available?: boolean;
+    body_hash_present?: boolean;
+    node_count?: number;
+    malformed_node_count?: number;
+  };
+  artifacts?: {
+    artifact_count?: number;
+    stored_artifact_count?: number;
+    failed_ingest_count?: number;
+    pending_view_artifact_count?: number;
+    artifact_kinds?: string[];
+    stored_bytes?: number;
+  };
 };
 
 type Artifact = {
@@ -362,6 +384,18 @@ function workflowExecutionLine(workflow: PublishedWorkflow): string {
   const runtime = summary.selected_runtime ?? summary.runtime_candidates?.join(", ") ?? workflow.model_alias;
   const lease = summary.requires_gpu_lease ? "GPU lease" : "no GPU lease";
   return `${summary.locality ?? "local"} / ${runtime} / ${lease}`;
+}
+
+function nativeComfyUiSummaryLine(summary?: NativeComfyUiJobSummary | null): string {
+  if (!summary?.compatibility_job) return "";
+  const prompt = summary.prompt ?? {};
+  const artifacts = summary.artifacts ?? {};
+  const promptState = summary.native_prompt_recorded ? (summary.native_prompt_id ?? "native prompt recorded") : "native prompt pending";
+  const nodes = prompt.node_count ?? 0;
+  const stored = artifacts.stored_artifact_count ?? 0;
+  const total = artifacts.artifact_count ?? 0;
+  const failed = artifacts.failed_ingest_count ?? 0;
+  return `${promptState} / ${nodes} graph node${nodes === 1 ? "" : "s"} / ${stored}/${total} artifact${total === 1 ? "" : "s"} stored${failed ? ` / ${failed} failed ingest` : ""}`;
 }
 
 function jobBacking(job: MediaJob | null, workflow?: PublishedWorkflow | null): { locality: string; backend: string; label: string; className: string } {
@@ -883,6 +917,7 @@ function JobSummary({
         <div><dt>Events</dt><dd>{eventStatus || "idle"}</dd></div>
         <div><dt>Backing</dt><dd>{backing.label}</dd></div>
         <div><dt>Plan</dt><dd>{workflow ? workflowExecutionLine(workflow) : "none"}</dd></div>
+        {job?.native_comfyui && <div><dt>Native</dt><dd>{nativeComfyUiSummaryLine(job.native_comfyui)}</dd></div>}
         <div><dt>Runtime</dt><dd>{job?.runtime ?? workflow?.model_alias ?? "none"}</dd></div>
         <div><dt>Artifacts</dt><dd>{artifacts.length}</dd></div>
       </dl>

@@ -1030,6 +1030,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "history_listing_accessible",
                 "history_available",
                 "durable_job_observable",
+                "native_summary_observable",
                 "durable_artifacts_observable",
                 "queue_delete_accessible",
                 "interrupt_accessible",
@@ -1039,6 +1040,10 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "native_prompt_id": native_prompt_id,
             "durable_job_id": native_job_id,
             "durable_artifact_count": 1,
+            "native_summary_node_count": 2,
+            "native_summary_class_type_count": 2,
+            "native_summary_stored_artifact_count": 1,
+            "native_summary_failed_ingest_count": 0,
             "missing_compatibility_evidence": [],
             "checks": {
                 "object_info_accessible": {"status": "ok", "recorded_at": "2026-07-24T12:31:00+00:00"},
@@ -1084,6 +1089,18 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "state": "completed",
                     "artifact_count": 1,
                 },
+                "native_summary_observable": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:33:00+00:00",
+                    "prompt_id": native_prompt_id,
+                    "job_id": native_job_id,
+                    "node_count": 2,
+                    "class_type_count": 2,
+                    "stored_artifact_count": 1,
+                    "failed_ingest_count": 0,
+                    "body_hash_present": True,
+                    "client_id_present": True,
+                },
                 "durable_artifacts_observable": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:33:00+00:00",
@@ -1116,7 +1133,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "byte_count": 4096,
                 },
             },
-            "sample_count": 10,
+            "sample_count": 13,
             "sample_labels": [
                 "object-info",
                 "object-info-node",
@@ -1127,6 +1144,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "websocket-completed",
                 "history-listing",
                 "durable-job-artifact",
+                "native-summary",
                 "queue-delete",
                 "targeted-interrupt",
                 "view-artifact",
@@ -2728,6 +2746,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("view_artifact_accessible", snapshot["required_checks"])
         self.assertIn("prompt_idempotency_replay", snapshot["required_checks"])
         self.assertIn("durable_job_observable", snapshot["required_checks"])
+        self.assertIn("native_summary_observable", snapshot["required_checks"])
         self.assertIn("durable_artifacts_observable", snapshot["required_checks"])
         self.assertEqual(
             snapshot["missing_checks"],
@@ -2738,6 +2757,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "prompt_idempotency_replay",
                 "history_listing_accessible",
                 "durable_job_observable",
+                "native_summary_observable",
                 "durable_artifacts_observable",
                 "queue_delete_accessible",
                 "interrupt_accessible",
@@ -2762,6 +2782,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("prompt_idempotency_replay.replay_header", snapshot["missing_compatibility_evidence"])
         self.assertIn("websocket_events.completed", snapshot["missing_compatibility_evidence"])
         self.assertIn("durable_job_observable.job_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("native_summary_observable.job_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("native_summary_observable.node_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("native_summary_observable.body_hash_present", snapshot["missing_compatibility_evidence"])
         self.assertIn("durable_artifacts_observable.byte_count", snapshot["missing_compatibility_evidence"])
         self.assertIn("queue_delete_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("interrupt_accessible.http_status", snapshot["missing_compatibility_evidence"])
@@ -2794,6 +2817,17 @@ class AcceptanceReportTests(unittest.TestCase):
                     "job_id": job_id,
                     "state": "completed",
                     "artifact_count": 1,
+                },
+                "native_summary_observable": {
+                    "status": "ok",
+                    "prompt_id": prompt_id,
+                    "job_id": job_id,
+                    "node_count": 1,
+                    "class_type_count": 1,
+                    "stored_artifact_count": 1,
+                    "failed_ingest_count": 0,
+                    "body_hash_present": True,
+                    "client_id_present": True,
                 },
                 "durable_artifacts_observable": {
                     "status": "ok",
@@ -2828,6 +2862,8 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertEqual(snapshot["missing_checks"], [])
         self.assertEqual(snapshot["missing_compatibility_evidence"], [])
+        self.assertEqual(snapshot["native_summary_node_count"], 1)
+        self.assertEqual(snapshot["native_summary_stored_artifact_count"], 1)
 
     def test_absent_legacy_comfyui_evidence_is_non_blocking(self) -> None:
         live_evidence = sample_live_evidence()
@@ -3815,6 +3851,17 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "state": "completed",
                                 "artifact_count": 1,
                             },
+                            "native_summary_observable": {
+                                "status": "ok",
+                                "prompt_id": native_prompt_id,
+                                "job_id": native_job_id,
+                                "node_count": 2,
+                                "class_type_count": 2,
+                                "stored_artifact_count": 1,
+                                "failed_ingest_count": 0,
+                                "body_hash_present": True,
+                                "client_id_present": True,
+                            },
                             "durable_artifacts_observable": {
                                 "status": "ok",
                                 "prompt_id": native_prompt_id,
@@ -3853,6 +3900,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"label": "websocket-completed"},
                             {"label": "history-listing"},
                             {"label": "durable-job-artifact"},
+                            {"label": "native-summary"},
                             {"label": "queue-delete"},
                             {"label": "targeted-interrupt"},
                             {"label": "view-artifact"},
@@ -4118,7 +4166,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["native_prompt_id"], native_prompt_id)
         self.assertEqual(native["durable_job_id"], native_job_id)
         self.assertEqual(native["durable_artifact_count"], 1)
-        self.assertEqual(native["sample_count"], 12)
+        self.assertEqual(native["native_summary_node_count"], 2)
+        self.assertEqual(native["native_summary_stored_artifact_count"], 1)
+        self.assertEqual(native["sample_count"], 13)
         legacy = snapshot["legacy_comfyui_listener"]
         self.assertTrue(legacy["available"])
         self.assertEqual(legacy["source_path"], str(legacy_comfyui.resolve()))

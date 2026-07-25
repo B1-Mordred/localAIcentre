@@ -885,6 +885,38 @@ type JobArtifact = {
   sha256?: string;
 };
 
+type NativeComfyUiJobSummary = {
+  compatibility_job?: boolean;
+  native_prompt_id?: string | null;
+  native_prompt_recorded?: boolean;
+  tracker_terminal?: boolean;
+  state?: string;
+  stage?: string;
+  progress?: number;
+  prompt?: {
+    available?: boolean;
+    client_id_present?: boolean;
+    body_hash_present?: boolean;
+    has_prompt?: boolean;
+    has_client_id?: boolean;
+    node_count?: number;
+    class_type_count?: number;
+    malformed_node_count?: number;
+    unknown_top_level_key_count?: number;
+    class_type_digest_present?: boolean;
+    node_id_digest_present?: boolean;
+    known_top_level_keys?: string[];
+  };
+  artifacts?: {
+    artifact_count?: number;
+    stored_artifact_count?: number;
+    failed_ingest_count?: number;
+    pending_view_artifact_count?: number;
+    artifact_kinds?: string[];
+    stored_bytes?: number;
+  };
+};
+
 type AccessSnippet = {
   id: string;
   label: string;
@@ -1143,6 +1175,7 @@ type JobRecord = {
   failure_category?: string | null;
   failure_message?: string | null;
   artifacts?: JobArtifact[];
+  native_comfyui?: NativeComfyUiJobSummary | null;
   redacted_request?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
@@ -3028,6 +3061,18 @@ function addJobReproducibilityEntry(entries: JobReproducibilityEntry[], label: s
   entries.push({ label, value: compactReproducibilityValue(value) });
 }
 
+function nativeComfyUiSummaryLine(summary?: NativeComfyUiJobSummary | null): string {
+  if (!summary?.compatibility_job) return "";
+  const prompt = summary.prompt ?? {};
+  const artifacts = summary.artifacts ?? {};
+  const promptState = summary.native_prompt_recorded ? (summary.native_prompt_id ?? "native prompt recorded") : "native prompt pending";
+  const nodes = prompt.node_count ?? 0;
+  const stored = artifacts.stored_artifact_count ?? 0;
+  const total = artifacts.artifact_count ?? 0;
+  const failed = artifacts.failed_ingest_count ?? 0;
+  return `${promptState} / ${nodes} graph node${nodes === 1 ? "" : "s"} / ${stored}/${total} artifact${total === 1 ? "" : "s"} stored${failed ? ` / ${failed} failed ingest` : ""}`;
+}
+
 function jobReproducibilityEntries(job: JobRecord): JobReproducibilityEntry[] {
   const request = job.redacted_request ?? {};
   const input = objectOrNull(request.input);
@@ -3040,6 +3085,7 @@ function jobReproducibilityEntries(job: JobRecord): JobReproducibilityEntry[] {
   addJobReproducibilityEntry(entries, "priority", request.priority ?? job.priority);
   addJobReproducibilityEntry(entries, "workflow", input?.workflow_id);
   addJobReproducibilityEntry(entries, "workflow version", input?.workflow_version);
+  addJobReproducibilityEntry(entries, "native ComfyUI", nativeComfyUiSummaryLine(job.native_comfyui));
   Object.entries(parameters ?? {}).slice(0, 10).forEach(([name, value]) => {
     addJobReproducibilityEntry(entries, labelFromKey(name), value);
   });
@@ -3290,7 +3336,7 @@ function Jobs() {
               <tr key={job.id}>
                 <td><code>{job.id}</code><small>{job.modality} / {job.operation} / {formatDateTime(job.created_at)}</small></td>
                 <td><span className={`status-pill ${job.state}`}>{job.state}</span><small>{job.stage ?? ""} / {job.progress ?? 0}% / retry {job.retry_count ?? 0}</small></td>
-                <td>{job.runtime}<small>{job.model_alias} / {job.resolved_model_version}</small></td>
+                <td>{job.runtime}<small>{job.model_alias} / {job.resolved_model_version}</small>{job.native_comfyui && <small>{nativeComfyUiSummaryLine(job.native_comfyui)}</small>}</td>
                 <td>
                   <select aria-label={`Priority for ${job.id}`} value={priority} onChange={(event) => setPriorityByJob((current) => ({ ...current, [job.id]: event.target.value }))} disabled={busy || !PRIORITIZABLE_JOB_STATES.has(job.state)}>
                     {JOB_PRIORITIES.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -3325,6 +3371,16 @@ function Jobs() {
             <strong>{selected.native_prompt_id ?? "no native prompt"}</strong>
             <small>started {formatDateTime(selected.started_at)} / completed {formatDateTime(selected.completed_at)}</small>
           </div>
+          {selected.native_comfyui && (
+            <section className="job-native-comfyui">
+              <h3>Native ComfyUI</h3>
+              <dl>
+                <div><dt>Prompt</dt><dd>{nativeComfyUiSummaryLine(selected.native_comfyui)}</dd></div>
+                <div><dt>Audit</dt><dd>{selected.native_comfyui.prompt?.body_hash_present ? "body hash recorded" : "body hash missing"} / {selected.native_comfyui.prompt?.client_id_present ? "client ID recorded" : "client ID absent"} / {selected.native_comfyui.prompt?.unknown_top_level_key_count ?? 0} unknown top-level key{selected.native_comfyui.prompt?.unknown_top_level_key_count === 1 ? "" : "s"}</dd></div>
+                <div><dt>Artifacts</dt><dd>{selected.native_comfyui.artifacts?.artifact_kinds?.join(", ") || "none"} / {formatBytes(selected.native_comfyui.artifacts?.stored_bytes)}</dd></div>
+              </dl>
+            </section>
+          )}
           <div>
             <strong>{(selected.artifacts ?? []).length} artifact{(selected.artifacts ?? []).length === 1 ? "" : "s"}</strong>
             <small>{(selected.artifacts ?? []).map((artifact) => artifact.url).filter(Boolean).join(" / ") || "none"}</small>

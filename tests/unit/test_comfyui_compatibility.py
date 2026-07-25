@@ -112,6 +112,12 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
                         "state": "completed",
                         "stage": "completed",
                         "progress": 100,
+                        "native_comfyui": {
+                            "native_prompt_id": "prompt_native_1",
+                            "native_prompt_recorded": True,
+                            "prompt": {"node_count": 1, "class_type_count": 1, "body_hash_present": True, "client_id_present": True},
+                            "artifacts": {"stored_artifact_count": 1, "failed_ingest_count": 0},
+                        },
                         "artifacts": [{"url": "/artifacts/comfyui/prompt_native_1/output.png"}],
                     }
                 ]
@@ -132,6 +138,8 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         self.assertIn("native_prompt_id=prompt_native_1", json_calls[0][1])
         self.assertEqual(json_calls[1], ("GET", "/v1/media/jobs/job_native_1/artifacts"))
         self.assertEqual(byte_calls, [("GET", "/artifacts/comfyui/prompt_native_1/output.png")])
+        self.assertEqual(harness.checks["native_summary_observable"]["node_count"], 1)
+        self.assertTrue(harness.checks["native_summary_observable"]["body_hash_present"])
         self.assertEqual(harness.checks["durable_job_observable"]["job_id"], "job_native_1")
         self.assertEqual(harness.checks["durable_artifacts_observable"]["byte_count"], 14)
         self.assertEqual(harness.samples[-1]["label"], "durable-job-artifact")

@@ -332,6 +332,7 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "history_listing_accessible",
     "history_available",
     "durable_job_observable",
+    "native_summary_observable",
     "durable_artifacts_observable",
     "queue_delete_accessible",
     "interrupt_accessible",
@@ -1367,6 +1368,34 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
     if _positive_int(durable_job.get("artifact_count")) < 1:
         missing.append("durable_job_observable.artifact_count")
 
+    native_summary = require_prompt_match("native_summary_observable")
+    native_summary_job_id = _nonempty_text(native_summary.get("job_id"))
+    if not native_summary_job_id:
+        missing.append("native_summary_observable.job_id")
+    elif job_id and native_summary_job_id != job_id:
+        missing.append("native_summary_observable.job_id_matches_durable_job")
+    native_summary_node_count = _positive_int(native_summary.get("node_count"))
+    native_summary_class_type_count = _positive_int(native_summary.get("class_type_count"))
+    native_summary_stored_artifact_count = _positive_int(native_summary.get("stored_artifact_count"))
+    native_summary_failed_ingest_count = _integer_value(native_summary.get("failed_ingest_count"))
+    if native_summary_node_count < 1:
+        missing.append("native_summary_observable.node_count")
+    if native_summary_class_type_count < 1:
+        missing.append("native_summary_observable.class_type_count")
+    if native_summary_stored_artifact_count < 1:
+        missing.append("native_summary_observable.stored_artifact_count")
+    if native_summary_failed_ingest_count is None or native_summary_failed_ingest_count < 0:
+        missing.append("native_summary_observable.failed_ingest_count")
+    if native_summary.get("body_hash_present") is not True:
+        missing.append("native_summary_observable.body_hash_present")
+    if native_summary.get("client_id_present") is not True:
+        missing.append("native_summary_observable.client_id_present")
+    serialized_native_summary = json.dumps(native_summary, sort_keys=True, default=str)
+    if "native_prompt_hash" in serialized_native_summary:
+        missing.append("native_summary_observable.raw_hash_redacted")
+    if "client_id" in native_summary or "request_params" in native_summary or "prompt" in native_summary:
+        missing.append("native_summary_observable.raw_request_redacted")
+
     durable_artifacts = require_prompt_match("durable_artifacts_observable")
     durable_artifact_job_id = _nonempty_text(durable_artifacts.get("job_id"))
     if not durable_artifact_job_id:
@@ -1397,6 +1426,10 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
         "native_prompt_id": prompt_id,
         "durable_job_id": job_id,
         "durable_artifact_count": _positive_int(durable_artifacts.get("artifact_count")),
+        "native_summary_node_count": native_summary_node_count,
+        "native_summary_class_type_count": native_summary_class_type_count,
+        "native_summary_stored_artifact_count": native_summary_stored_artifact_count,
+        "native_summary_failed_ingest_count": native_summary_failed_ingest_count,
         "missing_compatibility_evidence": missing,
     }
 
