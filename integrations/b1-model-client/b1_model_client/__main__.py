@@ -59,6 +59,8 @@ def validate_base_url(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise RuntimeError("Model Hub base URL is required")
+    if "\\" in raw or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in raw):
+        raise RuntimeError("Model Hub base URL contains unsafe characters")
     try:
         parsed = urlsplit(raw)
         _ = parsed.port
@@ -68,7 +70,7 @@ def validate_base_url(value: str) -> str:
         raise RuntimeError("Model Hub base URL must be an http(s) URL with a host")
     if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
         raise RuntimeError("Model Hub base URL must not contain credentials")
-    if parsed.query or parsed.fragment:
+    if parsed.query or parsed.fragment or "?" in raw or "#" in raw:
         raise RuntimeError("Model Hub base URL must not contain a query string or fragment")
     if "\\" in parsed.netloc or "\\" in parsed.path or not parsed.hostname:
         raise RuntimeError("Model Hub base URL contains unsafe characters")

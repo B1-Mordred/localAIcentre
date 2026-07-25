@@ -61,7 +61,9 @@ class ModelClientTests(unittest.TestCase):
             "ftp://models.ai.b1.germering",
             "https://user:pass@models.ai.b1.germering",
             "https://models.ai.b1.germering?token=secret",
+            "https://models.ai.b1.germering?",
             "https://models.ai.b1.germering/#fragment",
+            "https://models.ai.b1.germering/#",
             "https://models.ai.b1.germering/../admin",
             "https://models.ai.b1.germering/%2e%2e/admin",
             "https://models.ai.b1.germering/models%2fescape",
@@ -73,6 +75,8 @@ class ModelClientTests(unittest.TestCase):
             "https://models.ai.b1.germering/models%zzname",
             "https://models.ai.b1.germering/models%ffname",
             "https://models.ai.b1.germering:bad",
+            "https://models.ai.b1.germering/models\nadmin",
+            "https://models.ai.b1.germering/models\\admin",
         ]
         for value in unsafe_values:
             with self.subTest(value=value):
