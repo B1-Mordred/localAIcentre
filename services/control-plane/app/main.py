@@ -4317,6 +4317,8 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
 def public_runtime_reservation(row: dict[str, Any]) -> dict[str, Any]:
     public = dict(row)
     public.pop("idempotency_key", None)
+    reason = public.pop("reason", "")
+    public["reason_provided"] = bool(str(reason).strip())
     if public.get("status") == "active" and public["expires_at"] <= datetime.now(tz=UTC):
         public["status"] = "expired"
     return jsonable_encoder(public)

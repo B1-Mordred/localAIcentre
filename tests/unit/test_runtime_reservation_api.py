@@ -157,6 +157,8 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         self.assertEqual(result["object"], "list")
         self.assertEqual(result["data"][0]["id"], "reservation_1")
+        self.assertTrue(result["data"][0]["reason_provided"])
+        self.assertNotIn("reason", result["data"][0])
         self.assertEqual(
             fake_database.list_kwargs,
             {"limit": 25, "owner_id": "client_1", "status": "active", "runtime": "localai"},
@@ -198,6 +200,8 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.assertEqual(result["model_alias"], "chat-default")
         self.assertEqual(result["resolved_model_version"], "chat-model@1.0.0")
         self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("reason", result)
+        self.assertTrue(result["reason_provided"])
         self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
         self.assertEqual(fake_database.inserted[0]["duration_seconds"], 600)
         self.assertEqual(fake_database.inserted[0]["reason"], "batch window pasted prompt secret")
@@ -231,6 +235,8 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         self.assertEqual(result["id"], "reservation_1")
         self.assertNotIn("idempotency_key", result)
+        self.assertNotIn("reason", result)
+        self.assertTrue(result["reason_provided"])
         self.assertEqual(fake_database.inserted, [])
 
     def test_create_reservation_idempotency_conflict_reports_public_fields_only(self) -> None:
@@ -387,6 +393,17 @@ class RuntimeReservationApiTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 403)
 
+    def test_owner_get_returns_redacted_reservation_reason(self) -> None:
+        self.patch_attr("database", FakeReservationDatabase(reservation_row(reason="do not expose this prompt context")))
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:read"})))
+
+        result = asyncio.run(main.runtime_reservation_get("reservation_1"))
+
+        self.assertEqual(result["id"], "reservation_1")
+        self.assertTrue(result["reason_provided"])
+        self.assertNotIn("reason", result)
+        self.assertNotIn("do not expose", str(result))
+
     def test_public_delete_rejects_other_owner_before_cancel(self) -> None:
         fake_database = FakeReservationDatabase(reservation_row(owner_id="other_client"))
         self.patch_attr("database", fake_database)
@@ -409,6 +426,8 @@ class RuntimeReservationApiTests(unittest.TestCase):
         result = asyncio.run(main.runtime_reservation_delete("reservation_1"))
 
         self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["reason_provided"])
+        self.assertNotIn("reason", result)
         self.assertEqual(fake_database.cancelled, ["reservation_1"])
         self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.cancelled")
 
