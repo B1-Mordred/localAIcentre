@@ -6,7 +6,7 @@ Before touching the old deployment:
 make inventory
 ```
 
-The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_DATA_ROOT/backups/`, and is read-only. It captures:
+The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_DATA_ROOT/backups/`, and is read-only. Newly created inventory output directories are owner-only on POSIX systems and the report file is written mode `0600`; still treat the file as sensitive host migration evidence because it contains paths, Docker metadata, ports, DNS, mount, and storage summaries. It captures:
 
 - all Docker containers, Compose projects, volumes, networks, Docker version/info, and NVIDIA runtime availability
 - listening TCP sockets and processes

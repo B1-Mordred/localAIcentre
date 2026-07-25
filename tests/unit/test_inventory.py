@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -259,6 +260,31 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("open-webui", hinted_volumes)
         self.assertIn("ollama-models", hinted_volumes)
         self.assertEqual(report["classification"]["networks_with_ai_hints"][0]["Name"], "comfy_default")
+
+    def test_write_private_json_protects_inventory_output_and_new_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "nested" / "inventory.json"
+
+            inventory.write_private_json(output, {"format": "b1-ai-hub-host-inventory/v1", "ok": True})
+
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["format"], "b1-ai-hub-host-inventory/v1")
+            if os.name != "nt":
+                self.assertEqual((Path(tmp) / "nested").stat().st_mode & 0o777, 0o700)
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(os.name == "nt" or not hasattr(os, "O_NOFOLLOW"), "symlink output refusal is POSIX-specific")
+    def test_write_private_json_refuses_existing_output_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            link = root / "inventory.json"
+            target.write_text("old", encoding="utf-8")
+            link.symlink_to(target)
+
+            with self.assertRaises(OSError):
+                inventory.write_private_json(link, {"format": "b1-ai-hub-host-inventory/v1"})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "old")
 
 
 if __name__ == "__main__":

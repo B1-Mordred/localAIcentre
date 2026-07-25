@@ -105,6 +105,8 @@ REVIEW_PORTS = {
 INITIAL_PROFILE_NAME = "rtx3060-32gb-initial"
 MIN_INITIAL_GPU_VRAM_MIB = 12 * 1024
 MIN_INITIAL_HOST_RAM_MIB = 32000
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 
 def redact_text(value: str) -> str:
@@ -120,6 +122,41 @@ def redact_match(match: re.Match[str]) -> str:
     if match.lastindex and match.lastindex >= 2:
         return f"{match.group(1)}{match.group(2)}<redacted>"
     return "<redacted>"
+
+
+def ensure_private_missing_parents(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=PRIVATE_DIR_MODE)
+        if os.name != "nt":
+            directory.chmod(PRIVATE_DIR_MODE)
+
+
+def write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    ensure_private_missing_parents(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, PRIVATE_FILE_MODE)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if os.name != "nt":
+        path.chmod(PRIVATE_FILE_MODE)
 
 
 def run(command: list[str]) -> dict[str, Any]:
@@ -1058,10 +1095,9 @@ def main() -> None:
     parser.add_argument("--scan-root", action="append", default=None, help="Root to scan for Compose files. May be repeated.")
     args = parser.parse_args()
     output = Path(args.output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
     scan_roots = [Path(item).resolve() for item in args.scan_root] if args.scan_root else None
     inventory = build_inventory(b1_root=Path(args.b1_root).resolve(), scan_roots=scan_roots)
-    output.write_text(json.dumps(inventory, indent=2, sort_keys=True), encoding="utf-8")
+    write_private_json(output, inventory)
     print(f"wrote inventory: {output}")
 
 
