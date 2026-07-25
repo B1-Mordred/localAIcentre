@@ -67,6 +67,7 @@ GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "localai_exclusive_gpu_residency",
     "comfyui_switch_completed",
     "voicebox_switch_completed",
+    "localai_comfyui_voicebox_switch",
     "vram_reserve_enforced",
     "bounded_runtime_recovery_action",
 )

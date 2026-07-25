@@ -199,6 +199,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "localai_exclusive_gpu_residency",
                 "comfyui_switch_completed",
                 "voicebox_switch_completed",
+                "localai_comfyui_voicebox_switch",
                 "vram_reserve_enforced",
                 "bounded_runtime_recovery_action",
             ],
@@ -236,6 +237,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "localai_comfyui_voicebox_switch": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:00+00:00",
+                    "runtime_order": ["localai", "comfyui", "voicebox"],
                     "chat_resolved_model_version": "b1-chat-default@1.0.0",
                     "comfyui_resolved_model_version": "b1-image-default@1.0.0",
                     "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
@@ -1101,6 +1103,28 @@ class AcceptanceReportTests(unittest.TestCase):
             "RTX 3060 GPU acceptance evidence is missing required checks: voicebox_switch_completed, bounded_runtime_recovery_action",
             report["acceptance_blockers"],
         )
+
+    def test_gpu_snapshot_requires_combined_switch_sequence_evidence(self) -> None:
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
+                "generated_at": "2026-07-24T12:30:00+00:00",
+                "base_url": "https://api.ai.b1.germering",
+                "status": "ok",
+                "checks": {
+                    "resource_policy_and_runtime_readiness": {"status": "ok"},
+                    "localai_exclusive_gpu_residency": {"status": "ok"},
+                    "comfyui_switch_completed": {"status": "ok"},
+                    "voicebox_switch_completed": {"status": "ok"},
+                    "vram_reserve_enforced": {"status": "ok"},
+                    "bounded_runtime_recovery_action": {"status": "ok"},
+                },
+                "required_model_aliases": [],
+                "model_measurements": {},
+            }
+        )
+
+        self.assertEqual(snapshot["missing_checks"], ["localai_comfyui_voicebox_switch"])
 
     def test_report_blocks_handoff_for_missing_gpu_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()

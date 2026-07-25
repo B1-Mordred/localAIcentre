@@ -23,6 +23,7 @@ GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "localai_exclusive_gpu_residency",
     "comfyui_switch_completed",
     "voicebox_switch_completed",
+    "localai_comfyui_voicebox_switch",
     "vram_reserve_enforced",
     "bounded_runtime_recovery_action",
 )
@@ -350,6 +351,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         )
         self.record_check(
             "localai_comfyui_voicebox_switch",
+            runtime_order=["localai", "comfyui", "voicebox"],
             chat_model=chat_model,
             chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
             comfyui_model=image_model,
