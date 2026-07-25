@@ -19,6 +19,16 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "auto-language",
+      "display_name": "Auto language",
+      "description": "Let the local STT backend detect language when supported.",
+      "values": {
+        "language": "auto"
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

@@ -102,6 +102,16 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("dependency_lock_sha256", self.source)
         self.assertIn("Save Pin", self.source)
 
+    def test_workflows_tab_preserves_presets_and_mappings(self) -> None:
+        self.assertIn("type WorkflowPreset", self.source)
+        self.assertIn("presets?: WorkflowPreset[];", self.source)
+        self.assertIn("comfyui_parameter_mappings?: Array<Record<string, unknown>>;", self.source)
+        self.assertIn("runtime_parameter_mappings?: Array<Record<string, unknown>>;", self.source)
+        self.assertIn("presets: [", self.source)
+        self.assertIn("presets: workflow.presets ?? [],", self.source)
+        self.assertIn("comfyui_parameter_mappings: workflow.comfyui_parameter_mappings ?? [],", self.source)
+        self.assertIn("runtime_parameter_mappings: workflow.runtime_parameter_mappings ?? [],", self.source)
+
     def test_runtimes_tab_surfaces_structured_capabilities(self) -> None:
         self.assertIn("const capabilityListLabel", self.source)
         self.assertIn("const runtimeCapabilityFlags", self.source)

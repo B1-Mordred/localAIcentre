@@ -244,6 +244,22 @@ td small {
   padding: 5px 8px;
 }
 
+.preset-strip {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preset-strip button {
+  background: #f7fbfa;
+  border-color: #b8d8d2;
+  color: #0f5f59;
+  font-size: 13px;
+  min-height: 34px;
+  max-width: 100%;
+}
+
 .dependency.ready {
   border-color: #b6e2d3;
   color: #116149;

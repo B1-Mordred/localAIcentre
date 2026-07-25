@@ -49,6 +49,7 @@ PARSER_WORKFLOW_OPTIONAL_KEYS = {
     "workflow_json",
     "visibility_roles",
     "runtime_policy",
+    "presets",
     "comfyui_parameter_mappings",
     "runtime_parameter_mappings",
 }
@@ -121,6 +122,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(workflows[0].resource_class, "rtx3060-32gb")
         self.assertTrue(all(workflow.model_alias for workflow in workflows))
         self.assertTrue(all(workflow.output_mime_types for workflow in workflows))
+        self.assertTrue(all(workflow.presets for workflow in workflows))
 
     def test_published_workflow_schema_matches_parser_and_seed_files(self) -> None:
         schema = json.loads((ROOT / "workflows" / "schemas" / "published-workflow.schema.json").read_text(encoding="utf-8"))
@@ -134,6 +136,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(set(properties["resource_class"]["enum"]), RESOURCE_CLASSES)
         self.assertEqual(set(properties["limits"]["properties"]), LIMIT_KEYS)
         self.assertEqual(set(properties["visibility_roles"]["items"]["enum"]), ROLES)
+        self.assertEqual(set(properties["presets"]["items"]["required"]), {"id", "display_name", "values"})
 
         for path in sorted((ROOT / "workflows" / "approved").glob("*.json")):
             with self.subTest(path=path.name):
@@ -474,6 +477,76 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(mappings[0], {"runtime": "localai", "parameter": "source_image", "target": "image", "keep_source": False})
         self.assertEqual(mappings[1]["target"], "mask")
         self.assertTrue(mappings[1]["keep_source"])
+
+    def test_parse_workflow_accepts_safe_parameter_presets(self) -> None:
+        workflow = parse_workflow(
+            {
+                **BASE_WORKFLOW,
+                "input_schema": {
+                    "type": "object",
+                    "required": ["prompt"],
+                    "properties": {
+                        "prompt": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "steps": {"type": "integer", "minimum": 1, "maximum": 40},
+                        "seed": {"type": "integer", "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                },
+                "limits": {"max_steps": 40},
+                "presets": [
+                    {
+                        "id": "balanced",
+                        "display_name": "Balanced",
+                        "description": "Safe default for a single local image job.",
+                        "values": {"prompt": "clean local test", "steps": 20, "seed": 0},
+                    }
+                ],
+            }
+        )
+
+        preset = workflow.presets[0]
+        self.assertEqual(preset.id, "balanced")
+        self.assertEqual(preset.values["steps"], 20)
+        self.assertEqual(workflow.to_dict()["presets"][0]["display_name"], "Balanced")
+
+    def test_parse_workflow_rejects_invalid_presets(self) -> None:
+        with self.assertRaisesRegex(WorkflowError, "input_schema property"):
+            parse_workflow(
+                {
+                    **BASE_WORKFLOW,
+                    "presets": [{"id": "bad-field", "display_name": "Bad", "values": {"missing": 1}}],
+                }
+            )
+        with self.assertRaisesRegex(WorkflowError, "media upload/base64"):
+            parse_workflow(
+                {
+                    **BASE_WORKFLOW,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "source_image": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"}
+                        },
+                    },
+                    "presets": [{"id": "bad-media", "display_name": "Bad", "values": {"source_image": "aW1hZ2U="}}],
+                }
+            )
+        with self.assertRaisesRegex(WorkflowError, "workflow limit max_steps=40"):
+            parse_workflow(
+                {
+                    **BASE_WORKFLOW,
+                    "input_schema": {"type": "object", "properties": {"steps": {"type": "integer", "minimum": 1, "maximum": 80}}},
+                    "limits": {"max_steps": 40},
+                    "presets": [{"id": "too-many", "display_name": "Too Many", "values": {"steps": 41}}],
+                }
+            )
+        with self.assertRaisesRegex(WorkflowError, "unsafe object key"):
+            parse_workflow(
+                {
+                    **BASE_WORKFLOW,
+                    "input_schema": {"type": "object", "properties": {"options": {"type": "object"}}},
+                    "presets": [{"id": "unsafe", "display_name": "Unsafe", "values": {"options": {"__proto__": True}}}],
+                }
+            )
 
     def test_parse_workflow_rejects_invalid_runtime_parameter_mappings(self) -> None:
         with self.assertRaisesRegex(WorkflowError, "input_schema property"):

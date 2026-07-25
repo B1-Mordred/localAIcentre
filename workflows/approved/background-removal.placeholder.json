@@ -19,6 +19,16 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "transparent-output",
+      "display_name": "Transparent output",
+      "description": "Preserve a transparent alpha channel in the result.",
+      "values": {
+        "transparent": true
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

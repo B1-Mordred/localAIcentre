@@ -35,6 +35,21 @@
       "uniqueItems": true
     },
     "workflow_json": { "type": "object" },
+    "presets": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["id", "display_name", "values"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "description": { "type": "string", "maxLength": 240 },
+          "values": { "type": "object", "minProperties": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
     "comfyui_parameter_mappings": {
       "type": "array",
       "items": {

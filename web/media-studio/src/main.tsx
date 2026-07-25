@@ -54,6 +54,13 @@ type JsonSchemaProperty = {
   title?: string;
 };
 
+type WorkflowPreset = {
+  id: string;
+  display_name: string;
+  description?: string;
+  values: Record<string, JsonValue>;
+};
+
 type PublishedWorkflow = {
   id: string;
   version: string;
@@ -69,6 +76,7 @@ type PublishedWorkflow = {
     required?: string[];
     properties?: Record<string, JsonSchemaProperty>;
   };
+  presets?: WorkflowPreset[];
   resource_class: string;
   limits: Record<string, number>;
   status: string;
@@ -375,6 +383,23 @@ function initialValues(workflow: PublishedWorkflow): Record<string, JsonValue> {
     values[name] = defaultValue(schema);
   });
   return values;
+}
+
+function safePresetEntries(workflow: PublishedWorkflow, preset: WorkflowPreset): Array<[string, JsonValue]> {
+  const properties = workflow.input_schema.properties ?? {};
+  return Object.entries(preset.values ?? {}).filter(([name]) => Boolean(properties[name]) && properties[name].contentEncoding !== "base64");
+}
+
+function applyWorkflowPreset(
+  workflow: PublishedWorkflow,
+  preset: WorkflowPreset,
+  current: Record<string, JsonValue>
+): Record<string, JsonValue> {
+  const next = { ...current };
+  safePresetEntries(workflow, preset).forEach(([name, value]) => {
+    next[name] = value;
+  });
+  return next;
 }
 
 function missingRequired(workflow: PublishedWorkflow, values: Record<string, JsonValue>): string[] {
@@ -738,6 +763,31 @@ function SchemaField({
   );
 }
 
+function WorkflowPresets({
+  workflow,
+  onApply
+}: {
+  workflow: PublishedWorkflow;
+  onApply: (preset: WorkflowPreset) => void;
+}) {
+  const presets = workflow.presets ?? [];
+  if (!presets.length) return null;
+  return (
+    <div className="preset-strip" aria-label="Workflow presets">
+      {presets.map((preset) => (
+        <button
+          key={preset.id}
+          type="button"
+          title={preset.description ?? `Apply ${preset.display_name}`}
+          onClick={() => onApply(preset)}
+        >
+          <Wand2 size={15} />{preset.display_name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function WorkflowList({
   workflows,
   selectedId,
@@ -938,6 +988,12 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
     setEventTimeline([]);
   };
 
+  const applyPreset = (preset: WorkflowPreset) => {
+    if (!selectedWorkflow) return;
+    setValues((current) => applyWorkflowPreset(selectedWorkflow, preset, current));
+    setMessage(`applied preset ${preset.display_name}`);
+  };
+
   const uploadWorkflowFile = (name: string, schema: JsonSchemaProperty, file: File) => {
     const expected = schema.contentMediaType;
     if (expected && file.type && file.type !== expected) {
@@ -1067,6 +1123,7 @@ function StudioForm({ onJobsLoaded }: { onJobsLoaded: (jobs: MediaJob[]) => void
               <span>{selectedWorkflow.output_mime_types.join(", ")}</span>
               <span>{selectedWorkflow.resource_class}</span>
             </div>
+            <WorkflowPresets workflow={selectedWorkflow} onApply={applyPreset} />
             <div className="schema-grid">
               {Object.entries(selectedWorkflow.input_schema.properties ?? {}).map(([name, schema]) => (
                 <SchemaField

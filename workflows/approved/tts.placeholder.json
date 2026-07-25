@@ -20,6 +20,18 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "local-test",
+      "display_name": "Local test",
+      "description": "Short speech sample for validating the CPU TTS path.",
+      "values": {
+        "text": "B1 AI Hub is ready for a local speech test.",
+        "voice": "default",
+        "speed": 1
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

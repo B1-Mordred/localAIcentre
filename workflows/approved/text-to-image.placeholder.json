@@ -21,6 +21,30 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "fast-draft",
+      "display_name": "Fast draft",
+      "description": "Low step count for a quick local draft.",
+      "values": {
+        "prompt": "a clean product-style scene with natural lighting",
+        "negative_prompt": "",
+        "steps": 12,
+        "seed": 0
+      }
+    },
+    {
+      "id": "balanced",
+      "display_name": "Balanced",
+      "description": "Default bounded settings for a single RTX 3060 image job.",
+      "values": {
+        "prompt": "a clean product-style scene with natural lighting",
+        "negative_prompt": "",
+        "steps": 20,
+        "seed": 0
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

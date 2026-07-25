@@ -19,6 +19,16 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "two-x",
+      "display_name": "2x",
+      "description": "Default conservative upscale factor.",
+      "values": {
+        "scale": 2
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

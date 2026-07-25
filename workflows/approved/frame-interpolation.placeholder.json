@@ -20,6 +20,17 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "short-smooth",
+      "display_name": "Short smooth",
+      "description": "Bounded four-second interpolation for the RTX 3060 profile.",
+      "values": {
+        "target_fps": 24,
+        "max_seconds": 4
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

@@ -81,6 +81,18 @@ class MediaStudioSourceTests(unittest.TestCase):
         self.assertIn("<div><dt>Backing</dt><dd>{backing.label}</dd></div>", self.source)
         self.assertIn("<td>{job.runtime}<small>{jobBacking(job).label}</small></td>", self.source)
 
+    def test_workflow_presets_are_rendered_and_merge_safe_values(self) -> None:
+        self.assertIn("type WorkflowPreset", self.source)
+        self.assertIn("presets?: WorkflowPreset[];", self.source)
+        self.assertIn("function safePresetEntries", self.source)
+        self.assertIn('properties[name].contentEncoding !== "base64"', self.source)
+        self.assertIn("function applyWorkflowPreset", self.source)
+        self.assertIn("next[name] = value;", self.source)
+        self.assertIn("function WorkflowPresets", self.source)
+        self.assertIn('aria-label="Workflow presets"', self.source)
+        self.assertIn("setValues((current) => applyWorkflowPreset(selectedWorkflow, preset, current));", self.source)
+        self.assertIn("<WorkflowPresets workflow={selectedWorkflow} onApply={applyPreset} />", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

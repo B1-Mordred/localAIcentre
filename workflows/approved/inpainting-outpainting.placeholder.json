@@ -23,6 +23,19 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "clean-inpaint",
+      "display_name": "Clean inpaint",
+      "description": "Fill the masked area with a bounded local edit.",
+      "values": {
+        "prompt": "cleanly fill the masked area",
+        "mode": "inpaint",
+        "steps": 20,
+        "seed": 0
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

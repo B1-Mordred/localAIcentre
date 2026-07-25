@@ -29,6 +29,10 @@ GIT_COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 DEFAULT_MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_STAGED_MEDIA_BYTES = 256 * 1024 * 1024
+MAX_WORKFLOW_PRESETS = 16
+MAX_WORKFLOW_PRESET_NAME_LENGTH = 120
+MAX_WORKFLOW_PRESET_DESCRIPTION_LENGTH = 240
+UNSAFE_JSON_KEYS = {"__proto__", "prototype", "constructor"}
 LIMIT_TO_PARAMETER_NAMES = {
     "max_width": ("width",),
     "max_height": ("height",),
@@ -77,6 +81,18 @@ class ApprovedNodePin:
 
 
 @dataclass(frozen=True)
+class WorkflowPreset:
+    id: str
+    display_name: str
+    values: dict[str, Any]
+    description: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        return {key: value for key, value in data.items() if value is not None}
+
+
+@dataclass(frozen=True)
 class PublishedWorkflow:
     id: str
     version: str
@@ -93,6 +109,7 @@ class PublishedWorkflow:
     resource_class: str
     dependencies: list[WorkflowDependency]
     limits: dict[str, int]
+    presets: list[WorkflowPreset] = field(default_factory=list)
     comfyui_parameter_mappings: list[dict[str, Any]] = field(default_factory=list)
     runtime_parameter_mappings: list[dict[str, Any]] = field(default_factory=list)
     description: str | None = None
@@ -116,6 +133,7 @@ class PublishedWorkflow:
             "resource_class": self.resource_class,
             "dependencies": [dependency.to_dict() for dependency in self.dependencies],
             "limits": dict(self.limits),
+            "presets": [preset.to_dict() for preset in self.presets],
             "comfyui_parameter_mappings": [dict(mapping) for mapping in self.comfyui_parameter_mappings],
             "runtime_parameter_mappings": [dict(mapping) for mapping in self.runtime_parameter_mappings],
             "visibility_roles": list(self.visibility_roles),
@@ -144,6 +162,7 @@ def parse_workflow(data: dict[str, Any], context: str = "workflow") -> Published
         "workflow_json",
         "visibility_roles",
         "runtime_policy",
+        "presets",
         "comfyui_parameter_mappings",
         "runtime_parameter_mappings",
     }
@@ -187,6 +206,7 @@ def parse_workflow(data: dict[str, Any], context: str = "workflow") -> Published
     if not any(dependency.type == "model" and dependency.id == model_alias for dependency in dependencies):
         raise WorkflowError(f"{context}.model_alias must be declared as a model dependency")
     limits = _limits(data["limits"], f"{context}.limits")
+    presets = _workflow_presets(data.get("presets", []), input_schema, limits, f"{context}.presets")
     visibility_roles = _roles(data.get("visibility_roles", ["admin"]), f"{context}.visibility_roles")
     output_mime_types = _mime_types(data["output_mime_types"], f"{context}.output_mime_types")
     return PublishedWorkflow(
@@ -206,6 +226,7 @@ def parse_workflow(data: dict[str, Any], context: str = "workflow") -> Published
         resource_class=resource_class,
         dependencies=dependencies,
         limits=limits,
+        presets=presets,
         comfyui_parameter_mappings=comfyui_parameter_mappings,
         runtime_parameter_mappings=runtime_parameter_mappings,
         visibility_roles=visibility_roles,
@@ -661,6 +682,80 @@ def _runtime_parameter_mappings(value: Any, input_schema: dict[str, Any], contex
         seen_targets.add(target_key)
         parsed.append({"runtime": runtime, "parameter": parameter, "target": target, "keep_source": keep_source})
     return parsed
+
+
+def _workflow_presets(value: Any, input_schema: dict[str, Any], limits: dict[str, int], context: str) -> list[WorkflowPreset]:
+    if not isinstance(value, list):
+        raise WorkflowError(f"{context} must be a list")
+    if len(value) > MAX_WORKFLOW_PRESETS:
+        raise WorkflowError(f"{context} must not contain more than {MAX_WORKFLOW_PRESETS} presets")
+    properties = input_schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        properties = {}
+    parsed: list[WorkflowPreset] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(value):
+        item_context = f"{context}[{index}]"
+        if not isinstance(item, dict):
+            raise WorkflowError(f"{item_context} must be an object")
+        extra = set(item) - {"id", "display_name", "description", "values"}
+        if extra:
+            raise WorkflowError(f"{item_context} has unsupported keys: {', '.join(sorted(extra))}")
+        missing = {"id", "display_name", "values"} - set(item)
+        if missing:
+            raise WorkflowError(f"{item_context} is missing required keys: {', '.join(sorted(missing))}")
+        preset_id = _id(_string(item, "id", item_context), f"{item_context}.id")
+        if preset_id in seen_ids:
+            raise WorkflowError(f"{item_context}.id duplicates another preset")
+        seen_ids.add(preset_id)
+        display_name = _string(item, "display_name", item_context)
+        if len(display_name) > MAX_WORKFLOW_PRESET_NAME_LENGTH:
+            raise WorkflowError(f"{item_context}.display_name exceeds {MAX_WORKFLOW_PRESET_NAME_LENGTH} characters")
+        description = _optional_string(item, "description", item_context)
+        if description is not None and len(description) > MAX_WORKFLOW_PRESET_DESCRIPTION_LENGTH:
+            raise WorkflowError(f"{item_context}.description exceeds {MAX_WORKFLOW_PRESET_DESCRIPTION_LENGTH} characters")
+        preset_values = _dict(item["values"], f"{item_context}.values")
+        if not preset_values:
+            raise WorkflowError(f"{item_context}.values must not be empty")
+        parsed_values: dict[str, Any] = {}
+        for name, preset_value in preset_values.items():
+            value_context = f"{item_context}.values.{name}"
+            if not isinstance(name, str) or not name:
+                raise WorkflowError(f"{item_context}.values must use non-empty string keys")
+            if name in UNSAFE_JSON_KEYS:
+                raise WorkflowError(f"{value_context} uses an unsafe object key")
+            if name not in properties:
+                raise WorkflowError(f"{value_context} must reference an input_schema property")
+            property_schema = _dict(properties[name], f"workflow.input_schema.properties.{name}")
+            if property_schema.get("contentEncoding") == "base64":
+                raise WorkflowError(f"{value_context} cannot preset media upload/base64 fields")
+            _ensure_preset_json_safe(preset_value, value_context)
+            _validate_parameter_value(
+                name,
+                preset_value,
+                property_schema,
+                DEFAULT_MAX_INLINE_MEDIA_BYTES,
+                DEFAULT_MAX_STAGED_MEDIA_BYTES,
+            )
+            parsed_values[name] = preset_value
+        _enforce_limits(parsed_values, limits)
+        parsed.append(WorkflowPreset(id=preset_id, display_name=display_name, description=description, values=parsed_values))
+    return parsed
+
+
+def _ensure_preset_json_safe(value: Any, context: str, depth: int = 0) -> None:
+    if depth > 8:
+        raise WorkflowError(f"{context} is nested too deeply")
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            if not isinstance(key, str) or not key:
+                raise WorkflowError(f"{context} must use non-empty string object keys")
+            if key in UNSAFE_JSON_KEYS:
+                raise WorkflowError(f"{context}.{key} uses an unsafe object key")
+            _ensure_preset_json_safe(nested_value, f"{context}.{key}", depth + 1)
+    elif isinstance(value, list):
+        for index, nested_value in enumerate(value):
+            _ensure_preset_json_safe(nested_value, f"{context}[{index}]", depth + 1)
 
 
 def _roles(value: Any, context: str) -> list[str]:

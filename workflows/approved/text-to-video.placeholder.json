@@ -20,6 +20,18 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "short-orbit",
+      "display_name": "Short orbit",
+      "description": "Short clip preset sized for 12 GB VRAM validation.",
+      "values": {
+        "prompt": "slow orbit around a simple object on a clean background",
+        "frames": 25,
+        "steps": 12
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

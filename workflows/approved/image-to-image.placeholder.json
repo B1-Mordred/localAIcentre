@@ -22,6 +22,19 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "balanced-edit",
+      "display_name": "Balanced edit",
+      "description": "Moderate denoise strength with safe step count.",
+      "values": {
+        "prompt": "preserve composition with natural detail",
+        "strength": 0.65,
+        "steps": 20,
+        "seed": 0
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

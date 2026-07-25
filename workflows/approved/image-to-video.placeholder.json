@@ -22,6 +22,19 @@
     },
     "additionalProperties": false
   },
+  "presets": [
+    {
+      "id": "short-motion",
+      "display_name": "Short motion",
+      "description": "Conservative image-conditioned clip settings for 12 GB VRAM.",
+      "values": {
+        "prompt": "gentle camera motion with a stable subject",
+        "frames": 25,
+        "steps": 12,
+        "seed": 0
+      }
+    }
+  ],
   "output_schema": {
     "type": "object",
     "properties": {

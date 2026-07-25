@@ -1158,6 +1158,13 @@ type ComfyUiNodePin = {
   updated_at?: string;
 };
 
+type WorkflowPreset = {
+  id: string;
+  display_name: string;
+  description?: string;
+  values: Record<string, unknown>;
+};
+
 type PublishedWorkflow = {
   id: string;
   version: string;
@@ -1182,6 +1189,9 @@ type PublishedWorkflow = {
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
   workflow_json: Record<string, unknown>;
+  presets?: WorkflowPreset[];
+  comfyui_parameter_mappings?: Array<Record<string, unknown>>;
+  runtime_parameter_mappings?: Array<Record<string, unknown>>;
 };
 
 const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
@@ -5272,6 +5282,18 @@ const WORKFLOW_TEMPLATE = JSON.stringify(
       },
       additionalProperties: false
     },
+    presets: [
+      {
+        id: "balanced",
+        display_name: "Balanced",
+        description: "Default bounded settings for a single local image job.",
+        values: {
+          prompt: "a clean product-style scene with natural lighting",
+          steps: 20,
+          seed: 0
+        }
+      }
+    ],
     output_schema: {
       type: "object",
       properties: {
@@ -5434,6 +5456,7 @@ function Workflows() {
         output_mime_types: workflow.output_mime_types,
         workflow_json: workflow.workflow_json,
         input_schema: workflow.input_schema,
+        presets: workflow.presets ?? [],
         output_schema: workflow.output_schema,
         resource_class: workflow.resource_class,
         dependencies: workflow.dependencies.map((dependency) => ({
@@ -5442,6 +5465,8 @@ function Workflows() {
           ...(dependency.version ? { version: dependency.version } : {})
         })),
         limits: workflow.limits,
+        comfyui_parameter_mappings: workflow.comfyui_parameter_mappings ?? [],
+        runtime_parameter_mappings: workflow.runtime_parameter_mappings ?? [],
         visibility_roles: workflow.visibility_roles
       },
       null,
