@@ -81,6 +81,10 @@ class UpdatePolicyTests(unittest.TestCase):
             "https://example.org/releases/safe%2Fadmin",
             "https://example.org/releases/safe%5Cadmin",
             "https://example.org/releases/%00admin",
+            "https://example.org/releases/%",
+            "https://example.org/releases/%2",
+            "https://example.org/releases/%zz",
+            "https://example.org/releases/%ffadmin",
             "https://example.org:badport/release",
         ]
 

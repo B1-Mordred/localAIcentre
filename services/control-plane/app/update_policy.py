@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlsplit
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$")
 SHA256_DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{64}(?:$|[/?#])")
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 PRIVATE_SOURCE_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -76,7 +77,12 @@ def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
 
 def source_url_path_is_safe(path: str) -> bool:
     for part in [item for item in path.split("/") if item]:
-        decoded = unquote(part)
+        if BAD_PERCENT_ESCAPE_RE.search(part):
+            return False
+        try:
+            decoded = unquote(part, errors="strict")
+        except UnicodeDecodeError:
+            return False
         if decoded in {".", ".."}:
             return False
         if "/" in decoded or "\\" in decoded:

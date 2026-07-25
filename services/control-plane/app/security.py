@@ -20,6 +20,7 @@ PRIVATE_NETS = [
     ipaddress.ip_network("fe80::/10"),
 ]
 HostnameResolver = Callable[[str, int | None], list[str]]
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 CREDENTIAL_QUERY_KEY_EXACT = {
     "key",
@@ -96,7 +97,12 @@ def is_safe_public_import_url(url: str, approved_hosts: set[str] | None = None, 
         return False
     if hostname == "localhost" or hostname.endswith(".localhost"):
         return False
-    decoded_path = unquote(parsed.path)
+    if BAD_PERCENT_ESCAPE_RE.search(parsed.path):
+        return False
+    try:
+        decoded_path = unquote(parsed.path, errors="strict")
+    except UnicodeDecodeError:
+        return False
     if any(part in {".", ".."} for part in decoded_path.split("/") if part):
         return False
     try:

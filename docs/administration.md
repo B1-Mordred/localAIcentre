@@ -85,7 +85,7 @@ While maintenance mode is active, the control plane rejects new synchronous infe
 
 ## Controlled Updates
 
-The System tab records controlled update plans. Administrators provide a target version, optional HTTPS release URL, notes, and one or more service image references pinned by `@sha256:<digest>`. The control plane rejects `latest`, missing digests, duplicate services, unsafe service names, source URLs with credentials, non-HTTPS source URLs, and release URL paths containing literal or percent-encoded traversal, encoded separators, or control characters.
+The System tab records controlled update plans. Administrators provide a target version, optional HTTPS release URL, notes, and one or more service image references pinned by `@sha256:<digest>`. The control plane rejects `latest`, missing digests, duplicate services, unsafe service names, source URLs with credentials, non-HTTPS source URLs, malformed percent escapes, invalid percent-encoded UTF-8, and release URL paths containing literal or percent-encoded traversal, encoded separators, or control characters.
 
 Staging an update requires maintenance mode. The stage action creates a normal constrained backup, sends each pinned service image to runtime-agent `/v1/images/{service}/pull`, records the per-image result on `image_stage`, writes a digest-pinned Compose override to `$B1_DATA_ROOT/data/control-plane/updates/<update_id>/compose.images.yaml`, runs the same self-test used by `/admin/self-test`, and stores the backup name, override metadata, and self-test result on the update row. The override sets `image:` for each staged service and `build: null` so a controlled Compose invocation can consume the pulled immutable images instead of rebuilding local contexts.
 

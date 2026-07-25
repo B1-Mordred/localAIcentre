@@ -54,6 +54,10 @@ class SecurityValidationTests(unittest.TestCase):
             "https://example.com:badport/model.gguf",
             "https://example.com/../model.gguf",
             "https://example.com/%2e%2e/model.gguf",
+            "https://example.com/models/%",
+            "https://example.com/models/%2",
+            "https://example.com/models/%zz",
+            "https://example.com/models/%ff/model.gguf",
         ]
         for url in unsafe_urls:
             with self.subTest(url=url):
