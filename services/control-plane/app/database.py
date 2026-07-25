@@ -26,6 +26,19 @@ metadata = MetaData()
 engine: AsyncEngine | None = None
 scheduler_redis_client: Any | None = None
 SCHEDULER_REDIS_LEASE_KEY = "b1-ai-hub:scheduler:gpu"
+SCHEDULER_REDIS_RENEW_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("PSETEX", KEYS[1], ARGV[2], ARGV[1])
+  return 1
+end
+return 0
+"""
+SCHEDULER_REDIS_RELEASE_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+"""
 VALID_JOB_PRIORITIES = {priority.value for priority in PriorityClass}
 COMFYUI_NATIVE_MODEL_ALIAS = "comfyui-native"
 COMFYUI_NATIVE_RESUMABLE_STATES = ("running", "saving", "cancelling")
@@ -3099,7 +3112,7 @@ def redis_lease_value(owner: str, epoch: int) -> str:
     return json.dumps({"owner": owner, "epoch": epoch}, separators=(",", ":"), sort_keys=True)
 
 
-def redis_lease_owner(value: Any) -> str | None:
+def redis_lease_payload(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
     if isinstance(value, bytes):
@@ -3108,8 +3121,34 @@ def redis_lease_owner(value: Any) -> str | None:
         payload = json.loads(str(value))
     except json.JSONDecodeError:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def redis_lease_owner(value: Any) -> str | None:
+    payload = redis_lease_payload(value)
+    if payload is None:
+        return None
     owner = payload.get("owner")
     return owner if isinstance(owner, str) and owner else None
+
+
+def redis_lease_epoch(value: Any) -> int | None:
+    payload = redis_lease_payload(value)
+    if payload is None:
+        return None
+    try:
+        return int(payload["epoch"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def redis_eval_succeeded(value: Any) -> bool:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return bool(value)
 
 
 async def acquire_redis_scheduler_owner(owner: str, epoch: int, ttl_seconds: int) -> dict[str, Any]:
@@ -3118,17 +3157,16 @@ async def acquire_redis_scheduler_owner(owner: str, epoch: int, ttl_seconds: int
     lease_value = redis_lease_value(owner, epoch)
     ttl_ms = max(1, int(ttl_seconds * 1000))
     try:
-        current = await scheduler_redis_client.get(SCHEDULER_REDIS_LEASE_KEY)
-        if current is None:
-            acquired = bool(await scheduler_redis_client.set(SCHEDULER_REDIS_LEASE_KEY, lease_value, px=ttl_ms, nx=True))
-            if acquired:
-                return {"enabled": True, "acquired": True, "owner": owner, "epoch": epoch, "renewed": False}
-            current = await scheduler_redis_client.get(SCHEDULER_REDIS_LEASE_KEY)
-        current_owner = redis_lease_owner(current)
-        if current_owner == owner:
-            await scheduler_redis_client.set(SCHEDULER_REDIS_LEASE_KEY, lease_value, px=ttl_ms)
+        acquired = bool(await scheduler_redis_client.set(SCHEDULER_REDIS_LEASE_KEY, lease_value, px=ttl_ms, nx=True))
+        if acquired:
+            return {"enabled": True, "acquired": True, "owner": owner, "epoch": epoch, "renewed": False}
+        renewed = redis_eval_succeeded(await scheduler_redis_client.eval(SCHEDULER_REDIS_RENEW_SCRIPT, 1, SCHEDULER_REDIS_LEASE_KEY, lease_value, ttl_ms))
+        if renewed:
             return {"enabled": True, "acquired": True, "owner": owner, "epoch": epoch, "renewed": True}
-        return {"enabled": True, "acquired": False, "current_owner": current_owner, "current_value": current}
+        current = await scheduler_redis_client.get(SCHEDULER_REDIS_LEASE_KEY)
+        current_owner = redis_lease_owner(current)
+        current_epoch = redis_lease_epoch(current)
+        return {"enabled": True, "acquired": False, "current_owner": current_owner, "current_epoch": current_epoch, "current_value": current}
     except Exception as exc:  # pragma: no cover - exact Redis client exceptions vary by runtime
         return {"enabled": True, "acquired": False, "error": exc.__class__.__name__}
 
@@ -3144,20 +3182,25 @@ async def get_redis_scheduler_owner() -> dict[str, Any]:
         "enabled": True,
         "reachable": True,
         "owner": redis_lease_owner(current),
+        "epoch": redis_lease_epoch(current),
         "value": current.decode("utf-8", errors="replace") if isinstance(current, bytes) else current,
     }
 
 
-async def release_redis_scheduler_owner(owner: str) -> dict[str, Any]:
+async def release_redis_scheduler_owner(owner: str, epoch: int) -> dict[str, Any]:
     if scheduler_redis_client is None:
         return {"enabled": False, "released": True}
+    lease_value = redis_lease_value(owner, epoch)
     try:
+        released = redis_eval_succeeded(await scheduler_redis_client.eval(SCHEDULER_REDIS_RELEASE_SCRIPT, 1, SCHEDULER_REDIS_LEASE_KEY, lease_value))
+        if released:
+            return {"enabled": True, "released": True, "owner": owner, "epoch": epoch}
         current = await scheduler_redis_client.get(SCHEDULER_REDIS_LEASE_KEY)
+        if current is None:
+            return {"enabled": True, "released": True, "owner": owner, "epoch": epoch, "already_expired": True}
         current_owner = redis_lease_owner(current)
-        if current_owner != owner:
-            return {"enabled": True, "released": False, "current_owner": current_owner}
-        await scheduler_redis_client.delete(SCHEDULER_REDIS_LEASE_KEY)
-        return {"enabled": True, "released": True, "owner": owner}
+        current_epoch = redis_lease_epoch(current)
+        return {"enabled": True, "released": False, "current_owner": current_owner, "current_epoch": current_epoch}
     except Exception as exc:  # pragma: no cover - exact Redis client exceptions vary by runtime
         return {"enabled": True, "released": False, "error": exc.__class__.__name__}
 
@@ -3240,5 +3283,5 @@ async def release_scheduler_owner(owner: str) -> dict[str, Any] | None:
     if row is None:
         return None
     if row.get("released"):
-        return {**row, "redis_lease": await release_redis_scheduler_owner(owner)}
+        return {**row, "redis_lease": await release_redis_scheduler_owner(owner, int(row["epoch"]))}
     return row

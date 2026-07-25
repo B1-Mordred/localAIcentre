@@ -5,6 +5,7 @@ import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -360,10 +361,23 @@ class DatabaseExportTests(unittest.TestCase):
                 self.value = value
                 return True
 
-            async def delete(self, key: str) -> int:
+            async def eval(self, script: str, key_count: int, key: str, *args: Any) -> int:
+                test_case.assertEqual(key_count, 1)
                 test_case.assertEqual(key, database.SCHEDULER_REDIS_LEASE_KEY)
-                self.value = None
-                return 1
+                if script == database.SCHEDULER_REDIS_RENEW_SCRIPT:
+                    expected, ttl_ms = args
+                    test_case.assertGreater(ttl_ms, 0)
+                    if self.value == expected:
+                        self.value = expected
+                        return 1
+                    return 0
+                if script == database.SCHEDULER_REDIS_RELEASE_SCRIPT:
+                    (expected,) = args
+                    if self.value == expected:
+                        self.value = None
+                        return 1
+                    return 0
+                raise AssertionError(f"unexpected Redis script: {script}")
 
         fake_redis = FakeRedis()
         database.configure_scheduler_redis(fake_redis)
@@ -381,9 +395,45 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertTrue(renewed["acquired"])
         self.assertTrue(renewed["renewed"])
 
-        release = asyncio.run(database.release_redis_scheduler_owner("owner-a"))
+        stale_epoch = asyncio.run(database.acquire_redis_scheduler_owner("owner-a", 8, 30))
+        self.assertFalse(stale_epoch["acquired"])
+        self.assertEqual(stale_epoch["current_owner"], "owner-a")
+        self.assertEqual(stale_epoch["current_epoch"], 7)
+
+        release = asyncio.run(database.release_redis_scheduler_owner("owner-a", 7))
         self.assertTrue(release["released"])
         self.assertIsNone(fake_redis.value)
+
+    def test_redis_scheduler_release_refuses_same_owner_different_epoch(self) -> None:
+        class FakeRedis:
+            def __init__(self) -> None:
+                self.value: str | None = database.redis_lease_value("owner-a", 9)
+
+            async def get(self, key: str) -> str | None:
+                return self.value
+
+            async def set(self, key: str, value: str, px: int, nx: bool = False) -> bool:
+                if nx and self.value is not None:
+                    return False
+                self.value = value
+                return True
+
+            async def eval(self, script: str, key_count: int, key: str, *args: Any) -> int:
+                if script == database.SCHEDULER_REDIS_RELEASE_SCRIPT and self.value == args[0]:
+                    self.value = None
+                    return 1
+                return 0
+
+        fake_redis = FakeRedis()
+        database.configure_scheduler_redis(fake_redis)
+        self.addCleanup(lambda: database.configure_scheduler_redis(None))
+
+        release = asyncio.run(database.release_redis_scheduler_owner("owner-a", 8))
+        self.assertFalse(release["released"])
+        self.assertEqual(release["current_owner"], "owner-a")
+        self.assertEqual(release["current_epoch"], 9)
+        self.assertEqual(database.redis_lease_owner(fake_redis.value), "owner-a")
+        self.assertEqual(database.redis_lease_epoch(fake_redis.value), 9)
 
     def test_redis_lease_value_preserves_owner_strings(self) -> None:
         value = database.redis_lease_value("admin|manual", 12)

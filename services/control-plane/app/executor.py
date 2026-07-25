@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from inspect import isawaitable
@@ -382,7 +383,7 @@ class GpuJobRunner:
         self,
         artifact_root: Path,
         interval_seconds: int = 1,
-        lease_owner: str = "control-plane-gpu-runner",
+        lease_owner: str | None = None,
         lease_ttl_seconds: int = 300,
         runtime_agent_url: str = "",
         runtime_agent_token: str = "",
@@ -402,7 +403,7 @@ class GpuJobRunner:
     ) -> None:
         self.artifact_root = artifact_root
         self.interval_seconds = max(1, interval_seconds)
-        self.lease_owner = lease_owner
+        self.lease_owner = lease_owner or f"control-plane-gpu-runner-{uuid.uuid4().hex}"
         self.lease_ttl_seconds = max(30, lease_ttl_seconds)
         self.runtime_agent_url = runtime_agent_url.rstrip("/")
         self.runtime_agent_token = runtime_agent_token

@@ -16,7 +16,7 @@ LAN clients
       -> artifact-server
 ```
 
-The control plane owns model aliases, job state, scheduling, GPU leases, compatibility proxies, Model Hub metadata, Model Hub clients, Voicebox profile registry rows, runtime reservations, local browser users/sessions, API clients, and audit logs. PostgreSQL stores the durable scheduler owner/epoch and Redis stores the expiring live-owner key used during GPU execution. Redis is also used for pub/sub and queue coordination but is never the sole store of model, job, client, profile, reservation, or identity state.
+The control plane owns model aliases, job state, scheduling, GPU leases, compatibility proxies, Model Hub metadata, Model Hub clients, Voicebox profile registry rows, runtime reservations, local browser users/sessions, API clients, and audit logs. PostgreSQL stores the durable scheduler owner/epoch and Redis stores the expiring live-owner key used during GPU execution. Redis renew and release operations compare the exact owner/epoch value atomically, and the long-lived GPU runner uses a per-instance owner string, so a restarted or duplicated control plane cannot refresh or delete a newer live lease with the same generic worker name. Redis is also used for pub/sub and queue coordination but is never the sole store of model, job, client, profile, reservation, or identity state.
 
 Job records are exposed through two surfaces. Ordinary media-job routes are scoped to the authenticated owner for list, detail, cancellation, SSE events, and artifacts. Control Center uses `/admin/jobs`, limited to administrator/operator roles, for whole-queue filtering, inspection, priority changes, cancellation, and retry, with each mutation written to the audit log.
 

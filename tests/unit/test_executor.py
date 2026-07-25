@@ -523,7 +523,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["failure_category"], "unsupported_gpu_operation")
             self.assertEqual(fake.job["artifacts"], [])
             self.assertFalse((Path(tmp) / "temporary" / "job_gpu.json").exists())
-            self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+            self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_unloads_other_gpu_runtimes_before_vram_verification(self) -> None:
         fake = FakeDatabase(runtime="localai")
@@ -811,7 +811,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(fake.runtime_states["localai"]["stage"], "idle_unloaded")
         self.assertIsNone(fake.runtime_states["localai"]["active_model"])
         self.assertIsNone(fake.runtime_states["localai"]["model_alias"])
-        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+        self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_uses_alias_idle_timeout_override(self) -> None:
         fake = FakeDatabase(runtime="localai", claim_job=False)
@@ -921,7 +921,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["artifacts"][0]["url"], "/artifacts/comfyui/prompt_native_1/0-result.png")
             self.assertEqual(fake.job["artifacts"][0]["source"], "artifact_store")
             self.assertFalse((Path(tmp) / "temporary" / "job_gpu.json").exists())
-            self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+            self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_comfyui_native_merge_prefers_stored_artifact_metadata(self) -> None:
         existing = [
@@ -1075,7 +1075,7 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(fake.job["stage"], "comfyui_no_media_artifacts")
             self.assertEqual(fake.job["failure_category"], "comfyui_no_media_artifacts")
             self.assertEqual(fake.job["artifacts"], [])
-            self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+            self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_cancels_blocking_comfyui_prompt_submission_and_recovers_runtime(self) -> None:
         class CancellingDatabase(FakeDatabase):
@@ -1147,7 +1147,7 @@ class ExecutorTests(unittest.TestCase):
             ("comfyui", "recover_ok", "cancel_recovery"),
             [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
         )
-        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+        self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_submits_localai_image_generation_and_stores_b64_artifact(self) -> None:
         fake = FakeDatabase(runtime="localai")
@@ -1639,7 +1639,7 @@ class ExecutorTests(unittest.TestCase):
             ("voicebox", "recover_ok", "cancel_recovery"),
             [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
         )
-        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+        self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_marks_localai_job_recovery_required_when_no_media_is_returned(self) -> None:
         fake = FakeDatabase(runtime="localai")
@@ -1717,7 +1717,7 @@ class ExecutorTests(unittest.TestCase):
             ("localai", "recover_ok", "cancel_recovery"),
             [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
         )
-        self.assertEqual(fake.releases, ["control-plane-gpu-runner"])
+        self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_leaves_waiting_job_when_lease_is_held(self) -> None:
         fake = FakeDatabase(lease_acquired=False)
