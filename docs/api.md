@@ -626,6 +626,8 @@ The committed OpenAPI 3.1 contract is [openapi.json](./openapi.json). It is gene
 ```bash
 make openapi
 make openapi-check
+make openapi-client
+make openapi-client-check
 ```
 
-`make openapi-check` compares the committed file against a fresh generated schema and is run by CI. Install `services/control-plane/requirements.txt` before running it outside the Compose development environment. The deliberate future-route compatibility catch-all is excluded from the OpenAPI document; stable public/admin routes and explicit compatibility routes such as `/prompt` are included.
+`make openapi-check` compares the committed schema against a fresh generated schema, and `make openapi-client-check` compares both committed web clients against that schema. Both checks are run by CI. Install `services/control-plane/requirements.txt` before running schema generation outside the Compose development environment. The deliberate future-route compatibility catch-all is excluded from the OpenAPI document; stable public/admin routes and explicit compatibility routes such as `/prompt` are included.

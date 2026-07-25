@@ -67,6 +67,7 @@ class CiQualityGateTests(unittest.TestCase):
 
         self.assertIn("make validate", commands)
         self.assertIn("make openapi-check", commands)
+        self.assertIn("make openapi-client-check", commands)
         self.assertIn("tests.unit.test_migrations", commands)
         self.assertIn("deploy/scripts/bootstrap.py", commands)
         self.assertIn("PyYAML==6.0.2", commands)
@@ -89,6 +90,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("python-check", validate_line)
         self.assertIn("compatibility", validate_line)
         self.assertIn("security", validate_line)
+        self.assertIn("openapi-client-check", validate_line)
 
     def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:
         target_start = self.makefile_text.index("quality:")
@@ -109,6 +111,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("backend-python-quality-container", target)
         self.assertIn("python -m unittest discover -s tests/unit -v", target)
         self.assertIn("generate_openapi.py --output docs/openapi.json --check", target)
+        self.assertIn("generate_openapi_client.py --check", target)
         self.assertIn("pip install PyYAML==6.0.2", target)
         self.assertIn("$(MAKE) validate openapi-check", target)
         self.assertIn("$(MAKE) frontend", target)
@@ -116,7 +119,7 @@ class CiQualityGateTests(unittest.TestCase):
     def test_security_docs_describe_strong_local_quality_gate(self) -> None:
         self.assertIn("make quality", self.security_text)
         self.assertIn("B1_QUALITY_PYTHON_IMAGE", self.security_text)
-        self.assertIn("committed OpenAPI drift checks", self.security_text)
+        self.assertIn("committed OpenAPI/schema-client drift checks", self.security_text)
         self.assertIn("production NPM audits", self.security_text)
 
     def test_makefile_caddy_validation_image_is_digest_pinned(self) -> None:

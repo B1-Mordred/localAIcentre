@@ -39,6 +39,8 @@ jobs:
           make validate
       - name: Check OpenAPI drift
         run: make openapi-check
+      - name: Check generated web API client drift
+        run: make openapi-client-check
       - name: Check migration package
         run: python -m unittest tests.unit.test_migrations -v
 

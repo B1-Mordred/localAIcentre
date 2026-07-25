@@ -101,17 +101,19 @@ Validate the repository, Compose configuration, Python source syntax, offline co
 make validate
 ```
 
-Run the full local quality gate, including backend dependency installation in a temporary Python 3.12 venv, committed OpenAPI drift, and both frontend builds/audits. If Python 3.12 is not installed locally, the backend Python checks run in the pinned Python 3.12 Docker image instead:
+Run the full local quality gate, including backend dependency installation in a temporary Python 3.12 venv, committed OpenAPI/schema-client drift checks, and both frontend builds/audits. If Python 3.12 is not installed locally, the backend Python checks run in the pinned Python 3.12 Docker image instead:
 
 ```bash
 make quality
 ```
 
-Regenerate the committed API schema after endpoint changes:
+Regenerate the committed API schema and generated web clients after endpoint changes:
 
 ```bash
 make openapi
 make openapi-check
+make openapi-client
+make openapi-client-check
 ```
 
 Run source hygiene gates locally when touching dependencies, images, or security-sensitive code:
