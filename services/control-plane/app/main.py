@@ -2557,6 +2557,7 @@ def require_openai_forwarding(resolution: RuntimeResolution, operation: str) -> 
 async def acquire_inference_lease(resolution: RuntimeResolution, operation: str, owner_id: str | None = None) -> str | None:
     if not resolution.requires_gpu:
         return None
+    await enforce_gpu_hardware_admission(resolution)
     gate = await database.runtime_reservation_gate(owner_id or "", resolution.runtime, resolution.resolved_model_version, GPU_RUNTIMES)
     if not gate.get("allowed"):
         active = gate.get("active_reservation") or {}

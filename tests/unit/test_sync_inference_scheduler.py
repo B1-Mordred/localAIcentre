@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,9 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
         setattr(main, name, value)
         self.addCleanup(lambda: setattr(main, name, original))
 
+    def patch_settings(self, **changes: Any) -> None:
+        self.patch_attr("settings", replace(main.settings, **changes))
+
     def resolution(self) -> Any:
         return main.RuntimeResolution(
             public_alias="chat-default",
@@ -39,6 +43,19 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
             preferred_runtime="localai",
             requires_gpu=True,
             resource_label="expected",
+            runtime_policy="any",
+        )
+
+    def cpu_resolution(self) -> Any:
+        return main.RuntimeResolution(
+            public_alias="tts-fast",
+            model_id="piper-fast",
+            model_version="1.0.0",
+            resolved_model_version="piper-fast@1.0.0",
+            runtime="audio-cpu",
+            preferred_runtime="audio-cpu",
+            requires_gpu=False,
+            resource_label="recommended",
             runtime_policy="any",
         )
 
@@ -264,6 +281,78 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(calls[0]["gate"], "other_client")
         self.assertEqual(calls[0]["runtime_names"], main.GPU_RUNTIMES)
+
+    def test_acquire_inference_lease_rejects_gpu_when_production_hardware_policy_fails(self) -> None:
+        self.patch_settings(
+            runtime_deployment_mode="production",
+            gpu_total_vram_gib=12.0,
+            gpu_reserve_vram_gib=1.5,
+            host_total_ram_gib=32.0,
+            host_reserve_ram_gib=6.0,
+        )
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any], str | None]:
+            self.assertEqual(path, "/v1/metrics")
+            return (
+                {
+                    "gpu": {
+                        "available": True,
+                        "devices": [
+                            {
+                                "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+                                "memory_total_mib": 6144,
+                                "memory_free_mib": 4096,
+                            }
+                        ],
+                    },
+                    "memory": {
+                        "total_bytes": 31 * 1024**3,
+                        "available_bytes": 8 * 1024**3,
+                    },
+                },
+                None,
+            )
+
+        class FakeDatabase:
+            async def runtime_reservation_gate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+                raise AssertionError("reservation gate must not run when hardware admission blocks")
+
+            async def acquire_scheduler_owner(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+                raise AssertionError("scheduler lease must not run when hardware admission blocks")
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+        self.patch_attr("database", FakeDatabase())
+
+        with self.assertRaises(main.HTTPException) as ctx:
+            asyncio.run(main.acquire_inference_lease(self.resolution(), "chat", owner_id="client_1"))
+
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.detail["code"], "hardware_resource_policy")
+        check = ctx.exception.detail["hardware_resource_policy"]
+        self.assertEqual(check["name"], "hardware:resource-policy")
+        self.assertEqual(check["status"], "failed")
+        self.assertIn("largest GPU VRAM is 6144 MiB", check["detail"])
+        self.assertEqual(check["data"]["observed"]["largest_gpu_memory_total_mib"], 6144)
+
+    def test_acquire_inference_lease_skips_hardware_policy_for_cpu_resolution(self) -> None:
+        self.patch_settings(runtime_deployment_mode="production")
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any], str | None]:
+            raise AssertionError("CPU-only inference must not require GPU telemetry")
+
+        class FakeDatabase:
+            async def runtime_reservation_gate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+                raise AssertionError("CPU-only inference must not use GPU reservation gate")
+
+            async def acquire_scheduler_owner(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+                raise AssertionError("CPU-only inference must not acquire a GPU scheduler lease")
+
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+        self.patch_attr("database", FakeDatabase())
+
+        owner = asyncio.run(main.acquire_inference_lease(self.cpu_resolution(), "speech", owner_id="client_1"))
+
+        self.assertIsNone(owner)
 
 
 if __name__ == "__main__":
