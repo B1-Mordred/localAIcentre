@@ -1122,6 +1122,19 @@ type ModelInstallPlan = {
   resource_decision: { label: string; reason: string };
   model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   files: { path: string; status: string; size_bytes: number }[];
+  profile_compatibility?: {
+    profile_id: string;
+    display_name: string;
+    target_class: string;
+    matched_aliases: string[];
+    preferred_runtimes: string[];
+    runtime_policy: string;
+    target_resource_label: string;
+    resource_label: string;
+    status: string;
+    blockers: string[];
+    warnings: string[];
+  }[];
   archive_inspections: {
     path: string;
     archive_format: string;
@@ -1616,6 +1629,20 @@ function formatProfileLimits(limits?: ModelProfile["default_limits"]): string {
   return Object.entries(limits)
     .map(([key, value]) => `${key.split("_").join(" ")} ${String(value)}`)
     .join(" / ");
+}
+
+function formatProfileCompatibility(reports?: ModelInstallPlan["profile_compatibility"]): string {
+  if (!reports?.length) return "no matched required profile";
+  return reports.map((report) => {
+    const notes = [
+      `${report.display_name} ${report.status}`,
+      `aliases ${report.matched_aliases.join(", ")}`,
+      `resource ${report.resource_label}/${report.target_resource_label}`,
+      report.blockers.length ? `${report.blockers.length} blocker${report.blockers.length === 1 ? "" : "s"}` : "",
+      report.warnings.length ? `${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}` : ""
+    ].filter(Boolean);
+    return notes.join(" / ");
+  }).join(" ; ");
 }
 
 function formatHostBytes(value: number | null | undefined): string {
@@ -2217,6 +2244,7 @@ function Models() {
           <strong>{plan.model_ref} {plan.status}</strong>
           <span>{plan.model.display_name} / {plan.model.license.name} / {formatBytes(plan.total_size_bytes)}</span>
           <small>{plan.resource_decision.label}: {plan.resource_decision.reason}</small>
+          <small>Profiles: {formatProfileCompatibility(plan.profile_compatibility)}</small>
           <small>{plan.runtime_views.map((view) => `${view.runtime}: ${view.container_path}`).join(" / ")}</small>
           {runtimeSmokeSummaryFromCarrier(plan.model)?.configured && <small>Smoke: {runtimeSmokeLine(plan.model)}</small>}
           {Boolean(plan.archive_inspections?.length) && <small>{plan.archive_inspections.map(formatArchiveInspection).join(" / ")}</small>}

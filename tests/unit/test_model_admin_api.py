@@ -1360,6 +1360,7 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["method"], "GET")
         self.assertEqual(FakeAsyncClient.calls[0]["url"], "https://manifests.example.org/chat-small.manifest.json")
         self.assertIn("application/json", FakeAsyncClient.calls[0]["headers"]["Accept"])
+        self.assertEqual(result["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
 
     def test_remote_manifest_fetch_revalidates_url_before_streaming(self) -> None:
         class FakeStreamContext:

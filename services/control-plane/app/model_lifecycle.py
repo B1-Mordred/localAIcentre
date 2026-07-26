@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
-from .catalog import ModelManifest, parse_manifest_payload
+from .catalog import ModelManifest, ModelProfile, operation_is_supported, parse_manifest_payload
 from .scheduler import ResourcePolicy, classify_resource_fit
 from .security import has_credential_query_parameter, is_safe_public_import_url
 
@@ -85,6 +85,14 @@ HUGGINGFACE_CDN_SUFFIXES = (".cdn.hf.co", ".hf.co", ".xethub.hf.co")
 HUGGINGFACE_REPO_MARKERS = {"tree", "blob", "resolve"}
 HUGGINGFACE_REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 HUGGINGFACE_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PROFILE_RESOURCE_TOLERANCE = 1.15
+PROFILE_LABEL_SCORE = {
+    "recommended": 0,
+    "expected": 1,
+    "offload-required": 2,
+    "experimental": 3,
+    "incompatible": 4,
+}
 
 
 def parse_uploaded_manifest(payload: dict[str, Any]) -> ModelManifest:
@@ -1487,12 +1495,106 @@ def manifest_aliases_are_known(manifest: ModelManifest, known_aliases: set[str])
     return sorted(alias for alias in manifest.aliases if alias not in known_aliases)
 
 
+def profile_resource_overages(manifest: ModelManifest, profile: ModelProfile, tolerance: float = PROFILE_RESOURCE_TOLERANCE) -> list[str]:
+    overages: list[str] = []
+    manifest_estimate = manifest.resource_estimate
+    profile_estimate = profile.resource_estimate
+    checks = [
+        ("VRAM", manifest_estimate.vram_gib, profile_estimate.vram_gib, "GiB"),
+        ("RAM", manifest_estimate.ram_gib, profile_estimate.ram_gib, "GiB"),
+        ("disk", manifest_estimate.disk_gib, profile_estimate.disk_gib, "GiB"),
+    ]
+    for label, value, limit, unit in checks:
+        if limit > 0 and value > limit * tolerance:
+            overages.append(f"{label} estimate {value:g} {unit} exceeds profile envelope {limit:g} {unit}")
+    return overages
+
+
+def profile_compatibility_for_manifest(
+    manifest: ModelManifest,
+    profiles: list[ModelProfile],
+    policy: ResourcePolicy,
+    *,
+    allow_resource_override: bool = False,
+) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    manifest_aliases = set(manifest.aliases)
+    estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
+    decision = classify_resource_fit(policy, estimate)
+    manifest_label_score = PROFILE_LABEL_SCORE.get(decision.label, 99)
+    for profile in profiles:
+        matched_aliases = sorted(manifest_aliases.intersection(profile.aliases))
+        if not matched_aliases:
+            continue
+        blockers: list[str] = []
+        warnings: list[str] = []
+        if manifest.modality != profile.modality:
+            blockers.append(f"manifest modality {manifest.modality} does not match profile modality {profile.modality}")
+        if manifest.preferred_runtime not in set(profile.preferred_runtimes):
+            blockers.append(
+                f"manifest preferred runtime {manifest.preferred_runtime} is not allowed by profile runtimes: {', '.join(profile.preferred_runtimes)}"
+            )
+        supported_profile_operations = [
+            operation
+            for operation in profile.operations
+            if operation_is_supported(operation, manifest.operations, manifest.modality)
+        ]
+        unsupported_manifest_operations = [
+            operation
+            for operation in manifest.operations
+            if not operation_is_supported(operation, profile.operations, manifest.modality)
+        ]
+        if not supported_profile_operations:
+            blockers.append(f"manifest operations do not satisfy profile operations: {', '.join(profile.operations)}")
+        elif len(supported_profile_operations) < len(profile.operations):
+            warnings.append(
+                "manifest supports only part of the profile operation set: "
+                + ", ".join(supported_profile_operations)
+            )
+        if unsupported_manifest_operations:
+            blockers.append(
+                "manifest declares operations outside the profile operation set: "
+                + ", ".join(sorted(unsupported_manifest_operations))
+            )
+        target_score = PROFILE_LABEL_SCORE.get(profile.target_resource_label, 99)
+        if manifest_label_score > target_score:
+            message = f"resource label {decision.label} exceeds profile target {profile.target_resource_label}: {decision.reason}"
+            if allow_resource_override:
+                warnings.append(message)
+            else:
+                blockers.append(message)
+        overages = profile_resource_overages(manifest, profile)
+        if overages:
+            if allow_resource_override:
+                warnings.extend(overages)
+            else:
+                blockers.extend(overages)
+        reports.append(
+            {
+                "profile_id": profile.id,
+                "display_name": profile.display_name,
+                "target_class": profile.target_class,
+                "aliases": list(profile.aliases),
+                "matched_aliases": matched_aliases,
+                "preferred_runtimes": list(profile.preferred_runtimes),
+                "runtime_policy": profile.runtime_policy,
+                "target_resource_label": profile.target_resource_label,
+                "resource_label": decision.label,
+                "status": "blocked" if blockers else "compatible",
+                "blockers": blockers,
+                "warnings": warnings,
+            }
+        )
+    return reports
+
+
 def build_install_plan(
     manifest: ModelManifest,
     data_root: Path,
     policy: ResourcePolicy,
     *,
     known_aliases: set[str],
+    model_profiles: list[ModelProfile] | None = None,
     allow_resource_override: bool = False,
     accept_license: bool = False,
 ) -> dict[str, Any]:
@@ -1502,6 +1604,17 @@ def build_install_plan(
     archive_inspections, archive_blockers = inspect_manifest_archive_files(manifest, data_root, file_status)
     source_allowed = source_url_allowed(manifest)
     unknown_aliases = manifest_aliases_are_known(manifest, known_aliases)
+    profile_compatibility = profile_compatibility_for_manifest(
+        manifest,
+        model_profiles or [],
+        policy,
+        allow_resource_override=allow_resource_override,
+    )
+    profile_blockers = [
+        f"profile {report['profile_id']}: {blocker}"
+        for report in profile_compatibility
+        for blocker in report["blockers"]
+    ]
     requires_license_acceptance = bool(manifest.license.acceptance_required)
     files_verified = all(item["verified"] for item in file_status)
     resource_allowed = bool(decision.accepted or allow_resource_override)
@@ -1512,6 +1625,7 @@ def build_install_plan(
         and files_verified
         and archives_safe
         and resource_allowed
+        and not profile_blockers
         and (not requires_license_acceptance or accept_license)
     )
     blockers: list[str] = []
@@ -1522,6 +1636,7 @@ def build_install_plan(
     if not files_verified:
         blockers.append("one or more content-addressed blobs are missing or failed verification")
     blockers.extend(archive_blockers)
+    blockers.extend(profile_blockers)
     if not resource_allowed:
         blockers.append(decision.reason)
     if requires_license_acceptance and not accept_license:
@@ -1538,6 +1653,7 @@ def build_install_plan(
         "license_accepted": accept_license,
         "files": file_status,
         "archive_inspections": archive_inspections,
+        "profile_compatibility": profile_compatibility,
         "runtime_views": runtime_view_plan(manifest, data_root),
         "resource_decision": asdict(decision),
         "resource_override": allow_resource_override,

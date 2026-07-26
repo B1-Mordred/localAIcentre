@@ -365,6 +365,8 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("profile.target_resource_label", self.source)
         self.assertIn("formatModelEstimate(profile.resource_estimate)", self.source)
         self.assertIn("formatProfileLimits(profile.default_limits)", self.source)
+        self.assertIn("formatProfileCompatibility(plan.profile_compatibility)", self.source)
+        self.assertIn("profile_compatibility?:", self.source)
 
 
 if __name__ == "__main__":

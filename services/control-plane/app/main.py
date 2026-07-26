@@ -4935,11 +4935,13 @@ async def manifest_for_install_request(payload: ModelInstallPlanRequest) -> Any:
 
 
 def install_plan_for_manifest(manifest: Any, payload: ModelInstallPlanRequest) -> dict[str, Any]:
+    catalog = catalog_snapshot()
     return model_lifecycle.build_install_plan(
         manifest,
         data_root_path(),
         resource_policy(),
-        known_aliases=set(catalog_snapshot().aliases_by_id),
+        known_aliases=set(catalog.aliases_by_id),
+        model_profiles=catalog.list_profiles(),
         allow_resource_override=payload.allow_resource_override,
         accept_license=payload.accept_license,
     )

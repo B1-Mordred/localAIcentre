@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 from app import model_lifecycle, security  # noqa: E402
-from app.catalog import parse_manifest_payload  # noqa: E402
+from app.catalog import load_catalog, parse_manifest_payload  # noqa: E402
 from app.scheduler import ResourcePolicy  # noqa: E402
 
 
@@ -274,6 +274,91 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertTrue(plan["can_install"])
             self.assertEqual(plan["files"][0]["status"], "verified")
             model_lifecycle.require_installable(plan, confirmed=True)
+
+    def test_install_plan_reports_required_profile_compatibility(self) -> None:
+        data = b"profile compatible model"
+        digest = hashlib.sha256(data).hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+            plan = model_lifecycle.build_install_plan(
+                manifest,
+                root,
+                ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+
+            self.assertTrue(plan["can_install"])
+            self.assertEqual(plan["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
+            self.assertEqual(plan["profile_compatibility"][0]["status"], "compatible")
+            self.assertEqual(plan["profile_compatibility"][0]["matched_aliases"], ["chat-default"])
+
+    def test_install_plan_blocks_profile_runtime_mismatch(self) -> None:
+        data = b"profile runtime mismatch"
+        digest = hashlib.sha256(data).hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+
+            payload = manifest_payload(digest, len(data))
+            payload["runtimes"] = ["comfyui"]
+            payload["preferred_runtime"] = "comfyui"
+            manifest = parse_manifest_payload(payload)
+            plan = model_lifecycle.build_install_plan(
+                manifest,
+                root,
+                ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+
+            self.assertFalse(plan["can_install"])
+            self.assertEqual(plan["profile_compatibility"][0]["status"], "blocked")
+            self.assertTrue(any("preferred runtime comfyui" in item for item in plan["blockers"]))
+
+    def test_install_plan_profile_resource_envelope_requires_override(self) -> None:
+        data = b"profile envelope"
+        digest = hashlib.sha256(data).hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+
+            payload = manifest_payload(digest, len(data))
+            payload["resource_estimate"] = {"vram_gib": 9.0, "ram_gib": 12.0, "disk_gib": 12.0, "context_tokens": 8192}
+            manifest = parse_manifest_payload(payload)
+            blocked = model_lifecycle.build_install_plan(
+                manifest,
+                root,
+                ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+            overridden = model_lifecycle.build_install_plan(
+                manifest,
+                root,
+                ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+                allow_resource_override=True,
+            )
+
+            self.assertFalse(blocked["can_install"])
+            self.assertTrue(any("profile everyday-llm-7-9b-q4" in item for item in blocked["blockers"]))
+            self.assertTrue(overridden["can_install"])
+            self.assertEqual(overridden["profile_compatibility"][0]["status"], "compatible")
+            self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
 
     def test_install_plan_blocks_missing_blobs_unknown_aliases_and_unsafe_urls(self) -> None:
         manifest = parse_manifest_payload(manifest_payload("2" * 64, 12, source_url="https://127.0.0.1/model.bin"))
