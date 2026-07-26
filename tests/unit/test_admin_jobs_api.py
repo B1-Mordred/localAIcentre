@@ -517,6 +517,69 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("event: timeout", body)
         self.assertNotIn("job event stream timed out", body)
 
+    def test_event_stream_resumes_after_last_event_id_without_duplicate_snapshot(self) -> None:
+        first_updated_at = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+        second_updated_at = datetime(2026, 7, 22, 12, 1, tzinfo=UTC)
+        first = job_row(state="running", stage="running", progress=70, updated_at=first_updated_at)
+        second = job_row(state="running", stage="saving", progress=90, updated_at=second_updated_at)
+
+        class SequenceDatabase(FakeJobsDatabase):
+            def __init__(self) -> None:
+                super().__init__(first)
+                self.rows = [first, second]
+
+            async def get_job(self, job_id: str) -> dict[str, Any] | None:
+                if job_id != "job_1":
+                    return None
+                if len(self.rows) > 1:
+                    return dict(self.rows.pop(0))
+                return dict(self.rows[0])
+
+        self.patch_attr("database", SequenceDatabase())
+
+        async def collect_events() -> str:
+            response = main.job_event_stream(
+                "job_1",
+                lambda _: True,
+                poll_interval_seconds=0,
+                max_events=1,
+                last_event_id=main.job_event_id(first),
+            )
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn(": heartbeat", body)
+        self.assertEqual(body.count("event: job"), 1)
+        self.assertNotIn('"progress":70', body)
+        self.assertIn('"progress":90', body)
+        self.assertIn("id: job_1:2026-07-22T12:01:00+00:00", body)
+
+    def test_event_stream_still_emits_terminal_job_when_last_event_id_matches(self) -> None:
+        row = job_row(state="completed", stage="completed", progress=100)
+        self.patch_attr("database", FakeJobsDatabase(row))
+
+        async def collect_events() -> str:
+            response = main.job_event_stream(
+                "job_1",
+                lambda _: True,
+                poll_interval_seconds=0,
+                last_event_id=main.job_event_id(row),
+            )
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertNotIn(": heartbeat", body)
+        self.assertEqual(body.count("event: job"), 1)
+        self.assertIn('"state":"completed"', body)
+
     def test_event_stream_runs_until_job_reaches_terminal_state(self) -> None:
         class SequenceDatabase(FakeJobsDatabase):
             def __init__(self) -> None:
@@ -572,6 +635,24 @@ class AdminJobsApiTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", body)
         self.assertNotIn("sensitive", body)
         self.assertNotIn("belongs to a different owner", body)
+
+    def test_public_events_accept_last_event_id_header_parameter(self) -> None:
+        row = job_row(state="completed", stage="completed", progress=100)
+        fake_database = FakeJobsDatabase(row)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:read"})))
+
+        async def collect_events() -> str:
+            response = await main.media_job_events("job_1", last_event_id=main.job_event_id(row))
+            chunks: list[str] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+            return "".join(chunks)
+
+        body = asyncio.run(collect_events())
+
+        self.assertIn("event: job", body)
+        self.assertIn('"state":"completed"', body)
 
     def test_admin_events_requires_queue_admin_role(self) -> None:
         fake_database = FakeJobsDatabase(job_row(state="recovery_required", stage="recovery_required", progress=0))

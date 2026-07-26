@@ -41,7 +41,7 @@ from . import backup_schedule
 from . import compose_override as compose_override_policy
 from . import open_webui_migration
 from . import rollback_rehearsal
-from .job_events import format_sse_event, job_event_id
+from .job_events import format_sse_comment, format_sse_event, job_event_id, should_emit_job_snapshot
 from .job_states import TERMINAL_JOB_STATES
 from .job_redaction import redact_request
 from . import media_artifacts
@@ -9134,14 +9134,18 @@ async def admin_job_get(job_id: str, authorization: str | None = Header(default=
     response_class=StreamingResponse,
     responses={200: {"content": {"text/event-stream": {}}}},
 )
-async def admin_job_events(job_id: str, authorization: str | None = Header(default=None)) -> StreamingResponse:
+async def admin_job_events(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
     require_queue_admin(auth)
     job = await database.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    return job_event_stream(job_id, lambda current: True)
+    return job_event_stream(job_id, lambda current: True, last_event_id=last_event_id)
 
 
 @app.post("/admin/jobs/{job_id}/priority")
@@ -10833,14 +10837,18 @@ async def media_job_cancel(job_id: str, authorization: str | None = Header(defau
     response_class=StreamingResponse,
     responses={200: {"content": {"text/event-stream": {}}}},
 )
-async def media_job_events(job_id: str, authorization: str | None = Header(default=None)) -> StreamingResponse:
+async def media_job_events(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:read")
     initial_job = await database.get_job(job_id)
     if initial_job is None:
         raise HTTPException(status_code=404, detail="job not found")
     require_job_owner_or_admin(auth, initial_job)
-    return job_event_stream(job_id, lambda current: subject_can_read_job(auth, current))
+    return job_event_stream(job_id, lambda current: subject_can_read_job(auth, current), last_event_id=last_event_id)
 
 
 def job_event_stream(
@@ -10849,7 +10857,10 @@ def job_event_stream(
     *,
     poll_interval_seconds: float = 1.0,
     max_events: int | None = None,
+    last_event_id: str | None = None,
 ) -> StreamingResponse:
+    resume_after_event_id = str(last_event_id or "").strip()
+
     async def events():
         emitted = 0
         while True:
@@ -10860,7 +10871,12 @@ def job_event_stream(
             if not can_read_job(job):
                 yield format_sse_event("error", {"error": "job belongs to a different owner"})
                 return
-            yield format_sse_event("job", public_job(job), event_id=job_event_id(job), retry_ms=1000)
+            event_id = job_event_id(job)
+            if not should_emit_job_snapshot(job, resume_after_event_id, TERMINAL_JOB_STATES):
+                yield format_sse_comment("heartbeat")
+                await asyncio.sleep(max(0.0, poll_interval_seconds))
+                continue
+            yield format_sse_event("job", public_job(job), event_id=event_id, retry_ms=1000)
             emitted += 1
             if job["state"] in TERMINAL_JOB_STATES:
                 return

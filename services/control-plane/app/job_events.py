@@ -34,3 +34,14 @@ def format_sse_event(event: str, data: Any, *, event_id: str | None = None, retr
     for line in encoded.splitlines() or [""]:
         lines.append(f"data: {line}")
     return "\n".join(lines) + "\n\n"
+
+
+def format_sse_comment(comment: str) -> str:
+    return f": {_clean_sse_field(comment)}\n\n"
+
+
+def should_emit_job_snapshot(job: dict[str, Any], last_event_id: str | None, terminal_states: set[str] | frozenset[str]) -> bool:
+    event_id = job_event_id(job)
+    if not event_id or event_id != str(last_event_id or "").strip():
+        return True
+    return str(job.get("state") or "") in terminal_states

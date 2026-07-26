@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
-from app.job_events import format_sse_event, job_event_id  # noqa: E402
+from app.job_events import format_sse_comment, format_sse_event, job_event_id, should_emit_job_snapshot  # noqa: E402
 from app.job_states import (  # noqa: E402
     ACTIVE_JOB_STATES,
     MODEL_BLOCKING_JOB_STATES,
@@ -53,6 +53,19 @@ class JobStateTests(unittest.TestCase):
             event,
             'id: job_1:recovery_required\nretry: 1000\nevent: job\ndata: {"id":"job_1","state":"recovery_required"}\n\n',
         )
+
+    def test_format_sse_comment_sanitizes_controlled_heartbeat_text(self) -> None:
+        self.assertEqual(format_sse_comment("heartbeat\nretry: 0"), ": heartbeat retry: 0\n\n")
+
+    def test_last_event_id_suppresses_duplicate_active_snapshot_but_not_terminal_snapshot(self) -> None:
+        updated_at = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+        active = {"id": "job_1", "state": "running", "updated_at": updated_at}
+        terminal = {"id": "job_1", "state": "completed", "updated_at": updated_at}
+        last_event_id = job_event_id(active)
+
+        self.assertFalse(should_emit_job_snapshot(active, last_event_id, TERMINAL_JOB_STATES))
+        self.assertTrue(should_emit_job_snapshot(terminal, last_event_id, TERMINAL_JOB_STATES))
+        self.assertTrue(should_emit_job_snapshot(active, "job_1:older", TERMINAL_JOB_STATES))
 
 
 if __name__ == "__main__":

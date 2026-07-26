@@ -158,8 +158,11 @@ class ApiRouteSourceTests(unittest.TestCase):
     def test_committed_openapi_documents_job_events_as_sse(self) -> None:
         schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
         for path in ("/v1/media/jobs/{job_id}/events", "/admin/jobs/{job_id}/events"):
-            content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+            route = schema["paths"][path]["get"]
+            content = route["responses"]["200"]["content"]
             self.assertIn("text/event-stream", content)
+            header_names = {parameter.get("name") for parameter in route.get("parameters", []) if parameter.get("in") == "header"}
+            self.assertIn("Last-Event-ID", header_names)
 
     def test_committed_openapi_documents_prometheus_metrics_as_text(self) -> None:
         schema = json.loads(OPENAPI.read_text(encoding="utf-8"))
