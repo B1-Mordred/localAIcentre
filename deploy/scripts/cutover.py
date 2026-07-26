@@ -83,12 +83,13 @@ def scope_names(scope: dict[str, Any], key: str) -> list[str]:
 
 def scope_paths(scope: dict[str, Any]) -> list[str]:
     paths: list[str] = []
-    for item in scope.get("include_paths", []):
-        if not isinstance(item, dict):
-            continue
-        value = item.get("path")
-        if isinstance(value, str) and value and value not in paths:
-            paths.append(value)
+    for key in ("include_paths", "preserve_paths"):
+        for item in scope.get(key, []):
+            if not isinstance(item, dict):
+                continue
+            value = item.get("path")
+            if isinstance(value, str) and value and value not in paths:
+                paths.append(value)
     return paths
 
 
@@ -187,6 +188,32 @@ def listener_descriptions(items: list[dict[str, Any]]) -> list[str]:
     return [listener_description(item) for item in items]
 
 
+def classified_containers(inventory: dict[str, Any]) -> list[dict[str, Any]]:
+    classification = inventory.get("classification") if isinstance(inventory.get("classification"), dict) else {}
+    containers = classification.get("containers") if isinstance(classification.get("containers"), list) else []
+    return [dict(item) for item in containers if isinstance(item, dict)]
+
+
+def ports_field_publishes_host_port(value: Any, port: int) -> bool:
+    ports = str(value or "")
+    return f":{port}->" in ports or ports.strip().startswith(f"{port}->") or f", {port}->" in ports
+
+
+def current_b1_gateway_published_ports(inventory: dict[str, Any]) -> list[int]:
+    published: set[int] = set()
+    for container in classified_containers(inventory):
+        if container.get("classification") != "b1-ai-hub-current-preserve":
+            continue
+        name = str(container.get("container") or "")
+        image = str(container.get("image") or "")
+        if "gateway" not in name.lower() and not image.startswith("caddy:"):
+            continue
+        for port in (80, 443):
+            if ports_field_publishes_host_port(container.get("ports"), port):
+                published.add(port)
+    return sorted(published)
+
+
 def analyze_cutover_ports(
     inventory: dict[str, Any],
     *,
@@ -220,10 +247,16 @@ def analyze_cutover_ports(
         raise CutoverPlanError(f"temporary B1 staging port is already in use: {details}")
 
     warnings: list[str] = []
+    b1_gateway_ports = set(current_b1_gateway_published_ports(inventory))
+    production_owned_by_current_b1 = {
+        name: listener_descriptions(items)
+        for name, items in listeners.items()
+        if name.startswith("production_") and items and ports[name] in b1_gateway_ports
+    }
     occupied_production = {
         name: listener_descriptions(items)
         for name, items in listeners.items()
-        if name.startswith("production_") and items
+        if name.startswith("production_") and items and ports[name] not in b1_gateway_ports
     }
     for name, items in sorted(occupied_production.items()):
         warnings.append(
@@ -241,6 +274,8 @@ def analyze_cutover_ports(
             "production_ports": {"http": production_http_port, "https": production_https_port},
             "legacy_comfy_port": LEGACY_COMFY_PORT,
             "listeners": {name: listener_descriptions(items) for name, items in listeners.items()},
+            "current_b1_gateway_published_ports": sorted(b1_gateway_ports),
+            "production_ports_owned_by_current_b1_gateway": production_owned_by_current_b1,
             "operator_must_resolve_production_conflicts": bool(occupied_production),
             "operator_must_review_legacy_comfy_conflict": bool(listeners["legacy_comfy"]),
         },

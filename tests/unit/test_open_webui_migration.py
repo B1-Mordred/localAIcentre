@@ -69,6 +69,7 @@ class OpenWebUiMigrationTests(unittest.TestCase):
                 ]
             },
             "paths": {
+                "b1_root": {"path": str(root / "b1-ai-hub"), "exists": True, "type": "directory"},
                 "open_webui_data_candidates": [{"path": str(database_path.parent), "exists": True, "type": "directory"}],
                 "open_webui_data_roots": [{"path": str(database_path.parent), "exists": True, "type": "directory"}],
                 "open_webui_database_candidates": [
@@ -164,6 +165,8 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertTrue(plan["safety"]["does_not_read_database_rows"])
         self.assertTrue(plan["safety"]["does_not_import_automatically"])
         self.assertEqual(plan["open_webui"]["readable_database_count"], 1)
+        self.assertEqual(len(plan["open_webui"]["old_stack_database_candidates"]), 1)
+        self.assertEqual(plan["open_webui"]["current_b1_database_candidates"], [])
         self.assertEqual(plan["open_webui"]["data_path_candidates"], [str(database_path.parent)])
         self.assertEqual(plan["open_webui"]["unreadable_data_roots"], [])
         self.assertEqual(plan["open_webui"]["backed_up_database_candidate_count"], 1)
@@ -188,6 +191,40 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertNotIn("Private RAG document text", json.dumps(plan, sort_keys=True))
         self.assertNotIn("private-source.pdf", json.dumps(plan, sort_keys=True))
         self.assertNotIn("private setting", json.dumps(plan, sort_keys=True))
+        self.assertEqual(plan["warnings"], [])
+
+    def test_plan_ignores_current_b1_open_webui_database_when_checking_old_backup_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_database_path = root / "old-open-webui" / "data" / "webui.db"
+            current_database_path = root / "b1-ai-hub" / "data" / "open-webui" / "webui.db"
+            self.create_webui_db(old_database_path)
+            self.create_webui_db(current_database_path)
+            inventory_payload = self.inventory(root, old_database_path)
+            current_candidate = json.loads(json.dumps(inventory_payload["paths"]["open_webui_database_candidates"][0]))
+            current_candidate["path"] = str(current_database_path)
+            inventory_payload["paths"]["open_webui_database_candidates"].append(current_candidate)
+            inventory_payload["paths"]["open_webui_data_candidates"].append(
+                {"path": str(current_database_path.parent), "exists": True, "type": "directory"}
+            )
+            inventory_payload["paths"]["open_webui_data_roots"].append(
+                {"path": str(current_database_path.parent), "exists": True, "type": "directory"}
+            )
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            backup_dir = self.make_backup(root, old_database_path.parent)
+
+            plan = open_webui_migration.build_plan(
+                inventory_path=inventory_path,
+                backup_dir=backup_dir,
+                restore_target="/srv/b1-ai-hub/restore-tests/open-webui-migration",
+                now=datetime(2026, 7, 23, 13, 0, tzinfo=UTC),
+            )
+
+        self.assertEqual(plan["open_webui"]["readable_database_count"], 1)
+        self.assertEqual(plan["open_webui"]["backed_up_database_candidate_count"], 1)
+        self.assertEqual([item["path"] for item in plan["open_webui"]["old_stack_database_candidates"]], [str(old_database_path)])
+        self.assertEqual([item["path"] for item in plan["open_webui"]["current_b1_database_candidates"]], [str(current_database_path)])
+        self.assertEqual(plan["open_webui"]["database_candidates"][1]["source_role"], "current_b1_open_webui")
         self.assertEqual(plan["warnings"], [])
 
     def test_plan_warns_when_open_webui_root_is_discovered_but_unreadable(self) -> None:
@@ -220,7 +257,14 @@ class OpenWebUiMigrationTests(unittest.TestCase):
 
         self.assertEqual(
             plan["open_webui"]["unreadable_data_roots"],
-            [{"path": "/var/lib/docker/volumes/open-webui/_data", "reason": "PermissionError: denied"}],
+            [
+                {
+                    "path": "/var/lib/docker/volumes/open-webui/_data",
+                    "reason": "PermissionError: denied",
+                    "backup_coverage": "not_covered",
+                    "covering_sources": [],
+                }
+            ],
         )
         self.assertTrue(any("could not be scanned" in warning for warning in plan["warnings"]))
         self.assertEqual(plan["open_webui"]["recommended_strategy"], "no-readable-open-webui-database-found-preserve-old-stack")
@@ -288,6 +332,29 @@ class OpenWebUiMigrationTests(unittest.TestCase):
         self.assertEqual(plan["open_webui"]["version_evidence"]["compatibility_status"], "manual-source-version-review-required")
         self.assertTrue(plan["open_webui"]["version_evidence"]["source_containers"][0]["floating_or_missing_tag"])
         self.assertTrue(any("floating or missing tag" in warning for warning in plan["warnings"]))
+
+    def test_floating_open_webui_tag_is_recorded_when_backup_has_exact_image_id(self) -> None:
+        version_evidence = [
+            {
+                **open_webui_migration.image_reference_metadata("ghcr.io/open-webui/open-webui:main"),
+                "container": "open-webui",
+            }
+        ]
+        backed_metadata = [
+            {
+                "container": "open-webui",
+                "image_evidence": {
+                    "config_image": "ghcr.io/open-webui/open-webui:main",
+                    "image_id": "sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0",
+                    "repo_digests": [],
+                },
+            }
+        ]
+
+        self.assertEqual(
+            open_webui_migration.version_compatibility_status(version_evidence, backed_metadata),
+            "source-image-id-recorded-temporary-validation-required",
+        )
 
     def test_digest_pinned_open_webui_image_is_exact_version_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

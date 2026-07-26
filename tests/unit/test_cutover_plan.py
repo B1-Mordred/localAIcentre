@@ -155,6 +155,7 @@ class CutoverPlanTests(unittest.TestCase):
             "reviewed_by": "operator",
             "review_notes": "old Open WebUI container only",
             "include_paths": [{"path": str(root / "old-compose.yaml"), "reason": "old compose file"}],
+            "preserve_paths": [{"path": str(root / "ollama-models"), "reason": "preserve redownloadable old model cache without archiving"}],
             "include_docker_volumes": [],
             "include_containers": [{"name": container, "reason": "old AI container metadata and rollback target"}],
             "include_systemd_services": [{"name": "ollama.service", "reason": "old Ollama daemon and rollback target"}],
@@ -298,6 +299,10 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertEqual(plan["inputs"]["old_stack_backup_verification"]["status"], "verified")
         self.assertEqual(plan["old_stack_scope"]["containers_to_stop_during_cutover"], ["old-open-webui"])
         self.assertEqual(plan["old_stack_scope"]["systemd_services_to_stop_during_cutover"], ["ollama.service"])
+        self.assertEqual(
+            plan["old_stack_scope"]["host_paths_preserved"],
+            [str(root / "old-compose.yaml"), str(root / "ollama-models")],
+        )
         cutover_phase = next(phase for phase in plan["phases"] if phase["name"] == "cutover-window")
         rollback_phase = next(phase for phase in plan["phases"] if phase["name"] == "rollback")
         self.assertEqual(cutover_phase["commands"][0]["argv"], ["docker", "stop", "old-open-webui"])
@@ -646,6 +651,38 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertTrue(plan["port_readiness"]["operator_must_review_legacy_comfy_conflict"])
         self.assertEqual(plan["port_readiness"]["listeners"]["temporary_http"], [])
         self.assertEqual(plan["port_readiness"]["listeners"]["production_http"], ['0.0.0.0:80 users:(("nginx",pid=1,fd=3))'])
+
+    def test_port_readiness_accepts_current_b1_gateway_production_listeners(self) -> None:
+        inventory_payload = self.inventory(
+            listening_tcp=[
+                {"local_address": "0.0.0.0", "port": 80, "process": 'users:(("docker-proxy",pid=1,fd=3))'},
+                {"local_address": "0.0.0.0", "port": 443, "process": 'users:(("docker-proxy",pid=2,fd=3))'},
+            ]
+        )
+        inventory_payload["classification"]["containers"].append(
+            {
+                "container": "b1-ai-hub-gateway-1",
+                "image": "caddy:2.10.2-alpine",
+                "classification": "b1-ai-hub-current-preserve",
+                "ports": "0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp",
+            }
+        )
+
+        readiness, warnings = cutover.analyze_cutover_ports(
+            inventory_payload,
+            temporary_http_port=18080,
+            temporary_https_port=18443,
+            production_http_port=80,
+            production_https_port=443,
+        )
+
+        self.assertEqual(warnings, [])
+        self.assertFalse(readiness["operator_must_resolve_production_conflicts"])
+        self.assertEqual(readiness["current_b1_gateway_published_ports"], [80, 443])
+        self.assertEqual(
+            sorted(readiness["production_ports_owned_by_current_b1_gateway"]),
+            ["production_http", "production_https"],
+        )
 
     def test_build_plan_warns_on_missing_dns_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

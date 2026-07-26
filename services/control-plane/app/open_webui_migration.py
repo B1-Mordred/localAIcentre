@@ -88,6 +88,20 @@ def is_same_or_child(path: str, parent: str) -> bool:
     return normalized_path == normalized_parent or normalized_path.startswith(normalized_parent.rstrip(os.sep) + os.sep)
 
 
+def b1_data_root(inventory: dict[str, Any]) -> str | None:
+    paths = inventory.get("paths") if isinstance(inventory.get("paths"), dict) else {}
+    b1_root = paths.get("b1_root") if isinstance(paths.get("b1_root"), dict) else {}
+    raw_path = b1_root.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    return normalize_path(str(Path(raw_path) / "data" / "open-webui"))
+
+
+def is_current_b1_open_webui_path(path: str, inventory: dict[str, Any]) -> bool:
+    current_root = b1_data_root(inventory)
+    return bool(current_root and is_same_or_child(path, current_root))
+
+
 def inventory_paths(inventory: dict[str, Any], key: str) -> list[dict[str, Any]]:
     paths = inventory.get("paths") if isinstance(inventory.get("paths"), dict) else {}
     items = paths.get(key) if isinstance(paths.get(key), list) else []
@@ -173,6 +187,8 @@ def database_candidates(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "tables": tables,
                 "data_domains": data_domains,
                 "content_rows_read": False,
+                "source_role": "current_b1_open_webui" if is_current_b1_open_webui_path(path, inventory) else "old_stack_candidate",
+                "current_b1_data": is_current_b1_open_webui_path(path, inventory),
             }
         )
     return candidates
@@ -204,6 +220,22 @@ def unreadable_data_roots(inventory: dict[str, Any]) -> list[dict[str, str]]:
             roots.append({"path": path, "reason": str(item.get("error") or "not readable by current user")})
             seen.add(path)
     return sorted(roots, key=lambda item: item["path"])
+
+
+def annotate_unreadable_root_coverage(roots: list[dict[str, str]], manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = [item for item in manifest.get("sources", []) if isinstance(item, dict)]
+    annotated: list[dict[str, Any]] = []
+    for root in roots:
+        path = root["path"]
+        covering_sources = [source for source in sources if source_covers_candidate(path, source)]
+        annotated.append(
+            {
+                **root,
+                "backup_coverage": "covered" if covering_sources else "not_covered",
+                "covering_sources": covering_sources,
+            }
+        )
+    return annotated
 
 
 def looks_like_open_webui(*values: Any) -> bool:
@@ -283,14 +315,39 @@ def backed_up_open_webui_container_metadata(manifest: dict[str, Any], version_ev
         if names and name.lstrip("/") not in names:
             continue
         if names or looks_like_open_webui(name, source.get("archive_path")):
-            backed.append({"container": name, "archive_path": source.get("archive_path"), "reason": source.get("reason")})
+            image_evidence = source.get("image_evidence") if isinstance(source.get("image_evidence"), dict) else {}
+            backed.append(
+                {
+                    "container": name,
+                    "archive_path": source.get("archive_path"),
+                    "reason": source.get("reason"),
+                    "image_evidence": image_evidence,
+                }
+            )
     return sorted(backed, key=lambda item: str(item.get("container") or ""))
 
 
-def version_compatibility_status(version_evidence: list[dict[str, Any]]) -> str:
+def backed_metadata_has_exact_image_id(backed_container_metadata: list[dict[str, Any]]) -> bool:
+    for item in backed_container_metadata:
+        image_evidence = item.get("image_evidence") if isinstance(item.get("image_evidence"), dict) else {}
+        image_id = image_evidence.get("image_id")
+        repo_digests = image_evidence.get("repo_digests")
+        if isinstance(image_id, str) and image_id.startswith("sha256:"):
+            return True
+        if isinstance(repo_digests, list) and any(isinstance(digest, str) and "@sha256:" in digest for digest in repo_digests):
+            return True
+    return False
+
+
+def version_compatibility_status(
+    version_evidence: list[dict[str, Any]],
+    backed_container_metadata: list[dict[str, Any]] | None = None,
+) -> str:
     if not version_evidence:
         return "source-version-evidence-missing"
     if any(item.get("floating_or_missing_tag") for item in version_evidence):
+        if backed_container_metadata and backed_metadata_has_exact_image_id(backed_container_metadata):
+            return "source-image-id-recorded-temporary-validation-required"
         return "manual-source-version-review-required"
     return "source-version-recorded-temporary-validation-required"
 
@@ -378,19 +435,22 @@ def build_plan(
     artifacts = backup_database_artifacts(manifest)
     version_evidence = open_webui_container_version_evidence(inventory)
     backed_container_metadata = backed_up_open_webui_container_metadata(manifest, version_evidence)
-    unreadable_roots = unreadable_data_roots(inventory)
-    readable = [item for item in databases if item["readable_sqlite"]]
-    backed = [item for item in databases if item["backup_coverage"] == "covered"]
+    unreadable_roots = annotate_unreadable_root_coverage(unreadable_data_roots(inventory), manifest)
+    old_databases = [item for item in databases if not item.get("current_b1_data")]
+    current_b1_databases = [item for item in databases if item.get("current_b1_data")]
+    readable = [item for item in old_databases if item["readable_sqlite"]]
+    backed = [item for item in old_databases if item["backup_coverage"] == "covered"]
     readable_not_backed = [item for item in readable if item["backup_coverage"] != "covered"]
     backed_readable = [item for item in readable if item["backup_coverage"] == "covered"]
+    unreadable_not_backed = [item for item in unreadable_roots if item.get("backup_coverage") != "covered"]
     domain_coverage_gaps = open_webui_data_domain_coverage_gaps(readable, backed_readable)
     warnings: list[str] = []
-    if not readable:
+    if not readable and not artifacts:
         warnings.append("inventory did not contain a readable Open WebUI SQLite database; preserve the old stack for manual export")
-    if unreadable_roots:
+    if unreadable_not_backed:
         warnings.append(
             "Open WebUI data roots were discovered but could not be scanned by the inventory user; include the Docker volume in the reviewed old-stack backup or rerun inventory with read access: "
-            + ", ".join(item["path"] for item in unreadable_roots)
+            + ", ".join(item["path"] for item in unreadable_not_backed)
         )
     if readable_not_backed:
         warnings.append(
@@ -402,11 +462,11 @@ def build_plan(
             "Open WebUI data domains found in readable databases are not fully covered by the verified old-stack backup: "
             + ", ".join(domain_coverage_gaps)
         )
-    if artifacts and not backed:
+    if artifacts and not backed and not any(item.get("backup_coverage") == "covered" for item in unreadable_roots):
         warnings.append("backup contains Open WebUI-like database artifacts that were not matched to inventory candidates; review source paths before import")
     if not version_evidence:
         warnings.append("inventory did not contain Open WebUI container image/version evidence; verify source and target Open WebUI versions manually")
-    if any(item.get("floating_or_missing_tag") for item in version_evidence):
+    if any(item.get("floating_or_missing_tag") for item in version_evidence) and not backed_metadata_has_exact_image_id(backed_container_metadata):
         warnings.append(
             "Open WebUI container image evidence uses a floating or missing tag; record the exact old image digest or version before testing migration"
         )
@@ -431,6 +491,8 @@ def build_plan(
             "data_path_candidates": data_path_candidates(inventory),
             "unreadable_data_roots": unreadable_roots,
             "database_candidates": databases,
+            "old_stack_database_candidates": old_databases,
+            "current_b1_database_candidates": current_b1_databases,
             "backup_database_artifacts": artifacts,
             "readable_database_count": len(readable),
             "backed_up_database_candidate_count": len(backed),
@@ -439,11 +501,11 @@ def build_plan(
                 "backed_up_readable": aggregate_open_webui_data_domains(backed_readable),
                 "content_rows_read": False,
             },
-            "recommended_strategy": choose_strategy(databases, artifacts),
+            "recommended_strategy": choose_strategy(old_databases, artifacts),
             "version_evidence": {
                 "source_containers": version_evidence,
                 "backed_up_container_metadata": backed_container_metadata,
-                "compatibility_status": version_compatibility_status(version_evidence),
+                "compatibility_status": version_compatibility_status(version_evidence, backed_container_metadata),
                 "direct_database_reuse_approved_by_plan": False,
                 "requires_supported_open_webui_migration_path": True,
                 "requires_temporary_instance_validation": True,

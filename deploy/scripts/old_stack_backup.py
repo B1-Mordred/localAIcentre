@@ -192,15 +192,46 @@ def assert_safe_source_path(path: Path) -> Path:
     return resolved
 
 
-def iter_regular_files(source: Path) -> list[Path]:
+def path_is_within(candidate: Path, parent: Path) -> bool:
+    candidate_absolute = Path(os.path.abspath(candidate))
+    parent_absolute = Path(os.path.abspath(parent))
+    try:
+        candidate_absolute.relative_to(parent_absolute)
+        return True
+    except ValueError:
+        return False
+
+
+def excluded_source_paths(scope: dict[str, Any]) -> list[Path]:
+    paths: list[Path] = []
+    for item in scope.get("exclude_paths", []):
+        raw_path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(raw_path, str) or not raw_path:
+            raise OldStackBackupError("exclude_paths entries require path")
+        path = assert_safe_source_path(Path(raw_path))
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def is_excluded_source_path(path: Path, excluded_paths: list[Path]) -> bool:
+    return any(path == excluded or path_is_within(path, excluded) for excluded in excluded_paths)
+
+
+def iter_regular_files(source: Path, excluded_paths: list[Path] | None = None) -> list[Path]:
+    excluded_paths = excluded_paths or []
     if source.is_symlink():
         raise OldStackBackupError(f"refusing to back up symlink: {source}")
+    if is_excluded_source_path(source, excluded_paths):
+        return []
     if source.is_file():
         return [source]
     if not source.is_dir():
         raise OldStackBackupError(f"backup source is not a regular file or directory: {source}")
     files: list[Path] = []
     for current in sorted(source.rglob("*")):
+        if is_excluded_source_path(current, excluded_paths):
+            continue
         if current.is_symlink():
             raise OldStackBackupError(f"refusing to back up symlink: {current}")
         if current.is_file():
@@ -324,6 +355,25 @@ def redact_docker_inspect_json(value: Any, *, parent_key: str = "") -> Any:
     return value
 
 
+def docker_container_image_evidence(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return {}
+    container = payload[0]
+    config = container.get("Config") if isinstance(container.get("Config"), dict) else {}
+    repo_digests = container.get("RepoDigests") if isinstance(container.get("RepoDigests"), list) else []
+    image_id = container.get("Image")
+    config_image = config.get("Image")
+    return {
+        "config_image": config_image if isinstance(config_image, str) else None,
+        "image_id": image_id if isinstance(image_id, str) else None,
+        "repo_digests": [item for item in repo_digests if isinstance(item, str)],
+    }
+
+
 def normalize_scope_items(raw: Any, key: str) -> list[dict[str, Any]]:
     if raw is None:
         return []
@@ -354,6 +404,8 @@ def load_scope(path: Path) -> dict[str, Any]:
     return {
         **scope,
         "include_paths": normalize_scope_items(scope.get("include_paths"), "include_paths"),
+        "exclude_paths": normalize_scope_items(scope.get("exclude_paths", []), "exclude_paths"),
+        "preserve_paths": normalize_scope_items(scope.get("preserve_paths", []), "preserve_paths"),
         "include_docker_volumes": normalize_scope_items(scope.get("include_docker_volumes"), "include_docker_volumes"),
         "include_containers": normalize_scope_items(scope.get("include_containers"), "include_containers"),
         "include_systemd_services": normalize_scope_items(scope.get("include_systemd_services"), "include_systemd_services"),
@@ -446,8 +498,15 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
         "inventory_created_at": inventory.get("created_at"),
         "operator_reviewed": False,
         "reviewed_by": "",
-        "review_notes": "Fill include_* arrays only with resources confirmed to belong to the old AI stack. Preserve unrelated and unknown resources.",
+        "review_notes": (
+            "Fill include_* arrays only with resources confirmed to belong to the old AI stack. "
+            "Use exclude_paths only for reviewed cache/temporary subtrees that should not be archived. "
+            "Use preserve_paths only for rollback resources that must remain in place but should not be archived, "
+            "such as large reproducible model caches. Preserve unrelated and unknown resources."
+        ),
         "include_paths": [],
+        "exclude_paths": [],
+        "preserve_paths": [],
         "include_docker_volumes": [],
         "include_containers": [],
         "include_systemd_services": [],
@@ -601,6 +660,8 @@ def backup_old_stack(
     created_at = (now or datetime.now(tz=UTC)).astimezone(UTC).isoformat()
     records: list[ArchiveFile] = []
     source_index: list[dict[str, Any]] = []
+    excluded_paths = excluded_source_paths(scope)
+    excluded_path_strings = [str(path) for path in excluded_paths]
 
     with tarfile.open(archive_path, "w:gz") as archive:
         scope_content = json.dumps(scope, indent=2, sort_keys=True).encode("utf-8") + b"\n"
@@ -613,13 +674,16 @@ def backup_old_stack(
             source = assert_safe_source_path(Path(raw_path))
             if not source.exists():
                 raise OldStackBackupError(f"include path does not exist: {source}")
-            files = iter_regular_files(source)
+            files = iter_regular_files(source, excluded_paths)
             source_index.append(
                 {
                     "type": "host_path",
                     "source_path": str(source),
                     "archive_prefix": path_member_prefix(source),
                     "file_count": len(files),
+                    "excluded_paths": [
+                        path for path in excluded_path_strings if source == Path(path) or path_is_within(Path(path), source)
+                    ],
                     "reason": item.get("reason"),
                 }
             )
@@ -634,7 +698,7 @@ def backup_old_stack(
             mountpoint = docker_volume_mountpoint(volume_name, command_runner)
             if not mountpoint.exists():
                 raise OldStackBackupError(f"Docker volume mountpoint does not exist: {mountpoint}")
-            files = iter_regular_files(mountpoint)
+            files = iter_regular_files(mountpoint, excluded_paths)
             source_index.append(
                 {
                     "type": "docker_volume",
@@ -642,6 +706,9 @@ def backup_old_stack(
                     "mountpoint": str(mountpoint),
                     "archive_prefix": f"docker-volumes/{volume_name}",
                     "file_count": len(files),
+                    "excluded_paths": [
+                        path for path in excluded_path_strings if mountpoint == Path(path) or path_is_within(Path(path), mountpoint)
+                    ],
                     "reason": item.get("reason"),
                 }
             )
@@ -664,6 +731,7 @@ def backup_old_stack(
                     "name": container_name,
                     "archive_path": archive_name,
                     "redacted_review_archive_path": review_archive_name,
+                    "image_evidence": docker_container_image_evidence(inspect_payload.raw),
                     "raw_metadata_may_include_environment_secrets": True,
                     "reason": item.get("reason"),
                 }
@@ -686,7 +754,7 @@ def backup_old_stack(
                 if not unit_path.exists():
                     missing_unit_paths.append(str(unit_path))
                     continue
-                for file_path in iter_regular_files(unit_path):
+                for file_path in iter_regular_files(unit_path, excluded_paths):
                     unit_archive_path = archive_path_for_systemd_unit(service_name, file_path)
                     records.append(add_file_member(archive, file_path, unit_archive_path, "systemd_unit_file", sensitive=True))
                     unit_archive_paths.append(unit_archive_path)
@@ -717,6 +785,14 @@ def backup_old_stack(
         },
         "files": [record.__dict__ for record in records],
         "sources": source_index,
+        "excluded_paths": [
+            {
+                "path": str(assert_safe_source_path(Path(item["path"]))),
+                "reason": item.get("reason"),
+            }
+            for item in scope.get("exclude_paths", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        ],
         "contains_sensitive_data": any(record.sensitive for record in records),
         "safety": {
             "read_only_backup": True,

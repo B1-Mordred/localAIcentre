@@ -95,6 +95,20 @@ class InventoryTests(unittest.TestCase):
         )
         self.assertEqual(dns["ai.b1.germering"], ["192.168.2.100"])
         self.assertEqual(dns["monitoring.ai.b1.germering"], ["192.168.2.100"])
+        ahosts = inventory.parse_dns_ahosts(
+            "192.168.2.100 STREAM ai.b1.germering\n"
+            "192.168.2.100 DGRAM\n"
+            "192.168.2.100 RAW\n"
+            "::ffff:192.168.2.100 STREAM api.ai.b1.germering\n"
+            "::ffff:192.168.2.100 DGRAM\n"
+        )
+        self.assertEqual(ahosts["ai.b1.germering"], ["192.168.2.100"])
+        self.assertEqual(ahosts["api.ai.b1.germering"], ["192.168.2.100"])
+        cutover_records = inventory.cutover_dns_records(
+            {"ai.b1.germering": ["fd9b:4afc:bb00:1::100"]},
+            {"ai.b1.germering": ["192.168.2.100"]},
+        )
+        self.assertEqual(cutover_records["ai.b1.germering"], ["192.168.2.100"])
         interfaces = inventory.summarize_ip_interfaces(
             [
                 {
@@ -242,6 +256,9 @@ class InventoryTests(unittest.TestCase):
             project.mkdir()
             (project / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
 
+            dns_ahostsv4 = "\n".join(
+                f"192.168.2.100 STREAM {host}" for host in inventory.CORE_INTENDED_HOSTS
+            )
             outputs = {
                 "docker_ps_all": "\n".join(
                     [
@@ -272,7 +289,9 @@ class InventoryTests(unittest.TestCase):
                 "free": "              total used free shared buff/cache available\nMem:          32168 1000 2000 0 0 29168\nSwap:          2048 0 2048\n",
                 "df": "Filesystem Type 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 ext4 1000 250 750 25% /\n",
                 "mounts": json.dumps({"filesystems": [{"target": "/", "source": "/dev/sda1"}]}),
-                "dns_hosts": "192.168.2.100 ai.b1.germering api.ai.b1.germering monitoring.ai.b1.germering\n",
+                "dns_hosts": "fd9b:4afc:bb00:1::100 ai.b1.germering\n",
+                "dns_ahostsv4": dns_ahostsv4,
+                "dns_ahostsv6": "fd9b:4afc:bb00:1::100 STREAM ai.b1.germering\n",
                 "ip_addresses": json.dumps(
                     [
                         {
@@ -383,6 +402,13 @@ class InventoryTests(unittest.TestCase):
 
             self.patch_attr("read_resolv_conf", lambda: {"path": "/etc/resolv.conf", "exists": True, "lines": ["nameserver 192.168.2.1"]})
             self.patch_attr("default_model_path_candidates", lambda b1_root: [b1_root / "models"])
+            original_dns_admin_url = os.environ.get("B1_DNS_ADMIN_URL")
+            os.environ["B1_DNS_ADMIN_URL"] = "http://technitium.b1.germering"
+            self.addCleanup(
+                lambda: os.environ.pop("B1_DNS_ADMIN_URL", None)
+                if original_dns_admin_url is None
+                else os.environ.__setitem__("B1_DNS_ADMIN_URL", original_dns_admin_url)
+            )
             self.patch_attr(
                 "inspect_host_identity",
                 lambda: {
@@ -449,7 +475,11 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["host"]["dns"]["core_hosts"], list(inventory.CORE_INTENDED_HOSTS))
         self.assertEqual(report["host"]["dns"]["optional_hosts"], list(inventory.OPTIONAL_INTENDED_HOSTS))
         self.assertIn("monitoring.ai.b1.germering", report["host"]["dns"]["intended_hosts"])
-        self.assertEqual(report["host"]["dns"]["records"]["monitoring.ai.b1.germering"], ["192.168.2.100"])
+        self.assertEqual(report["host"]["dns"]["records"]["ai.b1.germering"], ["192.168.2.100"])
+        self.assertEqual(report["host"]["dns"]["records"]["api.ai.b1.germering"], ["192.168.2.100"])
+        self.assertIn("fd9b:4afc:bb00:1::100", report["host"]["dns"]["records_all_sources"]["ai.b1.germering"])
+        self.assertEqual(report["host"]["dns"]["records_by_source"]["getent_hosts"]["ai.b1.germering"], ["fd9b:4afc:bb00:1::100"])
+        self.assertEqual(report["host"]["dns"]["dns_admin"]["host"], "technitium.b1.germering")
         self.assertEqual(report["host"]["network"]["interfaces"][0]["ifname"], "eno1")
         self.assertEqual(report["host"]["network"]["default_routes"][0]["protocol"], "dhcp")
         self.assertEqual(report["migration_readiness"]["target_identity"]["hostname_authority"], "b1-appliance-config")

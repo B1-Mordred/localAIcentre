@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import platform
@@ -16,7 +17,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 CORE_INTENDED_HOSTS = (
@@ -51,6 +52,8 @@ COMMANDS = {
     "df": ["df", "-PT"],
     "mounts": ["findmnt", "--json"],
     "dns_hosts": ["getent", "hosts", *INTENDED_HOSTS],
+    "dns_ahostsv4": ["getent", "ahostsv4", *INTENDED_HOSTS],
+    "dns_ahostsv6": ["getent", "ahostsv6", *INTENDED_HOSTS],
     "ip_addresses": ["ip", "-json", "address", "show"],
     "ip_default_routes_v4": ["ip", "-4", "-json", "route", "show", "default"],
     "ip_default_routes_v6": ["ip", "-6", "-json", "route", "show", "default"],
@@ -498,10 +501,95 @@ def parse_dns_hosts(output: str) -> dict[str, list[str]]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        address = parts[0]
+        address = normalize_dns_address(parts[0])
         for host in parts[1:]:
             records.setdefault(host, []).append(address)
+    return dedupe_dns_records(records)
+
+
+def normalize_dns_address(value: str) -> str:
+    raw = value.strip()
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        return raw
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
+
+
+def dedupe_dns_records(records: dict[str, list[str]]) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for host, addresses in records.items():
+        if not isinstance(host, str) or not host:
+            continue
+        seen: set[str] = set()
+        values: list[str] = []
+        for address in addresses:
+            normalized_address = normalize_dns_address(str(address))
+            if not normalized_address or normalized_address in seen:
+                continue
+            seen.add(normalized_address)
+            values.append(normalized_address)
+        normalized[host] = values
+    return normalized
+
+
+def parse_dns_ahosts(output: str) -> dict[str, list[str]]:
+    records: dict[str, list[str]] = {}
+    socket_tokens = {"STREAM", "DGRAM", "RAW"}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        socket_type = parts[1].upper()
+        if socket_type not in socket_tokens:
+            continue
+        host = parts[2].strip().rstrip(".")
+        if not host:
+            continue
+        records.setdefault(host, []).append(normalize_dns_address(parts[0]))
+    return dedupe_dns_records(records)
+
+
+def merge_dns_records(*records_by_source: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for records in records_by_source:
+        for host, addresses in records.items():
+            merged.setdefault(host, []).extend(addresses)
+    return dedupe_dns_records(merged)
+
+
+def cutover_dns_records(host_records: dict[str, list[str]], ipv4_records: dict[str, list[str]]) -> dict[str, list[str]]:
+    records: dict[str, list[str]] = {}
+    for host in INTENDED_HOSTS:
+        primary = ipv4_records.get(host) or host_records.get(host) or []
+        records[host] = list(primary)
     return records
+
+
+def dns_admin_url_evidence() -> dict[str, Any]:
+    raw = os.getenv("B1_DNS_ADMIN_URL", "").strip()
+    if not raw:
+        return {"configured": False}
+    try:
+        parsed = urlsplit(raw)
+    except ValueError as exc:
+        return {"configured": False, "url": raw[:200], "warning": f"invalid DNS admin URL: {exc}"}
+    warnings: list[str] = []
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        warnings.append("DNS admin URL must be an http(s) URL with a host")
+    if parsed.username or parsed.password:
+        warnings.append("DNS admin URL must not include credentials")
+    if parsed.query or parsed.fragment:
+        warnings.append("DNS admin URL must not include query strings or fragments")
+    return {
+        "configured": not warnings,
+        "url": raw[:500],
+        "scheme": parsed.scheme,
+        "host": parsed.hostname or "",
+        "warnings": warnings,
+    }
 
 
 def parse_json_array(output: str) -> list[dict[str, Any]]:
@@ -1520,7 +1608,11 @@ def build_inventory(
         "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
     }
     docker_socket = inspect_docker_socket(docker_socket_path, configured_docker_gid)
-    dns_records = parse_dns_hosts(captured["dns_hosts"]["stdout"])
+    dns_host_records = parse_dns_hosts(captured["dns_hosts"]["stdout"])
+    dns_ipv4_records = parse_dns_ahosts(captured["dns_ahostsv4"]["stdout"])
+    dns_ipv6_records = parse_dns_ahosts(captured["dns_ahostsv6"]["stdout"])
+    dns_records = cutover_dns_records(dns_host_records, dns_ipv4_records)
+    dns_all_records = merge_dns_records(dns_records, dns_host_records, dns_ipv4_records, dns_ipv6_records)
     network_interfaces = summarize_ip_interfaces(parse_json_array(captured["ip_addresses"]["stdout"]))
     default_routes = summarize_default_routes(parse_json_array(captured["ip_default_routes_v4"]["stdout"]), family="inet")
     default_routes.extend(summarize_default_routes(parse_json_array(captured["ip_default_routes_v6"]["stdout"]), family="inet6"))
@@ -1573,6 +1665,14 @@ def build_inventory(
                 "core_hosts": list(CORE_INTENDED_HOSTS),
                 "optional_hosts": list(OPTIONAL_INTENDED_HOSTS),
                 "records": dns_records,
+                "records_all_sources": dns_all_records,
+                "records_by_source": {
+                    "getent_hosts": dns_host_records,
+                    "getent_ahostsv4": dns_ipv4_records,
+                    "getent_ahostsv6": dns_ipv6_records,
+                },
+                "primary_record_source": "getent_ahostsv4_when_available_else_getent_hosts",
+                "dns_admin": dns_admin_url_evidence(),
                 "resolv_conf": read_resolv_conf(),
             },
             "network": host_network,

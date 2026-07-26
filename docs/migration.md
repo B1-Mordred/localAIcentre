@@ -15,14 +15,14 @@ The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_
 - listening TCP sockets and processes
 - `nvidia-smi` GPU driver/VRAM/utilization data and NVIDIA Container Toolkit version when available
 - hardware-profile readiness against the initial 12 GB VRAM / 32 GB RAM baseline
-- host memory, disks, mount tree, DNS records for the core B1 AI Hub hostnames plus optional profile hostnames such as `monitoring.ai.b1.germering`, and resolver configuration
+- host memory, disks, mount tree, DNS records for the core B1 AI Hub hostnames plus optional profile hostnames such as `monitoring.ai.b1.germering`, resolver configuration, and optional `B1_DNS_ADMIN_URL` operator metadata for the LAN DNS control plane
 - candidate model directories, Open WebUI data/database locations, and Compose files under bounded scan roots
 - bounded model-directory storage summaries, including model-like file counts, sizes, suffix counts, and sample relative model filenames
 - read-only Open WebUI SQLite metadata, including table names, aggregate counts for known tables, and redacted data-domain summaries for accounts, chats, settings, documents/RAG, model/prompt/tool metadata, and feedback; row contents are not read
 - port-review evidence for production gateway ports, common old AI service ports, Ollama, Open WebUI, and optional legacy ComfyUI listeners
 - container, Compose, and systemd-service classifications: `candidate-old-ai-stack-review-required`, `preserve-unrelated`, `b1-ai-hub-current-preserve`, or `unknown-preserve-by-default`
 
-Review the generated inventory and classify old-stack services explicitly. First verify `migration_readiness.target_identity.accepted=true`, `migration_readiness.target_identity.hostname_authority` is `b1-appliance-config`, `migration_readiness.target_identity.expected_target_host` matches `B1_APPLIANCE_HOSTNAME`, `migration_readiness.networking.hostname_authority` is `b1-appliance-config`, `migration_readiness.networking.hostname_source` is `system-hostname`, `migration_readiness.networking.network_property_source` is `host-dhcp-client`, `migration_readiness.networking.b1_static_ip_configures` is `false`, `migration_readiness.networking.has_dhcp_default_route` is `true`, and DNS records for the configured virtual hosts are present. The intended network posture is a B1-defined appliance hostname applied as the target OS hostname plus host-managed DHCP or a DHCP reservation plus LAN DNS; the helper `make apply-system-hostname` may set only that OS hostname, while IP, gateway, route, and resolver properties remain DHCP-owned. The B1 repository and Compose project must not set a static appliance IP. An inventory from a developer workstation or wrong LAN segment is not cutover evidence for `ai.b1.germering`. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
+Review the generated inventory and classify old-stack services explicitly. First verify `migration_readiness.target_identity.accepted=true`, `migration_readiness.target_identity.hostname_authority` is `b1-appliance-config`, `migration_readiness.target_identity.expected_target_host` matches `B1_APPLIANCE_HOSTNAME`, `migration_readiness.networking.hostname_authority` is `b1-appliance-config`, `migration_readiness.networking.hostname_source` is `system-hostname`, `migration_readiness.networking.network_property_source` is `host-dhcp-client`, `migration_readiness.networking.b1_static_ip_configures` is `false`, `migration_readiness.networking.has_dhcp_default_route` is `true`, and DNS records for the configured virtual hosts are present. Set `B1_DNS_ADMIN_URL` only to record the operator-facing DNS administration endpoint, for example `http://technitium.b1.germering`; this is evidence metadata and does not authorize B1 AI Hub to mutate DNS. The intended network posture is a B1-defined appliance hostname applied as the target OS hostname plus host-managed DHCP or a DHCP reservation plus LAN DNS; the helper `make apply-system-hostname` may set only that OS hostname, while IP, gateway, route, and resolver properties remain DHCP-owned. The B1 repository and Compose project must not set a static appliance IP. An inventory from a developer workstation or wrong LAN segment is not cutover evidence for `ai.b1.germering`. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
 
 Optional bounded scans can be added when old Compose files are stored somewhere unusual:
 
@@ -61,6 +61,18 @@ Edit the scope file only after operator review:
     {
       "path": "/srv/open-webui/data",
       "reason": "old Open WebUI data"
+    }
+  ],
+  "exclude_paths": [
+    {
+      "path": "/var/lib/docker/volumes/open-webui/_data/cache",
+      "reason": "old Open WebUI runtime/model cache; not required for account/chat rollback"
+    }
+  ],
+  "preserve_paths": [
+    {
+      "path": "/usr/share/ollama/.ollama/models",
+      "reason": "large old Ollama model cache preserved in place for rollback; not archived"
     }
   ],
   "include_docker_volumes": [

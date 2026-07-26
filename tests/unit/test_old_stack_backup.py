@@ -100,6 +100,8 @@ class OldStackBackupTests(unittest.TestCase):
                 {"path": str(root / "old-open-webui" / "compose.yaml"), "reason": "old compose file"},
                 {"path": str(root / "models"), "reason": "non-redownloadable old model metadata"},
             ],
+            "exclude_paths": [{"path": str(volume_data / "cache"), "reason": "runtime cache"}],
+            "preserve_paths": [{"path": str(root / "models-redownloadable"), "reason": "preserve without archive"}],
             "include_docker_volumes": [{"name": "open-webui_data", "reason": "old Open WebUI data volume"}],
             "include_containers": [{"name": "old-open-webui", "reason": "container metadata for rollback"}],
             "include_systemd_services": [{"name": "ollama.service", "reason": "host Ollama service for rollback"}],
@@ -124,8 +126,9 @@ class OldStackBackupTests(unittest.TestCase):
                         [
                             {
                                 "Name": f"/{command[2]}",
-                                "Image": "ghcr.io/open-webui/open-webui:v0.6.30",
+                                "Image": "sha256:unitimageid",
                                 "Config": {
+                                    "Image": "ghcr.io/open-webui/open-webui:v0.6.30",
                                     "Env": ["OPEN_WEBUI_SECRET_KEY=unit-key", "PUID=1000"],
                                     "Labels": {"public": "kept", "api_key": "unit-api"},
                                     "Cmd": ["serve", "--token=unit-token"],
@@ -169,6 +172,9 @@ class OldStackBackupTests(unittest.TestCase):
         volume_data = root / "docker-volume-open-webui"
         volume_data.mkdir()
         (volume_data / "webui.db").write_bytes(b"sqlite")
+        (volume_data / "cache").mkdir()
+        (volume_data / "cache" / "cached-model.bin").write_bytes(b"cache")
+        (volume_data / "cache" / "readme-link").symlink_to(root / "old-open-webui" / "compose.yaml")
         systemd = root / "systemd"
         (systemd / "ollama.service.d").mkdir(parents=True)
         (systemd / "ollama.service").write_text(
@@ -192,6 +198,8 @@ class OldStackBackupTests(unittest.TestCase):
         self.assertEqual(template["format"], "b1-ai-hub-old-stack-backup-scope/v1")
         self.assertFalse(template["operator_reviewed"])
         self.assertEqual(template["include_paths"], [])
+        self.assertEqual(template["exclude_paths"], [])
+        self.assertEqual(template["preserve_paths"], [])
         self.assertEqual(template["include_docker_volumes"], [])
         self.assertEqual(template["include_containers"], [])
         self.assertEqual(template["include_systemd_services"], [])
@@ -267,6 +275,7 @@ class OldStackBackupTests(unittest.TestCase):
             self.assertFalse(manifest["safety"]["old_stack_deletion_allowed"])
             archive_names = {item["archive_path"] for item in manifest["files"]}
             self.assertIn("docker-volumes/open-webui_data/webui.db", archive_names)
+            self.assertNotIn("docker-volumes/open-webui_data/cache/cached-model.bin", archive_names)
             self.assertIn("docker-inspect/containers/old-open-webui.json", archive_names)
             self.assertIn("docker-inspect-redacted/containers/old-open-webui.json", archive_names)
             self.assertIn("systemd/services/ollama.service.show", archive_names)
@@ -292,10 +301,25 @@ class OldStackBackupTests(unittest.TestCase):
                 sources["docker_container_metadata"]["redacted_review_archive_path"],
                 "docker-inspect-redacted/containers/old-open-webui.json",
             )
+            self.assertEqual(sources["docker_container_metadata"]["image_evidence"]["image_id"], "sha256:unitimageid")
+            self.assertEqual(
+                sources["docker_container_metadata"]["image_evidence"]["config_image"],
+                "ghcr.io/open-webui/open-webui:v0.6.30",
+            )
             self.assertEqual(sources["systemd_service_metadata"]["redacted_review_archive_path"], "systemd/services-redacted/ollama.service.show")
             self.assertEqual(len(sources["systemd_service_metadata"]["unit_file_archive_paths"]), 2)
+            self.assertEqual(sources["docker_volume"]["excluded_paths"], [str(volume_data / "cache")])
+            self.assertEqual(manifest["excluded_paths"][0]["path"], str(volume_data / "cache"))
             with tarfile.open(backup_dir / "payload.tar.gz", "r:gz") as archive:
-                self.assertIn("docker-volumes/open-webui_data/webui.db", archive.getnames())
+                archive_member_names = archive.getnames()
+                self.assertIn("docker-volumes/open-webui_data/webui.db", archive_member_names)
+                self.assertNotIn("docker-volumes/open-webui_data/cache/cached-model.bin", archive_member_names)
+                self.assertFalse(any("models-redownloadable" in name for name in archive_member_names))
+                scope_member = archive.extractfile("scope.json")
+                self.assertIsNotNone(scope_member)
+                assert scope_member is not None
+                archived_scope = json.loads(scope_member.read().decode("utf-8"))
+                self.assertEqual(archived_scope["preserve_paths"][0]["path"], str(root / "models-redownloadable"))
                 redacted_member = archive.extractfile("docker-inspect-redacted/containers/old-open-webui.json")
                 self.assertIsNotNone(redacted_member)
                 assert redacted_member is not None
