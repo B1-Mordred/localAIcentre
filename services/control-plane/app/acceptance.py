@@ -4141,6 +4141,17 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("LocalAI status readiness check is absent")
         elif localai_status.get("status") != "ok":
             blockers.append(f"LocalAI status readiness check is {localai_status.get('status', 'unknown')}")
+    if "voicebox" in required_runtimes:
+        voicebox_build = _check_by_name(report.get("self_test") or {}, "runtime:voicebox-build-info")
+        if not voicebox_build:
+            blockers.append("Voicebox build-info readiness check is absent")
+        elif voicebox_build.get("status") != "ok":
+            blockers.append(f"Voicebox build-info readiness check is {voicebox_build.get('status', 'unknown')}")
+        voicebox_status = _check_by_name(report.get("self_test") or {}, "runtime:voicebox-status")
+        if not voicebox_status:
+            blockers.append("Voicebox status readiness check is absent")
+        elif voicebox_status.get("status") != "ok":
+            blockers.append(f"Voicebox status readiness check is {voicebox_status.get('status', 'unknown')}")
     if "comfyui" in required_runtimes:
         comfyui_build = _check_by_name(report.get("self_test") or {}, "runtime:comfyui-build-info")
         if not comfyui_build:

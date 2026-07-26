@@ -6890,6 +6890,8 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
     lifecycle_checks = await asyncio.gather(
         self_test_localai_build_info(),
         self_test_localai_status(),
+        self_test_voicebox_build_info(),
+        self_test_voicebox_status(),
         self_test_comfyui_build_info(),
         self_test_comfyui_status(),
     )
@@ -7572,8 +7574,16 @@ def comfyui_build_info_required() -> bool:
     return settings.runtime_deployment_mode == "production" and "comfyui" in set(settings.runtime_production_required)
 
 
+def voicebox_build_info_required() -> bool:
+    return settings.runtime_deployment_mode == "production" and "voicebox" in set(settings.runtime_production_required)
+
+
 def localai_build_info_required() -> bool:
     return settings.runtime_deployment_mode == "production" and "localai" in set(settings.runtime_production_required)
+
+
+def voicebox_build_info_failure_status() -> str:
+    return "failed" if voicebox_build_info_required() else "warning"
 
 
 def localai_build_info_failure_status() -> str:
@@ -7595,6 +7605,21 @@ def localai_build_info_pinned(payload: dict[str, Any]) -> bool:
         and payload.get("pinned") is True
         and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
         and re.fullmatch(r".+@sha256:[0-9a-f]{64}", upstream_image) is not None
+    )
+
+
+def voicebox_build_info_pinned(payload: dict[str, Any]) -> bool:
+    upstream_commit = str(payload.get("upstream_commit") or "").strip().lower()
+    source_archive_sha256 = str(payload.get("source_archive_sha256") or "").strip().lower()
+    return (
+        payload.get("status") == "ok"
+        and payload.get("runtime") == "voicebox"
+        and payload.get("action") == "build-info"
+        and payload.get("proxy") == "b1-voicebox-proxy"
+        and payload.get("upstream_repository") == "jamiepine/voicebox"
+        and payload.get("pinned") is True
+        and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
+        and re.fullmatch(r"[0-9a-f]{64}", source_archive_sha256) is not None
     )
 
 
@@ -7649,6 +7674,37 @@ def localai_status_payload_ok(payload: dict[str, Any]) -> bool:
     return {"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(action_names)
 
 
+def voicebox_status_payload_ok(payload: dict[str, Any]) -> bool:
+    if payload.get("status") != "ok" or payload.get("runtime") != "voicebox" or payload.get("action") != "status":
+        return False
+    process = payload.get("process")
+    model_inventory = payload.get("model_inventory")
+    build_info = payload.get("build_info")
+    capabilities = payload.get("capabilities")
+    active_requests = payload.get("active_requests")
+    if not isinstance(process, dict) or process.get("running") is not True:
+        return False
+    if not isinstance(active_requests, int) or active_requests < 0:
+        return False
+    if not isinstance(model_inventory, dict):
+        return False
+    for key in ("root_count", "available_root_count", "entry_count"):
+        value = model_inventory.get(key)
+        if not isinstance(value, int) or value < 0:
+            return False
+    if any(key in model_inventory for key in ("entries", "models", "paths", "files")):
+        return False
+    if not isinstance(build_info, dict) or not voicebox_build_info_pinned(build_info):
+        return False
+    if not isinstance(capabilities, dict):
+        return False
+    actions = capabilities.get("actions")
+    if not isinstance(actions, list):
+        return False
+    action_names = {item for item in actions if isinstance(item, str)}
+    return {"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(action_names)
+
+
 def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
     if payload.get("status") != "ok" or payload.get("runtime") != "comfyui" or payload.get("action") != "status":
         return False
@@ -7683,6 +7739,110 @@ def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
         return False
     action_names = {item for item in actions if isinstance(item, str)}
     return {"status", "load", "warm", "smoke", "unload", "build-info"}.issubset(action_names)
+
+
+async def self_test_voicebox_build_info() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "voicebox" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:voicebox-build-info",
+            "ok",
+            "Voicebox is not required by the production runtime policy",
+            {"required": False, "runtime": "voicebox"},
+        )
+    url = f"{settings.voicebox_url.rstrip('/')}/b1/runtime/build-info"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:voicebox-build-info",
+            voicebox_build_info_failure_status(),
+            f"Voicebox build-info hook is unreachable: {exc.__class__.__name__}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:voicebox-build-info",
+            voicebox_build_info_failure_status(),
+            f"Voicebox build-info hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:voicebox-build-info",
+            voicebox_build_info_failure_status(),
+            f"Voicebox build-info hook returned HTTP {response.status_code}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and voicebox_build_info_pinned(payload):
+        return selftest_policy.check(
+            "runtime:voicebox-build-info",
+            "ok",
+            "Voicebox runtime reports pinned B1 proxy metadata",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "build_info": payload},
+        )
+    return selftest_policy.check(
+        "runtime:voicebox-build-info",
+        voicebox_build_info_failure_status(),
+        "Voicebox build-info hook did not report pinned upstream commit and source archive SHA-256",
+        {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "build_info": payload},
+    )
+
+
+async def self_test_voicebox_status() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "voicebox" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:voicebox-status",
+            "ok",
+            "Voicebox is not required by the production runtime policy",
+            {"required": False, "runtime": "voicebox"},
+        )
+    url = f"{settings.voicebox_url.rstrip('/')}/b1/runtime/status"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:voicebox-status",
+            voicebox_build_info_failure_status(),
+            f"Voicebox status hook is unreachable: {exc.__class__.__name__}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:voicebox-status",
+            voicebox_build_info_failure_status(),
+            f"Voicebox status hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:voicebox-status",
+            voicebox_build_info_failure_status(),
+            f"Voicebox status hook returned HTTP {response.status_code}",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and voicebox_status_payload_ok(payload):
+        return selftest_policy.check(
+            "runtime:voicebox-status",
+            "ok",
+            "Voicebox runtime reports process, native-request, redacted model-inventory, and lifecycle capability status",
+            {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "status": payload},
+        )
+    return selftest_policy.check(
+        "runtime:voicebox-status",
+        voicebox_build_info_failure_status(),
+        "Voicebox status hook did not report required process, redacted model-inventory, lifecycle, and pinned build metadata",
+        {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "status": payload},
+    )
 
 
 async def self_test_localai_build_info() -> dict[str, Any]:
@@ -7954,6 +8114,8 @@ async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]
         self_test_runtime_unload(),
         self_test_localai_build_info(),
         self_test_localai_status(),
+        self_test_voicebox_build_info(),
+        self_test_voicebox_status(),
         self_test_comfyui_build_info(),
         self_test_comfyui_status(),
         self_test_artifact_delivery(),

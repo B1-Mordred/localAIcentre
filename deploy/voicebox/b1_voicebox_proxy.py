@@ -57,6 +57,7 @@ VOICEBOX_UPSTREAM_VERSION_DEFAULT = "v0.5.0"
 VOICEBOX_UPSTREAM_COMMIT_DEFAULT = "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d"
 VOICEBOX_SOURCE_ARCHIVE_SHA256_DEFAULT = "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083"
 VOICEBOX_PROXY_VERSION_DEFAULT = "b1-voicebox-proxy/v0.5.0-b1"
+VOICEBOX_LIFECYCLE_ACTIONS = ["status", "build-info", "load", "warm", "smoke", "unload"]
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -169,7 +170,53 @@ def voicebox_build_info() -> dict[str, Any]:
         "upstream_commit": upstream_commit,
         "source_archive_sha256": source_archive_sha256,
         "pinned": True,
+        "capabilities": {"actions": VOICEBOX_LIFECYCLE_ACTIONS},
     }
+
+
+def voicebox_model_inventory() -> dict[str, Any]:
+    roots = configured_model_roots()
+    max_entries = env_int("B1_VOICEBOX_STATUS_MODEL_LIST_MAX_ENTRIES", 2000)
+    entry_count = 0
+    available_root_count = 0
+    truncated = False
+    for root in roots:
+        if root.exists():
+            available_root_count += 1
+        entries = iter_model_entries((root,), max_entries=max_entries)
+        entry_count += len(entries)
+        if len(entries) >= max_entries:
+            truncated = True
+    return {
+        "root_count": len(roots),
+        "available_root_count": available_root_count,
+        "entry_count": entry_count,
+        "truncated": truncated,
+        "strict_model_list": env_bool("B1_VOICEBOX_HOOK_STRICT_MODEL_LIST", False),
+    }
+
+
+def voicebox_status(manager: "VoiceboxProcessManager", tracker: "NativeRequestTracker") -> dict[str, Any]:
+    process = manager.status()
+    build_info = voicebox_build_info()
+    model_inventory = voicebox_model_inventory()
+    process_running = process.get("running") is True
+    status = "ok" if process_running and build_info.get("status") == "ok" else "unhealthy"
+    return json_response(
+        status,
+        "status",
+        process=process,
+        active_requests=tracker.active(),
+        model_inventory=model_inventory,
+        build_info=build_info,
+        capabilities={
+            "actions": VOICEBOX_LIFECYCLE_ACTIONS,
+            "native_http_passthrough": True,
+            "native_websocket_passthrough": True,
+            "voice_profile_envelope": True,
+            "sample_path_forwarding": env_bool("B1_VOICEBOX_FORWARD_SAMPLE_PATHS", True),
+        },
+    )
 
 
 def strip_model_version(value: str) -> str:
@@ -537,6 +584,10 @@ async def handle_runtime_action(
     manager: VoiceboxProcessManager,
     tracker: NativeRequestTracker,
 ) -> dict[str, Any]:
+    if action == "status":
+        return voicebox_status(manager, tracker)
+    if action == "build-info":
+        return voicebox_build_info()
     if action == "load":
         return handle_load(payload)
     if action == "warm":
@@ -584,6 +635,15 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
     @app.get("/b1/runtime/build-info")
     async def b1_runtime_build_info() -> JSONResponse:
         payload = voicebox_build_info()
+        return JSONResponse(payload, status_code=200 if payload["status"] == "ok" else 503)
+
+    @app.get("/b1/runtime/status")
+    async def b1_runtime_status(request: Request) -> JSONResponse:
+        auth_failure = runtime_control_auth_failure(request.headers)
+        if auth_failure is not None:
+            status, payload = auth_failure
+            return JSONResponse(payload, status_code=status)
+        payload = voicebox_status(runtime_manager, request_tracker)
         return JSONResponse(payload, status_code=200 if payload["status"] == "ok" else 503)
 
     @app.post("/b1/runtime/{action}")

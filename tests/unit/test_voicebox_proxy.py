@@ -32,6 +32,9 @@ class FakeManager:
         self.restarts.append((timeout_seconds, reason))
         return {"strategy": "upstream_process_restart", "pid": 123, "reason": reason}
 
+    def status(self) -> dict[str, object]:
+        return {"running": True, "pid": 123, "returncode": None}
+
 
 class VoiceboxProxyTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -139,6 +142,8 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertEqual(info["upstream_commit"], "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d")
         self.assertEqual(info["source_archive_sha256"], "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083")
         self.assertIs(info["pinned"], True)
+        self.assertIn("status", info["capabilities"]["actions"])
+        self.assertIn("unload", info["capabilities"]["actions"])
 
     def test_build_info_fails_closed_when_pinned_commit_is_invalid(self) -> None:
         with patch.dict(
@@ -155,6 +160,48 @@ class VoiceboxProxyTests(unittest.TestCase):
 
         self.assertEqual(info["status"], "unconfigured")
         self.assertEqual(info["upstream_commit"], "")
+
+    def test_status_reports_process_capabilities_and_redacted_model_inventory(self) -> None:
+        manager = FakeManager()
+        tracker = self.proxy.NativeRequestTracker()
+        tracker.begin()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "voicebox-secret-model.safetensors").write_text("model", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "B1_VOICEBOX_HOOK_MODEL_ROOTS": str(root),
+                    "B1_VOICEBOX_STATUS_MODEL_LIST_MAX_ENTRIES": "100",
+                    "B1_VOICEBOX_UPSTREAM_COMMIT": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+                    "B1_VOICEBOX_SOURCE_ARCHIVE_SHA256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+                },
+                clear=False,
+            ):
+                status = self.proxy.voicebox_status(manager, tracker)
+
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["runtime"], "voicebox")
+        self.assertEqual(status["action"], "status")
+        self.assertEqual(status["process"]["running"], True)
+        self.assertEqual(status["active_requests"], 1)
+        self.assertEqual(status["model_inventory"]["root_count"], 1)
+        self.assertEqual(status["model_inventory"]["available_root_count"], 1)
+        self.assertEqual(status["model_inventory"]["entry_count"], 1)
+        self.assertIn("build-info", status["capabilities"]["actions"])
+        self.assertIn("unload", status["capabilities"]["actions"])
+        self.assertEqual(status["build_info"]["status"], "ok")
+        self.assertNotIn("voicebox-secret-model", str(status))
+
+    def test_status_reports_unhealthy_when_upstream_process_is_not_running(self) -> None:
+        class StoppedManager(FakeManager):
+            def status(self) -> dict[str, object]:
+                return {"running": False, "pid": None, "returncode": 1}
+
+        status = self.proxy.voicebox_status(StoppedManager(), self.proxy.NativeRequestTracker())
+
+        self.assertEqual(status["status"], "unhealthy")
+        self.assertEqual(status["process"]["running"], False)
 
     def test_speech_profile_envelope_maps_to_upstream_fields_and_local_sample_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -25,7 +25,7 @@ Voicebox remains internal. External clients use `https://voice.ai.b1.germering/`
 
 The production image starts a B1 proxy on `:17493` and starts upstream Voicebox on loopback `127.0.0.1:17494` by default. The proxy forwards native REST, web, MCP HTTP, and WebSocket traffic to upstream Voicebox while handling B1 scheduler lifecycle routes itself. This avoids patching upstream Voicebox source and keeps raw upstream traffic inside the container.
 
-The proxy also serves read-only `GET /b1/runtime/build-info` with the B1 proxy version, Jamie Pine Voicebox version, pinned upstream commit, and source archive SHA-256. The Voicebox compatibility harness records this live endpoint and Control Center acceptance reports reject speech/WebSocket limitation evidence that does not match the deployed proxy metadata.
+The proxy also serves read-only `GET /b1/runtime/build-info` with the B1 proxy version, Jamie Pine Voicebox version, pinned upstream commit, and source archive SHA-256. Authenticated `POST /b1/runtime/build-info` and `POST /b1/runtime/status` provide the same scheduler-facing lifecycle contract used by LocalAI and ComfyUI. The status payload reports the managed upstream process, active native request count, lifecycle actions, pinned build metadata, and model inventory as counts only. The Voicebox compatibility harness records these live endpoints and Control Center acceptance reports reject speech/WebSocket limitation evidence that does not match the deployed proxy metadata.
 
 ## Runtime Layout
 
@@ -48,6 +48,9 @@ The control plane is still the only service that may submit managed inference wo
 The B1 proxy implements these runtime hooks:
 
 - `GET /b1/runtime/build-info`
+- `GET /b1/runtime/status`
+- `POST /b1/runtime/build-info`
+- `POST /b1/runtime/status`
 - `POST /b1/runtime/load`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
@@ -58,6 +61,7 @@ Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-onl
 Hook behavior is intentionally bounded:
 
 - `load` checks Voicebox-visible runtime model roots and returns `unconfirmed` because upstream engine/profile selection performs final validation and lazy model loading.
+- `status` reports the upstream process status, active native request count, supported lifecycle actions, and model-root/file counts without returning model filenames or paths.
 - `warm` returns `unconfirmed` unless `B1_VOICEBOX_HOOK_WARM_ENABLED=true`.
 - `smoke` returns `unconfirmed` unless `B1_VOICEBOX_HOOK_SMOKE_ENABLED=true`.
 - enabled `warm`/`smoke` send a small `/v1/audio/speech` probe to upstream using `B1_VOICEBOX_HOOK_SMOKE_TEXT`, `B1_VOICEBOX_HOOK_SMOKE_VOICE`, and `B1_VOICEBOX_HOOK_SMOKE_ENDPOINT`; enable this only after the selected engine/profile has safe smoke parameters.

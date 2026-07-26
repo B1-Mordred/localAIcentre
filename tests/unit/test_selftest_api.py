@@ -66,6 +66,12 @@ class SelfTestApiTests(unittest.TestCase):
         async def self_test_localai_status() -> dict[str, Any]:
             return {"name": "runtime:localai-status", "status": "ok", "detail": "ok"}
 
+        async def self_test_voicebox_build_info() -> dict[str, Any]:
+            return {"name": "runtime:voicebox-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_voicebox_status() -> dict[str, Any]:
+            return {"name": "runtime:voicebox-status", "status": "ok", "detail": "ok"}
+
         async def self_test_comfyui_build_info() -> dict[str, Any]:
             return {"name": "runtime:comfyui-build-info", "status": "warning", "detail": "not checked"}
 
@@ -94,6 +100,8 @@ class SelfTestApiTests(unittest.TestCase):
         self.patch_attr("runtime_registry_snapshot", lambda: SimpleNamespace(adapters={"localai": FakeAdapter()}, public_adapters=lambda: []))
         self.patch_attr("self_test_localai_build_info", self_test_localai_build_info)
         self.patch_attr("self_test_localai_status", self_test_localai_status)
+        self.patch_attr("self_test_voicebox_build_info", self_test_voicebox_build_info)
+        self.patch_attr("self_test_voicebox_status", self_test_voicebox_status)
         self.patch_attr("self_test_comfyui_build_info", self_test_comfyui_build_info)
         self.patch_attr("self_test_comfyui_status", self_test_comfyui_status)
         original_compose_selection = main.acceptance.compose_selection_snapshot
@@ -107,7 +115,14 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["readiness"]["status"], "failed")
         self.assertEqual(
             [check["name"] for check in result["lifecycle_checks"]],
-            ["runtime:localai-build-info", "runtime:localai-status", "runtime:comfyui-build-info", "runtime:comfyui-status"],
+            [
+                "runtime:localai-build-info",
+                "runtime:localai-status",
+                "runtime:voicebox-build-info",
+                "runtime:voicebox-status",
+                "runtime:comfyui-build-info",
+                "runtime:comfyui-status",
+            ],
         )
 
     def test_runtime_unload_probe_uses_agent_dry_run(self) -> None:
@@ -292,6 +307,175 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertTrue(result["data"]["required"])
         self.assertEqual(result["data"]["status"]["guardrails"]["status"], "degraded")
+
+    def test_voicebox_build_info_self_test_passes_for_pinned_proxy(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "build-info",
+            "proxy": "b1-voicebox-proxy",
+            "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+            "upstream_repository": "jamiepine/voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(voicebox_url="http://voicebox:17493", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["proxy"], "b1-voicebox-proxy")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://voicebox:17493/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_voicebox_status_self_test_passes_for_process_inventory_and_redaction(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "build-info",
+            "proxy": "b1-voicebox-proxy",
+            "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+            "upstream_repository": "jamiepine/voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "status",
+            "process": {"running": True, "pid": 123, "returncode": None},
+            "active_requests": 0,
+            "model_inventory": {
+                "root_count": 1,
+                "available_root_count": 1,
+                "entry_count": 2,
+                "truncated": False,
+                "strict_model_list": False,
+            },
+            "capabilities": {
+                "actions": ["status", "build-info", "load", "warm", "smoke", "unload"],
+                "native_http_passthrough": True,
+                "native_websocket_passthrough": True,
+                "voice_profile_envelope": True,
+            },
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(voicebox_url="http://voicebox:17493", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["process"]["running"], True)
+        self.assertEqual(result["data"]["status"]["model_inventory"]["entry_count"], 2)
+        self.assertNotIn("voicebox-secret-model", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://voicebox:17493/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_voicebox_status_self_test_fails_when_process_is_not_running(self) -> None:
+        payload = {
+            "status": "unhealthy",
+            "runtime": "voicebox",
+            "action": "status",
+            "process": {"running": False, "pid": None, "returncode": 1},
+            "active_requests": 0,
+            "model_inventory": {"root_count": 1, "available_root_count": 1, "entry_count": 0},
+            "build_info": {},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["process"]["running"], False)
 
     def test_comfyui_build_info_self_test_passes_for_pinned_runtime(self) -> None:
         payload = {
