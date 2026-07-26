@@ -6,6 +6,7 @@
 - Docker Compose v2
 - NVIDIA driver and NVIDIA Container Toolkit for GPU runtime work
 - LAN DNS records for the configured virtual hosts
+- host OS networking configured for DHCP, preferably with a DHCP reservation for the appliance address
 - sufficient storage under `B1_DATA_ROOT`, default `/srv/b1-ai-hub`
 
 Validate host basics:
@@ -17,8 +18,10 @@ nvidia-smi
 stat -c '%g' /var/run/docker.sock
 ```
 
+The machine hostname is defined by the host system, not by B1 AI Hub. `B1_HOST_*` values are Caddy virtual hosts and API URLs only. Do not configure a static host IP in the repository or Compose project; acquire address, gateway, and resolver properties through the host DHCP client or a DHCP reservation, then point LAN DNS records for the B1 virtual hosts at that assigned address.
+
 For production, prefer `make prepare-production-env` instead of manually copying `.env.production.example`; it creates or updates `.env` and sets `B1_DOCKER_GID` from the host Docker socket GID. If you prepare `.env` manually, set `B1_DOCKER_GID` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
-The migration inventory records host identity, NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence. Verify the inventory `host.identity.hostname`/`host.identity.fqdn` belongs to the intended target before using it for cutover.
+The migration inventory records host identity, observed interfaces, non-loopback addresses, default routes, DHCP-route evidence, DNS records, NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence. Verify the inventory `host.identity.hostname`/`host.identity.fqdn` belongs to the intended target before using it for cutover, and verify `migration_readiness.networking` shows system-owned hostname policy with DHCP-acquired network properties or an explicitly reviewed DHCP reservation.
 
 ## First Boot
 

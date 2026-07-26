@@ -2756,6 +2756,26 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     if not _as_string_list(dns.get("common_addresses")):
         missing.append("cutover_plan_reviewed.dns_readiness.common_addresses")
 
+    networking = cutover.get("networking_readiness") if isinstance(cutover.get("networking_readiness"), dict) else {}
+    if networking.get("available") is not True:
+        missing.append("cutover_plan_reviewed.networking_readiness.available")
+    if networking.get("hostname_source") != "system-hostname":
+        missing.append("cutover_plan_reviewed.networking_readiness.hostname_source_system")
+    if networking.get("b1_manages_host_networking") is not False:
+        missing.append("cutover_plan_reviewed.networking_readiness.b1_manages_host_networking_false")
+    if networking.get("b1_static_ip_configures") is not False:
+        missing.append("cutover_plan_reviewed.networking_readiness.b1_static_ip_configures_false")
+    if _positive_int(networking.get("non_loopback_address_count")) < 1:
+        missing.append("cutover_plan_reviewed.networking_readiness.non_loopback_address_count")
+    if _positive_int(networking.get("default_route_address_count")) < 1:
+        missing.append("cutover_plan_reviewed.networking_readiness.default_route_address_count")
+    if _positive_int(networking.get("default_route_count")) < 1:
+        missing.append("cutover_plan_reviewed.networking_readiness.default_route_count")
+    if networking.get("has_dhcp_default_route") is not True:
+        missing.append("cutover_plan_reviewed.networking_readiness.has_dhcp_default_route")
+    if networking.get("operator_must_review_networking") is not False:
+        missing.append("cutover_plan_reviewed.networking_readiness.operator_must_review_networking_false")
+
     hardware = cutover.get("hardware_readiness") if isinstance(cutover.get("hardware_readiness"), dict) else {}
     if hardware.get("available") is not True or hardware.get("accepted") is not True:
         missing.append("cutover_plan_reviewed.hardware_readiness.accepted")
@@ -3110,6 +3130,9 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
         },
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
         "dns_readiness": plan.get("dns_readiness") if isinstance(plan.get("dns_readiness"), dict) else {"available": False},
+        "networking_readiness": plan.get("networking_readiness")
+        if isinstance(plan.get("networking_readiness"), dict)
+        else {"available": False},
         "hardware_readiness": plan.get("hardware_readiness") if isinstance(plan.get("hardware_readiness"), dict) else {"available": False},
         "gpu_runtime_readiness": plan.get("gpu_runtime_readiness") if isinstance(plan.get("gpu_runtime_readiness"), dict) else {"available": False},
         "runtime_agent_socket_readiness": plan.get("runtime_agent_socket_readiness")
@@ -4343,6 +4366,21 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             or dns_optional_divergent
         ):
             blockers.append("cutover DNS readiness requires operator review")
+        networking = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
+        if networking.get("available") is not True:
+            blockers.append("cutover host DHCP/networking readiness is unavailable")
+        elif (
+            networking.get("hostname_source") != "system-hostname"
+            or networking.get("b1_manages_host_networking") is not False
+            or networking.get("b1_static_ip_configures") is not False
+            or networking.get("has_dhcp_default_route") is not True
+            or networking.get("operator_must_review_networking") is True
+            or _positive_int(networking.get("non_loopback_address_count")) < 1
+            or _positive_int(networking.get("default_route_address_count")) < 1
+            or _positive_int(networking.get("default_route_count")) < 1
+            or _as_string_list(networking.get("warnings"))
+        ):
+            blockers.append("cutover host DHCP/networking readiness requires operator review")
         hardware = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
         if hardware.get("available") is not True:
             blockers.append("cutover hardware readiness is unavailable")
@@ -4954,6 +4992,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    networking_readiness = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
         if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
@@ -4995,6 +5034,20 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         if key in dns_readiness:
             preservation_summary_rows.append([f"dns.{key}", _format_value(dns_readiness.get(key))])
+    for key in (
+        "hostname_source",
+        "network_property_source",
+        "b1_static_ip_configures",
+        "non_loopback_address_count",
+        "default_route_interfaces",
+        "default_route_address_count",
+        "default_route_count",
+        "default_route_protocols",
+        "has_dhcp_default_route",
+        "operator_must_review_networking",
+    ):
+        if key in networking_readiness:
+            preservation_summary_rows.append([f"networking.{key}", _format_value(networking_readiness.get(key))])
     for key in (
         "profile",
         "accepted",
@@ -5383,6 +5436,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    networking_readiness = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
         if isinstance(preservation.get("runtime_agent_socket_readiness"), dict)
@@ -5397,6 +5451,18 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not _as_string_list(dns_readiness.get("missing_hosts"))
         and not _as_string_list(dns_readiness.get("divergent_hosts"))
         and not _as_string_list(dns_readiness.get("optional_divergent_hosts"))
+    )
+    networking_ready = (
+        networking_readiness.get("available") is True
+        and networking_readiness.get("hostname_source") == "system-hostname"
+        and networking_readiness.get("b1_manages_host_networking") is False
+        and networking_readiness.get("b1_static_ip_configures") is False
+        and _positive_int(networking_readiness.get("non_loopback_address_count")) >= 1
+        and _positive_int(networking_readiness.get("default_route_address_count")) >= 1
+        and _positive_int(networking_readiness.get("default_route_count")) >= 1
+        and networking_readiness.get("has_dhcp_default_route") is True
+        and networking_readiness.get("operator_must_review_networking") is not True
+        and not _as_string_list(networking_readiness.get("warnings"))
     )
     open_webui_preservation_ready = (
         open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True
@@ -5585,6 +5651,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0
         and dns_ready
+        and networking_ready
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True
@@ -5594,6 +5661,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not cutover_warnings,
         "cutover_warnings_ready": not cutover_warnings,
         "cutover_dns_ready": dns_ready,
+        "cutover_networking_ready": networking_ready,
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
         and hardware_readiness.get("operator_must_review_hardware") is not True,

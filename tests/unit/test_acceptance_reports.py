@@ -783,6 +783,22 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
                 "optional_missing_hosts": ["monitoring.ai.b1.germering"],
                 "optional_divergent_hosts": [],
             },
+            "networking_readiness": {
+                "available": True,
+                "hostname_source": "system-hostname",
+                "network_property_source": "host-dhcp-client",
+                "b1_manages_host_networking": False,
+                "b1_static_ip_configures": False,
+                "non_loopback_address_count": 1,
+                "default_route_interfaces": ["eno1"],
+                "default_route_address_count": 1,
+                "default_route_count": 1,
+                "default_route_protocols": ["dhcp"],
+                "has_dhcp_default_route": True,
+                "dns_record_count": 7,
+                "operator_must_review_networking": False,
+                "warnings": [],
+            },
             "hardware_readiness": {
                 "available": True,
                 "accepted": True,
@@ -878,6 +894,22 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "divergent_hosts": [],
             "optional_missing_hosts": ["monitoring.ai.b1.germering"],
             "optional_divergent_hosts": [],
+        },
+        "networking_readiness": {
+            "available": True,
+            "hostname_source": "system-hostname",
+            "network_property_source": "host-dhcp-client",
+            "b1_manages_host_networking": False,
+            "b1_static_ip_configures": False,
+            "non_loopback_address_count": 1,
+            "default_route_interfaces": ["eno1"],
+            "default_route_address_count": 1,
+            "default_route_count": 1,
+            "default_route_protocols": ["dhcp"],
+            "has_dhcp_default_route": True,
+            "dns_record_count": 7,
+            "operator_must_review_networking": False,
+            "warnings": [],
         },
         "hardware_readiness": {
             "available": True,
@@ -5141,6 +5173,7 @@ class AcceptanceReportTests(unittest.TestCase):
             snapshot["missing_backup_migration_rollback_evidence"],
         )
         self.assertIn("cutover_plan_reviewed.dns_readiness.common_addresses", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("cutover_plan_reviewed.networking_readiness.has_dhcp_default_route", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("cutover_plan_reviewed.resources_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.cutover_plan_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.rollback_actions_sha256", snapshot["missing_backup_migration_rollback_evidence"])
@@ -5288,6 +5321,34 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_dns_ready"])
         self.assertIn("cutover DNS readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_cutover_networking_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                networking_readiness={
+                    "available": True,
+                    "hostname_source": "system-hostname",
+                    "network_property_source": "host-dhcp-client",
+                    "b1_manages_host_networking": False,
+                    "b1_static_ip_configures": False,
+                    "non_loopback_address_count": 1,
+                    "default_route_interfaces": ["eno1"],
+                    "default_route_address_count": 1,
+                    "default_route_count": 1,
+                    "default_route_protocols": ["static"],
+                    "has_dhcp_default_route": False,
+                    "dns_record_count": 7,
+                    "operator_must_review_networking": True,
+                    "warnings": ["Inventory did not prove a DHCP-owned default route"],
+                }
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["cutover_networking_ready"])
+        self.assertIn("cutover host DHCP/networking readiness requires operator review", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_when_open_webui_preservation_requires_review(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -5339,6 +5400,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
                 "dns_readiness": sample_cutover_preservation()["dns_readiness"],
+                "networking_readiness": sample_cutover_preservation()["networking_readiness"],
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
                 "gpu_runtime_readiness": sample_cutover_preservation()["gpu_runtime_readiness"],
                 "runtime_agent_socket_readiness": sample_cutover_preservation()["runtime_agent_socket_readiness"],
@@ -5354,6 +5416,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["source_path"], str(current.resolve()))
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertEqual(snapshot["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertTrue(snapshot["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
         self.assertTrue(snapshot["gpu_runtime_readiness"]["accepted"])
         self.assertTrue(snapshot["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])

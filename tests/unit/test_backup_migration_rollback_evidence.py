@@ -131,6 +131,22 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "optional_missing_hosts": ["monitoring.ai.b1.germering"],
                     "optional_divergent_hosts": [],
                 },
+                "networking_readiness": {
+                    "available": True,
+                    "hostname_source": "system-hostname",
+                    "network_property_source": "host-dhcp-client",
+                    "b1_manages_host_networking": False,
+                    "b1_static_ip_configures": False,
+                    "non_loopback_address_count": 1,
+                    "default_route_interfaces": ["eno1"],
+                    "default_route_address_count": 1,
+                    "default_route_count": 1,
+                    "default_route_protocols": ["dhcp"],
+                    "has_dhcp_default_route": True,
+                    "dns_record_count": 7,
+                    "operator_must_review_networking": False,
+                    "warnings": [],
+                },
                 "hardware_readiness": {
                     "available": True,
                     "profile": "rtx3060-32gb-initial",
@@ -255,6 +271,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
             ["monitoring.ai.b1.germering"],
         )
+        self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["gpu_runtime_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
@@ -350,6 +367,29 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(cutover_plan, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "cutover Open WebUI preservation requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_networking_without_dhcp_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["networking_readiness"]["has_dhcp_default_route"] = False
+            payload["networking_readiness"]["operator_must_review_networking"] = True
+            payload["networking_readiness"]["warnings"] = ["Inventory did not prove a DHCP-owned default route"]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover host DHCP/networking readiness requires operator review"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

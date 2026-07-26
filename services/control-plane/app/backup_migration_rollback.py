@@ -227,6 +227,13 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
 
 
+def _int_value(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _preserved_resource_count(resources: dict[str, list[str]]) -> int:
     return sum(len(resources.get(key, [])) for key in rollback_rehearsal.PRESERVED_RESOURCE_KEYS)
 
@@ -303,6 +310,49 @@ def verify_cutover_gpu_runtime_readiness(payload: dict[str, Any]) -> dict[str, A
     }
 
 
+def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    networking = payload.get("networking_readiness") if isinstance(payload.get("networking_readiness"), dict) else {}
+    if not networking:
+        raise EvidenceError("cutover host DHCP/networking readiness is missing")
+    warnings = _string_list(networking.get("warnings"))
+    if networking.get("available") is not True:
+        raise EvidenceError("cutover host DHCP/networking readiness is unavailable")
+    if (
+        networking.get("hostname_source") != "system-hostname"
+        or networking.get("b1_manages_host_networking") is not False
+        or networking.get("b1_static_ip_configures") is not False
+        or networking.get("has_dhcp_default_route") is not True
+        or networking.get("operator_must_review_networking") is True
+        or warnings
+    ):
+        raise EvidenceError("cutover host DHCP/networking readiness requires operator review")
+    non_loopback_address_count = _int_value(networking.get("non_loopback_address_count")) or 0
+    default_route_address_count = _int_value(networking.get("default_route_address_count")) or 0
+    default_route_count = _int_value(networking.get("default_route_count")) or 0
+    if non_loopback_address_count <= 0:
+        raise EvidenceError("cutover host DHCP/networking readiness has no non-loopback address")
+    if default_route_address_count <= 0:
+        raise EvidenceError("cutover host DHCP/networking readiness has no address on a default-route interface")
+    if default_route_count <= 0:
+        raise EvidenceError("cutover host DHCP/networking readiness has no default route")
+    return {
+        "available": True,
+        "hostname_source": "system-hostname",
+        "network_property_source": networking.get("network_property_source") or "",
+        "b1_manages_host_networking": False,
+        "b1_static_ip_configures": False,
+        "non_loopback_address_count": non_loopback_address_count,
+        "default_route_address_count": default_route_address_count,
+        "default_route_count": default_route_count,
+        "default_route_interfaces": _string_list(networking.get("default_route_interfaces")),
+        "default_route_protocols": _string_list(networking.get("default_route_protocols")),
+        "has_dhcp_default_route": True,
+        "dns_record_count": networking.get("dns_record_count"),
+        "operator_must_review_networking": False,
+        "warnings": [],
+    }
+
+
 def verify_cutover_runtime_agent_socket_readiness(payload: dict[str, Any]) -> dict[str, Any]:
     socket = payload.get("runtime_agent_socket_readiness") if isinstance(payload.get("runtime_agent_socket_readiness"), dict) else {}
     if not socket:
@@ -364,6 +414,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
     if payload.get("warnings"):
         raise EvidenceError("cutover plan still has warnings")
     dns_readiness = verify_cutover_dns_readiness(payload)
+    networking_readiness = verify_cutover_networking_readiness(payload)
     hardware_readiness = verify_cutover_hardware_readiness(payload)
     gpu_runtime_readiness = verify_cutover_gpu_runtime_readiness(payload)
     runtime_agent_socket_readiness = verify_cutover_runtime_agent_socket_readiness(payload)
@@ -404,6 +455,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "rollback_operator_action_count": len(rollback_operator_actions),
         "rollback_actions_sha256": rollback_actions_sha256,
         "dns_readiness": dns_readiness,
+        "networking_readiness": networking_readiness,
         "hardware_readiness": hardware_readiness,
         "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,

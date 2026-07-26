@@ -95,6 +95,38 @@ class InventoryTests(unittest.TestCase):
         )
         self.assertEqual(dns["ai.b1.germering"], ["192.168.2.100"])
         self.assertEqual(dns["monitoring.ai.b1.germering"], ["192.168.2.100"])
+        interfaces = inventory.summarize_ip_interfaces(
+            [
+                {
+                    "ifname": "eno1",
+                    "operstate": "UP",
+                    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+                    "address": "00:11:22:33:44:55",
+                    "addr_info": [
+                        {
+                            "family": "inet",
+                            "local": "192.168.2.100",
+                            "prefixlen": 24,
+                            "scope": "global",
+                            "dynamic": True,
+                        }
+                    ],
+                },
+                {"ifname": "lo", "flags": ["LOOPBACK"], "addr_info": [{"family": "inet", "local": "127.0.0.1", "prefixlen": 8, "scope": "host"}]},
+            ]
+        )
+        routes = inventory.summarize_default_routes(
+            [{"dst": "default", "gateway": "192.168.2.1", "dev": "eno1", "protocol": "dhcp", "metric": 100}],
+            family="inet",
+        )
+        network = inventory.summarize_host_network(interfaces, routes, dns)
+        self.assertEqual(network["hostname_source"], "system-hostname")
+        self.assertFalse(network["b1_static_ip_configures"])
+        self.assertTrue(network["has_dhcp_default_route"])
+        self.assertEqual(network["non_loopback_address_count"], 1)
+        self.assertEqual(network["default_route_interfaces"], ["eno1"])
+        self.assertEqual(network["default_route_address_count"], 1)
+        self.assertFalse(network["operator_must_review_networking"])
 
         roots = inventory.summarize_open_webui_data_roots(
             [
@@ -222,6 +254,29 @@ class InventoryTests(unittest.TestCase):
                 "df": "Filesystem Type 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 ext4 1000 250 750 25% /\n",
                 "mounts": json.dumps({"filesystems": [{"target": "/", "source": "/dev/sda1"}]}),
                 "dns_hosts": "192.168.2.100 ai.b1.germering api.ai.b1.germering monitoring.ai.b1.germering\n",
+                "ip_addresses": json.dumps(
+                    [
+                        {
+                            "ifname": "eno1",
+                            "operstate": "UP",
+                            "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+                            "address": "00:11:22:33:44:55",
+                            "addr_info": [
+                                {
+                                    "family": "inet",
+                                    "local": "192.168.2.100",
+                                    "prefixlen": 24,
+                                    "scope": "global",
+                                    "dynamic": True,
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "ip_default_routes_v4": json.dumps(
+                    [{"dst": "default", "gateway": "192.168.2.1", "dev": "eno1", "protocol": "dhcp", "prefsrc": "192.168.2.100", "metric": 100}]
+                ),
+                "ip_default_routes_v6": "[]",
             }
             container_inspects = {
                 "1": [
@@ -373,6 +428,16 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["host"]["dns"]["optional_hosts"], list(inventory.OPTIONAL_INTENDED_HOSTS))
         self.assertIn("monitoring.ai.b1.germering", report["host"]["dns"]["intended_hosts"])
         self.assertEqual(report["host"]["dns"]["records"]["monitoring.ai.b1.germering"], ["192.168.2.100"])
+        self.assertEqual(report["host"]["network"]["interfaces"][0]["ifname"], "eno1")
+        self.assertEqual(report["host"]["network"]["default_routes"][0]["protocol"], "dhcp")
+        self.assertEqual(report["migration_readiness"]["networking"]["hostname_source"], "system-hostname")
+        self.assertEqual(report["migration_readiness"]["networking"]["network_property_source"], "host-dhcp-client")
+        self.assertFalse(report["migration_readiness"]["networking"]["b1_manages_host_networking"])
+        self.assertFalse(report["migration_readiness"]["networking"]["b1_static_ip_configures"])
+        self.assertEqual(report["migration_readiness"]["networking"]["default_route_interfaces"], ["eno1"])
+        self.assertEqual(report["migration_readiness"]["networking"]["default_route_address_count"], 1)
+        self.assertTrue(report["migration_readiness"]["networking"]["has_dhcp_default_route"])
+        self.assertFalse(report["migration_readiness"]["networking"]["operator_must_review_networking"])
         self.assertTrue(any(item["path"].endswith("compose.yaml") for item in report["paths"]["compose_file_candidates"]))
         self.assertTrue(any(item["path"].endswith("webui.db") for item in report["paths"]["open_webui_database_candidates"]))
         self.assertTrue(any(item["path"].endswith("alternate.db") for item in report["paths"]["open_webui_database_candidates"]))

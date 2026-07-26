@@ -345,6 +345,44 @@ def analyze_dns_readiness(
     )
 
 
+def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    networking = readiness.get("networking") if isinstance(readiness.get("networking"), dict) else {}
+    if not networking:
+        host = inventory.get("host") if isinstance(inventory.get("host"), dict) else {}
+        network = host.get("network") if isinstance(host.get("network"), dict) else {}
+        networking = network.get("dhcp_policy") if isinstance(network.get("dhcp_policy"), dict) else {}
+    if not networking:
+        return (
+            {
+                "available": False,
+                "hostname_source": "system-hostname",
+                "network_property_source": "host-dhcp-client",
+                "b1_manages_host_networking": False,
+                "b1_static_ip_configures": False,
+                "operator_must_review_networking": True,
+                "warnings": ["host DHCP/networking readiness was not present in inventory"],
+            },
+            ["Host networking readiness was not present in inventory; rerun inventory before cutover"],
+        )
+
+    warnings = [str(item) for item in networking.get("warnings", []) if isinstance(item, str)]
+    if networking.get("b1_static_ip_configures") is not False:
+        warnings.append("B1 networking policy must not configure a static host IP address")
+    if networking.get("hostname_source") != "system-hostname":
+        warnings.append("B1 hostname policy must use the system hostname, not application-managed host renaming")
+    try:
+        default_route_address_count = int(str(networking.get("default_route_address_count") or "0"))
+    except ValueError:
+        default_route_address_count = 0
+    if default_route_address_count <= 0:
+        warnings.append("Default-route interface address evidence is missing from the inventory")
+    if networking.get("has_dhcp_default_route") is not True and not any("DHCP" in warning for warning in warnings):
+        warnings.append("DHCP default-route evidence is missing from the inventory")
+    cutover_warnings = [f"Host DHCP/networking requires operator review before cutover: {warning}" for warning in warnings]
+    return {**networking, "available": True, "operator_must_review_networking": bool(cutover_warnings), "warnings": warnings}, cutover_warnings
+
+
 def same_resolved_path(left: str | None, right: Path) -> bool:
     if not isinstance(left, str) or not left:
         return False
@@ -567,6 +605,8 @@ def build_plan(
     warnings.extend(port_warnings)
     dns_readiness, dns_warnings = analyze_dns_readiness(inventory)
     warnings.extend(dns_warnings)
+    networking_readiness, networking_warnings = analyze_networking_readiness(inventory)
+    warnings.extend(networking_warnings)
     hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
     warnings.extend(hardware_warnings)
     gpu_runtime_readiness, gpu_runtime_warnings = analyze_gpu_runtime_readiness(inventory)
@@ -642,6 +682,7 @@ def build_plan(
         "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "dns_readiness": dns_readiness,
+        "networking_readiness": networking_readiness,
         "open_webui_preservation": open_webui_preservation,
         "warnings": warnings,
         "phases": [
@@ -655,6 +696,7 @@ def build_plan(
                     "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
                     "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
+                    "Confirm networking_readiness shows the target hostname is system-owned and host IP/gateway properties are acquired by DHCP or an operator-reviewed DHCP reservation.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",
                     "Confirm the verified old-stack backup is stored outside the old stack and is restorable.",
                     "Enable B1 maintenance mode before staging, cutover, rollback, or DNS route changes.",
@@ -682,6 +724,7 @@ def build_plan(
                     "Stop only the explicitly scoped old-stack containers and systemd services listed in this plan.",
                     "Resolve any production port listener warnings from port_readiness before starting the production Compose project.",
                     "Resolve dns_readiness warnings before switching users or external clients to the B1 virtual hosts.",
+                    "Resolve networking_readiness warnings before treating the inventory as target-host cutover evidence.",
                     "Resolve open_webui_preservation warnings before switching ordinary users to the production Open WebUI hostname.",
                     "Activate production DNS, reverse-proxy routes, or port bindings for the B1 virtual hosts.",
                     "Start or update the B1 production Compose project on the production ports.",

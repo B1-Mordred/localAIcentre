@@ -50,6 +50,9 @@ COMMANDS = {
     "df": ["df", "-PT"],
     "mounts": ["findmnt", "--json"],
     "dns_hosts": ["getent", "hosts", *INTENDED_HOSTS],
+    "ip_addresses": ["ip", "-json", "address", "show"],
+    "ip_default_routes_v4": ["ip", "-4", "-json", "route", "show", "default"],
+    "ip_default_routes_v6": ["ip", "-6", "-json", "route", "show", "default"],
 }
 
 AI_NAME_HINTS = (
@@ -498,6 +501,152 @@ def parse_dns_hosts(output: str) -> dict[str, list[str]]:
         for host in parts[1:]:
             records.setdefault(host, []).append(address)
     return records
+
+
+def parse_json_array(output: str) -> list[dict[str, Any]]:
+    payload = parse_json_payload(output)
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def summarize_ip_interfaces(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    interfaces: list[dict[str, Any]] = []
+    for row in rows:
+        ifname = str(row.get("ifname") or "").strip()
+        if not ifname:
+            continue
+        flags = [str(item) for item in row.get("flags", []) if isinstance(item, str)] if isinstance(row.get("flags"), list) else []
+        addr_info = row.get("addr_info") if isinstance(row.get("addr_info"), list) else []
+        addresses: list[dict[str, Any]] = []
+        for addr in addr_info:
+            if not isinstance(addr, dict):
+                continue
+            local = str(addr.get("local") or "").strip()
+            if not local:
+                continue
+            address_flags = (
+                [str(item) for item in addr.get("flags", []) if isinstance(item, str)]
+                if isinstance(addr.get("flags"), list)
+                else []
+            )
+            addresses.append(
+                {
+                    "family": str(addr.get("family") or ""),
+                    "local": local,
+                    "prefixlen": parse_int(addr.get("prefixlen")),
+                    "scope": str(addr.get("scope") or ""),
+                    "dynamic": bool(addr.get("dynamic")) or "dynamic" in {flag.lower() for flag in address_flags},
+                }
+            )
+        interfaces.append(
+            {
+                "ifname": ifname,
+                "operstate": row.get("operstate"),
+                "flags": flags,
+                "mac_address": row.get("address"),
+                "addresses": addresses,
+            }
+        )
+    return interfaces
+
+
+def summarize_default_routes(rows: list[dict[str, Any]], *, family: str) -> list[dict[str, Any]]:
+    routes: list[dict[str, Any]] = []
+    for row in rows:
+        routes.append(
+            {
+                "family": family,
+                "dst": row.get("dst") or "default",
+                "dev": row.get("dev"),
+                "gateway": row.get("gateway"),
+                "prefsrc": row.get("prefsrc"),
+                "protocol": row.get("protocol"),
+                "metric": parse_int(row.get("metric")),
+            }
+        )
+    return routes
+
+
+def summarize_host_network(
+    interfaces: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    dns_records: dict[str, list[str]],
+) -> dict[str, Any]:
+    non_loopback_addresses: list[dict[str, Any]] = []
+    default_route_devs = {
+        str(route.get("dev"))
+        for route in routes
+        if isinstance(route.get("dev"), str) and str(route.get("dev")).strip()
+    }
+    default_route_addresses: list[dict[str, Any]] = []
+    dynamic_address_count = 0
+    for interface in interfaces:
+        ifname = str(interface.get("ifname") or "")
+        flags = {str(flag).upper() for flag in interface.get("flags", []) if isinstance(flag, str)}
+        is_loopback = ifname == "lo" or "LOOPBACK" in flags
+        for address in interface.get("addresses", []):
+            if not isinstance(address, dict):
+                continue
+            if address.get("dynamic") is True:
+                dynamic_address_count += 1
+            if is_loopback or address.get("scope") == "host":
+                continue
+            public_address = {
+                "ifname": ifname,
+                "family": address.get("family"),
+                "local": address.get("local"),
+                "prefixlen": address.get("prefixlen"),
+                "scope": address.get("scope"),
+                "dynamic": address.get("dynamic"),
+            }
+            non_loopback_addresses.append(public_address)
+            if ifname in default_route_devs:
+                default_route_addresses.append(public_address)
+
+    default_route_protocols = sorted(
+        {
+            str(route.get("protocol"))
+            for route in routes
+            if isinstance(route.get("protocol"), str) and route.get("protocol")
+        }
+    )
+    has_dhcp_default_route = "dhcp" in default_route_protocols
+    dns_record_count = sum(len(addresses) for addresses in dns_records.values())
+    warnings: list[str] = []
+    if not non_loopback_addresses:
+        warnings.append("Inventory did not find a non-loopback host IP address; verify target-host networking before cutover")
+    if not routes:
+        warnings.append("Inventory did not find a default route; verify DHCP gateway acquisition before cutover")
+    if routes and not default_route_addresses:
+        warnings.append("Inventory did not find an IP address on a default-route interface; verify LAN host addressing before cutover")
+    if routes and not has_dhcp_default_route:
+        warnings.append(
+            "Inventory did not prove a DHCP-owned default route; verify the host network manager uses DHCP or a DHCP reservation before cutover"
+        )
+    if not dns_record_count:
+        warnings.append("Inventory did not resolve any configured B1 virtual-host DNS records; verify LAN DNS before cutover")
+
+    return {
+        "hostname_source": "system-hostname",
+        "network_property_source": "host-dhcp-client",
+        "b1_manages_host_networking": False,
+        "b1_static_ip_configures": False,
+        "expected_operator_networking": "host-managed DHCP lease/reservation plus LAN DNS records",
+        "interface_count": len(interfaces),
+        "non_loopback_address_count": len(non_loopback_addresses),
+        "dynamic_address_count": dynamic_address_count,
+        "non_loopback_addresses": non_loopback_addresses,
+        "default_route_interfaces": sorted(default_route_devs),
+        "default_route_address_count": len(default_route_addresses),
+        "default_route_addresses": default_route_addresses,
+        "default_route_count": len(routes),
+        "default_route_protocols": default_route_protocols,
+        "has_dhcp_default_route": has_dhcp_default_route,
+        "dns_record_count": dns_record_count,
+        "operator_must_review_networking": bool(warnings),
+        "warnings": warnings,
+    }
 
 
 def parse_docker_info(output: str) -> dict[str, Any]:
@@ -1331,6 +1480,15 @@ def build_inventory(
         "version": captured["nvidia_container_toolkit"]["stdout"].strip(),
     }
     docker_socket = inspect_docker_socket(docker_socket_path, configured_docker_gid)
+    dns_records = parse_dns_hosts(captured["dns_hosts"]["stdout"])
+    network_interfaces = summarize_ip_interfaces(parse_json_array(captured["ip_addresses"]["stdout"]))
+    default_routes = summarize_default_routes(parse_json_array(captured["ip_default_routes_v4"]["stdout"]), family="inet")
+    default_routes.extend(summarize_default_routes(parse_json_array(captured["ip_default_routes_v6"]["stdout"]), family="inet6"))
+    host_network = {
+        "interfaces": network_interfaces,
+        "default_routes": default_routes,
+        "dhcp_policy": summarize_host_network(network_interfaces, default_routes, dns_records),
+    }
 
     return {
         "created_at": created_at.astimezone(UTC).isoformat(),
@@ -1371,9 +1529,10 @@ def build_inventory(
                 "intended_hosts": list(INTENDED_HOSTS),
                 "core_hosts": list(CORE_INTENDED_HOSTS),
                 "optional_hosts": list(OPTIONAL_INTENDED_HOSTS),
-                "records": parse_dns_hosts(captured["dns_hosts"]["stdout"]),
+                "records": dns_records,
                 "resolv_conf": read_resolv_conf(),
             },
+            "network": host_network,
         },
         "paths": {
             "b1_root": summarize_path(b1_root),
@@ -1393,6 +1552,7 @@ def build_inventory(
                 nvidia_toolkit=nvidia_toolkit,
             ),
             "runtime_agent_docker_socket": docker_socket,
+            "networking": host_network["dhcp_policy"],
             "model_storage": summarize_model_storage(model_directories),
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
             "open_webui_data_roots": summarize_open_webui_data_roots(open_webui_data_roots),
@@ -1400,6 +1560,7 @@ def build_inventory(
                 "Port listeners are review evidence only; do not stop services from the inventory report.",
                 "SQLite metadata reads schema and aggregate counts only, not Open WebUI row contents.",
                 "Model directory scans are bounded and preserve symlinks/special files for operator review.",
+                "B1 AI Hub records observed host networking but does not configure hostnames, static IP addresses, gateways, or DNS servers.",
             ],
         },
         "classification": {
