@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 
 
 SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+COMPOSE_PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 IMAGE_NAME_COMPONENT_RE = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
 IMAGE_REFERENCE_RE = re.compile(
     rf"^(?=.{{1,512}}$)(?:{IMAGE_NAME_COMPONENT_RE}(?::[0-9]{{1,5}})?/)?"
@@ -131,12 +132,13 @@ class DockerEngineClient:
         return self.json_request("GET", "/version")
 
     def containers_for_service(self, service: str, compose_project: str | None = None) -> list[dict[str, Any]]:
-        filters = {"label": [f"com.docker.compose.service={service}"]}
-        if compose_project:
-            filters["label"].append(f"com.docker.compose.project={compose_project}")
+        service_name = validate_service_name(service)
+        project = validate_compose_project(compose_project)
+        filters = {"label": [f"com.docker.compose.service={service_name}", f"com.docker.compose.project={project}"]}
         query = urlencode({"all": "true", "filters": json.dumps(filters)})
         containers = self.json_request("GET", f"/containers/json?{query}") or []
-        return [container_summary(container) for container in containers]
+        summaries = [container_summary(container) for container in containers]
+        return [validate_container_ownership(summary, service_name, project) for summary in summaries]
 
     def service_statuses(self, services: list[str], compose_project: str | None = None) -> list[dict[str, Any]]:
         return [
@@ -157,7 +159,11 @@ class DockerEngineClient:
         return self._mutate_service("stop", service, compose_project, timeout_seconds)
 
     def _mutate_service(self, action: str, service: str, compose_project: str | None, timeout_seconds: int) -> dict[str, Any]:
-        containers = self.containers_for_service(service, compose_project)
+        service_name = validate_service_name(service)
+        project = validate_compose_project(compose_project)
+        containers = self.containers_for_service(service_name, project)
+        if not containers:
+            raise DockerApiError(f"no B1 AI Hub containers found for service {service_name} in compose project {project}")
         changed: list[dict[str, str]] = []
         for container in containers:
             container_id = container["id"]
@@ -171,7 +177,7 @@ class DockerEngineClient:
                 raise DockerApiError(f"unsupported service action: {action}")
             self.raw_request("POST", path)
             changed.append({"id": container_id, "name": container.get("name", ""), "action": action})
-        return {"service": service, "action": action, "containers": changed}
+        return {"service": service_name, "action": action, "containers": changed}
 
     def service_logs(self, service: str, lines: int, compose_project: str | None = None) -> list[str]:
         containers = self.containers_for_service(service, compose_project)
@@ -233,6 +239,15 @@ def validate_service_name(service: str) -> str:
     return service
 
 
+def validate_compose_project(compose_project: str | None) -> str:
+    project = (compose_project or "").strip()
+    if not project:
+        raise DockerApiError("B1 compose project is not configured")
+    if not COMPOSE_PROJECT_RE.match(project):
+        raise DockerApiError(f"invalid B1 compose project name: {project}")
+    return project
+
+
 def validate_pinned_image_reference(image: str) -> str:
     image_ref = image.strip()
     if not image_ref:
@@ -265,6 +280,17 @@ def require_runtime_action_service(
     if service not in runtime_action_services:
         raise PermissionError(service)
     return service
+
+
+def validate_container_ownership(container: dict[str, Any], service: str, compose_project: str) -> dict[str, Any]:
+    labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
+    observed_service = str(labels.get("com.docker.compose.service") or "")
+    observed_project = str(labels.get("com.docker.compose.project") or "")
+    if observed_service != service:
+        raise DockerApiError(f"Docker returned a container for service {observed_service or '<missing>'}, expected {service}")
+    if observed_project != compose_project:
+        raise DockerApiError(f"Docker returned a container for project {observed_project or '<missing>'}, expected {compose_project}")
+    return container
 
 
 def bound_log_lines(lines: int, maximum: int = 500) -> int:

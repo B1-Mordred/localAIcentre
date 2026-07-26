@@ -14,7 +14,7 @@ The offline suite validates Compose exposure policy and runtime-agent source pol
 - backend services must not publish LocalAI, ComfyUI, Voicebox, PostgreSQL, Redis, artifact-server, runtime-agent, Control Center, Media Studio, or Open WebUI ports
 - backend services must not run privileged or add Linux capabilities, except the documented minimal PostgreSQL/Redis capability sets
 - runtime-agent exposes only the fixed allowlisted status, metrics, service lifecycle, pinned-image, runtime-action, bounded-log, and rollback routes
-- runtime-agent mutating routes keep service allowlist guards, pinned-image guards, runtime-action guards, and bounded-log limits
+- runtime-agent mutating routes keep service allowlist guards, Compose project ownership checks, pinned-image guards, runtime-action guards, and bounded-log limits
 - runtime-agent source must not include Docker exec/container-create/build/volume/secret/plugin passthrough paths or arbitrary host command/environment/mount controls
 
 Run deployed security acceptance on the target stack after production auth is configured:

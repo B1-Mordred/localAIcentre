@@ -26,6 +26,7 @@ assert metrics_spec.loader is not None
 metrics_spec.loader.exec_module(runtime_metrics)
 
 DockerEngineClient = docker_api.DockerEngineClient
+DockerApiError = docker_api.DockerApiError
 LOG_LINE_MAX_BYTES = docker_api.LOG_LINE_MAX_BYTES
 TRUNCATION_SUFFIX = docker_api.TRUNCATION_SUFFIX
 bound_log_lines = docker_api.bound_log_lines
@@ -34,6 +35,7 @@ redact_line = docker_api.redact_line
 require_allowed_service = docker_api.require_allowed_service
 require_runtime_action_service = docker_api.require_runtime_action_service
 strip_docker_stream_headers = docker_api.strip_docker_stream_headers
+validate_compose_project = docker_api.validate_compose_project
 validate_pinned_image_reference = docker_api.validate_pinned_image_reference
 parse_meminfo = runtime_metrics.parse_meminfo
 parse_metric_paths = runtime_metrics.parse_metric_paths
@@ -133,6 +135,14 @@ class RuntimeAgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_allowed_services("control-plane,../../docker")
 
+    def test_compose_project_validation_fails_closed(self) -> None:
+        self.assertEqual(validate_compose_project("b1-ai-hub"), "b1-ai-hub")
+        self.assertEqual(validate_compose_project("b1_ai_hub"), "b1_ai_hub")
+        for project in (None, "", " B1-AI-HUB ", "../b1", "b1.ai-hub", "b1 ai hub"):
+            with self.subTest(project=project):
+                with self.assertRaises(DockerApiError):
+                    validate_compose_project(project)
+
     def test_pinned_image_reference_validation_rejects_floating_images(self) -> None:
         pinned = "ghcr.io/b1/control-plane:0.2.0@sha256:" + "a" * 64
         self.assertEqual(validate_pinned_image_reference(pinned), pinned)
@@ -208,11 +218,38 @@ class RuntimeAgentTests(unittest.TestCase):
         self.assertIn("com.docker.compose.service", path)
         self.assertIn("com.docker.compose.project", path)
 
+    def test_docker_client_requires_compose_project_for_container_lookup(self) -> None:
+        client = FakeDockerEngineClient()
+
+        with self.assertRaises(DockerApiError):
+            client.containers_for_service("control-plane", None)
+
+    def test_docker_client_rejects_mismatched_returned_container_labels(self) -> None:
+        client = FakeDockerEngineClient()
+        client.containers[0]["Labels"] = {
+            **client.containers[0]["Labels"],
+            "com.docker.compose.project": "other-project",
+        }
+
+        with self.assertRaises(DockerApiError) as raised:
+            client.containers_for_service("control-plane", "b1-ai-hub")
+
+        self.assertIn("expected b1-ai-hub", str(raised.exception))
+
     def test_docker_client_restart_uses_allowlisted_container_ids(self) -> None:
         client = FakeDockerEngineClient()
         result = client.restart_service("control-plane", "b1-ai-hub", timeout_seconds=7)
         self.assertEqual(result["containers"][0]["id"], "abcdef1234567890")
         self.assertEqual(client.requests[-1], ("POST", "/containers/abcdef1234567890/restart?t=7"))
+
+    def test_docker_client_mutation_requires_matching_service_container(self) -> None:
+        client = FakeDockerEngineClient()
+        client.containers = []
+
+        with self.assertRaises(DockerApiError) as raised:
+            client.restart_service("control-plane", "b1-ai-hub", timeout_seconds=7)
+
+        self.assertIn("no B1 AI Hub containers found", str(raised.exception))
 
     def test_docker_client_logs_are_bounded_and_redacted(self) -> None:
         client = FakeDockerEngineClient()

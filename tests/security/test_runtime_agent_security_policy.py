@@ -198,6 +198,14 @@ class RuntimeAgentSecurityPolicyTests(unittest.TestCase):
         for term in forbidden_terms:
             self.assertNotIn(term, constants, f"runtime-agent should not expose configurable {term}")
 
+    def test_runtime_agent_docker_lookups_require_b1_compose_project(self) -> None:
+        source = RUNTIME_AGENT_DOCKER_API.read_text(encoding="utf-8")
+
+        self.assertIn("validate_compose_project", source)
+        self.assertIn("com.docker.compose.project={project}", source)
+        self.assertIn("validate_container_ownership", source)
+        self.assertIn("no B1 AI Hub containers found", source)
+
 
 if __name__ == "__main__":
     unittest.main()
