@@ -1238,10 +1238,15 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "credentials_externalized",
                 "non_comfy_tts_completed",
                 "artifact_downloaded",
+                "server_side_comfyui_still_stopped_after_operation",
             ],
             "missing_checks": [],
             "remote_selected_model": "tts-fast",
             "remote_tts_bytes": 2048,
+            "remote_artifact_sha256": remote_artifact_sha,
+            "remote_artifact_relative_path": "b1-remote-node-non-comfy.wav",
+            "remote_comfyui_running_container_count_initial": 0,
+            "remote_comfyui_running_container_count_after_operation": 0,
             "missing_compatibility_evidence": [],
             "checks": {
                 "server_side_comfyui_stopped": {
@@ -1276,6 +1281,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "model": "tts-fast",
                     "runtime_policy": "non_comfy_only",
                     "byte_count": 2048,
+                    "sha256": remote_artifact_sha,
                     "placeholder_proof": {
                         "placeholder": False,
                         "cpu_audio_engine": "piper",
@@ -1287,8 +1293,21 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:35:00+00:00",
                     "filename": "b1-remote-node-non-comfy.wav",
+                    "relative_path": "b1-remote-node-non-comfy.wav",
                     "byte_count": 2048,
+                    "stat_size": 2048,
                     "sha256": remote_artifact_sha,
+                    "file_sha256": remote_artifact_sha,
+                    "path_within_download_dir": True,
+                    "symlink": False,
+                    "private_file_mode": True,
+                    "file_mode": "0o600",
+                },
+                "server_side_comfyui_still_stopped_after_operation": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:35:05+00:00",
+                    "verified_by": "admin_runtimes_runtime_agent_services",
+                    "running_container_count": 0,
                 },
             },
             "sample_count": 2,
@@ -3159,6 +3178,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "server_side_comfyui_stop_verified": {"status": "ok"},
                     "non_comfy_tts_completed": {"status": "ok"},
                     "artifact_downloaded": {"status": "ok"},
+                    "server_side_comfyui_still_stopped_after_operation": {"status": "ok"},
                 },
                 "samples": [{"label": "tts-fast-non-comfy"}],
             }
@@ -3188,7 +3208,10 @@ class AcceptanceReportTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(snapshot["missing_checks"], ["server_side_comfyui_stop_verified"])
+        self.assertEqual(
+            snapshot["missing_checks"],
+            ["server_side_comfyui_stop_verified", "server_side_comfyui_still_stopped_after_operation"],
+        )
 
     def test_remote_node_snapshot_requires_stopped_non_comfy_and_artifact_details(self) -> None:
         snapshot = acceptance.remote_nodes_evidence_snapshot(
@@ -3205,11 +3228,75 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["missing_checks"], [])
         self.assertIn("server_side_comfyui_stop_verified.verified_by", snapshot["missing_compatibility_evidence"])
         self.assertIn("server_side_comfyui_stop_verified.running_container_count_zero", snapshot["missing_compatibility_evidence"])
+        self.assertIn("server_side_comfyui_still_stopped_after_operation.verified_by", snapshot["missing_compatibility_evidence"])
+        self.assertIn(
+            "server_side_comfyui_still_stopped_after_operation.running_container_count_zero",
+            snapshot["missing_compatibility_evidence"],
+        )
         self.assertIn("remote_models_listed.model", snapshot["missing_compatibility_evidence"])
         self.assertIn("credentials_externalized.credential_source", snapshot["missing_compatibility_evidence"])
         self.assertIn("non_comfy_tts_completed.runtime_policy", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("non_comfy_tts_completed.placeholder_proof", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.sha256", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.file_sha256", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.filename", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.relative_path", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.path_within_download_dir", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.private_file_mode", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_requires_file_backed_artifact_integrity(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "non_comfy_tts_completed": {
+                    **payload["checks"]["non_comfy_tts_completed"],
+                    "byte_count": 2048,
+                    "sha256": "1" * 64,
+                },
+                "artifact_downloaded": {
+                    **payload["checks"]["artifact_downloaded"],
+                    "byte_count": 2048,
+                    "stat_size": 1024,
+                    "sha256": "2" * 64,
+                    "file_sha256": "3" * 64,
+                    "path_within_download_dir": False,
+                    "symlink": True,
+                    "private_file_mode": False,
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn("artifact_downloaded.file_sha256_matches_download", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.sha256_matches_tts", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.stat_size_matches_byte_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.path_within_download_dir", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.not_symlink", snapshot["missing_compatibility_evidence"])
+        self.assertIn("artifact_downloaded.private_file_mode", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_requires_comfyui_to_remain_stopped_after_operation(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "server_side_comfyui_still_stopped_after_operation": {
+                    **payload["checks"]["server_side_comfyui_still_stopped_after_operation"],
+                    "running_container_count": 1,
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn(
+            "server_side_comfyui_still_stopped_after_operation.running_container_count_zero",
+            snapshot["missing_compatibility_evidence"],
+        )
 
     def test_remote_node_snapshot_rejects_placeholder_tts_proof(self) -> None:
         payload = sample_live_evidence()["remote_nodes_non_comfy"]
@@ -3987,6 +4074,11 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "verified_by": "admin_runtimes_runtime_agent_services",
                                 "running_container_count": 0,
                             },
+                            "server_side_comfyui_still_stopped_after_operation": {
+                                "status": "ok",
+                                "verified_by": "admin_runtimes_runtime_agent_services",
+                                "running_container_count": 0,
+                            },
                             "remote_models_listed": {
                                 "status": "ok",
                                 "alias_count": 12,
@@ -4005,6 +4097,7 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "model": "tts-fast",
                                 "runtime_policy": "non_comfy_only",
                                 "byte_count": 2048,
+                                "sha256": remote_artifact_sha,
                                 "placeholder_proof": {
                                     "placeholder": False,
                                     "cpu_audio_engine": "piper",
@@ -4015,8 +4108,14 @@ class AcceptanceReportTests(unittest.TestCase):
                             "artifact_downloaded": {
                                 "status": "ok",
                                 "filename": "b1-remote-node-non-comfy.wav",
+                                "relative_path": "b1-remote-node-non-comfy.wav",
                                 "byte_count": 2048,
+                                "stat_size": 2048,
                                 "sha256": remote_artifact_sha,
+                                "file_sha256": remote_artifact_sha,
+                                "path_within_download_dir": True,
+                                "symlink": False,
+                                "private_file_mode": True,
                             },
                         },
                         "samples": [{"label": "remote-node-model-list"}, {"label": "tts-fast-non-comfy"}],

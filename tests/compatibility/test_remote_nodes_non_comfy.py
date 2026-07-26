@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,7 @@ REMOTE_NODES_REQUIRED_CHECKS = (
     "credentials_externalized",
     "non_comfy_tts_completed",
     "artifact_downloaded",
+    "server_side_comfyui_still_stopped_after_operation",
 )
 EXAMPLES_ROOT = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples"
 SECRET_VALUE_PATTERN = re.compile(r"\b(?:b1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|b1adm_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+)\b")
@@ -263,12 +265,15 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
                 runtime_policy=runtime_policy,
                 filename="b1-remote-node-non-comfy.wav",
             )
+            post_run_stop_verification = verify_server_side_comfyui_stopped_via_admin()
+            self.record_check("server_side_comfyui_still_stopped_after_operation", **post_run_stop_verification)
         self.record_check(
             "non_comfy_tts_completed",
             "incomplete" if placeholder_proof.get("placeholder_failure") else "ok",
             model=model,
             runtime_policy=runtime_policy,
             byte_count=byte_count,
+            sha256=digest,
             placeholder_proof=placeholder_proof,
             placeholder_allowed=self.allow_placeholder,
         )
@@ -276,13 +281,15 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
         self.assertGreater(byte_count, 0)
         self.assertEqual(len(digest), 64)
         self.assertTrue(Path(file_path).is_file())
-        self.record_check("artifact_downloaded", filename=Path(file_path).name, byte_count=byte_count, sha256=digest)
+        artifact_proof = self.verify_downloaded_artifact_file(file_path, output_dir, byte_count, digest)
+        self.record_check("artifact_downloaded", **artifact_proof)
         self.samples.append(
             {
                 "label": "tts-fast-non-comfy",
                 "model": model,
                 "runtime_policy": runtime_policy,
-                "output_filename": Path(file_path).name,
+                "output_filename": artifact_proof["filename"],
+                "relative_path": artifact_proof["relative_path"],
                 "byte_count": byte_count,
                 "sha256": digest,
                 "placeholder_proof": placeholder_proof,
@@ -294,6 +301,37 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
                 "remote-node non-Comfy TTS returned placeholder or unproven output "
                 f"({reason}); install a real non-Comfy TTS model/runtime before handoff"
             )
+
+    def verify_downloaded_artifact_file(self, file_path: str, output_dir: Path, byte_count: int, digest: str) -> dict[str, Any]:
+        original_path = Path(file_path)
+        resolved_path = original_path.resolve()
+        resolved_output_dir = output_dir.resolve()
+        self.assertFalse(original_path.is_symlink(), "remote-node artifact download must not be a symlink")
+        try:
+            relative_path = resolved_path.relative_to(resolved_output_dir)
+        except ValueError as exc:
+            raise AssertionError("remote-node artifact escaped the configured download directory") from exc
+        stat_result = resolved_path.stat()
+        mode = stat_result.st_mode & 0o777
+        private_file_mode = os.name == "nt" or (mode & 0o077) == 0
+        content = resolved_path.read_bytes()
+        file_digest = hashlib.sha256(content).hexdigest()
+        self.assertEqual(stat_result.st_size, byte_count)
+        self.assertEqual(len(content), byte_count)
+        self.assertEqual(file_digest, digest)
+        self.assertTrue(private_file_mode, f"remote-node artifact mode is too broad: {oct(mode)}")
+        return {
+            "filename": resolved_path.name,
+            "relative_path": relative_path.as_posix(),
+            "byte_count": byte_count,
+            "stat_size": stat_result.st_size,
+            "sha256": digest,
+            "file_sha256": file_digest,
+            "path_within_download_dir": True,
+            "symlink": False,
+            "private_file_mode": private_file_mode,
+            "file_mode": oct(mode),
+        }
 
     def verify_credentials_externalized(self) -> None:
         source = configured_credential_source()

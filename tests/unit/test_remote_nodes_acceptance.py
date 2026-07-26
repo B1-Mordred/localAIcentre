@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 
 from tests.compatibility import test_remote_nodes_non_comfy as remote_nodes
 
@@ -73,6 +76,28 @@ class RemoteNodesAcceptanceHarnessTests(unittest.TestCase):
                     }
                 }
             )
+
+    def test_downloaded_artifact_file_proof_requires_private_file_inside_output_dir(self) -> None:
+        test_case = remote_nodes.RemoteNodesNonComfyCompatibilityTests(methodName="test_tts_fast_uses_unified_api_without_server_side_comfyui")
+        content = b"RIFF....WAVEremote-node"
+        digest = hashlib.sha256(content).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            artifact = output_dir / "speech.wav"
+            artifact.write_bytes(content)
+            artifact.chmod(0o600)
+
+            proof = test_case.verify_downloaded_artifact_file(str(artifact), output_dir, len(content), digest)
+
+        self.assertEqual(proof["filename"], "speech.wav")
+        self.assertEqual(proof["relative_path"], "speech.wav")
+        self.assertEqual(proof["byte_count"], len(content))
+        self.assertEqual(proof["stat_size"], len(content))
+        self.assertEqual(proof["sha256"], digest)
+        self.assertEqual(proof["file_sha256"], digest)
+        self.assertTrue(proof["path_within_download_dir"])
+        self.assertFalse(proof["symlink"])
+        self.assertTrue(proof["private_file_mode"])
 
 
 if __name__ == "__main__":

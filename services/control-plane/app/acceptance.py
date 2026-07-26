@@ -305,6 +305,7 @@ REMOTE_NODES_REQUIRED_CHECKS = (
     "credentials_externalized",
     "non_comfy_tts_completed",
     "artifact_downloaded",
+    "server_side_comfyui_still_stopped_after_operation",
 )
 MODELHUB_EVIDENCE_FORMAT = "b1-ai-hub-modelhub-client-sync/v1"
 MODELHUB_REQUIRED_CHECKS = (
@@ -1560,15 +1561,20 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
 
-    stop = _check_record(checks, "server_side_comfyui_stop_verified")
-    if stop.get("verified_by") != "admin_runtimes_runtime_agent_services":
-        missing.append("server_side_comfyui_stop_verified.verified_by")
-    try:
-        running_container_count = int(stop.get("running_container_count"))
-    except (TypeError, ValueError):
-        running_container_count = -1
-    if running_container_count != 0:
-        missing.append("server_side_comfyui_stop_verified.running_container_count_zero")
+    def require_stopped_inventory(check_name: str) -> int:
+        record = _check_record(checks, check_name)
+        if record.get("verified_by") != "admin_runtimes_runtime_agent_services":
+            missing.append(f"{check_name}.verified_by")
+        try:
+            running_count = int(record.get("running_container_count"))
+        except (TypeError, ValueError):
+            running_count = -1
+        if running_count != 0:
+            missing.append(f"{check_name}.running_container_count_zero")
+        return max(0, running_count)
+
+    initial_running_container_count = require_stopped_inventory("server_side_comfyui_stop_verified")
+    post_run_running_container_count = require_stopped_inventory("server_side_comfyui_still_stopped_after_operation")
 
     listed = _check_record(checks, "remote_models_listed")
     model = _nonempty_text(listed.get("model"))
@@ -1601,8 +1607,12 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
         missing.append("non_comfy_tts_completed.model_matches_selection")
     if tts.get("runtime_policy") != "non_comfy_only":
         missing.append("non_comfy_tts_completed.runtime_policy")
-    if _positive_int(tts.get("byte_count")) < 1:
+    tts_byte_count = _positive_int(tts.get("byte_count"))
+    if tts_byte_count < 1:
         missing.append("non_comfy_tts_completed.byte_count")
+    tts_sha256 = _normalized_sha256(tts.get("sha256"))
+    if not tts_sha256:
+        missing.append("non_comfy_tts_completed.sha256")
     placeholder_proof = tts.get("placeholder_proof") if isinstance(tts.get("placeholder_proof"), dict) else {}
     if not placeholder_proof:
         missing.append("non_comfy_tts_completed.placeholder_proof")
@@ -1613,14 +1623,41 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
         missing.append("non_comfy_tts_completed.cpu_audio_engine_not_scaffold")
 
     artifact = _check_record(checks, "artifact_downloaded")
-    if _positive_int(artifact.get("byte_count")) < 1:
+    artifact_byte_count = _positive_int(artifact.get("byte_count"))
+    if artifact_byte_count < 1:
         missing.append("artifact_downloaded.byte_count")
-    if not _normalized_sha256(artifact.get("sha256")):
+    artifact_sha256 = _normalized_sha256(artifact.get("sha256"))
+    if not artifact_sha256:
         missing.append("artifact_downloaded.sha256")
+    file_sha256 = _normalized_sha256(artifact.get("file_sha256"))
+    if not file_sha256:
+        missing.append("artifact_downloaded.file_sha256")
+    elif artifact_sha256 and file_sha256 != artifact_sha256:
+        missing.append("artifact_downloaded.file_sha256_matches_download")
+    if tts_sha256 and artifact_sha256 and tts_sha256 != artifact_sha256:
+        missing.append("artifact_downloaded.sha256_matches_tts")
+    if tts_byte_count and artifact_byte_count and tts_byte_count != artifact_byte_count:
+        missing.append("artifact_downloaded.byte_count_matches_tts")
+    if _positive_int(artifact.get("stat_size")) != artifact_byte_count:
+        missing.append("artifact_downloaded.stat_size_matches_byte_count")
+    if not _nonempty_text(artifact.get("filename")):
+        missing.append("artifact_downloaded.filename")
+    if not _nonempty_text(artifact.get("relative_path")):
+        missing.append("artifact_downloaded.relative_path")
+    if artifact.get("path_within_download_dir") is not True:
+        missing.append("artifact_downloaded.path_within_download_dir")
+    if artifact.get("symlink") is True:
+        missing.append("artifact_downloaded.not_symlink")
+    if artifact.get("private_file_mode") is not True:
+        missing.append("artifact_downloaded.private_file_mode")
 
     return {
         "remote_selected_model": selected_model or model,
-        "remote_tts_bytes": _positive_int(tts.get("byte_count")),
+        "remote_tts_bytes": tts_byte_count,
+        "remote_artifact_sha256": artifact_sha256,
+        "remote_artifact_relative_path": _nonempty_text(artifact.get("relative_path")),
+        "remote_comfyui_running_container_count_initial": initial_running_container_count,
+        "remote_comfyui_running_container_count_after_operation": post_run_running_container_count,
         "missing_compatibility_evidence": missing,
     }
 
