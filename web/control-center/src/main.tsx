@@ -865,6 +865,20 @@ type ModelProfile = {
   notes?: string[];
 };
 
+type ProfileCompatibilityReport = {
+  profile_id: string;
+  display_name: string;
+  target_class: string;
+  matched_aliases: string[];
+  preferred_runtimes: string[];
+  runtime_policy: string;
+  target_resource_label: string;
+  resource_label: string;
+  status: string;
+  blockers: string[];
+  warnings: string[];
+};
+
 type CatalogModel = {
   id: string;
   version: string;
@@ -1122,19 +1136,7 @@ type ModelInstallPlan = {
   resource_decision: { label: string; reason: string };
   model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   files: { path: string; status: string; size_bytes: number }[];
-  profile_compatibility?: {
-    profile_id: string;
-    display_name: string;
-    target_class: string;
-    matched_aliases: string[];
-    preferred_runtimes: string[];
-    runtime_policy: string;
-    target_resource_label: string;
-    resource_label: string;
-    status: string;
-    blockers: string[];
-    warnings: string[];
-  }[];
+  profile_compatibility?: ProfileCompatibilityReport[];
   archive_inspections: {
     path: string;
     archive_format: string;
@@ -1156,6 +1158,9 @@ type ModelDownloadPlan = {
   license_accepted: boolean;
   model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   source_url: string;
+  resource_decision: { label: string; reason: string };
+  resource_override?: boolean;
+  profile_compatibility?: ProfileCompatibilityReport[];
   target_sha256: string;
   target_size_bytes: number;
   existing_partial_bytes: number;
@@ -1631,7 +1636,7 @@ function formatProfileLimits(limits?: ModelProfile["default_limits"]): string {
     .join(" / ");
 }
 
-function formatProfileCompatibility(reports?: ModelInstallPlan["profile_compatibility"]): string {
+function formatProfileCompatibility(reports?: ProfileCompatibilityReport[]): string {
   if (!reports?.length) return "no matched required profile";
   return reports.map((report) => {
     const notes = [
@@ -1861,6 +1866,7 @@ function Models() {
   const [downloadSecrets, setDownloadSecrets] = useState<EncryptedSecret[]>([]);
   const [downloadCredentialSecretName, setDownloadCredentialSecretName] = useState("");
   const [manifestUrl, setManifestUrl] = useState("");
+  const [allowResourceOverride, setAllowResourceOverride] = useState(false);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
@@ -1988,7 +1994,7 @@ function Models() {
     apiFetch(`/admin/models/install-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2010,7 +2016,7 @@ function Models() {
     apiFetch(`/admin/models/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance) })
+      body: JSON.stringify({ ...body, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance), allow_resource_override: allowResourceOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2033,7 +2039,7 @@ function Models() {
     apiFetch(`/admin/models/download-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2059,6 +2065,7 @@ function Models() {
         ...body,
         confirm: true,
         accept_license: Boolean(downloadPlan?.requires_license_acceptance),
+        allow_resource_override: allowResourceOverride,
         credential_secret_name: downloadCredentialSecretName.trim() || null
       })
     })
@@ -2233,6 +2240,10 @@ function Models() {
           Manifest URL
           <input value={manifestUrl} onChange={(event) => setManifestUrl(event.target.value)} maxLength={2048} placeholder="https://..." />
         </label>
+        <label className="inline-check" title="Allow an explicit admin override for resource/profile envelope exceptions">
+          <input type="checkbox" checked={allowResourceOverride} onChange={(event) => setAllowResourceOverride(event.target.checked)} />
+          <span>Resource override</span>
+        </label>
         <button title="Plan remote manifest install" onClick={() => planInstall()} disabled={busy || !manifestUrl.trim()}><ListChecks size={16} /></button>
         <button title="Install remote manifest" onClick={() => installModel()} disabled={busy || !manifestUrl.trim()}><Archive size={16} /></button>
         <button title="Plan remote manifest download" onClick={() => planDownload()} disabled={busy || !manifestUrl.trim()}><Download size={16} /></button>
@@ -2255,6 +2266,8 @@ function Models() {
         <div className="one-time-key">
           <strong>{downloadPlan.model_ref} download {downloadPlan.status}</strong>
           <span>{formatBytes(downloadPlan.existing_partial_bytes)} staged / {formatBytes(downloadPlan.target_size_bytes)} total</span>
+          <small>{downloadPlan.resource_decision.label}: {downloadPlan.resource_decision.reason}{downloadPlan.resource_override ? " / override requested" : ""}</small>
+          <small>Profiles: {formatProfileCompatibility(downloadPlan.profile_compatibility)}</small>
           <small>{downloadPlan.model.license.name} / {downloadPlan.model.license.redistribution}{downloadPlan.requires_license_acceptance ? ` / licence ${downloadPlan.license_accepted ? "accepted" : "acceptance required"}` : ""}</small>
           <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
           {runtimeSmokeSummaryFromCarrier(downloadPlan.model)?.configured && <small>Smoke: {runtimeSmokeLine(downloadPlan.model)}</small>}

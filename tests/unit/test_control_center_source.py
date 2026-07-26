@@ -335,6 +335,9 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Plan remote manifest install", self.source)
         self.assertIn("Queue remote manifest download", self.source)
         self.assertIn("accept_license: Boolean(downloadPlan?.requires_license_acceptance)", self.source)
+        self.assertIn("const [allowResourceOverride, setAllowResourceOverride]", self.source)
+        self.assertIn("allow_resource_override: allowResourceOverride", self.source)
+        self.assertIn("Resource override", self.source)
         self.assertIn("acceptance required", self.source)
 
     def test_models_tab_runs_installed_model_smoke_tests(self) -> None:
@@ -366,6 +369,7 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("formatModelEstimate(profile.resource_estimate)", self.source)
         self.assertIn("formatProfileLimits(profile.default_limits)", self.source)
         self.assertIn("formatProfileCompatibility(plan.profile_compatibility)", self.source)
+        self.assertIn("formatProfileCompatibility(downloadPlan.profile_compatibility)", self.source)
         self.assertIn("profile_compatibility?:", self.source)
 
 

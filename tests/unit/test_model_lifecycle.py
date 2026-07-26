@@ -403,6 +403,65 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertEqual(plan["file_count"], 1)
             self.assertEqual(len(plan["files"]), 1)
 
+    def test_download_plan_reports_required_profile_compatibility(self) -> None:
+        digest = hashlib.sha256(b"download profile").hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        manifest = parse_manifest_payload(
+            manifest_payload(
+                digest,
+                16,
+                source_url="https://downloads.example.org/model.gguf",
+                source_type="direct-url",
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(
+                manifest,
+                Path(tmp),
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+
+            self.assertTrue(plan["can_download"])
+            self.assertEqual(plan["resource_decision"]["label"], "recommended")
+            self.assertEqual(plan["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
+            self.assertEqual(plan["profile_compatibility"][0]["status"], "compatible")
+
+    def test_download_plan_blocks_profile_resource_envelope_without_override(self) -> None:
+        digest = hashlib.sha256(b"download profile override").hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        payload = manifest_payload(
+            digest,
+            16,
+            source_url="https://downloads.example.org/model.gguf",
+            source_type="direct-url",
+        )
+        payload["resource_estimate"] = {"vram_gib": 9.0, "ram_gib": 12.0, "disk_gib": 12.0, "context_tokens": 8192}
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = model_lifecycle.build_download_plan(
+                manifest,
+                Path(tmp),
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+            overridden = model_lifecycle.build_download_plan(
+                manifest,
+                Path(tmp),
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+                allow_resource_override=True,
+            )
+
+            self.assertFalse(blocked["can_download"])
+            self.assertTrue(any("profile everyday-llm-7-9b-q4" in item for item in blocked["blockers"]))
+            self.assertTrue(overridden["can_download"])
+            self.assertTrue(overridden["resource_override"])
+            self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
+
     def test_download_plan_supports_multi_file_base_url(self) -> None:
         first = b"first-model-file"
         second_partial = b"token"

@@ -1021,6 +1021,24 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 403)
         self.assertIn("cannot be used for install by this role", str(raised.exception.detail))
 
+    def test_download_plan_reports_profile_compatibility_and_resource_override(self) -> None:
+        digest = hashlib.sha256(b"profile download").hexdigest()
+        payload = manifest_payload(digest, len(b"profile download"))
+        payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
+        payload["resource_estimate"] = {"vram_gib": 9.0, "ram_gib": 12.0, "disk_gib": 12.0, "context_tokens": 8192}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+
+            blocked = asyncio.run(main.admin_model_download_plan(main.ModelInstallPlanRequest(manifest=payload)))
+            overridden = asyncio.run(main.admin_model_download_plan(main.ModelInstallPlanRequest(manifest=payload, allow_resource_override=True)))
+
+        self.assertFalse(blocked["can_download"])
+        self.assertEqual(blocked["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
+        self.assertTrue(any("profile everyday-llm-7-9b-q4" in item for item in blocked["blockers"]))
+        self.assertTrue(overridden["can_download"])
+        self.assertTrue(overridden["resource_override"])
+        self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
+
     def test_manifest_install_permissions_block_operator_download_and_install_mutations(self) -> None:
         data = b"admin-only model"
         digest = hashlib.sha256(data).hexdigest()

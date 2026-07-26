@@ -1440,14 +1440,40 @@ def download_file_plan(manifest: ModelManifest, file: Any, verification: dict[st
     }
 
 
-def build_download_plan(manifest: ModelManifest, data_root: Path, *, accept_license: bool = False) -> dict[str, Any]:
+def build_download_plan(
+    manifest: ModelManifest,
+    data_root: Path,
+    *,
+    accept_license: bool = False,
+    policy: ResourcePolicy | None = None,
+    known_aliases: set[str] | None = None,
+    model_profiles: list[ModelProfile] | None = None,
+    allow_resource_override: bool = False,
+) -> dict[str, Any]:
     files = downloadable_manifest_files(manifest)
+    effective_policy = policy or ResourcePolicy()
+    estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
+    decision = classify_resource_fit(effective_policy, estimate)
     source_allowed = source_url_allowed(manifest)
     verification_by_path = {item["path"]: item for item in verify_manifest_files(manifest, data_root)}
     requires_license_acceptance = bool(manifest.license.acceptance_required)
+    unknown_aliases = manifest_aliases_are_known(manifest, known_aliases) if known_aliases is not None else []
+    profile_compatibility = profile_compatibility_for_manifest(
+        manifest,
+        model_profiles or [],
+        effective_policy,
+        allow_resource_override=allow_resource_override,
+    )
+    profile_blockers = profile_blockers_for_reports(profile_compatibility)
+    resource_allowed = bool(decision.accepted or allow_resource_override)
     blockers: list[str] = []
     if not source_allowed:
         blockers.append("source URL is not allowed by import policy")
+    if unknown_aliases:
+        blockers.append(f"manifest aliases are not defined in the public alias seed: {', '.join(unknown_aliases)}")
+    blockers.extend(profile_blockers)
+    if policy is not None and not resource_allowed:
+        blockers.append(decision.reason)
     if requires_license_acceptance and not accept_license:
         blockers.append("licence acceptance is required")
     duplicate_hashes = sorted({file.sha256 for file in files if sum(1 for item in files if item.sha256 == file.sha256) > 1})
@@ -1479,6 +1505,9 @@ def build_download_plan(manifest: ModelManifest, data_root: Path, *, accept_lice
         "requires_license_acceptance": requires_license_acceptance,
         "license_accepted": accept_license,
         "source_url": manifest.source.url,
+        "resource_decision": asdict(decision),
+        "resource_override": allow_resource_override,
+        "profile_compatibility": profile_compatibility,
         "target_sha256": first_file["target_sha256"] if first_file else None,
         "target_size_bytes": total_size_bytes,
         "target_path": first_file["target_path"] if first_file else None,
@@ -1588,6 +1617,14 @@ def profile_compatibility_for_manifest(
     return reports
 
 
+def profile_blockers_for_reports(reports: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"profile {report['profile_id']}: {blocker}"
+        for report in reports
+        for blocker in report["blockers"]
+    ]
+
+
 def build_install_plan(
     manifest: ModelManifest,
     data_root: Path,
@@ -1610,11 +1647,7 @@ def build_install_plan(
         policy,
         allow_resource_override=allow_resource_override,
     )
-    profile_blockers = [
-        f"profile {report['profile_id']}: {blocker}"
-        for report in profile_compatibility
-        for blocker in report["blockers"]
-    ]
+    profile_blockers = profile_blockers_for_reports(profile_compatibility)
     requires_license_acceptance = bool(manifest.license.acceptance_required)
     files_verified = all(item["verified"] for item in file_status)
     resource_allowed = bool(decision.accepted or allow_resource_override)

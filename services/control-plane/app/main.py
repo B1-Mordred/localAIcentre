@@ -11,6 +11,7 @@ import mimetypes
 import re
 import uuid
 from contextlib import suppress
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -4947,11 +4948,22 @@ def install_plan_for_manifest(manifest: Any, payload: ModelInstallPlanRequest) -
     )
 
 
-def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False) -> dict[str, Any]:
+def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False, allow_resource_override: bool = False) -> dict[str, Any]:
+    catalog = catalog_snapshot()
     try:
-        return model_lifecycle.build_download_plan(manifest, data_root_path(), accept_license=accept_license)
+        return model_lifecycle.build_download_plan(
+            manifest,
+            data_root_path(),
+            accept_license=accept_license,
+            policy=resource_policy(),
+            known_aliases=set(catalog.aliases_by_id),
+            model_profiles=catalog.list_profiles(),
+            allow_resource_override=allow_resource_override,
+        )
     except model_lifecycle.ModelLifecycleError as exc:
         total_size_bytes = sum(file.size_bytes for file in manifest.files)
+        estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
+        decision = classify_resource_fit(resource_policy(), estimate)
         return {
             "model": manifest.to_dict(),
             "model_ref": f"{manifest.id}@{manifest.version}",
@@ -4962,6 +4974,9 @@ def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False) -
             "requires_license_acceptance": bool(manifest.license.acceptance_required),
             "license_accepted": accept_license,
             "source_url": manifest.source.url,
+            "resource_decision": asdict(decision),
+            "resource_override": allow_resource_override,
+            "profile_compatibility": [],
             "target_sha256": manifest.files[0].sha256 if manifest.files else None,
             "target_size_bytes": total_size_bytes,
             "target_path": None,
@@ -8575,7 +8590,7 @@ async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorizat
     require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
-    return download_plan_for_manifest(manifest, accept_license=payload.accept_license)
+    return download_plan_for_manifest(manifest, accept_license=payload.accept_license, allow_resource_override=payload.allow_resource_override)
 
 
 @app.get("/admin/models/downloads")
@@ -8604,7 +8619,7 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
     require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
-    plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license)
+    plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license, allow_resource_override=payload.allow_resource_override)
     credential_secret_name = await validate_model_download_secret_name(payload.credential_secret_name)
     if not payload.confirm:
         raise HTTPException(status_code=409, detail={"message": "download requires explicit confirmation", "plan": plan})
