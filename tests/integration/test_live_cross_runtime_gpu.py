@@ -47,6 +47,7 @@ GPU_ACCEPTANCE_OPTIONAL_VOICEBOX_REQUIRED_CHECKS = (
     "vram_reserve_enforced",
     "bounded_runtime_recovery_action",
 )
+GPU_ACCEPTANCE_REQUIRED_CHECKS = GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS
 
 
 def env_flag(name: str, default: bool = False) -> bool:
