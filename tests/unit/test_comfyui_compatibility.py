@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,36 @@ else:
 
 
 class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
+    def test_live_harness_defaults_to_bundled_tiny_smoke_prompt_metadata(self) -> None:
+        original_json = os.environ.pop("B1_NATIVE_COMFYUI_PROMPT_JSON", None)
+        original_file = os.environ.pop("B1_NATIVE_COMFYUI_PROMPT_FILE", None)
+        try:
+            payload, metadata = native_comfyui_live.load_prompt_payload_with_metadata()
+        finally:
+            if original_json is not None:
+                os.environ["B1_NATIVE_COMFYUI_PROMPT_JSON"] = original_json
+            if original_file is not None:
+                os.environ["B1_NATIVE_COMFYUI_PROMPT_FILE"] = original_file
+
+        self.assertIn("prompt", payload)
+        self.assertEqual(metadata["source"], "default-smoke-file")
+        self.assertEqual(metadata["file_name"], "native-comfyui-smoke-prompt.json")
+        self.assertTrue(metadata["route_level_smoke"])
+        self.assertTrue(metadata["default_prompt_file"])
+        self.assertIn("B1RuntimeTinyImage", metadata["class_types"])
+        self.assertIn("SaveImage", metadata["class_types"])
+
+    def test_prompt_metadata_marks_operator_prompt_as_handoff_candidate(self) -> None:
+        payload = {"prompt": {"1": {"class_type": "CheckpointLoaderSimple", "inputs": {}}, "2": {"class_type": "SaveImage", "inputs": {}}}}
+
+        metadata = native_comfyui_live.prompt_metadata(payload, source="env-file", file_path="/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json")
+
+        self.assertEqual(metadata["file_name"], "text-to-image-api-prompt.json")
+        self.assertFalse(metadata["route_level_smoke"])
+        self.assertFalse(metadata["default_prompt_file"])
+        self.assertEqual(metadata["node_count"], 2)
+        self.assertEqual(metadata["class_type_count"], 2)
+
     def test_multipart_form_data_builds_upload_image_body_without_credentials(self) -> None:
         body, content_type = native_comfyui_live.multipart_form_data(
             {"type": "input", "overwrite": "true"},

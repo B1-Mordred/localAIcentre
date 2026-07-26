@@ -18,6 +18,8 @@ from typing import Any
 
 
 NATIVE_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-native-comfyui-compatibility/v1"
+DEFAULT_NATIVE_COMFYUI_PROMPT_FILE = Path(__file__).resolve().parents[2] / "workflows" / "acceptance" / "native-comfyui-smoke-prompt.json"
+TINY_COMFYUI_SMOKE_CLASS = "B1RuntimeTinyImage"
 NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "object_info_accessible",
     "object_info_node_accessible",
@@ -138,15 +140,59 @@ def b1_artifact_collection_proof(job_id: str, artifact_proofs: list[dict[str, An
     }
 
 
-def load_prompt_payload() -> dict[str, Any]:
+def contains_class_type(value: Any, class_type: str) -> bool:
+    if isinstance(value, dict):
+        if value.get("class_type") == class_type:
+            return True
+        return any(contains_class_type(item, class_type) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_class_type(item, class_type) for item in value)
+    return False
+
+
+def prompt_class_types(payload: dict[str, Any]) -> list[str]:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, dict):
+        return []
+    class_types = []
+    for node in prompt.values():
+        if isinstance(node, dict) and isinstance(node.get("class_type"), str):
+            class_types.append(node["class_type"])
+    return sorted(set(class_types))
+
+
+def prompt_metadata(payload: dict[str, Any], *, source: str, file_path: str = "") -> dict[str, Any]:
+    prompt = payload.get("prompt") if isinstance(payload.get("prompt"), dict) else {}
+    class_types = prompt_class_types(payload)
+    return {
+        "source": source,
+        "file_path": file_path,
+        "file_name": Path(file_path).name if file_path else "",
+        "node_count": len(prompt),
+        "class_type_count": len(class_types),
+        "class_types": class_types[:50],
+        "route_level_smoke": contains_class_type(payload, TINY_COMFYUI_SMOKE_CLASS),
+        "default_prompt_file": source == "default-smoke-file",
+    }
+
+
+def load_prompt_payload_with_metadata() -> tuple[dict[str, Any], dict[str, Any]]:
     raw = os.getenv("B1_NATIVE_COMFYUI_PROMPT_JSON", "").strip()
     file_path = os.getenv("B1_NATIVE_COMFYUI_PROMPT_FILE", "").strip()
     if raw and file_path:
         raise unittest.SkipTest("set only one of B1_NATIVE_COMFYUI_PROMPT_JSON or B1_NATIVE_COMFYUI_PROMPT_FILE")
+    source = "env-json" if raw else "env-file"
     if file_path:
         raw = Path(file_path).read_text(encoding="utf-8")
+    elif not raw and DEFAULT_NATIVE_COMFYUI_PROMPT_FILE.is_file():
+        file_path = str(DEFAULT_NATIVE_COMFYUI_PROMPT_FILE)
+        raw = DEFAULT_NATIVE_COMFYUI_PROMPT_FILE.read_text(encoding="utf-8")
+        source = "default-smoke-file"
     if not raw:
-        raise unittest.SkipTest("set B1_NATIVE_COMFYUI_PROMPT_FILE or B1_NATIVE_COMFYUI_PROMPT_JSON to a real native API prompt")
+        raise unittest.SkipTest(
+            "set B1_NATIVE_COMFYUI_PROMPT_FILE or B1_NATIVE_COMFYUI_PROMPT_JSON to a native API prompt; "
+            f"the bundled default was not found at {DEFAULT_NATIVE_COMFYUI_PROMPT_FILE}"
+        )
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise unittest.SkipTest("native ComfyUI prompt must decode to a JSON object")
@@ -154,6 +200,11 @@ def load_prompt_payload() -> dict[str, Any]:
         payload = {"prompt": payload}
     if not isinstance(payload.get("prompt"), dict) or not payload["prompt"]:
         raise unittest.SkipTest("native ComfyUI prompt payload must contain a non-empty prompt object")
+    return payload, prompt_metadata(payload, source=source, file_path=file_path)
+
+
+def load_prompt_payload() -> dict[str, Any]:
+    payload, _metadata = load_prompt_payload_with_metadata()
     return payload
 
 
@@ -161,6 +212,7 @@ def load_prompt_payload() -> dict[str, Any]:
 class NativeComfyUiCompatibilityTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
+    prompt_metadata: dict[str, Any] = {}
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -177,7 +229,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         cls.api_host_header = os.getenv("B1_NATIVE_COMFYUI_API_HOST_HEADER", "").strip()
         cls.client_id = os.getenv("B1_NATIVE_COMFYUI_CLIENT_ID", f"b1-native-comfyui-{uuid.uuid4().hex}")
         cls.timeout_seconds = float(os.getenv("B1_NATIVE_COMFYUI_TIMEOUT_SECONDS", "300"))
-        cls.prompt_payload = load_prompt_payload()
+        cls.prompt_payload, cls.prompt_metadata = load_prompt_payload_with_metadata()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -194,6 +246,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
                     "generated_at": datetime.now(tz=UTC).isoformat(),
                     "base_url": cls.base_url,
                     "api_base_url": cls.api_base_url,
+                    "prompt": cls.prompt_metadata,
                     "status": status,
                     "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
                     "checks": cls.checks,

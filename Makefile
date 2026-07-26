@@ -18,6 +18,7 @@ B1_LOCALAI_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/localai-runtime.j
 B1_GPU_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/cross-runtime-gpu.json
 B1_RESTART_RECONCILIATION_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/restart-reconciliation.json
 B1_NATIVE_COMFYUI_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/native-comfyui.json
+B1_NATIVE_COMFYUI_PROMPT_FILE ?= $(CURDIR)/workflows/acceptance/native-comfyui-smoke-prompt.json
 B1_LEGACY_COMFY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/legacy-comfy-listener.json
 B1_REMOTE_NODES_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/remote-nodes-non-comfy.json
 B1_MODELHUB_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/modelhub-client-sync.json
@@ -145,7 +146,7 @@ compatibility:
 	python3 -m unittest discover -s tests/compatibility -v
 
 native-comfyui-compatibility:
-	B1_NATIVE_COMFYUI_LIVE_TEST=1 B1_NATIVE_COMFYUI_EVIDENCE="$(B1_NATIVE_COMFYUI_EVIDENCE)" python3 -m unittest tests.compatibility.test_native_comfyui_compatibility -v
+	B1_NATIVE_COMFYUI_LIVE_TEST=1 B1_NATIVE_COMFYUI_PROMPT_FILE="$(B1_NATIVE_COMFYUI_PROMPT_FILE)" B1_NATIVE_COMFYUI_EVIDENCE="$(B1_NATIVE_COMFYUI_EVIDENCE)" python3 -m unittest tests.compatibility.test_native_comfyui_compatibility -v
 
 legacy-comfyui-compatibility:
 	B1_LEGACY_COMFY_LIVE_TEST=1 B1_LEGACY_COMFY_EVIDENCE="$(B1_LEGACY_COMFY_EVIDENCE)" python3 -m unittest tests.compatibility.test_legacy_comfyui_listener -v

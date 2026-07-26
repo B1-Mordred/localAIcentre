@@ -1355,6 +1355,16 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "generated_at": "2026-07-24T12:33:00+00:00",
             "base_url": "https://comfy.ai.b1.germering",
             "status": "ok",
+            "prompt": {
+                "source": "env-file",
+                "file_path": "/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json",
+                "file_name": "text-to-image-api-prompt.json",
+                "node_count": 2,
+                "class_type_count": 2,
+                "class_types": ["CheckpointLoaderSimple", "SaveImage"],
+                "route_level_smoke": False,
+                "default_prompt_file": False,
+            },
             "required_checks": [
                 "object_info_accessible",
                 "object_info_node_accessible",
@@ -3674,6 +3684,40 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("queue_delete_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("interrupt_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("view_artifact_accessible.artifacts", snapshot["missing_compatibility_evidence"])
+        self.assertIn("prompt.metadata", snapshot["missing_compatibility_evidence"])
+
+    def test_native_comfyui_snapshot_rejects_route_level_smoke_prompt_for_handoff(self) -> None:
+        native = json.loads(json.dumps(sample_live_evidence()["native_comfyui_compatibility"]))
+        native["prompt"] = {
+            "source": "default-smoke-file",
+            "file_path": "/repo/workflows/acceptance/native-comfyui-smoke-prompt.json",
+            "file_name": "native-comfyui-smoke-prompt.json",
+            "node_count": 2,
+            "class_type_count": 2,
+            "class_types": ["B1RuntimeTinyImage", "SaveImage"],
+            "route_level_smoke": True,
+            "default_prompt_file": True,
+        }
+        snapshot = acceptance.native_comfyui_evidence_snapshot(native)
+
+        self.assertIn("prompt.route_level_smoke_not_handoff", snapshot["missing_compatibility_evidence"])
+        self.assertTrue(snapshot["prompt_route_level_smoke"])
+
+    def test_report_blocks_handoff_for_route_level_native_comfyui_smoke_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        native = json.loads(json.dumps(live_evidence["native_comfyui_compatibility"]))
+        native["prompt"]["source"] = "default-smoke-file"
+        native["prompt"]["file_name"] = "native-comfyui-smoke-prompt.json"
+        native["prompt"]["route_level_smoke"] = True
+        native["prompt"]["default_prompt_file"] = True
+        live_evidence["native_comfyui_compatibility"] = acceptance.native_comfyui_evidence_snapshot(native)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn(
+            "native ComfyUI compatibility evidence is missing detailed proof: prompt.route_level_smoke_not_handoff",
+            report["acceptance_blockers"],
+        )
 
     def test_native_comfyui_snapshot_requires_all_returned_artifacts_to_be_verified(self) -> None:
         native = json.loads(json.dumps(sample_live_evidence()["native_comfyui_compatibility"]))
@@ -3777,6 +3821,15 @@ class AcceptanceReportTests(unittest.TestCase):
                 "generated_at": "2026-07-24T12:33:00+00:00",
                 "base_url": "https://comfy.ai.b1.germering",
                 "status": "ok",
+                "prompt": {
+                    "source": "env-file",
+                    "file_name": "text-to-image-api-prompt.json",
+                    "node_count": 1,
+                    "class_type_count": 1,
+                    "class_types": ["SaveImage"],
+                    "route_level_smoke": False,
+                    "default_prompt_file": False,
+                },
                 "checks": checks,
                 "samples": [{"label": "prompt-submission"}],
             }

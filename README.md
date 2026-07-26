@@ -197,7 +197,7 @@ B1_WORKFLOWS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/installed-workflows.json
 make installed-workflows-acceptance
 ```
 
-Run native ComfyUI compatibility from an external client after a real API-format workflow is installed. For route-level rehearsals, `/srv/b1-ai-hub/workflows/acceptance/native-comfyui-smoke-prompt.json` produces a deterministic tiny image through the B1 ComfyUI hook, but production handoff should use a real prompt such as the edited text-to-image template.
+Run native ComfyUI compatibility from an external client. By default, `make native-comfyui-compatibility` uses the checked-in `workflows/acceptance/native-comfyui-smoke-prompt.json` to produce a deterministic tiny image through the B1 ComfyUI hook; that is useful for fast route-level rehearsals without model weights. Production handoff must override `B1_NATIVE_COMFYUI_PROMPT_FILE` with a real prompt such as the edited text-to-image template, and acceptance reports reject evidence generated from the tiny smoke prompt.
 
 ```bash
 B1_NATIVE_COMFYUI_LIVE_TEST=1 \

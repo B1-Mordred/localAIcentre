@@ -1522,6 +1522,17 @@ def _installed_workflows_summary(payload: dict[str, Any]) -> dict[str, Any]:
 def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
+    prompt_metadata = payload.get("prompt") if isinstance(payload.get("prompt"), dict) else {}
+    prompt_route_level_smoke = prompt_metadata.get("route_level_smoke") is True
+    if not prompt_metadata:
+        missing.append("prompt.metadata")
+    else:
+        if _positive_int(prompt_metadata.get("node_count")) < 1:
+            missing.append("prompt.node_count")
+        if _positive_int(prompt_metadata.get("class_type_count")) < 1:
+            missing.append("prompt.class_type_count")
+        if prompt_route_level_smoke:
+            missing.append("prompt.route_level_smoke_not_handoff")
 
     prompt = _check_record(checks, "prompt_submission")
     prompt_id = _nonempty_text(prompt.get("prompt_id"))
@@ -1652,6 +1663,11 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
         "native_summary_class_type_count": native_summary_class_type_count,
         "native_summary_stored_artifact_count": native_summary_stored_artifact_count,
         "native_summary_failed_ingest_count": native_summary_failed_ingest_count,
+        "prompt_source": _nonempty_text(prompt_metadata.get("source")),
+        "prompt_file_name": _nonempty_text(prompt_metadata.get("file_name")),
+        "prompt_route_level_smoke": prompt_route_level_smoke,
+        "prompt_node_count": _positive_int(prompt_metadata.get("node_count")),
+        "prompt_class_type_count": _positive_int(prompt_metadata.get("class_type_count")),
         "missing_compatibility_evidence": missing,
     }
 
