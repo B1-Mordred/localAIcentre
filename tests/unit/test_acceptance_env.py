@@ -39,6 +39,10 @@ class AcceptanceEnvTests(unittest.TestCase):
             text,
         )
         self.assertIn('export B1_ACCEPTANCE_API_KEY="${B1_ACCEPTANCE_API_KEY:-}"', text)
+        self.assertIn(
+            'export B1_ACCEPTANCE_CA_FILE="${B1_ACCEPTANCE_CA_FILE:-/srv/example/data/control-plane/caddy-root.crt}"',
+            text,
+        )
         self.assertIn('export B1_HOST_CHAT="${B1_HOST_CHAT:-ai.b1.germering}"', text)
         self.assertIn('export B1_APPLIANCE_HOSTNAME="${B1_APPLIANCE_HOSTNAME:-$B1_HOST_CHAT}"', text)
         self.assertIn('export B1_EXPECTED_TARGET_HOST="${B1_EXPECTED_TARGET_HOST:-$B1_APPLIANCE_HOSTNAME}"', text)

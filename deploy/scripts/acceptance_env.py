@@ -93,7 +93,7 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     backup_root = data_root / "backups"
     acceptance_root = backup_root / "acceptance"
     workflows_root = data_root / "workflows" / "acceptance"
-    ca_file = data_root / "data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+    ca_file = data_root / "data" / "control-plane" / "caddy-root.crt"
     chat_base = f"https://{config.host_chat}"
     api_base = f"https://{config.host_api}"
     comfy_base = f"https://{config.host_comfy}"

@@ -53,7 +53,7 @@ class AcceptancePreflightTests(unittest.TestCase):
         path.write_text(payload.strip() + "\n", encoding="utf-8")
 
     def write_operator_files(self, root: Path, *, tiny_prompt: bool = False, placeholder: bool = False) -> None:
-        ca = root / "data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+        ca = root / "data" / "control-plane" / "caddy-root.crt"
         ca.parent.mkdir(parents=True, exist_ok=True)
         ca.write_text("test-ca\n", encoding="utf-8")
         workflows = root / "workflows" / "acceptance"
