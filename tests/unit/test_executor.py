@@ -672,6 +672,93 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(fake.runtime_states["comfyui"]["details"]["hook"]["strategy"], "backend_shutdown")
         self.assertEqual(fake.runtime_states["voicebox"]["status"], "unload_ok")
 
+    def test_gpu_runner_unloads_target_runtime_when_model_changes(self) -> None:
+        fake = FakeDatabase(runtime="comfyui")
+        fake.runtime_states["comfyui"] = {
+            "runtime": "comfyui",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "sd15-image",
+            "model_alias": "image-edit",
+            "resolved_model_version": "sd15-image@1",
+            "job_id": "job_image",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC),
+        }
+        self.patch_database(fake)
+
+        class SwitchRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(artifact_root, runtime_urls={"comfyui": "http://comfyui"})
+                self.controls: list[tuple[str, str, dict[str, Any]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action, payload))
+                return {"status": "ok", "runtime": runtime, "action": action, "strategy": "model_unload"}
+
+        job = {
+            "id": "job_video",
+            "runtime": "comfyui",
+            "model_alias": "video-text",
+            "resolved_model_version": "sd15-video-sequence@1",
+            "modality": "video",
+            "operation": "generation",
+            "request_params": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = SwitchRunner(Path(tmp))
+            result = asyncio.run(runner.unload_target_runtime_for_model_switch(job))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([(runtime, action) for runtime, action, _ in runner.controls], [("comfyui", "unload")])
+        self.assertEqual(runner.controls[0][2]["model"], "sd15-image")
+        self.assertEqual(fake.runtime_states["comfyui"]["status"], "unload_ok")
+        self.assertIsNone(fake.runtime_states["comfyui"]["active_model"])
+        self.assertTrue(fake.runtime_states["comfyui"]["details"]["same_runtime_model_switch"])
+        self.assertEqual(fake.runtime_states["comfyui"]["details"]["previous_model"], "sd15-image@1")
+        self.assertEqual(fake.runtime_states["comfyui"]["details"]["target_model"], "sd15-video-sequence@1")
+
+    def test_gpu_runner_keeps_target_runtime_when_model_matches(self) -> None:
+        fake = FakeDatabase(runtime="comfyui")
+        fake.runtime_states["comfyui"] = {
+            "runtime": "comfyui",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "sd15-image",
+            "model_alias": "image-default",
+            "resolved_model_version": "sd15-image@1",
+            "job_id": "job_image",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC),
+        }
+        self.patch_database(fake)
+
+        class SwitchRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(artifact_root, runtime_urls={"comfyui": "http://comfyui"})
+                self.controls: list[tuple[str, str, dict[str, Any]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action, payload))
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+        job = {
+            "id": "job_image",
+            "runtime": "comfyui",
+            "model_alias": "image-default",
+            "resolved_model_version": "sd15-image@1",
+            "modality": "image",
+            "operation": "generation",
+            "request_params": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = SwitchRunner(Path(tmp))
+            result = asyncio.run(runner.unload_target_runtime_for_model_switch(job))
+
+        self.assertIsNone(result)
+        self.assertEqual(runner.controls, [])
+        self.assertEqual(fake.runtime_states["comfyui"]["active_model"], "sd15-image")
+
     def test_gpu_runner_calls_runtime_load_and_warm_hooks(self) -> None:
         fake = FakeDatabase(runtime="voicebox")
         fake.job.update(

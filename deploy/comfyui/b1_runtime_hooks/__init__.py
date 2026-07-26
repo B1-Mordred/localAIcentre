@@ -719,11 +719,113 @@ class B1RuntimeTinyImage:
         return (image,)
 
 
+def safe_filename_prefix(value: Any, fallback: str = "b1-video/animated") -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return fallback
+    parts: list[str] = []
+    for raw in text.split("/"):
+        cleaned = "".join(ch if ch.isascii() and (ch.isalnum() or ch in {".", "_", "-"}) else "_" for ch in raw)
+        segment = cleaned.strip("._-")[:120]
+        if segment:
+            parts.append(segment)
+    return "/".join(parts[:4]) or fallback
+
+
+def animated_gif_ui_result(filename: str, subfolder: str, file_type: str, frame_count: int, fps: int) -> dict[str, Any]:
+    return {
+        "ui": {
+            "gifs": [
+                {
+                    "filename": filename,
+                    "subfolder": subfolder,
+                    "type": file_type,
+                    "format": "image/gif",
+                    "frame_count": frame_count,
+                    "fps": fps,
+                }
+            ]
+        }
+    }
+
+
+class B1RuntimeSaveAnimatedGif:
+    def __init__(self) -> None:
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, dict[str, Any]]:
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "filename_prefix": ("STRING", {"default": "b1-video/animated"}),
+                "fps": ("INT", {"default": 4, "min": 1, "max": 12, "step": 1}),
+                "max_frames": ("INT", {"default": 8, "min": 1, "max": 16, "step": 1}),
+                "loop": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_gif"
+    CATEGORY = "B1/runtime"
+    OUTPUT_NODE = True
+
+    def save_gif(
+        self,
+        images: Any,
+        filename_prefix: str = "b1-video/animated",
+        fps: int = 4,
+        max_frames: int = 8,
+        loop: bool = True,
+    ) -> dict[str, Any]:
+        import numpy as np
+        from PIL import Image
+
+        safe_fps = max(1, min(int(fps), 12))
+        safe_max_frames = max(1, min(int(max_frames), 16))
+        selected = images[:safe_max_frames]
+        if len(selected) < 1:
+            raise ValueError("B1RuntimeSaveAnimatedGif requires at least one image")
+
+        first = selected[0]
+        height = int(first.shape[0])
+        width = int(first.shape[1])
+        prefix = safe_filename_prefix(filename_prefix)
+        full_output_folder, filename, counter, subfolder, _filename_prefix = folder_paths.get_save_image_path(
+            prefix,
+            self.output_dir,
+            width,
+            height,
+        )
+
+        frames: list[Any] = []
+        for image in selected:
+            tensor = image.detach() if hasattr(image, "detach") else image
+            array = 255.0 * tensor.cpu().numpy() if hasattr(tensor, "cpu") else 255.0 * np.asarray(tensor)
+            frames.append(Image.fromarray(np.clip(array, 0, 255).astype(np.uint8)))
+
+        output_file = f"{filename}_{counter:05}_.gif"
+        output_path = Path(full_output_folder) / output_file
+        duration_ms = max(1, int(1000 / safe_fps))
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=duration_ms,
+            loop=0 if loop else 1,
+            optimize=True,
+        )
+        return animated_gif_ui_result(output_file, subfolder, self.type, len(frames), safe_fps)
+
+
 NODE_CLASS_MAPPINGS = {
     "B1RuntimeSmoke": B1RuntimeSmoke,
     "B1RuntimeTinyImage": B1RuntimeTinyImage,
+    "B1RuntimeSaveAnimatedGif": B1RuntimeSaveAnimatedGif,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "B1RuntimeSmoke": "B1 Runtime Smoke",
     "B1RuntimeTinyImage": "B1 Runtime Tiny Image",
+    "B1RuntimeSaveAnimatedGif": "B1 Runtime Save Animated GIF",
 }

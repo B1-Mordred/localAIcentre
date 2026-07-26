@@ -662,6 +662,74 @@ class GpuJobRunner:
             results.append(result)
         return results
 
+    def runtime_state_has_active_model(self, state: dict[str, Any] | None) -> bool:
+        if not isinstance(state, dict):
+            return False
+        return bool(str(state.get("active_model") or "").strip() or str(state.get("resolved_model_version") or "").strip())
+
+    def runtime_state_matches_job_model(self, state: dict[str, Any] | None, job: dict[str, Any]) -> bool:
+        if not self.runtime_state_has_active_model(state):
+            return True
+        assert state is not None
+        target_refs = {
+            value
+            for value in (
+                str(job.get("resolved_model_version") or "").strip(),
+                self.resolved_model_id(job).strip(),
+            )
+            if value
+        }
+        if not target_refs:
+            alias = str(job.get("model_alias") or "").strip()
+            return bool(alias and alias == str(state.get("model_alias") or "").strip())
+        state_refs = {
+            value
+            for value in (
+                str(state.get("active_model") or "").strip(),
+                str(state.get("resolved_model_version") or "").strip(),
+            )
+            if value
+        }
+        return bool(target_refs & state_refs)
+
+    async def unload_target_runtime_for_model_switch(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        target_runtime = str(job.get("runtime") or "")
+        if target_runtime not in GPU_RUNTIMES:
+            return None
+        state = (await self.current_runtime_state_by_name()).get(target_runtime) or {}
+        if self.runtime_state_matches_job_model(state, job):
+            return None
+        previous_model = str(state.get("resolved_model_version") or state.get("active_model") or "").strip()
+        target_model = str(job.get("resolved_model_version") or self.resolved_model_id(job)).strip()
+        result, details = await self.graceful_or_forced_unload_runtime(
+            target_runtime,
+            target_runtime,
+            job,
+            state,
+            reason=f"prepare {target_runtime} for job {job['id']}: switch from {previous_model} to {target_model}",
+        )
+        await self.record_runtime_state_for_job(
+            target_runtime,
+            self.runtime_hook_state_status("unload", result),
+            "unloading",
+            job,
+            {
+                **details,
+                "same_runtime_model_switch": True,
+                "previous_model": previous_model,
+                "target_model": target_model,
+            },
+            record_model=False,
+        )
+        return result
+
+    async def unload_gpu_runtimes_for_job(self, job: dict[str, Any]) -> list[dict[str, Any] | None]:
+        results = await self.unload_other_gpu_runtimes(job)
+        same_runtime_result = await self.unload_target_runtime_for_model_switch(job)
+        if same_runtime_result is not None:
+            results.append(same_runtime_result)
+        return results
+
     def runtime_control_payload(self, job: dict[str, Any]) -> dict[str, Any]:
         runtime = str(job.get("runtime") or "")
         payload = {
@@ -1559,7 +1627,7 @@ class GpuJobRunner:
                     run_started = monotonic()
                 await database.update_job(job["id"], **update_payload)
                 if state == JobState.UNLOADING:
-                    await self.unload_other_gpu_runtimes(job)
+                    await self.unload_gpu_runtimes_for_job(job)
                 if state == JobState.VERIFYING_VRAM:
                     await self.verify_vram_or_recover(job)
                 if state == JobState.LOADING:

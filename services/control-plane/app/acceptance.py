@@ -4133,14 +4133,14 @@ def _runtime_sources_from_repo(repo_root: Path, bases: list[dict[str, Any]]) -> 
             "runtime": "localai",
             "upstream_version": localai.get("B1_LOCALAI_UPSTREAM_VERSION", ""),
             "upstream_commit": localai.get("B1_LOCALAI_UPSTREAM_COMMIT", ""),
-            "base_image": _first_base_for(bases, "localai"),
+            "base_image": _first_base_for(bases, "localai", "final"),
         },
         {
             "runtime": "comfyui",
             "upstream_version": comfyui.get("B1_COMFYUI_VERSION", ""),
             "upstream_commit": comfyui.get("B1_COMFYUI_COMMIT", ""),
             "tarball_sha256": comfyui.get("B1_COMFYUI_TARBALL_SHA256", ""),
-            "base_image": _first_base_for(bases, "comfyui"),
+            "base_image": _first_base_for(bases, "comfyui", "final"),
         },
         {
             "runtime": "voicebox",
@@ -4159,7 +4159,7 @@ def _runtime_sources_from_repo(repo_root: Path, bases: list[dict[str, Any]]) -> 
             "upstream_release": audio_cpu.get("B1_PIPER_RELEASE", ""),
             "asset": audio_cpu.get("B1_PIPER_ASSET", ""),
             "asset_sha256": audio_cpu.get("B1_PIPER_SHA256", ""),
-            "base_image": _first_base_for(bases, "audio-cpu"),
+            "base_image": _first_base_for(bases, "audio-cpu", "final"),
         },
     ]
 

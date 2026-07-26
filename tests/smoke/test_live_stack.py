@@ -396,15 +396,18 @@ def model_record_ref(record: dict[str, Any]) -> str:
 def latest_ok_measurement_run(manifest: dict[str, Any], resolved_model_version: str, alias: str) -> tuple[dict[str, Any] | None, int]:
     measurements = manifest.get("measurements") if isinstance(manifest.get("measurements"), dict) else {}
     runs = measurements.get("runs") if isinstance(measurements.get("runs"), list) else []
+    manifest_aliases = manifest.get("aliases") if isinstance(manifest.get("aliases"), list) else []
     ok_runs = [
         run
         for run in runs
         if isinstance(run, dict)
         and run.get("status") == "ok"
         and run.get("resolved_model_version") == resolved_model_version
-        and (run.get("model_alias") == alias or alias in manifest.get("aliases", []))
+        and (run.get("model_alias") == alias or alias in manifest_aliases)
     ]
-    return (compact_measurement_run(ok_runs[-1]) if ok_runs else None, len(ok_runs))
+    exact = [run for run in ok_runs if run.get("model_alias") == alias]
+    selected = exact[-1] if exact else ok_runs[-1] if ok_runs else None
+    return (compact_measurement_run(selected) if selected else None, len(exact) if exact else len(ok_runs))
 
 
 def measured_model_alias(client: LiveApiClient, alias: str, *, expected_runtime: str | None = None) -> dict[str, Any]:

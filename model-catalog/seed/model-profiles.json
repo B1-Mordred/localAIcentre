@@ -133,18 +133,19 @@
       "default_limits": { "maximum_resolution": "1024x1024", "maximum_batch_size": 1, "maximum_steps": 30 }
     },
     {
-      "id": "short-video-12gb-workflow",
+      "id": "short-video-6gb-sequence-workflow",
       "display_name": "Short Video Workflow",
       "aliases": ["video-text", "video-image"],
       "modality": "video",
       "operations": ["video-generation", "image-to-video"],
       "preferred_runtimes": ["comfyui"],
-      "target_class": "small or quantized 12 GB validated video workflow",
-      "selection_guidance": "Use batch size one, short clips, visible yield points, and persisted measurements before making video aliases available to ordinary users.",
-      "resource_estimate": { "vram_gib": 10.4, "ram_gib": 14.0, "disk_gib": 20.0, "max_frames": 49 },
-      "target_resource_label": "expected",
+      "target_class": "experimental 6 GB animated-sequence starter, then a future small or quantized temporal video workflow",
+      "selection_guidance": "Use the SD 1.5 animated-sequence starter only to prove local scheduling, artifacts, and UI/API flow on 6 GB VRAM. Install a pinned temporal video model with fresh smoke measurements before treating video aliases as quality generation.",
+      "resource_estimate": { "vram_gib": 4.9, "ram_gib": 8.0, "disk_gib": 4.0, "max_frames": 4 },
+      "target_resource_label": "experimental",
       "runtime_policy": "comfyui-workflow",
-      "default_limits": { "maximum_batch_size": 1, "maximum_frames": 49, "maximum_duration_seconds": 4, "maximum_steps": 24 }
+      "default_limits": { "maximum_batch_size": 1, "maximum_frames": 4, "maximum_duration_seconds": 1, "maximum_steps": 6 },
+      "candidate_manifest_ids": ["b1-sd15-pruned-emaonly-comfyui-video-sequence"]
     }
   ]
 }

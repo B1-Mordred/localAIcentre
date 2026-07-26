@@ -87,7 +87,7 @@
     },
     "input_schema": { "type": "object" },
     "output_schema": { "type": "object" },
-    "resource_class": { "type": "string", "enum": ["rtx3060-32gb", "requires-upgrade"] },
+    "resource_class": { "type": "string", "enum": ["rtx3060-32gb", "rtx3060-laptop-6gb-32gb", "requires-upgrade"] },
     "dependencies": {
       "type": "array",
       "items": {

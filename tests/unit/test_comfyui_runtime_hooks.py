@@ -154,6 +154,42 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertEqual(hooks.B1RuntimeTinyImage.RETURN_TYPES, ("IMAGE",))
         required_inputs = hooks.B1RuntimeTinyImage.INPUT_TYPES()["required"]
         self.assertEqual(set(required_inputs), {"width", "height", "red", "green", "blue"})
+        self.assertIn("B1RuntimeSaveAnimatedGif", hooks.NODE_CLASS_MAPPINGS)
+        self.assertEqual(hooks.NODE_DISPLAY_NAME_MAPPINGS["B1RuntimeSaveAnimatedGif"], "B1 Runtime Save Animated GIF")
+        self.assertEqual(hooks.B1RuntimeSaveAnimatedGif.RETURN_TYPES, ())
+        self.assertTrue(hooks.B1RuntimeSaveAnimatedGif.OUTPUT_NODE)
+        gif_inputs = hooks.B1RuntimeSaveAnimatedGif.INPUT_TYPES()["required"]
+        self.assertEqual(set(gif_inputs), {"images", "filename_prefix", "fps", "max_frames", "loop"})
+
+    def test_animated_gif_output_metadata_uses_native_comfyui_gifs_key(self) -> None:
+        hooks, _routes, _queue = load_hooks()
+
+        result = hooks.animated_gif_ui_result("clip_00001_.gif", "b1-video", "output", 4, 4)
+
+        self.assertEqual(
+            result,
+            {
+                "ui": {
+                    "gifs": [
+                        {
+                            "filename": "clip_00001_.gif",
+                            "subfolder": "b1-video",
+                            "type": "output",
+                            "format": "image/gif",
+                            "frame_count": 4,
+                            "fps": 4,
+                        }
+                    ]
+                }
+            },
+        )
+
+    def test_animated_gif_filename_prefix_is_constrained_to_output_segments(self) -> None:
+        hooks, _routes, _queue = load_hooks()
+
+        self.assertEqual(hooks.safe_filename_prefix("../unsafe//video clip"), "unsafe/video_clip")
+        self.assertEqual(hooks.safe_filename_prefix(""), "b1-video/animated")
+        self.assertEqual(hooks.safe_filename_prefix("a/b/c/d/e/f"), "a/b/c/d")
 
     def test_runtime_action_requires_configured_bearer_token(self) -> None:
         hooks, _routes, _queue = load_hooks()

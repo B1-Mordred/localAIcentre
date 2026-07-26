@@ -484,6 +484,73 @@ class LiveAcceptanceClientTests(unittest.TestCase):
         finally:
             live_stack.urlopen = original
 
+    def test_measured_model_alias_prefers_exact_alias_for_shared_manifest(self) -> None:
+        runs = []
+        for alias in ("image-default", "image-edit"):
+            runs.append(
+                {
+                    "id": f"modelsmoke-{alias}",
+                    "type": "install-smoke",
+                    "status": "ok",
+                    "runtime": "comfyui",
+                    "model_alias": alias,
+                    "resolved_model_version": "b1-sd15@1.0.0",
+                    "duration_ms": 5000,
+                    "load_time_ms": 2000,
+                    "run_time_ms": 1000,
+                    "peak_vram_mib": 4096,
+                    "peak_ram_mib": 8192,
+                    "hook": {
+                        "status": "ok",
+                        "runtime": "comfyui",
+                        "model_alias": alias,
+                        "resolved_model_version": "b1-sd15@1.0.0",
+                        "strategy": "b1_native_prompt",
+                    },
+                }
+            )
+        payload = {
+            "aliases": [
+                {
+                    "id": "image-default",
+                    "status": "installed",
+                    "modality": "image",
+                    "preferred_runtime": "comfyui",
+                    "runtimes": ["comfyui"],
+                    "resource_label": "expected",
+                    "resolved_model": {"id": "b1-sd15", "version": "1.0.0", "display_name": "B1 SD15"},
+                }
+            ],
+            "records": [
+                {
+                    "id": "b1-sd15",
+                    "version": "1.0.0",
+                    "display_name": "B1 SD15",
+                    "preferred_runtime": "comfyui",
+                    "resource_label": "expected",
+                    "manifest": {
+                        "aliases": ["image-default", "image-edit"],
+                        "measurements": {
+                            "updated_at": "2026-07-26T22:00:00+00:00",
+                            "latest_resource_estimate": {"vram_gib": 4.8, "ram_gib": 8.0, "disk_gib": 4.0},
+                            "runs": runs,
+                        },
+                    },
+                }
+            ],
+        }
+
+        original = live_stack.urlopen
+        try:
+            live_stack.urlopen = lambda *args, **kwargs: FakePayloadResponse(payload)  # type: ignore[assignment]
+            client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
+            summary = live_stack.measured_model_alias(client, "image-default", expected_runtime="comfyui")
+        finally:
+            live_stack.urlopen = original
+
+        self.assertEqual(summary["latest_ok_run"]["model_alias"], "image-default")
+        self.assertEqual(summary["ok_run_count"], 1)
+
     def test_measured_model_alias_requires_runtime_hook_proof(self) -> None:
         payload = {
             "aliases": [

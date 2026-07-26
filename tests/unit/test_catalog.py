@@ -84,7 +84,11 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["aliases"], ["chat-default", "chat-fast"])
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["resource_label"], "recommended")
         self.assertEqual(profiles["quality-llm-12-14b-q4"]["resource_label"], "offload-required")
-        self.assertEqual(profiles["short-video-12gb-workflow"]["resource_label"], "expected")
+        self.assertEqual(profiles["short-video-6gb-sequence-workflow"]["resource_label"], "recommended")
+        self.assertEqual(
+            profiles["short-video-6gb-sequence-workflow"]["candidate_manifest_ids"],
+            ["b1-sd15-pruned-emaonly-comfyui-video-sequence"],
+        )
         self.assertEqual(profiles["fast-cpu-tts"]["candidate_manifest_ids"], ["b1-piper-en-us-amy-low"])
 
     def test_cpu_residency_policy_controls_alias_projection(self) -> None:

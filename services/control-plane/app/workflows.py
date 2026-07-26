@@ -14,7 +14,7 @@ from . import artifacts as artifact_policy
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 BACKEND_POLICIES = {"comfyui-only", "non-comfy-only", "either"}
-RESOURCE_CLASSES = {"rtx3060-32gb", "requires-upgrade"}
+RESOURCE_CLASSES = {"rtx3060-32gb", "rtx3060-laptop-6gb-32gb", "requires-upgrade"}
 DEPENDENCY_TYPES = {"model", "node", "runtime"}
 ROLES = {"admin", "operator", "creator", "user", "service"}
 LIMIT_KEYS = {"max_width", "max_height", "max_frames", "max_steps", "max_batch_size", "max_duration_seconds"}
