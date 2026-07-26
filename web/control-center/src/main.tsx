@@ -394,6 +394,20 @@ type SelfTestCheck = {
   data?: Record<string, unknown>;
 };
 
+type RuntimeReadinessRow = {
+  runtime: string;
+  required: boolean;
+  ready: boolean;
+  healthStatus: string;
+  healthPlaceholder: boolean;
+  serviceObserved: boolean;
+  activeContainerCount: number;
+  containerImages: string[];
+  placeholderReasons: string[];
+  blockers: string[];
+  remediation: string[];
+};
+
 type SelfTestResult = {
   status: string;
   checks: SelfTestCheck[];
@@ -3042,6 +3056,7 @@ function Runtimes() {
   const composeProfiles = stringList(composeSelection?.selected_profiles);
   const composeMissing = stringList(composeSelection?.missing_files)
     .concat(stringList(composeSelection?.missing_profiles).map((item) => `profile:${item}`));
+  const readinessRows = runtimeReadinessRows(readiness);
 
   return (
     <div className="panel-grid">
@@ -3064,6 +3079,30 @@ function Runtimes() {
             <small>{composeReadiness.detail}</small>
             <small>files: {composeFiles.length ? composeFiles.join(", ") : "none"} / profiles: {composeProfiles.length ? composeProfiles.join(", ") : "none"}</small>
             {composeMissing.length ? <small>missing: {composeMissing.join(", ")}</small> : <small>all required runtime overlays selected</small>}
+          </div>
+        )}
+        {readinessRows.length > 0 && (
+          <div className="acceptance-detail-section">
+            <h4>Production Runtime Triage</h4>
+            <table>
+              <thead><tr><th>Runtime</th><th>Health</th><th>Service</th><th>Images</th><th>Blockers</th><th>Next Action</th></tr></thead>
+              <tbody>
+                {readinessRows.filter((row) => row.required).map((row) => (
+                  <tr key={row.runtime}>
+                    <td><code>{row.runtime}</code></td>
+                    <td>
+                      <span className={statusPillClass(row.ready ? "ok" : row.healthStatus)}>{row.healthStatus}</span>
+                      {row.healthPlaceholder && <small>placeholder health</small>}
+                    </td>
+                    <td>{row.serviceObserved ? `${row.activeContainerCount} active container${row.activeContainerCount === 1 ? "" : "s"}` : "not observed"}</td>
+                    <td>{row.containerImages.length ? row.containerImages.join(", ") : "none"}</td>
+                    <td>{row.blockers.length ? row.blockers.concat(row.placeholderReasons).join("; ") : "none"}</td>
+                    <td>{row.remediation.length ? row.remediation.join("; ") : "ready"}</td>
+                  </tr>
+                ))}
+                {!readinessRows.some((row) => row.required) && <tr><td colSpan={6}>No production-required runtime rows recorded</td></tr>}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
@@ -3282,6 +3321,28 @@ function stringList(value: unknown): string[] {
     .filter((item): item is string | number | boolean => ["string", "number", "boolean"].includes(typeof item))
     .map((item) => String(item).trim())
     .filter(Boolean);
+}
+
+function runtimeReadinessRows(check: SelfTestCheck | null): RuntimeReadinessRow[] {
+  const data = objectOrNull(check?.data) ?? {};
+  const rows = Array.isArray(data.runtime_readiness) ? data.runtime_readiness : [];
+  return rows
+    .map((item) => objectOrNull(item))
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      runtime: String(item.runtime ?? ""),
+      required: item.required === true,
+      ready: item.ready === true,
+      healthStatus: String(item.health_status ?? "unknown"),
+      healthPlaceholder: item.health_placeholder === true,
+      serviceObserved: item.service_observed === true,
+      activeContainerCount: typeof item.active_container_count === "number" ? item.active_container_count : 0,
+      containerImages: stringList(item.container_images),
+      placeholderReasons: stringList(item.placeholder_reasons),
+      blockers: stringList(item.blockers),
+      remediation: stringList(item.remediation)
+    }))
+    .filter((item) => item.runtime);
 }
 
 function acceptanceOperatorEvidenceRows(report: Record<string, unknown>): AcceptanceEvidenceDetail[] {

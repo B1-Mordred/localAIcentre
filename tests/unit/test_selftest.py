@@ -311,6 +311,9 @@ class SelfTestTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "warning")
         self.assertEqual(result["data"]["required_placeholders"], ["localai", "comfyui", "audio-cpu"])
+        localai = next(item for item in result["data"]["runtime_readiness"] if item["runtime"] == "localai")
+        self.assertIn("runtime-agent service inventory unavailable", localai["blockers"])
+        self.assertIn("runtime health payload reports a placeholder runtime", localai["placeholder_reasons"])
 
     def test_runtime_production_readiness_fails_for_production_placeholders(self) -> None:
         result = selftest.runtime_production_readiness_check(
@@ -328,6 +331,7 @@ class SelfTestTests(unittest.TestCase):
             result["data"]["required_unhealthy"],
             [{"runtime": "comfyui", "status": "unreachable"}, {"runtime": "audio-cpu", "status": "missing"}],
         )
+        self.assertFalse(result["data"]["service_inventory_available"])
 
     def test_runtime_production_readiness_fails_for_placeholder_service_inventory(self) -> None:
         result = selftest.runtime_production_readiness_check(
@@ -377,6 +381,9 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(result["data"]["required_placeholders"], ["localai"])
         self.assertEqual(result["data"]["placeholder_runtimes"], ["localai"])
         self.assertIn("container label b1.ai-hub.placeholder=true", result["data"]["service_placeholder_reasons"]["localai"])
+        localai = next(item for item in result["data"]["runtime_readiness"] if item["runtime"] == "localai")
+        self.assertEqual(localai["container_images"], ["b1-ai-hub/mock-runtime:dev"])
+        self.assertIn("runtime is still using placeholder evidence", localai["blockers"])
 
     def test_runtime_production_readiness_ignores_stopped_placeholder_inventory(self) -> None:
         result = selftest.runtime_production_readiness_check(
@@ -408,6 +415,9 @@ class SelfTestTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["required_placeholders"], [])
+        localai = result["data"]["runtime_readiness"][0]
+        self.assertTrue(localai["ready"])
+        self.assertEqual(localai["container_names"], ["b1-ai-hub-localai-1"])
 
     def test_runtime_production_readiness_passes_for_required_real_runtimes(self) -> None:
         result = selftest.runtime_production_readiness_check(
@@ -418,10 +428,61 @@ class SelfTestTests(unittest.TestCase):
             ],
             "production",
             ("localai", "comfyui", "audio-cpu"),
+            {
+                "services": [
+                    {
+                        "name": "localai",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-localai-1",
+                                "image": "b1-ai-hub/localai:v4.7.1-b1",
+                                "state": "running",
+                                "labels": {"b1.ai-hub.placeholder": "false"},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "comfyui",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-comfyui-1",
+                                "image": "b1-ai-hub/comfyui:v0.3.77-b1",
+                                "state": "running",
+                                "labels": {"b1.ai-hub.placeholder": "false"},
+                            }
+                        ],
+                    },
+                    {
+                        "name": "audio-cpu",
+                        "containers": [
+                            {
+                                "name": "b1-ai-hub-audio-cpu-1",
+                                "image": "b1-ai-hub/audio-cpu:test",
+                                "state": "running",
+                                "labels": {"b1.ai-hub.placeholder": "false"},
+                            }
+                        ],
+                    },
+                ]
+            },
         )
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["placeholder_runtimes"], [])
+        self.assertTrue(all(item["ready"] for item in result["data"]["runtime_readiness"] if item["required"]))
+
+    def test_runtime_production_readiness_fails_when_inventory_is_unavailable(self) -> None:
+        result = selftest.runtime_production_readiness_check(
+            [{"name": "localai", "status": "ok", "details": {"version": "pinned"}}],
+            "production",
+            ("localai",),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        localai = result["data"]["runtime_readiness"][0]
+        self.assertEqual(localai["runtime"], "localai")
+        self.assertIn("runtime-agent service inventory unavailable", localai["blockers"])
+        self.assertIn("start runtime-agent with Docker socket access", " ".join(localai["remediation"]))
 
 
 if __name__ == "__main__":

@@ -195,6 +195,11 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Compose selection: {composeReadiness.status}", self.source)
         self.assertIn("all required runtime overlays selected", self.source)
         self.assertIn("profile:${item}", self.source)
+        self.assertIn("type RuntimeReadinessRow", self.source)
+        self.assertIn("function runtimeReadinessRows", self.source)
+        self.assertIn("Production Runtime Triage", self.source)
+        self.assertIn("row.blockers.concat(row.placeholderReasons).join", self.source)
+        self.assertIn("No production-required runtime rows recorded", self.source)
 
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:
         self.assertIn("type VoiceSampleArtifact", self.source)

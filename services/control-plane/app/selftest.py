@@ -411,6 +411,26 @@ def runtime_service_placeholder_reasons(service_inventory: dict[str, Any] | None
     return {name: sorted(set(items)) for name, items in reasons.items()}
 
 
+def _unique_strings(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def _service_inventory_by_runtime(service_inventory: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    services: dict[str, dict[str, Any]] = {}
+    for service in service_inventory_items(service_inventory):
+        name = runtime_health_name(service)
+        if name:
+            services[name] = service
+    return services
+
+
 def normalize_runtime_names(names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     normalized: list[str] = []
@@ -422,6 +442,80 @@ def normalize_runtime_names(names: tuple[str, ...] | list[str]) -> tuple[str, ..
     return tuple(normalized)
 
 
+def runtime_production_readiness_rows(
+    runtime_health: list[dict[str, Any]],
+    required_runtimes: tuple[str, ...] | list[str],
+    service_inventory: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    required = normalize_runtime_names(required_runtimes)
+    required_set = set(required)
+    health_by_name = {runtime_health_name(item): item for item in runtime_health if runtime_health_name(item)}
+    services_by_name = _service_inventory_by_runtime(service_inventory)
+    service_inventory_available = bool(service_inventory_items(service_inventory))
+    service_placeholder_reasons = runtime_service_placeholder_reasons(service_inventory)
+    runtime_names = sorted(required_set | set(health_by_name) | set(services_by_name))
+    rows: list[dict[str, Any]] = []
+
+    for runtime in runtime_names:
+        health = health_by_name.get(runtime)
+        status = "missing"
+        if health is not None:
+            raw_status = health.get("status")
+            status = raw_status.strip().lower() if isinstance(raw_status, str) and raw_status.strip() else "unknown"
+
+        service = services_by_name.get(runtime)
+        containers = service.get("containers") if isinstance(service, dict) and isinstance(service.get("containers"), list) else []
+        active_containers = [container for container in containers if isinstance(container, dict) and _container_state_is_relevant(container)]
+        service_reasons = service_placeholder_reasons.get(runtime, [])
+        health_placeholder = runtime_health_is_placeholder(health) if health is not None else False
+        placeholder_reasons = list(service_reasons)
+        if health_placeholder:
+            placeholder_reasons.append("runtime health payload reports a placeholder runtime")
+        placeholder_reasons = sorted(set(placeholder_reasons))
+
+        blockers: list[str] = []
+        remediation: list[str] = []
+        if runtime in required_set:
+            if health is None:
+                blockers.append("runtime health payload missing")
+                remediation.append("verify the runtime adapter is configured and reachable from the control plane")
+            elif status != "ok":
+                blockers.append(f"runtime health is {status}")
+                remediation.append("inspect runtime logs and use the Control Center recover action after fixing the service")
+            if placeholder_reasons:
+                blockers.append("runtime is still using placeholder evidence")
+                remediation.append("select the pinned production Compose overlay/profile and remove placeholder images or labels")
+            if not service_inventory_available:
+                blockers.append("runtime-agent service inventory unavailable")
+                remediation.append("start runtime-agent with Docker socket access so production readiness can verify service labels and images")
+            elif service is None:
+                blockers.append("runtime-agent service inventory has no service record")
+                remediation.append("include the runtime service in the Compose project selected for production mode")
+            elif not active_containers:
+                blockers.append("runtime-agent service inventory has no active container")
+                remediation.append("run docker compose up -d with the production runtime overlays selected")
+
+        rows.append(
+            {
+                "runtime": runtime,
+                "required": runtime in required_set,
+                "ready": runtime in required_set and not blockers,
+                "health_status": status,
+                "health_placeholder": health_placeholder,
+                "service_observed": service is not None,
+                "service_inventory_available": service_inventory_available,
+                "active_container_count": len(active_containers),
+                "container_names": _unique_strings([container.get("name") for container in active_containers]),
+                "container_images": _unique_strings([container.get("image") for container in active_containers]),
+                "placeholder_reasons": placeholder_reasons,
+                "blockers": blockers,
+                "remediation": _unique_strings(remediation) if blockers else ["ready"],
+            }
+        )
+
+    return rows
+
+
 def runtime_production_readiness_check(
     runtime_health: list[dict[str, Any]],
     deployment_mode: str,
@@ -431,6 +525,7 @@ def runtime_production_readiness_check(
     mode = deployment_mode.strip().lower()
     required = normalize_runtime_names(required_runtimes)
     health_by_name = {runtime_health_name(item): item for item in runtime_health if runtime_health_name(item)}
+    service_inventory_available = bool(service_inventory_items(service_inventory))
     service_placeholder_reasons = runtime_service_placeholder_reasons(service_inventory)
     placeholder_runtimes = sorted(
         {name for name, item in health_by_name.items() if runtime_health_is_placeholder(item)}
@@ -457,8 +552,9 @@ def runtime_production_readiness_check(
         "placeholder_runtimes": placeholder_runtimes,
         "required_placeholders": required_placeholders,
         "required_unhealthy": required_unhealthy,
-        "service_inventory_available": bool(service_inventory_items(service_inventory)),
+        "service_inventory_available": service_inventory_available,
         "service_placeholder_reasons": service_placeholder_reasons,
+        "runtime_readiness": runtime_production_readiness_rows(runtime_health, required, service_inventory),
     }
 
     if mode not in VALID_RUNTIME_DEPLOYMENT_MODES:
@@ -471,11 +567,12 @@ def runtime_production_readiness_check(
     if not required:
         return check("runtimes:production-readiness", "warning", "no production-required runtimes are configured", data)
 
-    blockers = bool(required_placeholders or required_unhealthy)
+    missing_inventory = not service_inventory_available
+    blockers = bool(required_placeholders or required_unhealthy or missing_inventory)
     if not blockers:
         return check("runtimes:production-readiness", "ok", "required runtimes are production-ready", data)
 
-    detail = "required runtimes are placeholders, missing, or unhealthy"
+    detail = "required runtimes are placeholders, missing, unhealthy, or unverifiable by runtime-agent inventory"
     if mode == "production":
         return check("runtimes:production-readiness", "failed", detail, data)
     return check("runtimes:production-readiness", "warning", f"{detail}; development mode permits bootstrapping only", data)
