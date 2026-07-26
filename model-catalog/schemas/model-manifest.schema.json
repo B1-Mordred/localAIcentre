@@ -106,6 +106,7 @@
           "path": { "type": "string" },
           "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
           "size_bytes": { "type": "integer", "minimum": 1 },
+          "source_path": { "type": "string" },
           "format": { "type": "string" },
           "quantization": { "type": "string" }
         },

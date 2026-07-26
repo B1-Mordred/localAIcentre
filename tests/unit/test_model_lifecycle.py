@@ -525,7 +525,12 @@ class ModelLifecycleTests(unittest.TestCase):
             payload["source"]["revision"] = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
             payload["files"] = [
                 {"path": "README.md", "sha256": first_digest, "size_bytes": len(first)},
-                {"path": "onnx/model_q4.onnx", "sha256": second_digest, "size_bytes": len(second_partial) + len(second_rest)},
+                {
+                    "path": "runtime/onnx/model_q4.onnx",
+                    "source_path": "onnx/model_q4.onnx",
+                    "sha256": second_digest,
+                    "size_bytes": len(second_partial) + len(second_rest),
+                },
             ]
             manifest = parse_manifest_payload(payload)
 
@@ -543,6 +548,7 @@ class ModelLifecycleTests(unittest.TestCase):
                 plan["files"][1]["source_url"],
                 "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_q4.onnx",
             )
+            self.assertEqual(plan["files"][1]["path"], "runtime/onnx/model_q4.onnx")
 
     def test_seed_piper_download_plan_is_stageable(self) -> None:
         catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())

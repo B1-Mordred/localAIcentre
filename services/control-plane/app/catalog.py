@@ -131,6 +131,7 @@ class ManifestFile:
     path: str
     sha256: str
     size_bytes: int
+    source_path: str | None = None
     format: str | None = None
     quantization: str | None = None
 
@@ -697,14 +698,16 @@ def _parse_source(data: dict[str, Any], context: str) -> ManifestSource:
 
 def _parse_file(data: dict[str, Any], context: str) -> ManifestFile:
     _require_keys(data, {"path", "sha256", "size_bytes"}, context)
-    _forbid_extra_keys(data, {"path", "sha256", "size_bytes", "format", "quantization"}, context)
+    _forbid_extra_keys(data, {"path", "sha256", "size_bytes", "source_path", "format", "quantization"}, context)
     size = data["size_bytes"]
     if not isinstance(size, int) or size < 1:
         raise CatalogError(f"{context}.size_bytes must be a positive integer")
+    source_path = data.get("source_path")
     return ManifestFile(
         path=_safe_relative_path(_string(data, "path", context), f"{context}.path"),
         sha256=_validate_sha256(_string(data, "sha256", context), f"{context}.sha256"),
         size_bytes=size,
+        source_path=_safe_relative_path(_string(data, "source_path", context), f"{context}.source_path") if source_path is not None else None,
         format=_optional_string(data, "format", context),
         quantization=_optional_string(data, "quantization", context),
     )

@@ -6,14 +6,15 @@
   "modality": "image",
   "operations": ["image-generation", "image-edit"],
   "source": {
-    "type": "direct-url",
-    "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/v1-5-pruned-emaonly.safetensors",
+    "type": "huggingface",
+    "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
     "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
     "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa"
   },
   "files": [
     {
       "path": "diffusion/checkpoints/sd-v1-5-pruned-emaonly-b1.safetensors",
+      "source_path": "v1-5-pruned-emaonly.safetensors",
       "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa",
       "size_bytes": 4265146304,
       "format": "safetensors",

@@ -1309,7 +1309,8 @@ def direct_download_source_url(manifest: ModelManifest, file: Any) -> str:
         raise ModelLifecycleError("multi-file direct-url manifests require source.url to end with /")
     if parsed.query or parsed.fragment:
         raise ModelLifecycleError("multi-file direct-url manifests cannot use query strings or fragments on source.url")
-    encoded_path = "/".join(quote(part, safe="") for part in safe_relative_parts(file.path, f"direct-url file path: {file.path}"))
+    source_path = getattr(file, "source_path", None) or file.path
+    encoded_path = "/".join(quote(part, safe="") for part in safe_relative_parts(source_path, f"direct-url source file path: {source_path}"))
     return urlunparse((parsed.scheme, parsed.netloc, f"{parsed.path}{encoded_path}", "", "", ""))
 
 
@@ -1373,7 +1374,8 @@ def huggingface_repo_source(source_url: str, revision: str) -> dict[str, str]:
 
 def huggingface_download_source_url(manifest: ModelManifest, file: Any) -> str:
     source = huggingface_repo_source(manifest.source.url, manifest.source.revision)
-    encoded_file_path = "/".join(quote(part, safe="") for part in safe_relative_parts(file.path, f"Hugging Face file path: {file.path}"))
+    source_path = getattr(file, "source_path", None) or file.path
+    encoded_file_path = "/".join(quote(part, safe="") for part in safe_relative_parts(source_path, f"Hugging Face source file path: {source_path}"))
     encoded_revision = quote(source["revision"], safe="")
     return f"https://huggingface.co/{source['repo_path']}/resolve/{encoded_revision}/{encoded_file_path}"
 

@@ -466,6 +466,37 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(record["permissions"]["downloadable_by"], ["admin", "service"])
             self.assertEqual(record["deprecation"]["replacement_model"], "chat-next")
 
+    def test_manifest_file_source_path_round_trips_and_validates(self) -> None:
+        payload = {
+            "id": "image-small",
+            "version": "1.0.0",
+            "display_name": "Image Small",
+            "modality": "image",
+            "operations": ["image-generation"],
+            "source": {"type": "huggingface", "url": "https://huggingface.co/example/image-small", "revision": "abc123"},
+            "files": [
+                {
+                    "path": "diffusion/checkpoints/image-small.safetensors",
+                    "source_path": "image-small.safetensors",
+                    "sha256": "1" * 64,
+                    "size_bytes": 12,
+                }
+            ],
+            "runtimes": ["comfyui"],
+            "preferred_runtime": "comfyui",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+            "license": {"name": "test", "redistribution": "downloadable"},
+            "execution_modes": ["hosted-inference", "downloadable"],
+        }
+
+        manifest = parse_manifest_payload(payload)
+
+        self.assertEqual(manifest.files[0].path, "diffusion/checkpoints/image-small.safetensors")
+        self.assertEqual(manifest.files[0].source_path, "image-small.safetensors")
+        self.assertEqual(manifest.to_dict()["files"][0]["source_path"], "image-small.safetensors")
+        with self.assertRaisesRegex(CatalogError, "source_path"):
+            parse_manifest_payload({**payload, "files": [{**payload["files"][0], "source_path": "../escape.safetensors"}]})
+
     def test_manifest_runtime_smoke_contract_round_trips_and_validates_comfyui_prompt(self) -> None:
         prompt = {
             "1": {
