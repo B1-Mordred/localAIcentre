@@ -3451,6 +3451,13 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("Caddy internal CA readiness check is absent")
     elif caddy_ca.get("status") != "ok":
         blockers.append(f"Caddy internal CA readiness check is {caddy_ca.get('status', 'unknown')}")
+    required_runtimes = {item.lower() for item in _as_string_list(compose_selection.get("production_required_runtimes"))}
+    if "comfyui" in required_runtimes:
+        comfyui_build = _check_by_name(report.get("self_test") or {}, "runtime:comfyui-build-info")
+        if not comfyui_build:
+            blockers.append("ComfyUI build-info readiness check is absent")
+        elif comfyui_build.get("status") != "ok":
+            blockers.append(f"ComfyUI build-info readiness check is {comfyui_build.get('status', 'unknown')}")
     gpu_check = _check_by_name(report.get("self_test") or {}, "gpu:nvml")
     if not gpu_check:
         blockers.append("GPU/NVML check is absent")

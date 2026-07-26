@@ -63,6 +63,7 @@ The GPU runner can call internal B1 hooks on the selected runtime before submiss
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
+- `POST /b1/runtime/build-info`
 
 Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-only and sets `B1_RUNTIME_CONTROL_REQUIRE_AUTH=true`. The control plane sends this token as `Authorization: Bearer ...` for all `/b1/runtime/*` hook calls. If the token is missing or wrong, the hook route rejects lifecycle actions before touching ComfyUI's queue or model-management APIs.
 
@@ -75,5 +76,6 @@ Hook behavior is intentionally bounded:
 - when no native prompt is configured, enabled `warm`/`smoke` fall back to a tiny B1 no-op output node through ComfyUI's native queue; this proves the ComfyUI execution loop is responsive, but it is not a model-specific workflow acceptance test.
 - `B1RuntimeTinyImage` is available for deterministic native compatibility smoke prompts that need a viewable image artifact without loading model weights.
 - `unload` sets ComfyUI's native `unload_models` and `free_memory` flags and, when the queue is idle, immediately calls native model/cache cleanup.
+- `build-info` returns the B1 hook package version, `Comfy-Org/ComfyUI` upstream version, pinned upstream commit, and source archive SHA-256. `/admin/self-test` calls it over the internal runtime URL and fails in production when ComfyUI is required but the deployed runtime does not report pinned metadata.
 
 Use `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or relative paths visible in ComfyUI model folders. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only if approved custom nodes introduce additional model folder keys that should participate in lifecycle checks. Production acceptance should install ComfyUI-backed manifests with `runtime_smoke.schema=b1-ai-hub-runtime-smoke/v1` and a small model-specific `runtime_smoke.comfyui.prompt`, then persist measured VRAM data for the exact published workflows and model manifests on the target RTX 3060/32 GB host.

@@ -5,6 +5,7 @@ import gc
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import PurePath
@@ -30,6 +31,13 @@ B1_MODEL_FOLDERS = (
     "upscale_models",
     "embeddings",
 )
+COMFYUI_UPSTREAM_REPOSITORY = "Comfy-Org/ComfyUI"
+COMFYUI_HOOK_VERSION_DEFAULT = "b1-comfyui-hooks/v0.3.77-b1"
+COMFYUI_UPSTREAM_VERSION_DEFAULT = "v0.3.77"
+COMFYUI_UPSTREAM_COMMIT_DEFAULT = "59afc3984868289f808d02fa5cd180edfb2de240"
+COMFYUI_SOURCE_ARCHIVE_SHA256_DEFAULT = "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1"
+GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -107,6 +115,38 @@ def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"status": status, "runtime": "comfyui", "action": action}
     payload.update(extra)
     return payload
+
+
+def normalized_git_sha(value: str) -> str:
+    candidate = value.strip().lower()
+    return candidate if GIT_SHA_RE.fullmatch(candidate) else ""
+
+
+def normalized_sha256(value: str) -> str:
+    candidate = value.strip().lower()
+    return candidate if SHA256_RE.fullmatch(candidate) else ""
+
+
+def comfyui_build_info() -> dict[str, Any]:
+    hook_version = os.getenv("B1_COMFYUI_HOOK_VERSION", COMFYUI_HOOK_VERSION_DEFAULT).strip()
+    upstream_version = os.getenv("B1_COMFYUI_UPSTREAM_VERSION", COMFYUI_UPSTREAM_VERSION_DEFAULT).strip()
+    upstream_commit = normalized_git_sha(os.getenv("B1_COMFYUI_UPSTREAM_COMMIT", COMFYUI_UPSTREAM_COMMIT_DEFAULT))
+    source_archive_sha256 = normalized_sha256(
+        os.getenv("B1_COMFYUI_SOURCE_ARCHIVE_SHA256", COMFYUI_SOURCE_ARCHIVE_SHA256_DEFAULT)
+    )
+    status = "ok" if hook_version and upstream_version and upstream_commit and source_archive_sha256 else "unconfigured"
+    return {
+        "status": status,
+        "runtime": "comfyui",
+        "action": "build-info",
+        "hook": "b1-comfyui-runtime-hooks",
+        "hook_version": hook_version,
+        "upstream_repository": COMFYUI_UPSTREAM_REPOSITORY,
+        "upstream_version": upstream_version,
+        "upstream_commit": upstream_commit,
+        "source_archive_sha256": source_archive_sha256,
+        "pinned": status == "ok",
+    }
 
 
 def prompt_max_bytes() -> int:
@@ -431,6 +471,8 @@ async def runtime_action(request: web.Request) -> web.Response:
         result = await handle_smoke(payload)
     elif action == "unload":
         result = handle_unload(payload)
+    elif action == "build-info":
+        result = comfyui_build_info()
     else:
         result = json_response("unsupported", action, reason="unknown_action")
     return web.json_response(result)

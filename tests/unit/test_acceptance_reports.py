@@ -1933,6 +1933,30 @@ def sample_caddy_ca_check(status: str = "ok") -> dict[str, Any]:
     }
 
 
+def sample_comfyui_build_info_check(status: str = "ok") -> dict[str, Any]:
+    return {
+        "name": "runtime:comfyui-build-info",
+        "status": status,
+        "detail": "ComfyUI runtime reports pinned B1 build metadata" if status == "ok" else "ComfyUI build-info hook did not report pinned metadata",
+        "data": {
+            "required": True,
+            "runtime": "comfyui",
+            "build_info": {
+                "status": "ok" if status == "ok" else "unconfigured",
+                "runtime": "comfyui",
+                "action": "build-info",
+                "hook": "b1-comfyui-runtime-hooks",
+                "hook_version": "b1-comfyui-hooks/v0.3.77-b1",
+                "upstream_repository": "Comfy-Org/ComfyUI",
+                "upstream_version": "v0.3.77",
+                "upstream_commit": "59afc3984868289f808d02fa5cd180edfb2de240" if status == "ok" else "",
+                "source_archive_sha256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1" if status == "ok" else "",
+                "pinned": status == "ok",
+            },
+        },
+    }
+
+
 def sample_compose_selection(**overrides: str) -> dict[str, Any]:
     env = {
         "B1_COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml",
@@ -1953,6 +1977,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
                 sample_tls_routing_check(),
                 sample_caddy_ca_check(),
+                sample_comfyui_build_info_check(),
                 {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                 {
                     "name": "hardware:resource-policy",
@@ -2615,6 +2640,88 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("Caddy internal CA readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_required_comfyui_build_info_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("ComfyUI build-info readiness check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_required_comfyui_build_info_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_comfyui_build_info_check("failed"),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("ComfyUI build-info readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_does_not_require_comfyui_build_info_when_comfyui_is_not_required(self) -> None:
+        report = sample_report(
+            compose_selection=sample_compose_selection(B1_RUNTIME_PRODUCTION_REQUIRED="localai,audio-cpu"),
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            },
+        )
+
+        self.assertNotIn("ComfyUI build-info readiness check is absent", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_hardware_resource_policy_check(self) -> None:
         report = sample_report(

@@ -7422,6 +7422,79 @@ async def self_test_runtime_unload() -> dict[str, Any]:
     )
 
 
+def comfyui_build_info_required() -> bool:
+    return settings.runtime_deployment_mode == "production" and "comfyui" in set(settings.runtime_production_required)
+
+
+def comfyui_build_info_failure_status() -> str:
+    return "failed" if comfyui_build_info_required() else "warning"
+
+
+def comfyui_build_info_pinned(payload: dict[str, Any]) -> bool:
+    upstream_commit = str(payload.get("upstream_commit") or "").strip().lower()
+    source_archive_sha256 = str(payload.get("source_archive_sha256") or "").strip().lower()
+    return (
+        payload.get("status") == "ok"
+        and payload.get("runtime") == "comfyui"
+        and payload.get("action") == "build-info"
+        and payload.get("pinned") is True
+        and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
+        and re.fullmatch(r"[0-9a-f]{64}", source_archive_sha256) is not None
+    )
+
+
+async def self_test_comfyui_build_info() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "comfyui" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:comfyui-build-info",
+            "ok",
+            "ComfyUI is not required by the production runtime policy",
+            {"required": False, "runtime": "comfyui"},
+        )
+    url = f"{settings.comfyui_url.rstrip('/')}/b1/runtime/build-info"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:comfyui-build-info",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI build-info hook is unreachable: {exc.__class__.__name__}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:comfyui-build-info",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI build-info hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:comfyui-build-info",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI build-info hook returned HTTP {response.status_code}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and comfyui_build_info_pinned(payload):
+        return selftest_policy.check(
+            "runtime:comfyui-build-info",
+            "ok",
+            "ComfyUI runtime reports pinned B1 build metadata",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "build_info": payload},
+        )
+    return selftest_policy.check(
+        "runtime:comfyui-build-info",
+        comfyui_build_info_failure_status(),
+        "ComfyUI build-info hook did not report pinned upstream commit and source archive SHA-256",
+        {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "build_info": payload},
+    )
+
+
 async def self_test_artifact_delivery() -> dict[str, Any]:
     artifact_root = Path(settings.artifact_root)
     relative_path = f"temporary/self-test-{uuid.uuid4().hex}.txt"
@@ -7465,6 +7538,7 @@ async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]
         self_test_tls_routing(),
         self_test_tiny_inference(subject_id),
         self_test_runtime_unload(),
+        self_test_comfyui_build_info(),
         self_test_artifact_delivery(),
     )
 

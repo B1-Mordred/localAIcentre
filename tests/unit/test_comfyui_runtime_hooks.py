@@ -157,6 +157,50 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertEqual(missing.payload["reason"], "runtime_control_token_required")
         self.assertNotEqual(accepted.status, 401)
 
+    def test_build_info_reports_pinned_upstream_and_hook_identity(self) -> None:
+        hooks, _routes, _queue = load_hooks()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "B1_COMFYUI_HOOK_VERSION": "b1-comfyui-hooks/v0.3.77-b1",
+                "B1_COMFYUI_UPSTREAM_VERSION": "v0.3.77",
+                "B1_COMFYUI_UPSTREAM_COMMIT": "59afc3984868289f808d02fa5cd180edfb2de240",
+                "B1_COMFYUI_SOURCE_ARCHIVE_SHA256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1",
+            },
+            clear=False,
+        ):
+            info = hooks.comfyui_build_info()
+
+        self.assertEqual(info["status"], "ok")
+        self.assertEqual(info["runtime"], "comfyui")
+        self.assertEqual(info["action"], "build-info")
+        self.assertEqual(info["hook"], "b1-comfyui-runtime-hooks")
+        self.assertEqual(info["hook_version"], "b1-comfyui-hooks/v0.3.77-b1")
+        self.assertEqual(info["upstream_repository"], "Comfy-Org/ComfyUI")
+        self.assertEqual(info["upstream_version"], "v0.3.77")
+        self.assertEqual(info["upstream_commit"], "59afc3984868289f808d02fa5cd180edfb2de240")
+        self.assertEqual(info["source_archive_sha256"], "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1")
+        self.assertTrue(info["pinned"])
+
+    def test_build_info_fails_closed_when_pins_are_invalid(self) -> None:
+        hooks, _routes, _queue = load_hooks()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "B1_COMFYUI_UPSTREAM_COMMIT": "not-a-commit",
+                "B1_COMFYUI_SOURCE_ARCHIVE_SHA256": "not-a-sha256",
+            },
+            clear=False,
+        ):
+            info = hooks.comfyui_build_info()
+
+        self.assertEqual(info["status"], "unconfigured")
+        self.assertFalse(info["pinned"])
+        self.assertEqual(info["upstream_commit"], "")
+        self.assertEqual(info["source_archive_sha256"], "")
+
     def test_model_matching_accepts_folder_path_basename_and_stem(self) -> None:
         hooks, _routes, _queue = load_hooks()
         files = [{"folder": "checkpoints", "name": "sdxl/base.safetensors"}]

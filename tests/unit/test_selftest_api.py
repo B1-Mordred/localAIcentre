@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,100 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls[0]["path"], "/v1/runtime-actions/localai/unload")
         self.assertTrue(calls[0]["payload"]["dry_run"])
+
+    def test_comfyui_build_info_self_test_passes_for_pinned_runtime(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "comfyui",
+            "action": "build-info",
+            "hook": "b1-comfyui-runtime-hooks",
+            "hook_version": "b1-comfyui-hooks/v0.3.77-b1",
+            "upstream_repository": "Comfy-Org/ComfyUI",
+            "upstream_version": "v0.3.77",
+            "upstream_commit": "59afc3984868289f808d02fa5cd180edfb2de240",
+            "source_archive_sha256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1",
+            "pinned": True,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(comfyui_url="http://comfyui:8188", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("comfyui",))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["upstream_commit"], "59afc3984868289f808d02fa5cd180edfb2de240")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://comfyui:8188/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_comfyui_build_info_self_test_fails_when_required_in_production(self) -> None:
+        payload = {"status": "unconfigured", "runtime": "comfyui", "action": "build-info", "pinned": False}
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "comfyui"))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["status"], "unconfigured")
+
+    def test_comfyui_build_info_self_test_is_ok_when_not_required_in_production(self) -> None:
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "audio-cpu"))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["data"]["required"])
+        self.assertNotIn("build_info", result["data"])
 
     def test_tiny_inference_requires_expected_embedding_shape(self) -> None:
         calls: list[dict[str, Any]] = []

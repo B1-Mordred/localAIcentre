@@ -656,6 +656,13 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assertEqual(environment["B1_COMFYUI_HOOK_WARM_ENABLED"], "${B1_COMFYUI_HOOK_WARM_ENABLED:-false}")
         self.assertEqual(environment["B1_COMFYUI_HOOK_SMOKE_ENABLED"], "${B1_COMFYUI_HOOK_SMOKE_ENABLED:-false}")
+        self.assertEqual(environment["B1_COMFYUI_HOOK_VERSION"], "${B1_COMFYUI_HOOK_VERSION:-b1-comfyui-hooks/v0.3.77-b1}")
+        self.assertEqual(environment["B1_COMFYUI_UPSTREAM_VERSION"], "${B1_COMFYUI_VERSION:-v0.3.77}")
+        self.assertEqual(environment["B1_COMFYUI_UPSTREAM_COMMIT"], "${B1_COMFYUI_COMMIT:-59afc3984868289f808d02fa5cd180edfb2de240}")
+        self.assertEqual(
+            environment["B1_COMFYUI_SOURCE_ARCHIVE_SHA256"],
+            "${B1_COMFYUI_TARBALL_SHA256:-0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1}",
+        )
         self.assertEqual(environment["B1_RUNTIME_CONTROL_TOKEN_FILE"], "/run/secrets/runtime_control_token")
         self.assertEqual(environment["B1_RUNTIME_CONTROL_REQUIRE_AUTH"], "${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}")
         self.assertEqual(environment["B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS"], "${B1_COMFYUI_HOOK_SMOKE_TIMEOUT_SECONDS:-30}")
@@ -680,6 +687,8 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assertIn("COPY b1_runtime_hooks /opt/comfyui/custom_nodes/b1_runtime_hooks", dockerfile)
         self.assertIn('@PromptServer.instance.routes.post("/b1/runtime/{action}")', hooks)
+        self.assertIn('action == "build-info"', hooks)
+        self.assertIn("Comfy-Org/ComfyUI", hooks)
         self.assertIn("model_management.unload_all_models()", hooks)
         self.assertIn("B1RuntimeSmoke", hooks)
         self.assertIn("B1RuntimeTinyImage", hooks)
