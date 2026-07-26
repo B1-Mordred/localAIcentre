@@ -57,6 +57,14 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertIn('export B1_RESTART_RECONCILIATION_STARTED_AFTER="${B1_RESTART_RECONCILIATION_STARTED_AFTER:-}"', text)
         self.assertIn('export B1_MODELHUB_SYNC_MODEL="${B1_MODELHUB_SYNC_MODEL:-}"', text)
         self.assertIn('export B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE="${B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE:-/srv/example/backups/acceptance/backup-migration-rollback.json}"', text)
+        self.assertIn(
+            'export B1_ACCEPTANCE_REPORT_OUTPUT="${B1_ACCEPTANCE_REPORT_OUTPUT:-/srv/example/backups/acceptance/operator-handoff-report-response.json}"',
+            text,
+        )
+        self.assertIn('export B1_ACCEPTANCE_REPORT_LABEL="${B1_ACCEPTANCE_REPORT_LABEL:-B1 AI Hub operator handoff}"', text)
+        self.assertIn('export B1_ACCEPTANCE_REPORT_OPERATOR_EVIDENCE_FILE="${B1_ACCEPTANCE_REPORT_OPERATOR_EVIDENCE_FILE:-}"', text)
+        self.assertIn('export B1_ACCEPTANCE_REPORT_OPERATOR_NOTES_FILE="${B1_ACCEPTANCE_REPORT_OPERATOR_NOTES_FILE:-}"', text)
+        self.assertIn('export B1_ACCEPTANCE_REPORT_REQUIRE_READY="${B1_ACCEPTANCE_REPORT_REQUIRE_READY:-true}"', text)
         self.assertIn('export B1_BACKUP_DIR="${B1_BACKUP_DIR:-}"', text)
         self.assertIn('export RESTORE_REPORT="${RESTORE_REPORT:-}"', text)
         self.assertIn('export INVENTORY="${INVENTORY:-}"', text)
@@ -84,7 +92,7 @@ class AcceptanceEnvTests(unittest.TestCase):
                 "unset B1_SMOKE_EVIDENCE B1_BACKUP_ROOT; "
                 "B1_ACCEPTANCE_API_KEY=test-token; "
                 f'. "{output}"; '
-                'printf "%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE"'
+                'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE" "$B1_ACCEPTANCE_REPORT_OUTPUT"'
             )
             result = subprocess.run(["bash", "-c", command], check=True, text=True, stdout=subprocess.PIPE)
             lines = result.stdout.splitlines()
@@ -93,6 +101,7 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertEqual(lines[1], "test-token")
         self.assertEqual(lines[2], "/srv/example/backups/acceptance/live-smoke.json")
         self.assertEqual(lines[3], "https://ai.b1.germering")
+        self.assertEqual(lines[4], "/srv/example/backups/acceptance/operator-handoff-report-response.json")
 
     def test_generate_writes_private_file_and_refuses_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -232,9 +232,13 @@ After all required live-test environment variables are set and the restart-recon
 ```bash
 make acceptance-preflight
 make operator-live-acceptance
+make acceptance-report-preview
+make operator-handoff-report
 ```
 
 `make operator-live-acceptance` runs `repository-quality-evidence` and `acceptance-preflight` first, so a dirty source tree, failed local quality gate, stale environment, missing backup/migration/rollback artifact input, or unsafe local handoff setting stops before the live API/GPU tests run. After preflight verifies the reviewed backup and runbook artifact inputs, the group generates backup/migration/rollback evidence, then writes live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. The live harnesses stamp source commit, ref, and dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*` environment variables; the final acceptance report blocks handoff when stamped evidence is dirty, invalid, or from a different commit than the report source-control snapshot.
+
+`make acceptance-report-preview` calls the same Control Center report API as the browser Preview button and writes the API response to `$B1_ACCEPTANCE_REPORT_OUTPUT` without creating files or audit records. `make operator-handoff-report` calls `POST /admin/acceptance-reports`, writes the response privately, and fails if the created report is not `operator_handoff_ready=true` unless `B1_ACCEPTANCE_REPORT_REQUIRE_READY=false` is set for a labelled blocked snapshot. Both targets read the B1 API key from `B1_ACCEPTANCE_API_KEY` or a private `B1_ACCEPTANCE_API_KEY_FILE`; the key is not passed as a command-line argument.
 
 Live harness evidence is written atomically with `0640` permissions and refuses symlink targets or symlinked parent directories, so handoff JSON cannot be redirected outside the reviewed backup root.
 

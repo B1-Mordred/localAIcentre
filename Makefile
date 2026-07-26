@@ -26,6 +26,7 @@ B1_VOICEBOX_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/voicebox-remote.json
 B1_SECURITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/security-acceptance.json
 B1_REPOSITORY_QUALITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/repository-quality.json
 B1_ACCEPTANCE_ENV ?= $(B1_BACKUP_ROOT)/acceptance/operator-live-acceptance.env
+B1_ACCEPTANCE_REPORT_OUTPUT ?= $(B1_BACKUP_ROOT)/acceptance/operator-handoff-report-response.json
 B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
@@ -35,7 +36,7 @@ B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env bootstrap acceptance-env acceptance-preflight validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
@@ -48,6 +49,12 @@ acceptance-env:
 
 acceptance-preflight:
 	python3 deploy/scripts/acceptance_preflight.py --data-root "$(B1_DATA_ROOT)" --env-file "$(B1_ACCEPTANCE_ENV)" --output "$(B1_PREFLIGHT_EVIDENCE)"
+
+acceptance-report-preview:
+	B1_ACCEPTANCE_REPORT_REQUIRE_READY=false python3 deploy/scripts/acceptance_report.py preview
+
+operator-handoff-report:
+	python3 deploy/scripts/acceptance_report.py create
 
 validate: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check openapi-client-check unit compatibility security
 

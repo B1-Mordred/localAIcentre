@@ -218,6 +218,14 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     for key, filename in EVIDENCE_FILES.items():
         lines.append(shell_default_literal(key, str(acceptance_root / filename)))
 
+    lines.extend(section("Handoff report creation"))
+    lines.append(shell_default_literal("B1_ACCEPTANCE_REPORT_OUTPUT", str(acceptance_root / "operator-handoff-report-response.json")))
+    lines.append(shell_default_literal("B1_ACCEPTANCE_REPORT_LABEL", "B1 AI Hub operator handoff"))
+    lines.append(shell_default_expression("B1_ACCEPTANCE_REPORT_NOTES", ""))
+    lines.append(shell_default_expression("B1_ACCEPTANCE_REPORT_OPERATOR_EVIDENCE_FILE", ""))
+    lines.append(shell_default_expression("B1_ACCEPTANCE_REPORT_OPERATOR_NOTES_FILE", ""))
+    lines.append(shell_default_literal("B1_ACCEPTANCE_REPORT_REQUIRE_READY", "true"))
+
     lines.extend(section("Prompt, job, and artifact inputs"))
     lines.append(shell_default_literal("B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE", str(workflows_root / "text-to-image-api-prompt.json")))
     lines.append(shell_default_literal("B1_NATIVE_COMFYUI_PROMPT_FILE", str(workflows_root / "text-to-image-api-prompt.json")))
@@ -254,6 +262,7 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append("# 4. Fill B1_BACKUP_DIR, RESTORE_REPORT, INVENTORY, OLD_STACK_BACKUP, OPEN_WEBUI_PLAN, CUTOVER_PLAN, and ROLLBACK_REPORT after backup/migration/rollback review.")
     lines.append("# 5. Source this file, then run: make acceptance-preflight")
     lines.append("# 6. When preflight passes, run: make operator-live-acceptance")
+    lines.append("# 7. After live acceptance passes, run: make acceptance-report-preview && make operator-handoff-report")
     return "\n".join(lines) + "\n"
 
 

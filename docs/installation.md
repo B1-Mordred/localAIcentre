@@ -102,6 +102,15 @@ make repository-quality-evidence
 
 The target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, explicit successful-gate assertions, and a per-coverage test-result summary. `make operator-live-acceptance` runs this target first, so final evidence cannot be collected from a dirty tree, from a direct script shortcut, or without the broad local checks passing. Operator preflight and live test evidence also carries source commit/ref/dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*`; any stamped evidence from a different or dirty source tree blocks final handoff.
 
+After the live evidence group passes, preview and create the final handoff report through the same authenticated Control Center API used by the browser:
+
+```bash
+make acceptance-report-preview
+make operator-handoff-report
+```
+
+The generated acceptance env sets `B1_ACCEPTANCE_REPORT_OUTPUT`, `B1_ACCEPTANCE_REPORT_LABEL`, and blank operator-evidence file variables. Put any CLI-supplied operator checklist JSON in a private file and set `B1_ACCEPTANCE_REPORT_OPERATOR_EVIDENCE_FILE`; otherwise use the Control Center checklist before pressing Preview/Create. `operator-handoff-report` reads `B1_ACCEPTANCE_API_KEY` or a private `B1_ACCEPTANCE_API_KEY_FILE`, writes a private response JSON under `$B1_BACKUP_ROOT/acceptance/`, and exits nonzero if the created report is still blocked.
+
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...
