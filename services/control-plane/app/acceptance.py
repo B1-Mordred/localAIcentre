@@ -4848,6 +4848,7 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
     if not isinstance(coverage, dict):
         return {
             "status": "unavailable",
+            "required_runtimes": [],
             "required_aliases": [],
             "missing_aliases": [],
             "ready_aliases": [],
@@ -4895,6 +4896,7 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
             }
         )
     required_aliases = _as_string_list(coverage.get("required_aliases"))
+    required_runtimes = _as_string_list(coverage.get("required_runtimes"))
     missing_aliases = _as_string_list(coverage.get("missing_aliases"))
     validation_actions: list[dict[str, Any]] = []
     validation_blockers_by_reason: dict[str, list[str]] = {}
@@ -4977,6 +4979,7 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
     ready_count = min(supplied_ready_count, len(ready_aliases)) if supplied_ready_count else len(ready_aliases)
     return {
         "status": status,
+        "required_runtimes": required_runtimes,
         "required_aliases": required_aliases,
         "missing_aliases": missing_aliases,
         "ready_aliases": ready_aliases,
@@ -5274,7 +5277,7 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
 
 def _model_measurement_coverage_markdown(coverage: dict[str, Any]) -> str:
     summary_rows = [["Field", "Value"]]
-    for key in ("status", "required_aliases", "ready_aliases", "missing_aliases", "ready_count", "blocked_count", "reason"):
+    for key in ("status", "required_runtimes", "required_aliases", "ready_aliases", "missing_aliases", "ready_count", "blocked_count", "reason"):
         value = coverage.get(key)
         if isinstance(value, list):
             value = ", ".join(str(item) for item in value) if value else "none"

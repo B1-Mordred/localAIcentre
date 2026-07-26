@@ -99,7 +99,9 @@ BACKUP_MIGRATION_ROLLBACK_INPUTS = (
     ("CUTOVER_PLAN", "cutover and rollback plan", "json", CUTOVER_PLAN_FORMAT),
     ("ROLLBACK_REPORT", "rollback rehearsal report", "json", ROLLBACK_REHEARSAL_FORMAT),
 )
-REQUIRED_HANDOFF_RUNTIMES = ("localai", "comfyui", "audio-cpu", "voicebox")
+BASE_HANDOFF_RUNTIMES = ("localai", "comfyui", "audio-cpu")
+OPTIONAL_HANDOFF_RUNTIMES = ("voicebox",)
+REQUIRED_HANDOFF_RUNTIMES = BASE_HANDOFF_RUNTIMES
 RUNTIME_COMPOSE_FILES = {
     "localai": "compose.production-localai.yaml",
     "comfyui": "compose.production-comfyui.yaml",
@@ -331,6 +333,13 @@ def split_words(value: str) -> list[str]:
     return [part.strip().lower() for part in re.split(r"[,\s]+", value) if part.strip()]
 
 
+def required_handoff_runtimes(production_required_runtimes: set[str]) -> tuple[str, ...]:
+    return (
+        *BASE_HANDOFF_RUNTIMES,
+        *(runtime for runtime in OPTIONAL_HANDOFF_RUNTIMES if runtime in production_required_runtimes),
+    )
+
+
 def compose_file_basenames(ctx: PreflightContext) -> list[str]:
     raw = env_value(ctx, "COMPOSE_FILE") or env_value(ctx, "B1_COMPOSE_FILE")
     separator = env_value(ctx, "COMPOSE_PATH_SEPARATOR") or os.pathsep
@@ -345,6 +354,7 @@ def compose_file_basenames(ctx: PreflightContext) -> list[str]:
 def check_production_topology(ctx: PreflightContext) -> PreflightCheck:
     mode = env_value(ctx, "B1_RUNTIME_DEPLOYMENT_MODE").lower()
     required_runtimes = set(split_words(env_value(ctx, "B1_RUNTIME_PRODUCTION_REQUIRED")))
+    handoff_runtimes = required_handoff_runtimes(required_runtimes)
     selected_files = compose_file_basenames(ctx)
     selected_file_set = set(selected_files)
     profiles = set(split_words(env_value(ctx, "COMPOSE_PROFILES") or env_value(ctx, "B1_COMPOSE_PROFILES")))
@@ -352,16 +362,16 @@ def check_production_topology(ctx: PreflightContext) -> PreflightCheck:
     required_files = ["compose.yaml"]
     required_files.extend(
         RUNTIME_COMPOSE_FILES[runtime]
-        for runtime in REQUIRED_HANDOFF_RUNTIMES
+        for runtime in handoff_runtimes
         if runtime in RUNTIME_COMPOSE_FILES
     )
     required_profiles = sorted(
         RUNTIME_COMPOSE_PROFILES[runtime]
-        for runtime in REQUIRED_HANDOFF_RUNTIMES
+        for runtime in handoff_runtimes
         if runtime in RUNTIME_COMPOSE_PROFILES
     )
     missing_files = [filename for filename in required_files if filename not in selected_file_set]
-    missing_runtimes = [runtime for runtime in REQUIRED_HANDOFF_RUNTIMES if runtime not in required_runtimes]
+    missing_runtimes = [runtime for runtime in handoff_runtimes if runtime not in required_runtimes]
     missing_profiles = [profile for profile in required_profiles if profile not in profiles]
 
     cpu_engine_failures = []
@@ -384,7 +394,8 @@ def check_production_topology(ctx: PreflightContext) -> PreflightCheck:
         "runtime_deployment_mode": mode or "<unset>",
         "runtime_deployment_mode_mismatch": mode_mismatch,
         "production_required_runtimes": sorted(required_runtimes),
-        "required_handoff_runtimes": list(REQUIRED_HANDOFF_RUNTIMES),
+        "required_handoff_runtimes": list(handoff_runtimes),
+        "optional_handoff_runtimes": list(OPTIONAL_HANDOFF_RUNTIMES),
         "missing_required_runtimes": missing_runtimes,
         "selected_file_basenames": selected_files,
         "required_compose_files": required_files,

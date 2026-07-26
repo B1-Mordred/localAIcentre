@@ -123,30 +123,35 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "<redacted>"),
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
-ACCEPTANCE_MODEL_MEASUREMENT_GROUPS: tuple[dict[str, Any], ...] = (
+ACCEPTANCE_MODEL_MEASUREMENT_GROUP_SPECS: tuple[dict[str, Any], ...] = (
     {
         "id": "localai_runtime",
         "label": "LocalAI runtime acceptance",
-        "aliases": (("chat-default", "localai"),),
+        "aliases": (("chat-default", "localai", "localai"),),
     },
     {
         "id": "gpu_acceptance",
         "label": "RTX 3060 GPU acceptance",
-        "aliases": (("chat-default", "localai"), ("image-default", "comfyui"), ("tts-quality", "voicebox")),
+        "aliases": (
+            ("chat-default", "localai", "localai"),
+            ("image-default", "comfyui", "comfyui"),
+            ("tts-quality", "voicebox", "voicebox"),
+        ),
     },
     {
         "id": "installed_workflows",
         "label": "Installed workflow acceptance",
         "aliases": (
-            ("chat-default", "localai"),
-            ("tts-fast", "audio-cpu"),
-            ("stt-default", "audio-cpu"),
-            ("image-default", "comfyui"),
-            ("image-edit", "comfyui"),
-            ("video-text", "comfyui"),
+            ("chat-default", "localai", "localai"),
+            ("tts-fast", "audio-cpu", "audio-cpu"),
+            ("stt-default", "audio-cpu", "audio-cpu"),
+            ("image-default", "comfyui", "comfyui"),
+            ("image-edit", "comfyui", "comfyui"),
+            ("video-text", "comfyui", "comfyui"),
         ),
     },
 )
+ACCEPTANCE_MODEL_MEASUREMENT_GROUPS = ACCEPTANCE_MODEL_MEASUREMENT_GROUP_SPECS
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
 COMFYUI_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
@@ -5171,17 +5176,55 @@ def model_measurement_handoff_plan(groups: list[dict[str, Any]], required_aliase
     }
 
 
-def acceptance_model_measurement_coverage(aliases: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
+def acceptance_model_measurement_groups(required_runtimes: tuple[str, ...] | list[str] | set[str] | None = None) -> tuple[dict[str, Any], ...]:
+    runtime_set = {
+        str(runtime).strip().lower()
+        for runtime in (required_runtimes if required_runtimes is not None else settings.runtime_production_required)
+        if str(runtime).strip()
+    }
+    groups: list[dict[str, Any]] = []
+    for group in ACCEPTANCE_MODEL_MEASUREMENT_GROUP_SPECS:
+        aliases: list[tuple[str, str]] = []
+        for alias_id, expected_runtime, runtime_gate in group["aliases"]:
+            if runtime_gate not in runtime_set:
+                continue
+            aliases.append((alias_id, expected_runtime))
+        if aliases:
+            groups.append(
+                {
+                    "id": group["id"],
+                    "label": group["label"],
+                    "aliases": tuple(aliases),
+                }
+            )
+    return tuple(groups)
+
+
+def acceptance_model_measurement_coverage(
+    aliases: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    required_runtimes: tuple[str, ...] | list[str] | set[str] | None = None,
+) -> dict[str, Any]:
     aliases_by_id = {str(item.get("id")): item for item in aliases if isinstance(item, dict) and item.get("id")}
     records_by_ref = {
         f"{item.get('id')}@{item.get('version')}": item
         for item in records
         if isinstance(item, dict) and item.get("id") and item.get("version")
     }
+    effective_required_runtimes = tuple(
+        sorted(
+            {
+                str(runtime).strip().lower()
+                for runtime in (required_runtimes if required_runtimes is not None else settings.runtime_production_required)
+                if str(runtime).strip()
+            }
+        )
+    )
+    measurement_groups = acceptance_model_measurement_groups(effective_required_runtimes)
     groups: list[dict[str, Any]] = []
     all_required_aliases: set[str] = set()
     all_missing_aliases: set[str] = set()
-    for group in ACCEPTANCE_MODEL_MEASUREMENT_GROUPS:
+    for group in measurement_groups:
         entries: list[dict[str, Any]] = []
         for alias_id, expected_runtime in group["aliases"]:
             all_required_aliases.add(alias_id)
@@ -5203,6 +5246,7 @@ def acceptance_model_measurement_coverage(aliases: list[dict[str, Any]], records
     handoff_plan = model_measurement_handoff_plan(groups, all_required_aliases, all_missing_aliases)
     return {
         "status": "ok" if not all_missing_aliases else "incomplete",
+        "required_runtimes": list(effective_required_runtimes),
         "required_aliases": sorted(all_required_aliases),
         "missing_aliases": sorted(all_missing_aliases),
         "handoff_plan": handoff_plan,

@@ -726,6 +726,27 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(topology["status"], "fail")
         self.assertTrue(topology["data"]["runtime_deployment_mode_mismatch"])
 
+    def test_preflight_accepts_optional_voicebox_omitted_from_required_runtimes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(
+                root,
+                env_file,
+                {
+                    "B1_RUNTIME_PRODUCTION_REQUIRED": "localai,comfyui,audio-cpu",
+                    "COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml",
+                    "COMPOSE_PROFILES": "",
+                },
+            )
+
+        topology = self.check_by_name(report, "production_topology")
+        self.assertEqual(topology["status"], "ok")
+        self.assertEqual(topology["data"]["required_handoff_runtimes"], ["localai", "comfyui", "audio-cpu"])
+        self.assertNotIn("compose.production-voicebox.yaml", topology["data"]["required_compose_files"])
+        self.assertEqual(topology["data"]["required_compose_profiles"], [])
+
     def test_preflight_rejects_missing_production_compose_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

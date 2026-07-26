@@ -1678,22 +1678,75 @@ class ModelAdminApiTests(unittest.TestCase):
         ]
         records = [model_record_from_manifest(manifest) for manifest in manifests.values()]
 
-        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+        coverage = main.acceptance_model_measurement_coverage(
+            aliases,
+            records,
+            required_runtimes=("localai", "comfyui", "audio-cpu"),
+        )
 
         self.assertEqual(coverage["status"], "ok")
+        self.assertEqual(coverage["required_runtimes"], ["audio-cpu", "comfyui", "localai"])
         self.assertEqual(coverage["missing_aliases"], [])
-        self.assertEqual(coverage["ready_count"], 7)
+        self.assertEqual(coverage["ready_count"], 6)
         self.assertEqual(coverage["blocked_count"], 0)
         self.assertEqual(coverage["next_actions"], [])
         self.assertEqual(coverage["blocker_summary"], [])
         self.assertTrue(coverage["handoff_plan"]["ready"])
         gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
         self.assertEqual(gpu_group["status"], "ok")
+        self.assertNotIn("tts-quality", gpu_group["required_aliases"])
         chat = next(item for item in gpu_group["measurements"] if item["alias"] == "chat-default")
         self.assertTrue(chat["ready"])
         self.assertEqual(chat["latest_ok_run"]["peak_vram_mib"], 4096)
         self.assertEqual(chat["latest_ok_run"]["hook"]["status"], "ok")
         self.assertNotIn("unsafe_extra", chat["latest_ok_run"])
+
+    def test_acceptance_model_measurement_coverage_includes_voicebox_when_required(self) -> None:
+        runtime_by_alias = {
+            "chat-default": "localai",
+            "image-default": "comfyui",
+            "tts-quality": "voicebox",
+            "tts-fast": "audio-cpu",
+            "stt-default": "audio-cpu",
+            "image-edit": "comfyui",
+            "video-text": "comfyui",
+        }
+        manifests = {
+            alias: measured_manifest_payload(alias, runtime)
+            for alias, runtime in runtime_by_alias.items()
+        }
+        aliases = [
+            {
+                "id": alias,
+                "status": "installed",
+                "modality": manifests[alias]["modality"],
+                "preferred_runtime": runtime,
+                "runtimes": [runtime],
+                "resource_label": "expected",
+                "resolved_model": {
+                    "id": manifests[alias]["id"],
+                    "version": manifests[alias]["version"],
+                    "display_name": manifests[alias]["display_name"],
+                },
+            }
+            for alias, runtime in runtime_by_alias.items()
+        ]
+        records = [model_record_from_manifest(manifest) for manifest in manifests.values()]
+
+        coverage = main.acceptance_model_measurement_coverage(
+            aliases,
+            records,
+            required_runtimes=("localai", "comfyui", "audio-cpu", "voicebox"),
+        )
+
+        self.assertEqual(coverage["status"], "ok")
+        self.assertEqual(coverage["ready_count"], 7)
+        self.assertEqual(coverage["blocked_count"], 0)
+        self.assertIn("tts-quality", coverage["required_aliases"])
+        gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
+        voicebox = next(item for item in gpu_group["measurements"] if item["alias"] == "tts-quality")
+        self.assertTrue(voicebox["ready"])
+        self.assertEqual(voicebox["expected_runtime"], "voicebox")
 
     def test_acceptance_model_measurement_coverage_reports_missing_smoke_and_runtime_mismatch(self) -> None:
         chat_manifest = measured_manifest_payload("chat-default", "audio-cpu")
@@ -1717,7 +1770,11 @@ class ModelAdminApiTests(unittest.TestCase):
         ]
         records = [model_record_from_manifest(chat_manifest), model_record_from_manifest(image_manifest)]
 
-        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+        coverage = main.acceptance_model_measurement_coverage(
+            aliases,
+            records,
+            required_runtimes=("localai", "comfyui", "audio-cpu"),
+        )
 
         self.assertEqual(coverage["status"], "incomplete")
         self.assertIn("chat-default", coverage["missing_aliases"])
@@ -1728,7 +1785,7 @@ class ModelAdminApiTests(unittest.TestCase):
         gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
         image = next(item for item in gpu_group["measurements"] if item["alias"] == "image-default")
         self.assertIn("no persisted ok model smoke measurement exists", image["blockers"])
-        self.assertEqual(coverage["blocked_count"], 7)
+        self.assertEqual(coverage["blocked_count"], 6)
         actions_by_alias = {item["alias"]: item for item in coverage["next_actions"]}
         self.assertIn("chat-default", actions_by_alias)
         self.assertIn("Select or install a localai-compatible model", actions_by_alias["chat-default"]["action"])
@@ -1762,7 +1819,11 @@ class ModelAdminApiTests(unittest.TestCase):
         ]
         records = [model_record_from_manifest(image_manifest), model_record_from_manifest(tts_manifest)]
 
-        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+        coverage = main.acceptance_model_measurement_coverage(
+            aliases,
+            records,
+            required_runtimes=("localai", "comfyui", "audio-cpu"),
+        )
 
         self.assertEqual(coverage["status"], "incomplete")
         image = next(
@@ -1798,7 +1859,11 @@ class ModelAdminApiTests(unittest.TestCase):
         ]
         records = [model_record_from_manifest(tts_manifest)]
 
-        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+        coverage = main.acceptance_model_measurement_coverage(
+            aliases,
+            records,
+            required_runtimes=("localai", "comfyui", "audio-cpu"),
+        )
 
         tts = next(
             entry

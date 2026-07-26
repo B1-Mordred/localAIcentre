@@ -996,6 +996,7 @@ type ModelAcceptanceHandoffPlan = {
 
 type ModelAcceptanceMeasurementCoverage = {
   status: string;
+  required_runtimes?: string[];
   required_aliases: string[];
   missing_aliases: string[];
   ready_aliases?: string[];
@@ -2631,6 +2632,9 @@ function Models() {
           </div>
           <div className="one-time-key">
             <strong>Model-smoke coverage: {acceptanceCoverage.status}</strong>
+            {acceptanceCoverage.required_runtimes && acceptanceCoverage.required_runtimes.length > 0 && (
+              <small>Required runtimes: {acceptanceCoverage.required_runtimes.join(", ")}</small>
+            )}
             <small>{acceptanceCoverage.required_aliases.length} required aliases / {readyAliasCount} ready / {blockedAliasCount} blocked</small>
             <small>{acceptanceCoverage.missing_aliases.length ? `missing ${acceptanceCoverage.missing_aliases.join(", ")}` : "all measured"}</small>
             {acceptanceBlockerSummary.length > 0 && <small>{acceptanceBlockerSummary.map((item) => `${item.blocker}: ${item.aliases.join(", ")}`).join(" / ")}</small>}

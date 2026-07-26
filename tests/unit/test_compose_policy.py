@@ -88,6 +88,7 @@ class ComposePolicyTests(unittest.TestCase):
         cls.production_localai_text = (ROOT / "compose.production-localai.yaml").read_text(encoding="utf-8")
         cls.production_comfyui_text = (ROOT / "compose.production-comfyui.yaml").read_text(encoding="utf-8")
         cls.production_voicebox_text = (ROOT / "compose.production-voicebox.yaml").read_text(encoding="utf-8")
+        cls.production_env_text = (ROOT / ".env.production.example").read_text(encoding="utf-8")
         cls.production_env = _read_env(ROOT / ".env.production.example")
         cls.monitoring_compose = yaml.load(
             cls.monitoring_text,
@@ -557,7 +558,11 @@ class ComposePolicyTests(unittest.TestCase):
             for item in self.production_env["B1_RUNTIME_PRODUCTION_REQUIRED"].replace(",", " ").split()
             if item
         }
-        self.assertEqual(required_runtimes, {"localai", "comfyui", "audio-cpu", "voicebox"})
+        self.assertEqual(required_runtimes, {"localai", "comfyui", "audio-cpu"})
+        self.assertIn(
+            "# B1_RUNTIME_PRODUCTION_REQUIRED=localai,comfyui,audio-cpu,voicebox",
+            self.production_env_text,
+        )
 
     def test_control_plane_receives_prepared_source_metadata(self) -> None:
         environment = self.compose["services"]["control-plane"]["environment"]
@@ -593,7 +598,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("make apply-system-hostname", docs)
         self.assertIn("the target OS hostname must present", docs)
         self.assertIn("hostname_authority=b1-appliance-config", installation)
-        self.assertIn("Do not configure a static host IP", installation)
+        self.assertIn("Do not configure a static B1 appliance IP", installation)
         self.assertIn("B1-defined appliance hostname applied as the target OS hostname plus host-managed DHCP", migration)
         self.assertIn("Host IP/gateway/route/resolver properties", env_normalized)
         self.assertIn("should come from DHCP", env_normalized)
@@ -713,7 +718,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIsNone(environment["B1_RUNTIME_NAME"])
         self.assertEqual(environment["B1_COMFYUI_LISTEN"], "${B1_COMFYUI_LISTEN:-0.0.0.0}")
         self.assertEqual(environment["B1_COMFYUI_PORT"], "${B1_COMFYUI_PORT:-8188}")
-        self.assertEqual(environment["B1_COMFYUI_RESERVE_VRAM_GIB"], "${B1_COMFYUI_RESERVE_VRAM_GIB:-1.5}")
+        self.assertEqual(environment["B1_COMFYUI_RESERVE_VRAM_GIB"], "${B1_COMFYUI_RESERVE_VRAM_GIB:-1.0}")
         self.assertEqual(environment["B1_COMFYUI_DISABLE_API_NODES"], "${B1_COMFYUI_DISABLE_API_NODES:-true}")
         self.assertEqual(environment["B1_COMFYUI_CACHE_NONE"], "${B1_COMFYUI_CACHE_NONE:-true}")
         self.assertEqual(environment["B1_COMFYUI_HOOK_STRICT_MODEL_LIST"], "${B1_COMFYUI_HOOK_STRICT_MODEL_LIST:-false}")
