@@ -1983,6 +1983,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 "version": "0.2.0",
             },
         ),
+        handoff=overrides.pop("handoff", None),
     )
 
 
@@ -2015,7 +2016,9 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("Operator handoff ready: true", markdown)
             self.assertIn("## Handoff Quick Reference", markdown)
             self.assertIn("https://control.ai.b1.germering/", markdown)
-            self.assertIn("cp .env.production.example .env && docker compose up -d", markdown)
+            self.assertIn("| fresh_install | docker compose up -d |", markdown)
+            self.assertIn("| production_env | make prepare-production-env |", markdown)
+            self.assertIn("| optional_preflight | make bootstrap |", markdown)
             self.assertIn("/srv/b1-ai-hub/secrets/admin_bootstrap_key", markdown)
             self.assertIn("Upgrade system RAM from 32 GB to at least 64 GB first", markdown)
             self.assertIn("No known limitations recorded in this acceptance report.", markdown)
@@ -2075,9 +2078,18 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(loaded["format"], acceptance.REPORT_FORMAT)
         self.assertEqual(loaded["handoff"]["default_urls"][1]["url"], "https://control.ai.b1.germering/")
         self.assertEqual(loaded["handoff"]["commands"][0]["key"], "fresh_install")
+        self.assertEqual(loaded["handoff"]["commands"][0]["command"], "docker compose up -d")
         self.assertTrue(loaded["deployment_pins"]["status"] == "ok")
         self.assertTrue(summary["deployment_pins_ready"])
         self.assertEqual([item["id"] for item in listed], [report["id"]])
+
+    def test_report_blocks_handoff_when_fresh_install_command_drifts(self) -> None:
+        report = sample_report(
+            handoff={"commands": [{"key": "fresh_install", "command": "make bootstrap && docker compose up -d"}]},
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("handoff fresh-install command must be exactly: docker compose up -d", report["acceptance_blockers"])
 
     def test_deployment_pin_snapshot_reads_repository_and_matches_bundled_runtime_pins(self) -> None:
         repository = acceptance.deployment_pins_snapshot(ROOT)

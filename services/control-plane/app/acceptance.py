@@ -43,8 +43,10 @@ HANDOFF_URL_PURPOSES = {
     "api": "Unified inference and job API",
 }
 HANDOFF_COMMANDS = (
-    ("fresh_install", "cp .env.production.example .env && docker compose up -d"),
-    ("development_install", "cp .env.example .env && docker compose up -d"),
+    ("fresh_install", "docker compose up -d"),
+    ("production_env", "make prepare-production-env"),
+    ("optional_preflight", "make bootstrap"),
+    ("development_env", "cp .env.example .env"),
     ("host_inventory", "make inventory"),
     ("old_stack_scope", "make old-stack-scope INVENTORY=/srv/b1-ai-hub/backups/inventory-YYYYMMDD-HHMMSS.json"),
     ("old_stack_backup", "make old-stack-backup SCOPE=/srv/b1-ai-hub/backups/old-stack-scope.json"),
@@ -55,6 +57,7 @@ HANDOFF_COMMANDS = (
     ("backup_migration_rollback_evidence", "Use Control Center Storage/System or POST /admin/migration/backup-migration-rollback-evidence"),
     ("acceptance_report", "Use Control Center System or POST /admin/acceptance-reports"),
 )
+FRESH_INSTALL_COMMAND = "docker compose up -d"
 ADMIN_ONBOARDING_STEPS = (
     "Trust the Caddy internal CA root on administrator workstations when B1_CADDY_TLS_ARGS=internal.",
     "Open the Control Center URL and choose initial setup while no administrator account exists.",
@@ -3341,6 +3344,15 @@ def deployment_pins_snapshot(repo_root: Path | None = None) -> dict[str, Any]:
 
 def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
+    handoff = report.get("handoff") if isinstance(report.get("handoff"), dict) else {}
+    commands = handoff.get("commands") if isinstance(handoff.get("commands"), list) else []
+    command_map = {
+        str(item.get("key")): str(item.get("command") or "").strip()
+        for item in commands
+        if isinstance(item, dict)
+    }
+    if command_map.get("fresh_install") != FRESH_INSTALL_COMMAND:
+        blockers.append("handoff fresh-install command must be exactly: " + FRESH_INSTALL_COMMAND)
     if report.get("status") != "ok":
         blockers.append(f"self-test status is {report.get('status', 'unknown')}")
     if report.get("runtime_deployment_mode") != "production":

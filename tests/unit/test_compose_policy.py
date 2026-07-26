@@ -528,7 +528,10 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assertIn("The Compose `bootstrap` service runs the same idempotent setup first", readme)
         self.assertIn("It is not required for a fresh installation", installation)
+        self.assertIn("the required operator start command remains exactly `docker compose up -d`", installation)
+        self.assertIn("make prepare-production-env", production_env_text)
         self.assertIn("docker compose up -d", production_env_text)
+        self.assertNotIn("cp .env.production.example .env", production_env_text)
         self.assertNotIn("#   make bootstrap\n#   docker compose up -d", production_env_text)
 
     def test_production_env_disables_development_placeholders_and_cloud_by_default(self) -> None:

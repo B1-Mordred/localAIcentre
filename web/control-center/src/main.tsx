@@ -573,6 +573,11 @@ type AcceptanceEvidenceDetail = {
   note: string;
 };
 
+type HandoffCommandDetail = {
+  key: string;
+  command: string;
+};
+
 type LiveEvidenceDetail = {
   key: string;
   label: string;
@@ -3290,6 +3295,19 @@ function acceptanceOperatorEvidenceRows(report: Record<string, unknown>): Accept
     .filter((item) => item.key || item.label);
 }
 
+function acceptanceHandoffCommandRows(report: Record<string, unknown>): HandoffCommandDetail[] {
+  const handoff = objectOrNull(report.handoff) ?? {};
+  const commands = Array.isArray(handoff.commands) ? handoff.commands : [];
+  return commands
+    .map((item) => objectOrNull(item))
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      key: String(item.key ?? ""),
+      command: String(item.command ?? "")
+    }))
+    .filter((item) => item.key || item.command);
+}
+
 function liveEvidenceProofDetails(snapshot: Record<string, unknown>): string[] {
   const details: string[] = [];
   for (const [field, label] of ACCEPTANCE_LIVE_EVIDENCE_DETAIL_FIELDS) {
@@ -5283,6 +5301,7 @@ function System() {
   const selectedFiles = selectedSummary?.files ?? {};
   const selectedSourceControl = detailRecord(selectedReport.source_control);
   const selectedCutover = detailRecord(selectedReport.cutover_preservation);
+  const selectedHandoffCommands = acceptanceHandoffCommandRows(selectedReport);
   const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
   const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
   const selectedModelMeasurementCoverage = detailRecord(selectedReport.model_measurement_coverage);
@@ -5753,6 +5772,21 @@ function System() {
             ) : (
               <p>None</p>
             )}
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Handoff Commands</h4>
+            <table>
+              <thead><tr><th>Step</th><th>Command</th></tr></thead>
+              <tbody>
+                {selectedHandoffCommands.map((item) => (
+                  <tr key={`${item.key}:${item.command}`}>
+                    <td>{item.key}</td>
+                    <td><code>{item.command}</code></td>
+                  </tr>
+                ))}
+                {!selectedHandoffCommands.length && <tr><td colSpan={2}>No handoff commands recorded</td></tr>}
+              </tbody>
+            </table>
           </div>
           <div className="acceptance-detail-section">
             <h4>Deployment Pins</h4>
