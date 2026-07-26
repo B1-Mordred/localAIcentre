@@ -67,6 +67,6 @@ B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener
 make legacy-comfyui-compatibility
 ```
 
-The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
+The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Its evidence also records the explicit `legacy-comfy` profile, bind host, CIDR allowlist, `comfyui-legacy-8188` marker, scheduler-aware `control-plane:8000` proxy target, no-direct-ComfyUI-backend assertion, and per-route proof that bearer, cookie, and CSRF headers were absent. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
 
-When `B1_LEGACY_COMFY_EVIDENCE` points under `$B1_BACKUP_ROOT/acceptance`, Control Center acceptance reports ingest the latest legacy listener evidence as an optional section. Missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete, failed, or stale evidence is reported as a handoff blocker when an operator has enabled and tested that path.
+When `B1_LEGACY_COMFY_EVIDENCE` points under `$B1_BACKUP_ROOT/acceptance`, Control Center acceptance reports ingest the latest legacy listener evidence as an optional section. Missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete, failed, stale, open-world allowlist, direct-backend, or shallow check-name-only evidence is reported as a handoff blocker when an operator has enabled and tested that path.

@@ -414,6 +414,69 @@ def sample_preflight_checks() -> dict[str, dict[str, Any]]:
     }
 
 
+def sample_legacy_comfy_payload() -> dict[str, Any]:
+    return {
+        "format": "b1-ai-hub-legacy-comfyui-listener/v1",
+        "generated_at": "2026-07-24T12:34:00+00:00",
+        "base_url": "http://ai.b1.germering:8188",
+        "status": "ok",
+        "listener_policy": {
+            "compose_profile": "legacy-comfy",
+            "base_url": "http://ai.b1.germering:8188",
+            "scheme": "http",
+            "port": 8188,
+            "bind_host": "192.168.2.100",
+            "listen_port": "8188",
+            "allow_cidrs": ["192.168.2.0/24", "100.64.0.0/10"],
+            "compatibility_marker": "comfyui-legacy-8188",
+            "gateway_target": "control-plane:8000",
+            "direct_comfyui_backend": False,
+            "authorization_headers_stripped": True,
+            "cookie_headers_stripped": True,
+            "csrf_headers_stripped": True,
+            "bearer_auth_required": False,
+        },
+        "checks": {
+            "object_info_without_auth": {
+                "status": "ok",
+                "recorded_at": "2026-07-24T12:34:00+00:00",
+                "path": "/object_info",
+                "url": "http://ai.b1.germering:8188/object_info",
+                "authorization_header_sent": False,
+                "cookie_header_sent": False,
+                "csrf_header_sent": False,
+                "type": "object",
+                "keys": ["CheckpointLoaderSimple"],
+            },
+            "system_stats_without_auth": {
+                "status": "ok",
+                "recorded_at": "2026-07-24T12:34:00+00:00",
+                "path": "/system_stats",
+                "url": "http://ai.b1.germering:8188/system_stats",
+                "authorization_header_sent": False,
+                "cookie_header_sent": False,
+                "csrf_header_sent": False,
+                "type": "object",
+                "keys": ["system", "devices"],
+            },
+            "websocket_without_auth": {
+                "status": "ok",
+                "recorded_at": "2026-07-24T12:34:00+00:00",
+                "websocket_url": "ws://ai.b1.germering:8188/ws?clientId=b1-legacy-comfyui-test",
+                "websocket_path": "/ws",
+                "websocket_scheme": "ws",
+                "client_id": "b1-legacy-comfyui-test",
+                "authorization_header_sent": False,
+                "cookie_header_sent": False,
+                "csrf_header_sent": False,
+                "received_initial_message": True,
+                "initial_event_type": "status",
+            },
+        },
+        "samples": [{"label": "object_info"}, {"label": "system_stats"}, {"label": "websocket"}],
+    }
+
+
 def sample_security_checks() -> dict[str, dict[str, Any]]:
     return {
         "unauthenticated_requests_rejected": {
@@ -4105,7 +4168,52 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertTrue(snapshot["available"])
         self.assertEqual(snapshot["required_checks"], list(acceptance.LEGACY_COMFYUI_REQUIRED_CHECKS))
         self.assertEqual(snapshot["missing_checks"], ["websocket_without_auth"])
+        self.assertIn("listener_policy", snapshot["missing_legacy_evidence"])
+        self.assertIn("samples.system_stats", snapshot["missing_legacy_evidence"])
         self.assertEqual(snapshot["sample_count"], 1)
+
+    def test_legacy_comfyui_snapshot_accepts_scheduler_aware_listener_evidence(self) -> None:
+        snapshot = acceptance.legacy_comfyui_evidence_snapshot(sample_legacy_comfy_payload())
+
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertEqual(snapshot["missing_legacy_evidence"], [])
+        self.assertEqual(snapshot["legacy_listener_gateway_target"], "control-plane:8000")
+        self.assertEqual(snapshot["legacy_listener_allow_cidrs"], ["192.168.2.0/24", "100.64.0.0/10"])
+        self.assertEqual(snapshot["legacy_websocket_client_id"], "b1-legacy-comfyui-test")
+
+    def test_report_blocks_handoff_for_shallow_legacy_comfyui_evidence_when_present(self) -> None:
+        live_evidence = sample_live_evidence()
+        legacy_payload = sample_legacy_comfy_payload()
+        legacy_payload.pop("listener_policy")
+        for check in legacy_payload["checks"].values():
+            check.pop("authorization_header_sent", None)
+            check.pop("cookie_header_sent", None)
+            check.pop("csrf_header_sent", None)
+        live_evidence["legacy_comfyui_listener"] = acceptance.legacy_comfyui_evidence_snapshot(legacy_payload)
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["legacy_comfyui_evidence_ready"])
+        self.assertIn(
+            "legacy ComfyUI listener evidence is missing detailed proof: ",
+            " ".join(report["acceptance_blockers"]),
+        )
+        self.assertIn("listener_policy", live_evidence["legacy_comfyui_listener"]["missing_legacy_evidence"])
+
+    def test_report_blocks_handoff_for_open_world_legacy_comfyui_allowlist(self) -> None:
+        live_evidence = sample_live_evidence()
+        legacy_payload = sample_legacy_comfy_payload()
+        legacy_payload["listener_policy"]["allow_cidrs"] = ["0.0.0.0/0"]
+        live_evidence["legacy_comfyui_listener"] = acceptance.legacy_comfyui_evidence_snapshot(legacy_payload)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn(
+            "listener_policy.allow_cidrs_not_open_world",
+            live_evidence["legacy_comfyui_listener"]["missing_legacy_evidence"],
+        )
 
     def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -5214,20 +5322,7 @@ class AcceptanceReportTests(unittest.TestCase):
             native_comfyui.write_text(json.dumps(native_payload), encoding="utf-8")
             legacy_comfyui = evidence_root / "legacy-comfy-listener.json"
             legacy_comfyui.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-legacy-comfyui-listener/v1",
-                        "generated_at": "2026-07-24T12:34:00+00:00",
-                        "base_url": "http://ai.b1.germering:8188",
-                        "status": "ok",
-                        "checks": {
-                            "object_info_without_auth": {"status": "ok"},
-                            "system_stats_without_auth": {"status": "ok"},
-                            "websocket_without_auth": {"status": "ok"},
-                        },
-                        "samples": [{"label": "object-info"}, {"label": "system-stats"}, {"label": "websocket"}],
-                    }
-                ),
+                json.dumps(sample_legacy_comfy_payload()),
                 encoding="utf-8",
             )
             modelhub = evidence_root / "modelhub-client-sync.json"
@@ -5482,6 +5577,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(legacy["source_path"], str(legacy_comfyui.resolve()))
         self.assertEqual(legacy["status"], "ok")
         self.assertEqual(legacy["missing_checks"], [])
+        self.assertEqual(legacy["missing_legacy_evidence"], [])
         self.assertEqual(legacy["sample_count"], 3)
         remote_nodes = snapshot["remote_nodes_non_comfy"]
         self.assertTrue(remote_nodes["available"])

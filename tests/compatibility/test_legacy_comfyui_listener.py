@@ -35,6 +35,10 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def split_words(value: str) -> list[str]:
+    return [part.strip() for part in value.replace(",", " ").split() if part.strip()]
+
+
 @unittest.skipUnless(os.getenv("B1_LEGACY_COMFY_LIVE_TEST") == "1", "set B1_LEGACY_COMFY_LIVE_TEST=1 to run live legacy ComfyUI tests")
 class LegacyComfyUiListenerTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
@@ -52,6 +56,9 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
         cls.host_header = os.getenv("B1_LEGACY_COMFY_HOST_HEADER", "").strip()
         cls.client_id = os.getenv("B1_LEGACY_COMFY_CLIENT_ID", f"b1-legacy-comfyui-{uuid.uuid4().hex}")
         cls.timeout_seconds = float(os.getenv("B1_LEGACY_COMFY_TIMEOUT_SECONDS", "30"))
+        cls.bind_host = os.getenv("B1_LEGACY_COMFY_BIND", "192.168.2.100").strip()
+        cls.listen_port = os.getenv("B1_LEGACY_COMFY_PORT", "8188").strip()
+        cls.allow_cidrs = split_words(os.getenv("B1_LEGACY_COMFY_ALLOW_CIDRS", "192.168.2.0/24 100.64.0.0/10"))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -68,10 +75,32 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
                 "base_url": cls.base_url,
                 "status": status,
                 "required_checks": list(LEGACY_COMFYUI_REQUIRED_CHECKS),
+                "listener_policy": cls.listener_policy(),
                 "checks": cls.checks,
                 "samples": cls.samples,
             },
         )
+
+    @classmethod
+    def listener_policy(cls) -> dict[str, Any]:
+        parsed = urllib.parse.urlparse(cls.base_url)
+        listen_port = int(cls.listen_port) if cls.listen_port.isdigit() else 8188
+        return {
+            "compose_profile": "legacy-comfy",
+            "base_url": cls.base_url,
+            "scheme": parsed.scheme,
+            "port": parsed.port or listen_port,
+            "bind_host": cls.bind_host,
+            "listen_port": cls.listen_port,
+            "allow_cidrs": cls.allow_cidrs,
+            "compatibility_marker": "comfyui-legacy-8188",
+            "gateway_target": "control-plane:8000",
+            "direct_comfyui_backend": False,
+            "authorization_headers_stripped": True,
+            "cookie_headers_stripped": True,
+            "csrf_headers_stripped": True,
+            "bearer_auth_required": False,
+        }
 
     @classmethod
     def ssl_context(cls) -> ssl.SSLContext | None:
@@ -125,7 +154,17 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
             sample = {"keys": sorted(str(key) for key in payload.keys())[:20], "type": "object"}
         else:
             sample = {"length": len(payload), "type": "array"}
-        self.record_check(name, path=path, **sample)
+        parsed = urllib.parse.urlparse(self.url(path))
+        self.record_check(
+            name,
+            path=path,
+            url=urllib.parse.urlunparse(parsed._replace(query="", fragment="")),
+            authorization_header_sent=False,
+            cookie_header_sent=False,
+            csrf_header_sent=False,
+            host_header=self.host_header,
+            **sample,
+        )
         self.samples.append({"label": path.strip("/") or "root", **sample})
 
     async def verify_websocket(self) -> None:
@@ -148,10 +187,16 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
             self.record_check(
                 "websocket_without_auth",
                 websocket_url=self.websocket_url(),
+                websocket_path=urllib.parse.urlparse(self.websocket_url()).path,
+                websocket_scheme=urllib.parse.urlparse(self.websocket_url()).scheme,
                 client_id=self.client_id,
+                authorization_header_sent=False,
+                cookie_header_sent=False,
+                csrf_header_sent=False,
                 received_initial_message=message is not None,
                 initial_event_type=event_type,
             )
+            self.samples.append({"label": "websocket", "client_id": self.client_id, "initial_event_type": event_type})
 
     def test_legacy_rest_and_websocket_without_bearer_auth(self) -> None:
         self.record_metadata_check("object_info_without_auth", "/object_info")

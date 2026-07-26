@@ -1878,6 +1878,104 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
     }
 
 
+def _legacy_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    base_url = _nonempty_text(payload.get("base_url"))
+    parsed_base = urlsplit(base_url)
+    if parsed_base.scheme != "http":
+        missing.append("base_url.http_scheme")
+    if parsed_base.port != 8188:
+        missing.append("base_url.port_8188")
+
+    labels = _sample_labels(payload)
+    for label in ("object_info", "system_stats", "websocket"):
+        if label not in labels:
+            missing.append(f"samples.{label}")
+
+    policy = payload.get("listener_policy") if isinstance(payload.get("listener_policy"), dict) else {}
+    if not policy:
+        missing.append("listener_policy")
+    else:
+        if _nonempty_text(policy.get("compose_profile")) != "legacy-comfy":
+            missing.append("listener_policy.compose_profile")
+        if _nonempty_text(policy.get("compatibility_marker")) != "comfyui-legacy-8188":
+            missing.append("listener_policy.compatibility_marker")
+        if _nonempty_text(policy.get("gateway_target")) != "control-plane:8000":
+            missing.append("listener_policy.gateway_target")
+        if policy.get("direct_comfyui_backend") is not False:
+            missing.append("listener_policy.direct_comfyui_backend_false")
+        if policy.get("authorization_headers_stripped") is not True:
+            missing.append("listener_policy.authorization_headers_stripped")
+        if policy.get("cookie_headers_stripped") is not True:
+            missing.append("listener_policy.cookie_headers_stripped")
+        if policy.get("csrf_headers_stripped") is not True:
+            missing.append("listener_policy.csrf_headers_stripped")
+        if policy.get("bearer_auth_required") is not False:
+            missing.append("listener_policy.bearer_auth_required_false")
+        bind_host = _nonempty_text(policy.get("bind_host"))
+        if not bind_host or bind_host in {"0.0.0.0", "::", "*"}:
+            missing.append("listener_policy.bind_host_restricted")
+        allow_cidrs = _as_string_list(policy.get("allow_cidrs"))
+        if not allow_cidrs:
+            missing.append("listener_policy.allow_cidrs")
+        forbidden_cidrs = {"0.0.0.0/0", "::/0", "0/0", "any", "*"}
+        if any(item.strip().lower() in forbidden_cidrs for item in allow_cidrs):
+            missing.append("listener_policy.allow_cidrs_not_open_world")
+
+    object_info = _check_record(checks, "object_info_without_auth")
+    if object_info.get("path") != "/object_info":
+        missing.append("object_info_without_auth.path")
+    if object_info.get("authorization_header_sent") is not False:
+        missing.append("object_info_without_auth.authorization_header_absent")
+    if object_info.get("cookie_header_sent") is not False:
+        missing.append("object_info_without_auth.cookie_header_absent")
+    if object_info.get("csrf_header_sent") is not False:
+        missing.append("object_info_without_auth.csrf_header_absent")
+    if _nonempty_text(object_info.get("type")) not in {"object", "array"}:
+        missing.append("object_info_without_auth.response_type")
+
+    system_stats = _check_record(checks, "system_stats_without_auth")
+    if system_stats.get("path") != "/system_stats":
+        missing.append("system_stats_without_auth.path")
+    if system_stats.get("authorization_header_sent") is not False:
+        missing.append("system_stats_without_auth.authorization_header_absent")
+    if system_stats.get("cookie_header_sent") is not False:
+        missing.append("system_stats_without_auth.cookie_header_absent")
+    if system_stats.get("csrf_header_sent") is not False:
+        missing.append("system_stats_without_auth.csrf_header_absent")
+    if _nonempty_text(system_stats.get("type")) not in {"object", "array"}:
+        missing.append("system_stats_without_auth.response_type")
+
+    websocket = _check_record(checks, "websocket_without_auth")
+    websocket_url = _nonempty_text(websocket.get("websocket_url"))
+    parsed_ws = urlsplit(websocket_url)
+    if parsed_ws.scheme not in {"ws", "wss"}:
+        missing.append("websocket_without_auth.websocket_scheme")
+    if parsed_ws.path != "/ws":
+        missing.append("websocket_without_auth.websocket_path")
+    if "clientId=" not in parsed_ws.query:
+        missing.append("websocket_without_auth.client_id_query")
+    if websocket.get("authorization_header_sent") is not False:
+        missing.append("websocket_without_auth.authorization_header_absent")
+    if websocket.get("cookie_header_sent") is not False:
+        missing.append("websocket_without_auth.cookie_header_absent")
+    if websocket.get("csrf_header_sent") is not False:
+        missing.append("websocket_without_auth.csrf_header_absent")
+    if not _nonempty_text(websocket.get("client_id")):
+        missing.append("websocket_without_auth.client_id")
+
+    return {
+        "legacy_listener_base_url": base_url,
+        "legacy_listener_bind_host": _nonempty_text(policy.get("bind_host")) if policy else "",
+        "legacy_listener_allow_cidrs": _as_string_list(policy.get("allow_cidrs")) if policy else [],
+        "legacy_listener_gateway_target": _nonempty_text(policy.get("gateway_target")) if policy else "",
+        "legacy_websocket_client_id": _nonempty_text(websocket.get("client_id")),
+        "missing_legacy_evidence": missing,
+    }
+
+
 def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
@@ -2962,6 +3060,7 @@ def legacy_comfyui_evidence_snapshot(payload: dict[str, Any], source_path: Path 
         expected_format=LEGACY_COMFYUI_EVIDENCE_FORMAT,
         unsupported_reason="unsupported legacy ComfyUI listener evidence format",
         required_checks=LEGACY_COMFYUI_REQUIRED_CHECKS,
+        extra_fields=_legacy_comfyui_compatibility_summary(payload),
     )
 
 
@@ -3803,6 +3902,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_checks = legacy_comfyui_evidence.get("missing_checks")
         if isinstance(missing_checks, list) and missing_checks:
             blockers.append("legacy ComfyUI listener evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_legacy = legacy_comfyui_evidence.get("missing_legacy_evidence")
+        if not isinstance(missing_legacy, list):
+            blockers.append("legacy ComfyUI listener evidence lacks detailed legacy listener summary")
+        elif missing_legacy:
+            blockers.append("legacy ComfyUI listener evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_legacy))
     remote_nodes_evidence = live_evidence.get("remote_nodes_non_comfy") if isinstance(live_evidence.get("remote_nodes_non_comfy"), dict) else {}
     if remote_nodes_evidence.get("available") is not True:
         blockers.append("remote-node non-Comfy compatibility evidence is unavailable")
@@ -4323,6 +4427,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_compatibility = evidence.get("missing_compatibility_evidence")
     if isinstance(missing_compatibility, list) and missing_compatibility:
         summary_rows.append(["missing_compatibility_evidence", ", ".join(str(item) for item in missing_compatibility)])
+    missing_legacy = evidence.get("missing_legacy_evidence")
+    if isinstance(missing_legacy, list) and missing_legacy:
+        summary_rows.append(["missing_legacy_evidence", ", ".join(str(item) for item in missing_legacy)])
     missing_reconciliation = evidence.get("missing_reconciliation_evidence")
     if isinstance(missing_reconciliation, list) and missing_reconciliation:
         summary_rows.append(["missing_reconciliation_evidence", ", ".join(str(item) for item in missing_reconciliation)])
@@ -5021,6 +5128,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         or (
             legacy_comfyui_evidence.get("status") == "ok"
             and not legacy_comfyui_evidence.get("missing_checks")
+            and legacy_comfyui_evidence.get("missing_legacy_evidence") == []
             and "legacy_comfyui_listener" not in freshness_failures
         )
     )
