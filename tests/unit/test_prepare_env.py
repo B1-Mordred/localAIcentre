@@ -99,6 +99,147 @@ class PrepareEnvTests(unittest.TestCase):
             self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", content)
             self.assertIn(f"B1_DOCKER_GID={os.stat(socket_path).st_gid}", content)
 
+    def test_prepare_stamps_source_metadata_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            template = root / ".env.production.example"
+            output = root / ".env"
+            socket_path = root / "docker.sock"
+            template.write_text(
+                "B1_DOCKER_GID=0\n"
+                "B1_SOURCE_COMMIT=\n"
+                "B1_SOURCE_REF=\n"
+                "B1_SOURCE_DIRTY=\n"
+                "B1_SOURCE_DIRTY_PATH_COUNT=\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "B1 Test"], cwd=repo, check=True)
+            (repo / "README.md").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            (repo / "README.md").write_text("changed\n", encoding="utf-8")
+            (repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+            sock = self.unix_socket(socket_path)
+            self.addCleanup(sock.close)
+
+            result = prepare_env.prepare_production_env(
+                template=template,
+                output=output,
+                docker_socket=socket_path,
+                stamp_source=True,
+                source_root=repo,
+            )
+
+            content = output.read_text(encoding="utf-8")
+            self.assertEqual(result["source_control"]["source_commit"], commit)
+            self.assertEqual(result["source_control"]["source_ref"], "main")
+            self.assertTrue(result["source_control"]["source_dirty"])
+            self.assertEqual(result["source_control"]["dirty_path_count"], 2)
+            self.assertIn(f"B1_SOURCE_COMMIT={commit}", content)
+            self.assertIn("B1_SOURCE_REF=main", content)
+            self.assertIn("B1_SOURCE_DIRTY=true", content)
+            self.assertIn("B1_SOURCE_DIRTY_PATH_COUNT=2", content)
+
+    def test_prepare_stamps_existing_source_environment_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / ".env.production.example"
+            output = root / ".env"
+            socket_path = root / "docker.sock"
+            template.write_text("B1_DOCKER_GID=0\n", encoding="utf-8")
+            sock = self.unix_socket(socket_path)
+            self.addCleanup(sock.close)
+            old_env = dict(os.environ)
+            os.environ.update(
+                {
+                    "B1_SOURCE_COMMIT": "A" * 40,
+                    "B1_SOURCE_REF": "release/test",
+                    "B1_SOURCE_DIRTY": "false",
+                    "B1_SOURCE_DIRTY_PATH_COUNT": "0",
+                }
+            )
+            self.addCleanup(lambda: os.environ.clear() or os.environ.update(old_env))
+
+            result = prepare_env.prepare_production_env(
+                template=template,
+                output=output,
+                docker_socket=socket_path,
+                stamp_source=True,
+                source_root=root / "not-a-git-repo",
+            )
+
+            content = output.read_text(encoding="utf-8")
+            self.assertEqual(result["source_control"]["source_commit"], "a" * 40)
+            self.assertFalse(result["source_control"]["source_dirty"])
+            self.assertIn(f"B1_SOURCE_COMMIT={'a' * 40}", content)
+            self.assertIn("B1_SOURCE_REF=release/test", content)
+            self.assertIn("B1_SOURCE_DIRTY=false", content)
+            self.assertIn("B1_SOURCE_DIRTY_PATH_COUNT=0", content)
+
+    def test_prepare_prefers_git_checkout_over_stale_exported_source_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            template = root / ".env.production.example"
+            output = root / ".env"
+            socket_path = root / "docker.sock"
+            template.write_text("B1_DOCKER_GID=0\nB1_SOURCE_COMMIT=\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "B1 Test"], cwd=repo, check=True)
+            (repo / "README.md").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            sock = self.unix_socket(socket_path)
+            self.addCleanup(sock.close)
+            old_env = dict(os.environ)
+            os.environ.update(
+                {
+                    "B1_SOURCE_COMMIT": "B" * 40,
+                    "B1_SOURCE_REF": "stale/ref",
+                    "B1_SOURCE_DIRTY": "true",
+                    "B1_SOURCE_DIRTY_PATH_COUNT": "7",
+                }
+            )
+            self.addCleanup(lambda: os.environ.clear() or os.environ.update(old_env))
+
+            result = prepare_env.prepare_production_env(
+                template=template,
+                output=output,
+                docker_socket=socket_path,
+                stamp_source=True,
+                source_root=repo,
+            )
+
+            content = output.read_text(encoding="utf-8")
+            self.assertEqual(result["source_control"]["source_commit"], commit)
+            self.assertEqual(result["source_control"]["source_ref"], "main")
+            self.assertFalse(result["source_control"]["source_dirty"])
+            self.assertEqual(result["source_control"]["dirty_path_count"], 0)
+            self.assertIn(f"B1_SOURCE_COMMIT={commit}", content)
+            self.assertIn("B1_SOURCE_REF=main", content)
+            self.assertIn("B1_SOURCE_DIRTY=false", content)
+            self.assertIn("B1_SOURCE_DIRTY_PATH_COUNT=0", content)
+
     def test_prepare_appends_missing_docker_gid_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

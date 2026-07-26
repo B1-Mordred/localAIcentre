@@ -558,6 +558,12 @@ class ComposePolicyTests(unittest.TestCase):
         }
         self.assertEqual(required_runtimes, {"localai", "comfyui", "audio-cpu", "voicebox"})
 
+    def test_control_plane_receives_prepared_source_metadata(self) -> None:
+        environment = self.compose["services"]["control-plane"]["environment"]
+        for key in ("B1_SOURCE_COMMIT", "B1_SOURCE_REF", "B1_SOURCE_DIRTY", "B1_SOURCE_DIRTY_PATH_COUNT"):
+            self.assertIn(key, self.production_env)
+            self.assertEqual(environment[key], f"${{{key}:-}}")
+
     def test_docs_keep_compose_up_as_fresh_install_start_command(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")

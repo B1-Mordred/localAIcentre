@@ -733,6 +733,18 @@ def _evidence_dirty(value: Any) -> bool:
     return False
 
 
+def _env_bool_metadata(value: Any) -> bool | None:
+    if value is True or value is False:
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "dirty"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "clean"}:
+            return False
+    return None
+
+
 def _live_evidence_source_failures(report: dict[str, Any]) -> dict[str, str]:
     source_control = report.get("source_control") if isinstance(report.get("source_control"), dict) else {}
     report_commit = _normalized_commit_sha(source_control.get("source_commit") or source_control.get("commit"))
@@ -3732,6 +3744,16 @@ def source_control_snapshot(repo_root: Path | None = None, environ: dict[str, st
         snapshot["short_commit"] = snapshot["source_commit"][:12]
         snapshot["available"] = bool(re.fullmatch(r"[a-f0-9]{40}", snapshot["source_commit"]))
         snapshot["source"] = "environment"
+        source_dirty = _env_bool_metadata(env.get("B1_SOURCE_DIRTY") or env.get("GIT_DIRTY"))
+        dirty_path_count = _integer_value(
+            env.get("B1_SOURCE_DIRTY_PATH_COUNT")
+            or env.get("B1_DIRTY_PATH_COUNT")
+            or env.get("GIT_DIRTY_PATH_COUNT")
+        )
+        if source_dirty is not None:
+            snapshot["source_dirty"] = source_dirty
+        if dirty_path_count is not None:
+            snapshot["dirty_path_count"] = dirty_path_count
         return snapshot
     git_snapshot = _read_git_head(repo_root or Path.cwd())
     snapshot.update(git_snapshot)

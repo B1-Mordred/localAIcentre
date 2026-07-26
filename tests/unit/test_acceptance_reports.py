@@ -7022,13 +7022,21 @@ class AcceptanceReportTests(unittest.TestCase):
     def test_source_control_snapshot_prefers_valid_environment_commit(self) -> None:
         snapshot = acceptance.source_control_snapshot(
             Path("/tmp/not-used"),
-            environ={"B1_SOURCE_COMMIT": "E" * 40, "B1_SOURCE_REF": "release/v1", "B1_APP_VERSION": "1.2.3"},
+            environ={
+                "B1_SOURCE_COMMIT": "E" * 40,
+                "B1_SOURCE_REF": "release/v1",
+                "B1_APP_VERSION": "1.2.3",
+                "B1_SOURCE_DIRTY": "true",
+                "B1_SOURCE_DIRTY_PATH_COUNT": "4",
+            },
         )
 
         self.assertTrue(snapshot["available"])
         self.assertEqual(snapshot["source"], "environment")
         self.assertEqual(snapshot["source_commit"], "e" * 40)
         self.assertEqual(snapshot["version"], "1.2.3")
+        self.assertTrue(snapshot["source_dirty"])
+        self.assertEqual(snapshot["dirty_path_count"], 4)
 
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
