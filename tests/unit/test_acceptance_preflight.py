@@ -80,6 +80,23 @@ class AcceptancePreflightTests(unittest.TestCase):
             }
             """
         self.write_json(workflows / "text-to-image-api-prompt.json", prompt)
+        self.write_json(
+            workflows / "native-comfyui-upload-save-prompt.json",
+            """
+            {
+              "prompt": {
+                "1": {
+                  "class_type": "LoadImage",
+                  "inputs": { "image": "acceptance-input.png" }
+                },
+                "2": {
+                  "class_type": "SaveImage",
+                  "inputs": { "filename_prefix": "acceptance-upload-save", "images": ["1", 0] }
+                }
+              }
+            }
+            """,
+        )
         checkpoint = "REPLACE_WITH_INSTALLED_CHECKPOINT.safetensors" if placeholder else "validated-checkpoint.safetensors"
         self.write_json(
             workflows / "image-generation-job.json",
