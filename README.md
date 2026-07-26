@@ -234,7 +234,7 @@ make acceptance-preflight
 make operator-live-acceptance
 ```
 
-`make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
+`make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. The live harnesses stamp source commit, ref, and dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*` environment variables; the final acceptance report blocks handoff when stamped evidence is dirty, invalid, or from a different commit than the report source-control snapshot. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
 
 Live harness evidence is written atomically with `0640` permissions and refuses symlink targets or symlinked parent directories, so handoff JSON cannot be redirected outside the reviewed backup root.
 

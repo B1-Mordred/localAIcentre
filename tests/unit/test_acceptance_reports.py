@@ -2395,7 +2395,7 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn(
-            "repository quality evidence source commit does not match report source-control commit",
+            "repository quality gates evidence source provenance is not acceptable: source_commit does not match report source-control commit",
             report["acceptance_blockers"],
         )
 
@@ -3646,6 +3646,45 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["live_evidence_freshness_ready"])
         self.assertIn("LocalAI runtime acceptance evidence generated_at is missing or invalid", report["acceptance_blockers"])
         self.assertIn("security acceptance evidence generated_at is after the handoff report time", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_live_evidence_source_mismatch(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["live_stack_smoke"] = {
+            **live_evidence["live_stack_smoke"],
+            "source_commit": "d" * 40,
+            "source_dirty": False,
+            "dirty_path_count": 0,
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["smoke_evidence_ready"])
+        self.assertFalse(summary["live_evidence_source_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn(
+            "live stack smoke evidence source provenance is not acceptable: source_commit does not match report source-control commit",
+            report["acceptance_blockers"],
+        )
+
+    def test_report_blocks_handoff_for_dirty_live_evidence_source(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["gpu_acceptance"] = {
+            **live_evidence["gpu_acceptance"],
+            "source_commit": "c" * 40,
+            "source_dirty": True,
+            "dirty_path_count": 3,
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertFalse(summary["live_evidence_source_ready"])
+        self.assertIn(
+            "RTX 3060 GPU acceptance evidence source provenance is not acceptable: source_dirty is true; dirty_path_count is 3",
+            report["acceptance_blockers"],
+        )
 
     def test_report_blocks_handoff_without_localai_evidence(self) -> None:
         live_evidence = sample_live_evidence()
@@ -5313,6 +5352,10 @@ class AcceptanceReportTests(unittest.TestCase):
             smoke = evidence_root / "live-smoke.json"
             smoke_payload = sample_live_evidence()["live_stack_smoke"]
             smoke_payload["samples"] = [{"label": label} for label in smoke_payload["sample_labels"]]
+            smoke_payload["source_commit"] = "c" * 40
+            smoke_payload["source_ref"] = "agent/test"
+            smoke_payload["source_dirty"] = False
+            smoke_payload["dirty_path_count"] = 0
             smoke.write_text(json.dumps(smoke_payload), encoding="utf-8")
             current = evidence_root / "cross-runtime-gpu.json"
             gpu_payload = sample_live_evidence()["gpu_acceptance"]
@@ -5601,6 +5644,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(smoke_snapshot["smoke_open_webui_base_url"], "https://ai.b1.germering")
         self.assertEqual(smoke_snapshot["smoke_open_webui_status_code"], 200)
         self.assertEqual(smoke_snapshot["sample_count"], 6)
+        self.assertEqual(smoke_snapshot["source_commit"], "c" * 40)
+        self.assertEqual(smoke_snapshot["source_ref"], "agent/test")
+        self.assertFalse(smoke_snapshot["source_dirty"])
+        self.assertEqual(smoke_snapshot["dirty_path_count"], 0)
         gpu = snapshot["gpu_acceptance"]
         self.assertTrue(gpu["available"])
         self.assertEqual(gpu["source_path"], str(current.resolve()))

@@ -26,6 +26,7 @@ from acceptance_env import (  # noqa: E402
     LIVE_FLAGS,
     default_output_path,
 )
+from source_metadata import stamp_source_metadata  # noqa: E402
 
 
 PREFLIGHT_FORMAT = "b1-ai-hub-operator-live-acceptance-preflight/v1"
@@ -626,15 +627,17 @@ def run_preflight(ctx: PreflightContext) -> dict[str, Any]:
         "fail": sum(1 for check in checks if check.status == "fail"),
     }
     status = "fail" if counts["fail"] else "warning" if counts["warning"] else "ok"
-    return {
-        "format": PREFLIGHT_FORMAT,
-        "generated_at": datetime.now(tz=UTC).isoformat(),
-        "status": status,
-        "summary": counts,
-        "data_root": str(ctx.data_root),
-        "env_file": str(ctx.env_file) if ctx.env_file else None,
-        "checks": [check.to_dict() for check in checks],
-    }
+    return stamp_source_metadata(
+        {
+            "format": PREFLIGHT_FORMAT,
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "status": status,
+            "summary": counts,
+            "data_root": str(ctx.data_root),
+            "env_file": str(ctx.env_file) if ctx.env_file else None,
+            "checks": [check.to_dict() for check in checks],
+        }
+    )
 
 
 def human_report(report: dict[str, Any]) -> str:
@@ -736,15 +739,17 @@ def main() -> int:
     try:
         report = run_preflight(build_context(args))
     except AcceptancePreflightError as exc:
-        report = {
-            "format": PREFLIGHT_FORMAT,
-            "generated_at": datetime.now(tz=UTC).isoformat(),
-            "status": "fail",
-            "summary": {"ok": 0, "warning": 0, "fail": 1},
-            "data_root": str(Path(args.data_root).expanduser()),
-            "env_file": args.env_file or None,
-            "checks": [fail("acceptance_env_file", str(exc)).to_dict()],
-        }
+        report = stamp_source_metadata(
+            {
+                "format": PREFLIGHT_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "status": "fail",
+                "summary": {"ok": 0, "warning": 0, "fail": 1},
+                "data_root": str(Path(args.data_root).expanduser()),
+                "env_file": args.env_file or None,
+                "checks": [fail("acceptance_env_file", str(exc)).to_dict()],
+            }
+        )
     output_path = resolved_output_path(str(args.output))
     if output_path is not None:
         report["output_path"] = str(output_path)

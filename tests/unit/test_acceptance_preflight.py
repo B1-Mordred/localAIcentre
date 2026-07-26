@@ -202,6 +202,30 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertNotIn("b1k_acceptance.secret", text)
         self.assertNotIn("correct horse battery staple", text)
 
+    def test_preflight_stamps_source_metadata_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            with patch.dict(
+                os.environ,
+                {
+                    "B1_SOURCE_COMMIT": "b" * 40,
+                    "B1_SOURCE_REF": "agent/source-proof",
+                    "B1_SOURCE_DIRTY": "false",
+                    "B1_SOURCE_DIRTY_PATH_COUNT": "0",
+                },
+                clear=False,
+            ):
+                report = self.run_report(root, env_file)
+
+        self.assertEqual(report["source"], "environment")
+        self.assertEqual(report["source_commit"], "b" * 40)
+        self.assertEqual(report["short_commit"], "b" * 12)
+        self.assertEqual(report["source_ref"], "agent/source-proof")
+        self.assertFalse(report["source_dirty"])
+        self.assertEqual(report["dirty_path_count"], 0)
+
     def test_json_output_is_private_and_readable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

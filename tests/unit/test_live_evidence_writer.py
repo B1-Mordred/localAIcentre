@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tests.support import evidence
@@ -36,6 +38,36 @@ class LiveEvidenceWriterTests(unittest.TestCase):
         self.assertEqual(payload["format"], "test/v1")
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(mode, 0o640)
+
+    def test_write_private_json_stamps_source_metadata_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acceptance" / "live-smoke.json"
+            env = {
+                "B1_SOURCE_COMMIT": "a" * 40,
+                "B1_SOURCE_REF": "agent/test",
+                "B1_SOURCE_DIRTY": "false",
+                "B1_SOURCE_DIRTY_PATH_COUNT": "0",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                evidence.write_private_json(path, {"format": "test/v1", "status": "ok"})
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["source"], "environment")
+        self.assertEqual(payload["source_commit"], "a" * 40)
+        self.assertEqual(payload["short_commit"], "a" * 12)
+        self.assertEqual(payload["source_ref"], "agent/test")
+        self.assertEqual(payload["source_branch"], "agent/test")
+        self.assertFalse(payload["source_dirty"])
+        self.assertEqual(payload["dirty_path_count"], 0)
+
+    def test_write_private_json_keeps_existing_source_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acceptance" / "live-smoke.json"
+            with mock.patch.dict(os.environ, {"B1_SOURCE_COMMIT": "a" * 40}, clear=False):
+                evidence.write_private_json(path, {"format": "test/v1", "source_commit": "b" * 40})
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["source_commit"], "b" * 40)
 
     def test_write_private_json_refuses_symlink_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -481,6 +481,15 @@ LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
     ("restart_reconciliation", "restart reconciliation"),
     ("backup_migration_rollback", "backup, migration, and rollback acceptance"),
 )
+LIVE_EVIDENCE_SOURCE_KEYS = (
+    "source",
+    "source_commit",
+    "short_commit",
+    "source_ref",
+    "source_branch",
+    "source_dirty",
+    "dirty_path_count",
+)
 
 
 class AcceptanceReportError(ValueError):
@@ -691,6 +700,40 @@ def _live_evidence_freshness_failures(report: dict[str, Any]) -> dict[str, str]:
             failures[key] = f"{label} evidence is stale ({age_hours}h old; rerun within {max_age_hours}h of handoff report)"
         elif age_seconds < -MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS:
             failures[key] = f"{label} evidence generated_at is after the handoff report time"
+    return failures
+
+
+def _evidence_dirty(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "y", "on", "dirty"}:
+        return True
+    return False
+
+
+def _live_evidence_source_failures(report: dict[str, Any]) -> dict[str, str]:
+    source_control = report.get("source_control") if isinstance(report.get("source_control"), dict) else {}
+    report_commit = _normalized_commit_sha(source_control.get("source_commit") or source_control.get("commit"))
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    failures: dict[str, str] = {}
+    for key, label in LIVE_EVIDENCE_LABELS:
+        evidence = live_evidence.get(key) if isinstance(live_evidence.get(key), dict) else {}
+        if evidence.get("available") is not True:
+            continue
+        evidence_commit_supplied = "source_commit" in evidence
+        evidence_commit = _normalized_commit_sha(evidence.get("source_commit")) if evidence_commit_supplied else ""
+        details: list[str] = []
+        if evidence_commit_supplied and not evidence_commit:
+            details.append("source_commit is invalid")
+        elif evidence_commit and report_commit and evidence_commit != report_commit:
+            details.append("source_commit does not match report source-control commit")
+        dirty_path_count = _integer_value(evidence.get("dirty_path_count"))
+        if _evidence_dirty(evidence.get("source_dirty")):
+            details.append("source_dirty is true")
+        if dirty_path_count not in (None, 0):
+            details.append(f"dirty_path_count is {dirty_path_count}")
+        if details:
+            failures[key] = f"{label} evidence source provenance is not acceptable: " + "; ".join(details)
     return failures
 
 
@@ -2920,6 +2963,9 @@ def _live_evidence_snapshot(
         "sample_count": len(samples),
         "sample_labels": sample_labels[:100],
     }
+    for key in LIVE_EVIDENCE_SOURCE_KEYS:
+        if key in payload:
+            snapshot[key] = payload.get(key)
     snapshot.update(extra_fields or {})
     return snapshot
 
@@ -2981,7 +3027,7 @@ def preflight_evidence_snapshot(payload: dict[str, Any], source_path: Path | Non
         missing_detail.append("checks")
     missing_detail.extend(f"failed_check.{name}" for name in failed_checks)
     missing_detail.extend(f"unknown_check_status.{name}" for name in unknown_status_checks)
-    return {
+    snapshot = {
         "available": True,
         "format": payload.get("format"),
         "source_path": str(source_path) if source_path else "",
@@ -3000,6 +3046,10 @@ def preflight_evidence_snapshot(payload: dict[str, Any], source_path: Path | Non
         "failed_checks": failed_checks,
         "missing_preflight_evidence": missing_detail,
     }
+    for key in LIVE_EVIDENCE_SOURCE_KEYS:
+        if key in payload:
+            snapshot[key] = payload.get(key)
+    return snapshot
 
 
 def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
@@ -3899,9 +3949,6 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("repository quality evidence lacks detailed test-result summary")
         elif missing_quality:
             blockers.append("repository quality evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_quality))
-        quality_commit = str(repository_quality.get("source_commit") or "").lower()
-        if re.fullmatch(r"[a-f0-9]{40}", source_commit) and quality_commit and source_commit != quality_commit:
-            blockers.append("repository quality evidence source commit does not match report source-control commit")
     deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
     if deployment_pins.get("status") != "ok":
         blockers.append("deployment pin manifest is not clean")
@@ -3920,6 +3967,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     coverage = report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
     blockers.extend(_model_measurement_coverage_blockers(coverage))
     blockers.extend(_live_evidence_freshness_failures(report).values())
+    blockers.extend(_live_evidence_source_failures(report).values())
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     if preflight_evidence.get("available") is not True:
         blockers.append("operator live-acceptance preflight evidence is unavailable")
@@ -4587,7 +4635,10 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
         "generated_at",
         "base_url",
         "status",
+        "source",
         "source_commit",
+        "short_commit",
+        "source_ref",
         "source_branch",
         "source_dirty",
         "dirty_path_count",
@@ -5267,12 +5318,14 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     )
     model_measurement_coverage_ready = model_measurement_coverage.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
+    source_failures = _live_evidence_source_failures(report)
     repository_quality_evidence_ready = (
         repository_quality_evidence.get("available") is True
         and repository_quality_evidence.get("status") == "ok"
         and not repository_quality_evidence.get("missing_checks")
         and repository_quality_evidence.get("missing_quality_evidence") == []
         and "repository_quality" not in freshness_failures
+        and "repository_quality" not in source_failures
     )
     preflight_evidence_ready = (
         preflight_evidence.get("available") is True
@@ -5280,6 +5333,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not preflight_evidence.get("missing_checks")
         and preflight_evidence.get("missing_preflight_evidence") == []
         and "operator_preflight" not in freshness_failures
+        and "operator_preflight" not in source_failures
     )
     smoke_evidence_ready = (
         smoke_evidence.get("available") is True
@@ -5287,6 +5341,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not smoke_evidence.get("missing_checks")
         and smoke_evidence.get("missing_smoke_evidence") == []
         and "live_stack_smoke" not in freshness_failures
+        and "live_stack_smoke" not in source_failures
     )
     gpu_evidence_ready = (
         gpu_evidence.get("available") is True
@@ -5295,6 +5350,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not gpu_evidence.get("missing_model_measurements")
         and gpu_evidence.get("missing_gpu_evidence") == []
         and "gpu_acceptance" not in freshness_failures
+        and "gpu_acceptance" not in source_failures
     )
     localai_evidence_ready = (
         localai_evidence.get("available") is True
@@ -5303,6 +5359,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not localai_evidence.get("missing_model_measurements")
         and localai_evidence.get("missing_localai_evidence") == []
         and "localai_runtime" not in freshness_failures
+        and "localai_runtime" not in source_failures
     )
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
@@ -5311,6 +5368,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not installed_workflows_evidence.get("missing_model_measurements")
         and installed_workflows_evidence.get("missing_installed_workflow_evidence") == []
         and "installed_workflows" not in freshness_failures
+        and "installed_workflows" not in source_failures
     )
     native_comfyui_evidence_ready = (
         native_comfyui_evidence.get("available") is True
@@ -5318,6 +5376,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not native_comfyui_evidence.get("missing_checks")
         and native_comfyui_evidence.get("missing_compatibility_evidence") == []
         and "native_comfyui_compatibility" not in freshness_failures
+        and "native_comfyui_compatibility" not in source_failures
     )
     legacy_comfyui_evidence_ready = (
         legacy_comfyui_evidence.get("available") is not True
@@ -5326,6 +5385,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and not legacy_comfyui_evidence.get("missing_checks")
             and legacy_comfyui_evidence.get("missing_legacy_evidence") == []
             and "legacy_comfyui_listener" not in freshness_failures
+            and "legacy_comfyui_listener" not in source_failures
         )
     )
     remote_nodes_evidence_ready = (
@@ -5334,6 +5394,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not remote_nodes_evidence.get("missing_checks")
         and remote_nodes_evidence.get("missing_compatibility_evidence") == []
         and "remote_nodes_non_comfy" not in freshness_failures
+        and "remote_nodes_non_comfy" not in source_failures
     )
     modelhub_evidence_ready = (
         modelhub_evidence.get("available") is True
@@ -5341,6 +5402,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not modelhub_evidence.get("missing_checks")
         and modelhub_evidence.get("missing_integrity_evidence") == []
         and "modelhub_client_sync" not in freshness_failures
+        and "modelhub_client_sync" not in source_failures
     )
     voicebox_evidence_ready = (
         voicebox_evidence.get("available") is True
@@ -5348,6 +5410,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not voicebox_evidence.get("missing_checks")
         and voicebox_evidence.get("missing_compatibility_evidence") == []
         and "voicebox_remote" not in freshness_failures
+        and "voicebox_remote" not in source_failures
     )
     security_evidence_ready = (
         security_evidence.get("available") is True
@@ -5355,6 +5418,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not security_evidence.get("missing_checks")
         and security_evidence.get("missing_security_evidence") == []
         and "security_acceptance" not in freshness_failures
+        and "security_acceptance" not in source_failures
     )
     restart_reconciliation_evidence_ready = (
         restart_reconciliation_evidence.get("available") is True
@@ -5362,6 +5426,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not restart_reconciliation_evidence.get("missing_checks")
         and restart_reconciliation_evidence.get("missing_reconciliation_evidence") == []
         and "restart_reconciliation" not in freshness_failures
+        and "restart_reconciliation" not in source_failures
     )
     backup_migration_rollback_evidence_ready = (
         backup_evidence.get("available") is True
@@ -5369,6 +5434,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not backup_evidence.get("missing_checks")
         and backup_evidence.get("missing_backup_migration_rollback_evidence") == []
         and "backup_migration_rollback" not in freshness_failures
+        and "backup_migration_rollback" not in source_failures
     )
     summary = {
         "id": report.get("id"),
@@ -5417,8 +5483,10 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "restart_reconciliation_evidence_ready": restart_reconciliation_evidence_ready,
         "backup_migration_rollback_evidence_ready": backup_migration_rollback_evidence_ready,
         "live_evidence_freshness_ready": not freshness_failures,
+        "live_evidence_source_ready": not source_failures,
         "live_evidence_ready": (
             not freshness_failures
+            and not source_failures
             and repository_quality_evidence_ready
             and preflight_evidence_ready
             and smoke_evidence_ready
