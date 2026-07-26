@@ -32,7 +32,8 @@
       "inputs": {
         "artifact_url": "{{3.data[0].url}}",
         "filename": "b1-text-to-image.png"
-      }
+      },
+      "expected_outputs": ["file_path", "bytes", "sha256", "proof_json"]
     }
   ],
   "expected_server_side_comfyui_required": false

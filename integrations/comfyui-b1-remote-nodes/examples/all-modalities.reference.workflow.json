@@ -85,7 +85,8 @@
         "artifact_url": "{{9.artifacts_json}}",
         "filename": "b1-generated-image.png",
         "artifact_index": 0
-      }
+      },
+      "expected_outputs": ["file_path", "bytes", "sha256", "proof_json"]
     },
     {
       "id": 11,
@@ -135,7 +136,8 @@
         "response_format": "wav",
         "runtime_policy": "non_comfy_only",
         "filename": "b1-remote-node-reference.wav"
-      }
+      },
+      "expected_outputs": ["file_path", "bytes", "sha256", "proof_json"]
     },
     {
       "id": 16,

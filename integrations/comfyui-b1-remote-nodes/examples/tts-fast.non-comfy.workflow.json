@@ -11,7 +11,8 @@
         "response_format": "wav",
         "runtime_policy": "non_comfy_only",
         "filename": "b1-tts-fast-smoke.wav"
-      }
+      },
+      "expected_outputs": ["file_path", "bytes", "sha256", "proof_json"]
     }
   ],
   "expected_server_side_comfyui_required": false

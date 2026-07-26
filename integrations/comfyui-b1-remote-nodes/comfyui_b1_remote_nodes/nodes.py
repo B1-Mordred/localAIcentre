@@ -810,6 +810,55 @@ def write_download(
     return str(target), len(content), digest
 
 
+def download_file_proof(
+    file_path: str,
+    byte_count: int,
+    digest: str,
+    *,
+    source_path: str = "",
+    expected_bytes: int | None = None,
+    expected_sha256: str | None = None,
+    placeholder_proof: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    original_path = Path(file_path)
+    resolved_path = original_path.resolve()
+    output_dir = configured_download_dir().resolve()
+    try:
+        relative_path = resolved_path.relative_to(output_dir)
+    except ValueError as exc:
+        raise B1RemoteNodeError("downloaded artifact path escaped the configured output directory") from exc
+    if original_path.is_symlink():
+        raise B1RemoteNodeError("downloaded artifact must not be a symlink")
+    stat_result = resolved_path.stat()
+    content = resolved_path.read_bytes()
+    file_digest = validate_download_integrity(content, byte_count, digest)
+    mode = stat_result.st_mode & 0o777
+    private_file_mode = os.name == "nt" or (mode & 0o077) == 0
+    if not private_file_mode:
+        raise B1RemoteNodeError(f"downloaded artifact mode is too broad: {oct(mode)}")
+    proof = {
+        "filename": resolved_path.name,
+        "relative_path": relative_path.as_posix(),
+        "byte_count": byte_count,
+        "stat_size": stat_result.st_size,
+        "sha256": digest,
+        "file_sha256": file_digest,
+        "path_within_download_dir": True,
+        "symlink": False,
+        "private_file_mode": private_file_mode,
+        "file_mode": oct(mode),
+    }
+    if source_path:
+        proof["source_path"] = source_path
+    if expected_bytes is not None:
+        proof["expected_bytes"] = expected_bytes
+    if expected_sha256 is not None:
+        proof["expected_sha256"] = expected_sha256
+    if placeholder_proof is not None:
+        proof["placeholder_proof"] = placeholder_proof
+    return proof
+
+
 def unique_download_target(target: Path, digest: str) -> Path:
     if not target.exists() and not target.is_symlink():
         return target
@@ -1156,14 +1205,21 @@ class B1TextToSpeech:
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "STRING")
-    RETURN_NAMES = ("file_path", "bytes", "sha256")
+    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("file_path", "bytes", "sha256", "proof_json")
     FUNCTION = "run"
     CATEGORY = "B1 AI Hub"
 
     def run(self, model: str, text: str, voice: str, response_format: str = "wav", runtime_policy: str = "any", filename: str = "speech.wav"):
-        file_path, byte_count, digest, _proof = text_to_speech_download(model, text, voice, response_format, runtime_policy, filename)
-        return file_path, byte_count, digest
+        file_path, byte_count, digest, placeholder_proof = text_to_speech_download(model, text, voice, response_format, runtime_policy, filename)
+        proof = download_file_proof(
+            file_path,
+            byte_count,
+            digest,
+            source_path="/v1/audio/speech",
+            placeholder_proof=placeholder_proof,
+        )
+        return file_path, byte_count, digest, json_output(proof)
 
 
 class B1SpeechToText:
@@ -1318,8 +1374,8 @@ class B1DownloadArtifact:
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "STRING")
-    RETURN_NAMES = ("file_path", "bytes", "sha256")
+    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("file_path", "bytes", "sha256", "proof_json")
     FUNCTION = "run"
     CATEGORY = "B1 AI Hub"
 
@@ -1327,7 +1383,16 @@ class B1DownloadArtifact:
         path, expected_bytes, expected_digest, record_name = artifact_reference(artifact_url, artifact_index)
         content, headers = request_bytes(path, method="GET", timeout_seconds=1800)
         preferred = filename.strip() or record_name or path.rsplit("/", 1)[-1]
-        return write_download(content, headers, preferred, expected_bytes=expected_bytes, expected_sha256=expected_digest)
+        file_path, byte_count, digest = write_download(content, headers, preferred, expected_bytes=expected_bytes, expected_sha256=expected_digest)
+        proof = download_file_proof(
+            file_path,
+            byte_count,
+            digest,
+            source_path=path,
+            expected_bytes=expected_bytes,
+            expected_sha256=expected_digest,
+        )
+        return file_path, byte_count, digest, json_output(proof)
 
 
 NODE_CLASS_MAPPINGS = {

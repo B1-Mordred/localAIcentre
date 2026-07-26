@@ -291,13 +291,20 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
             selected_model = nodes.B1SelectModelAlias().run(model)[0]
             self.assertEqual(selected_model, model)
             self.record_check("model_alias_selected", model=selected_model)
-            file_path, byte_count, digest, placeholder_proof = nodes.text_to_speech_download(
+            file_path, byte_count, digest, proof_raw = nodes.B1TextToSpeech().run(
                 model,
                 "B1 remote-node non-Comfy compatibility test.",
                 "default",
                 runtime_policy=runtime_policy,
                 filename="b1-remote-node-non-comfy.wav",
             )
+            node_proof = json.loads(proof_raw)
+            placeholder_proof = node_proof.get("placeholder_proof") if isinstance(node_proof.get("placeholder_proof"), dict) else {
+                "placeholder": None,
+                "cpu_audio_engine": None,
+                "placeholder_failure": True,
+                "reasons": ["node_placeholder_proof_missing"],
+            }
             post_run_stop_verification = verify_server_side_comfyui_stopped_via_admin()
             self.record_check("server_side_comfyui_still_stopped_after_operation", **post_run_stop_verification)
         self.record_check(
@@ -308,6 +315,7 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
             byte_count=byte_count,
             sha256=digest,
             placeholder_proof=placeholder_proof,
+            node_proof=node_proof,
             placeholder_allowed=self.allow_placeholder,
         )
         self.assertEqual(Path(file_path).parent.resolve(), output_dir)

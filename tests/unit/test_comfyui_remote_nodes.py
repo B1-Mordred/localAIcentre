@@ -451,7 +451,7 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
 
         self.patch_attr("request_bytes", fake_request_bytes)
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
-            file_path, byte_count, digest = nodes.B1TextToSpeech().run("tts-fast", "hello", "default", runtime_policy="non_comfy_only")
+            file_path, byte_count, digest, proof_raw = nodes.B1TextToSpeech().run("tts-fast", "hello", "default", runtime_policy="non_comfy_only")
             self.assertTrue(Path(file_path).is_file())
 
         self.assertEqual(calls[0]["path"], "/v1/audio/speech")
@@ -460,6 +460,16 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(calls[0]["payload"]["runtime_policy"], "non_comfy_only")
         self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["source_path"], "/v1/audio/speech")
+        self.assertEqual(proof["byte_count"], byte_count)
+        self.assertEqual(proof["file_sha256"], digest)
+        self.assertTrue(proof["path_within_download_dir"])
+        self.assertTrue(proof["private_file_mode"])
+        self.assertEqual(
+            proof["placeholder_proof"],
+            {"placeholder": False, "cpu_audio_engine": "piper", "placeholder_failure": False, "reasons": []},
+        )
 
     def test_text_to_speech_download_returns_placeholder_proof(self) -> None:
         def fake_request_bytes(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
@@ -677,8 +687,8 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
                     nodes.B1DownloadArtifact().run(value, "bad.png")
 
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
-            file_path, byte_count, digest = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
-            second_path, second_byte_count, second_digest = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            file_path, byte_count, digest, proof_raw = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            second_path, second_byte_count, second_digest, second_proof_raw = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
             first = Path(file_path)
             second = Path(second_path)
             self.assertEqual(first.parent, Path(tmp).resolve())
@@ -690,6 +700,13 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(first.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(second.stat().st_mode & 0o777, 0o600)
+            proof = json.loads(proof_raw)
+            second_proof = json.loads(second_proof_raw)
+            self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.png")
+            self.assertEqual(proof["relative_path"], first.name)
+            self.assertEqual(proof["file_sha256"], digest)
+            self.assertEqual(second_proof["relative_path"], second.name)
+            self.assertEqual(second_proof["file_sha256"], second_digest)
 
         self.assertEqual(byte_count, len(b"\x89PNG\r\n\x1a\n"))
         self.assertEqual(digest, nodes.hashlib.sha256(b"\x89PNG\r\n\x1a\n").hexdigest())
@@ -713,13 +730,18 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             "sha256": digest.upper(),
         }
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
-            file_path, byte_count, actual_digest = nodes.B1DownloadArtifact().run(json.dumps(artifact))
+            file_path, byte_count, actual_digest, proof_raw = nodes.B1DownloadArtifact().run(json.dumps(artifact))
             self.assertEqual(Path(file_path).name, "server_result.png")
             self.assertEqual(Path(file_path).read_bytes(), content)
 
         self.assertEqual(calls[0]["path"], "/artifacts/runtime/job/0.png")
         self.assertEqual(byte_count, len(content))
         self.assertEqual(actual_digest, digest)
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["expected_bytes"], len(content))
+        self.assertEqual(proof["expected_sha256"], digest)
+        self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.png")
+        self.assertTrue(proof["private_file_mode"])
 
     def test_artifact_download_accepts_artifact_list_json_by_index(self) -> None:
         content = b"RIFF....WEBP"
@@ -738,12 +760,16 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             ]
         }
         with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
-            file_path, byte_count, actual_digest = nodes.B1DownloadArtifact().run(json.dumps(artifact_list), artifact_index=1)
+            file_path, byte_count, actual_digest, proof_raw = nodes.B1DownloadArtifact().run(json.dumps(artifact_list), artifact_index=1)
 
         self.assertEqual(seen_paths, ["/artifacts/runtime/job/1.webp"])
         self.assertEqual(byte_count, len(content))
         self.assertEqual(actual_digest, digest)
         self.assertEqual(Path(file_path).suffix, ".webp")
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["source_path"], "/artifacts/runtime/job/1.webp")
+        self.assertEqual(proof["expected_bytes"], len(content))
+        self.assertEqual(proof["expected_sha256"], digest)
 
         for bad_index in [-1, 2]:
             with self.subTest(bad_index=bad_index):
@@ -772,6 +798,19 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             with self.assertRaisesRegex(nodes.B1RemoteNodeError, "size mismatch"):
                 nodes.B1DownloadArtifact().run(json.dumps(mismatched_size))
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_file_proof_rechecks_private_file_digest_and_location(self) -> None:
+        content = b"verified content"
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest = nodes.write_download(content, {"content-type": "application/octet-stream"}, "result.bin")
+            proof = nodes.download_file_proof(file_path, byte_count, digest, source_path="/artifacts/runtime/job/0.bin")
+            self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.bin")
+            self.assertEqual(proof["file_sha256"], digest)
+            self.assertTrue(proof["path_within_download_dir"])
+
+            Path(file_path).write_bytes(b"tampered")
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "size mismatch"):
+                nodes.download_file_proof(file_path, byte_count, digest)
 
     def test_artifact_record_metadata_rejects_unsafe_values(self) -> None:
         for payload in [
@@ -947,6 +986,8 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         for name in REQUIRED_REMOTE_NODE_CLASSES:
             self.assertIn(name, nodes.NODE_CLASS_MAPPINGS)
             self.assertIn(name, nodes.NODE_DISPLAY_NAME_MAPPINGS)
+        self.assertEqual(nodes.B1TextToSpeech.RETURN_NAMES, ("file_path", "bytes", "sha256", "proof_json"))
+        self.assertEqual(nodes.B1DownloadArtifact.RETURN_NAMES, ("file_path", "bytes", "sha256", "proof_json"))
 
 
 if __name__ == "__main__":
