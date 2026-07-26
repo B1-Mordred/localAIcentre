@@ -2,7 +2,7 @@
   "id": "transcription",
   "version": "0.1.0",
   "display_name": "Transcription",
-  "description": "Safe placeholder workflow definition for local CPU speech-to-text.",
+  "description": "Runnable local CPU speech-to-text workflow for Media Studio using the managed stt-default alias.",
   "modality": "stt",
   "operation": "transcription",
   "model_alias": "stt-default",

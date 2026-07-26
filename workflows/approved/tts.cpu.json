@@ -2,7 +2,7 @@
   "id": "tts",
   "version": "0.1.0",
   "display_name": "Text to Speech",
-  "description": "Safe placeholder workflow definition for fast local CPU speech.",
+  "description": "Runnable local CPU text-to-speech workflow for Media Studio using the managed tts-fast alias.",
   "modality": "tts",
   "operation": "speech",
   "model_alias": "tts-fast",

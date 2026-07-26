@@ -8369,11 +8369,25 @@ async def self_test_artifact_delivery() -> dict[str, Any]:
     )
 
 
+async def self_test_published_workflows() -> dict[str, Any]:
+    try:
+        rows = await database.list_workflows()
+        workflows = [public_workflow(row) for row in rows]
+    except Exception as exc:
+        severity = "failed" if settings.runtime_deployment_mode == "production" else "warning"
+        detail = f"published workflow readiness could not be inspected: {exc.__class__.__name__}"
+        if severity == "warning":
+            detail += "; development mode permits bootstrapping only"
+        return selftest_policy.check("workflows:starter-readiness", severity, detail)
+    return selftest_policy.starter_workflow_readiness_check(workflows, settings.runtime_deployment_mode)
+
+
 async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]:
     return await asyncio.gather(
         self_test_caddy_internal_ca(),
         self_test_tls_routing(),
         self_test_tiny_inference(subject_id),
+        self_test_published_workflows(),
         self_test_runtime_unload(),
         self_test_localai_build_info(),
         self_test_localai_status(),

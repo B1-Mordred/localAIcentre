@@ -33,6 +33,50 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(selftest.check_http_result("agent", {"ok": True})["status"], "ok")
         self.assertEqual(selftest.check_http_result("agent", None, "timeout")["status"], "degraded")
 
+    def starter_workflows(self) -> list[dict[str, object]]:
+        workflows: list[dict[str, object]] = []
+        for workflow_id in selftest.STARTER_WORKFLOW_IDS:
+            is_cpu = workflow_id in selftest.CPU_STARTER_WORKFLOWS
+            expectation = selftest.CPU_STARTER_WORKFLOWS.get(workflow_id, {})
+            workflows.append(
+                {
+                    "id": workflow_id,
+                    "status": "published" if is_cpu else "needs_dependencies",
+                    "description": "Runnable local CPU workflow" if is_cpu else "Safe placeholder workflow definition",
+                    "modality": expectation.get("modality", "image"),
+                    "operation": expectation.get("operation", "generation"),
+                    "backend_policy": expectation.get("backend_policy", "comfyui-only"),
+                    "dependency_status": {"ready": is_cpu},
+                    "execution_summary": {
+                        "selected_runtime": expectation.get("runtime", "comfyui"),
+                        "requires_gpu_lease": not is_cpu,
+                        "workflow_json_node_count": 0,
+                    },
+                }
+            )
+        return workflows
+
+    def test_starter_workflow_readiness_accepts_ready_cpu_starters_and_pending_gpu_starters(self) -> None:
+        result = selftest.starter_workflow_readiness_check(self.starter_workflows(), "production")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual({item["id"] for item in result["data"]["cpu_ready"]}, {"tts", "transcription"})
+        self.assertEqual(result["data"]["missing"], [])
+        self.assertEqual(result["data"]["cpu_blockers"], [])
+
+    def test_starter_workflow_readiness_fails_missing_or_placeholder_cpu_starter_in_production(self) -> None:
+        workflows = [workflow for workflow in self.starter_workflows() if workflow["id"] != "transcription"]
+        for workflow in workflows:
+            if workflow["id"] == "tts":
+                workflow["description"] = "Safe placeholder workflow definition for fast local CPU speech."
+
+        result = selftest.starter_workflow_readiness_check(workflows, "production")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("missing starter workflows: transcription", result["detail"])
+        self.assertIn("CPU starter workflows are not ready: tts", result["detail"])
+        self.assertEqual(result["data"]["cpu_blockers"][0]["id"], "tts")
+
     def test_hardware_resource_policy_passes_when_metrics_satisfy_policy(self) -> None:
         result = selftest.hardware_resource_policy_check(
             {

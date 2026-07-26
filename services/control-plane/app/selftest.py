@@ -22,6 +22,22 @@ SAFE_PERMISSIONS_POLICY_DIRECTIVES = {
     "microphone": ("microphone=()", "microphone=(self)"),
     "geolocation": ("geolocation=()",),
 }
+STARTER_WORKFLOW_IDS = (
+    "text-to-image",
+    "image-to-image",
+    "inpainting-outpainting",
+    "background-removal",
+    "upscaling",
+    "text-to-video",
+    "image-to-video",
+    "frame-interpolation",
+    "tts",
+    "transcription",
+)
+CPU_STARTER_WORKFLOWS = {
+    "tts": {"modality": "tts", "operation": "speech", "runtime": "audio-cpu", "backend_policy": "non-comfy-only"},
+    "transcription": {"modality": "stt", "operation": "transcription", "runtime": "audio-cpu", "backend_policy": "non-comfy-only"},
+}
 MIB_PER_GIB = 1024
 BYTES_PER_GIB = 1024**3
 HOST_TOTAL_RAM_KERNEL_RESERVE_TOLERANCE = 0.97
@@ -76,6 +92,86 @@ def check_http_result(name: str, payload: dict[str, Any] | None, error: str | No
     if payload is None:
         return check(name, "degraded", "no response payload")
     return check(name, "ok", "response received", payload)
+
+
+def starter_workflow_readiness_check(workflows: list[dict[str, Any]], deployment_mode: str) -> dict[str, Any]:
+    name = "workflows:starter-readiness"
+    mode = deployment_mode.strip().lower()
+    failure_status = "failed" if mode == "production" else "warning"
+    by_id = {str(workflow.get("id")): workflow for workflow in workflows if isinstance(workflow.get("id"), str)}
+    missing = [workflow_id for workflow_id in STARTER_WORKFLOW_IDS if workflow_id not in by_id]
+    cpu_blockers: list[dict[str, Any]] = []
+    cpu_ready: list[dict[str, Any]] = []
+    pending_gpu_or_model_workflows: list[dict[str, Any]] = []
+    for workflow_id, expectation in CPU_STARTER_WORKFLOWS.items():
+        workflow = by_id.get(workflow_id)
+        if workflow is None:
+            continue
+        summary = workflow.get("execution_summary") if isinstance(workflow.get("execution_summary"), dict) else {}
+        dependency_status = workflow.get("dependency_status") if isinstance(workflow.get("dependency_status"), dict) else {}
+        description = str(workflow.get("description") or "")
+        reasons: list[str] = []
+        if workflow.get("status") != "published":
+            reasons.append(f"status is {workflow.get('status') or 'missing'}")
+        if dependency_status.get("ready") is not True:
+            reasons.append("dependencies are not ready")
+        if workflow.get("backend_policy") != expectation["backend_policy"]:
+            reasons.append(f"backend_policy is {workflow.get('backend_policy') or 'missing'}")
+        if workflow.get("modality") != expectation["modality"]:
+            reasons.append(f"modality is {workflow.get('modality') or 'missing'}")
+        if workflow.get("operation") != expectation["operation"]:
+            reasons.append(f"operation is {workflow.get('operation') or 'missing'}")
+        if summary.get("selected_runtime") != expectation["runtime"]:
+            reasons.append(f"selected runtime is {summary.get('selected_runtime') or 'missing'}")
+        if summary.get("requires_gpu_lease") is True:
+            reasons.append("CPU starter workflow unexpectedly requires a GPU lease")
+        if "placeholder" in description.lower():
+            reasons.append("description still labels this runnable CPU workflow as a placeholder")
+        item = {
+            "id": workflow_id,
+            "status": workflow.get("status"),
+            "selected_runtime": summary.get("selected_runtime"),
+            "ready": dependency_status.get("ready"),
+        }
+        if reasons:
+            cpu_blockers.append({**item, "reasons": reasons})
+        else:
+            cpu_ready.append(item)
+    for workflow_id in STARTER_WORKFLOW_IDS:
+        if workflow_id in CPU_STARTER_WORKFLOWS:
+            continue
+        workflow = by_id.get(workflow_id)
+        if workflow is None:
+            continue
+        summary = workflow.get("execution_summary") if isinstance(workflow.get("execution_summary"), dict) else {}
+        pending_gpu_or_model_workflows.append(
+            {
+                "id": workflow_id,
+                "status": workflow.get("status"),
+                "selected_runtime": summary.get("selected_runtime"),
+                "workflow_json_node_count": summary.get("workflow_json_node_count"),
+                "ready": (workflow.get("dependency_status") or {}).get("ready") if isinstance(workflow.get("dependency_status"), dict) else None,
+            }
+        )
+    data = {
+        "deployment_mode": mode,
+        "required_starter_workflows": list(STARTER_WORKFLOW_IDS),
+        "missing": missing,
+        "cpu_ready": cpu_ready,
+        "cpu_blockers": cpu_blockers,
+        "pending_gpu_or_model_workflows": pending_gpu_or_model_workflows,
+    }
+    blockers: list[str] = []
+    if missing:
+        blockers.append("missing starter workflows: " + ", ".join(missing))
+    if cpu_blockers:
+        blockers.append("CPU starter workflows are not ready: " + ", ".join(item["id"] for item in cpu_blockers))
+    if blockers:
+        detail = "; ".join(blockers)
+        if mode != "production":
+            detail += "; development mode permits bootstrapping only"
+        return check(name, failure_status, detail, data)
+    return check(name, "ok", "starter workflows are seeded and CPU Media Studio workflows are ready", data)
 
 
 def _number(value: Any) -> float | None:
