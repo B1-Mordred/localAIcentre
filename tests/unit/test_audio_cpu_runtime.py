@@ -207,6 +207,7 @@ with wave.open(str(output), "wb") as wav:
         self.assertEqual(speech["status"], "ok")
         self.assertFalse(speech["gpu_lease_required"])
         self.assertEqual(speech["measurements"]["peak_vram_mib"], 0)
+        self.assertGreater(speech["measurements"]["peak_ram_mib"], 0)
         self.assertGreater(speech["measurements"]["speech_bytes"], 44)
         self.assertEqual(embedding["measurements"]["embedding_dimensions"], 16)
         self.assertTrue(embedding["measurements"]["embedding_nonzero"])
@@ -387,6 +388,7 @@ with wave.open(str(output), "wb") as wav:
         self.assertGreater(len(speech.body), 44)
         self.assertEqual(smoke["status"], "ok")
         self.assertFalse(smoke["placeholder"])
+        self.assertGreater(smoke["measurements"]["peak_ram_mib"], 0)
         self.assertGreater(smoke["measurements"]["speech_bytes"], 44)
         self.assertEqual(transcription.status_code, 503)
         self.assertIn(b"engine_unavailable", transcription.body)
@@ -557,6 +559,7 @@ with wave.open(str(output), "wb") as wav:
         self.assertEqual(smoke["status"], "ok")
         self.assertEqual(smoke["engine"], "onnx")
         self.assertFalse(smoke["placeholder"])
+        self.assertGreater(smoke["measurements"]["peak_ram_mib"], 0)
         self.assertEqual(smoke["measurements"]["embedding_dimensions"], 4)
 
     def test_vosk_stt_engine_uses_resolved_model_version_runtime_view(self) -> None:
@@ -626,6 +629,7 @@ with wave.open(str(output), "wb") as wav:
         self.assertEqual(smoke["status"], "ok")
         self.assertEqual(smoke["engine"], "vosk")
         self.assertFalse(smoke["placeholder"])
+        self.assertGreater(smoke["measurements"]["peak_ram_mib"], 0)
         self.assertEqual(smoke["measurements"]["transcript_chars"], len("hello from vosk"))
         self.assertEqual(len(calls), 2)
 

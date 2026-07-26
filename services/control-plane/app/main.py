@@ -4919,9 +4919,8 @@ def model_measurement_coverage_for_alias(
         blockers.append("no persisted ok model smoke measurement exists")
     if expected_runtime and runtime != expected_runtime:
         blockers.append(f"measurement runtime {runtime or 'unknown'} does not match expected runtime {expected_runtime}")
-    return {
+    entry = {
         "alias": alias_id,
-        "ready": not blockers,
         "status": alias_record.get("status"),
         "modality": alias_record.get("modality"),
         "expected_runtime": expected_runtime,
@@ -4940,6 +4939,12 @@ def model_measurement_coverage_for_alias(
         "latest_ok_run": latest_ok_run or {},
         "blockers": blockers,
     }
+    for blocker in acceptance.model_measurement_blockers(alias_id, entry, expected_runtime=expected_runtime or ""):
+        if blocker not in blockers:
+            blockers.append(blocker)
+    entry["ready"] = not blockers
+    entry["blockers"] = blockers
+    return entry
 
 
 def model_measurement_next_action(entry: dict[str, Any]) -> str:
@@ -5522,10 +5527,13 @@ async def run_model_runtime_smoke(manifest: Any, auth: AuthContext) -> dict[str,
             peak_vram_mib = max(value for value in vram_candidates if value is not None) if any(value is not None for value in vram_candidates) else None
             peak_ram_mib = max(value for value in ram_candidates if value is not None) if any(value is not None for value in ram_candidates) else None
         else:
+            load_time_ms = 0
             run_started = monotonic()
             hook_result = await post_cpu_runtime_smoke(manifest.preferred_runtime, job)
             run_time_ms = elapsed_milliseconds(run_started)
             peak_vram_mib = hook_int_measurement(hook_result, "peak_vram_mib")
+            if peak_vram_mib is None:
+                peak_vram_mib = 0
             peak_ram_mib = hook_int_measurement(hook_result, "peak_ram_mib")
     except Exception as exc:
         completed_at = datetime.now(tz=UTC)

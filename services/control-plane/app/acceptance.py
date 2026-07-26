@@ -871,6 +871,10 @@ def _model_measurement_ok(alias: str, value: Any, *, expected_runtime: str = "")
     return not _model_measurement_blockers(alias, value, expected_runtime=expected_runtime)
 
 
+def model_measurement_blockers(alias: str, value: Any, *, expected_runtime: str = "") -> list[str]:
+    return _model_measurement_blockers(alias, value, expected_runtime=expected_runtime)
+
+
 def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
     required_aliases = _as_string_list(payload.get("required_model_aliases"))
     raw_measurements = payload.get("model_measurements") if isinstance(payload.get("model_measurements"), dict) else {}

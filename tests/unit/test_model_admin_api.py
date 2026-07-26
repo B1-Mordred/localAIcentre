@@ -58,6 +58,8 @@ def measured_manifest_payload(alias: str, runtime: str, *, model_id: str | None 
         "preferred_runtime": runtime,
         "runtimes": [runtime],
     }
+    if runtime == "audio-cpu":
+        payload["resource_estimate"] = {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1}
     payload["measurements"] = {
         "schema": "b1-ai-hub-model-measurements/v1",
         "source": "control-plane",
@@ -75,8 +77,9 @@ def measured_manifest_payload(alias: str, runtime: str, *, model_id: str | None 
                 "started_at": "2026-07-24T12:00:00+00:00",
                 "completed_at": "2026-07-24T12:00:03+00:00",
                 "duration_ms": 3000,
+                "load_time_ms": 0 if runtime == "audio-cpu" else 900,
                 "run_time_ms": 500,
-                "peak_vram_mib": 4096,
+                "peak_vram_mib": 0 if runtime == "audio-cpu" else 4096,
                 "peak_ram_mib": 2048,
                 "unsafe_extra": "not public",
             }
@@ -1721,6 +1724,49 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertIn("no persisted ok model smoke measurement exists", summary)
         self.assertIn("image-default", summary["no persisted ok model smoke measurement exists"])
 
+    def test_acceptance_model_measurement_coverage_rejects_incomplete_smoke_metrics(self) -> None:
+        image_manifest = measured_manifest_payload("image-default", "comfyui")
+        image_manifest["measurements"]["runs"][0].pop("peak_vram_mib")
+        image_manifest["measurements"]["runs"][0].pop("load_time_ms")
+        tts_manifest = measured_manifest_payload("tts-fast", "audio-cpu")
+        tts_manifest["measurements"]["runs"][0]["peak_vram_mib"] = 32
+        aliases = [
+            {
+                "id": "image-default",
+                "status": "installed",
+                "preferred_runtime": "comfyui",
+                "runtimes": ["comfyui"],
+                "resolved_model": {"id": image_manifest["id"], "version": image_manifest["version"]},
+            },
+            {
+                "id": "tts-fast",
+                "status": "installed",
+                "preferred_runtime": "audio-cpu",
+                "runtimes": ["audio-cpu"],
+                "resolved_model": {"id": tts_manifest["id"], "version": tts_manifest["version"]},
+            },
+        ]
+        records = [model_record_from_manifest(image_manifest), model_record_from_manifest(tts_manifest)]
+
+        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+
+        self.assertEqual(coverage["status"], "incomplete")
+        image = next(
+            entry
+            for group in coverage["groups"]
+            for entry in group["measurements"]
+            if entry["alias"] == "image-default"
+        )
+        tts = next(
+            entry
+            for group in coverage["groups"]
+            for entry in group["measurements"]
+            if entry["alias"] == "tts-fast"
+        )
+        self.assertIn("latest run load_time_ms is missing", image["blockers"])
+        self.assertIn("latest run peak_vram_mib is missing for GPU runtime", image["blockers"])
+        self.assertIn("CPU-only measurement reported GPU VRAM usage", tts["blockers"])
+
     def test_admin_models_includes_acceptance_measurement_coverage(self) -> None:
         manifest = measured_manifest_payload("chat-default", "localai")
         record = model_record_from_manifest(manifest)
@@ -1773,6 +1819,53 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(job["request_params"]["runtime_smoke"], runtime_smoke)
         self.assertEqual(payload["runtime_smoke"], runtime_smoke)
         self.assertEqual(payload["runtime_smoke_config"], runtime_smoke["localai"])
+
+    def test_model_runtime_smoke_cpu_records_zero_load_and_hook_metrics(self) -> None:
+        data = b"tiny cpu model"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest_payload_data = {
+            **manifest_payload(digest, len(data)),
+            "id": "b1-piper-test",
+            "display_name": "B1 Piper Test",
+            "modality": "tts",
+            "operations": ["tts"],
+            "preferred_runtime": "audio-cpu",
+            "runtimes": ["audio-cpu"],
+            "resource_estimate": {"vram_gib": 0, "ram_gib": 1, "disk_gib": 1},
+            "aliases": ["tts-fast"],
+        }
+        row = model_record_from_manifest(manifest_payload_data)
+        fake_database = FakeDatabase(row, [row], active_jobs=0)
+        self.patch_common(Path(tempfile.gettempdir()), fake_database)
+        manifest = main.model_lifecycle.parse_uploaded_manifest(manifest_payload_data)
+        auth = AuthContext(subject_id="test-admin", role=Role.ADMIN, scopes=frozenset({"*"}))
+        calls: list[dict[str, Any]] = []
+
+        async def fake_post_cpu_runtime_smoke(runtime: str, job: dict[str, Any]) -> dict[str, Any]:
+            await asyncio.sleep(0.001)
+            calls.append({"runtime": runtime, "job": job})
+            return {
+                "status": "ok",
+                "runtime": "audio-cpu",
+                "measurements": {
+                    "peak_vram_mib": 0,
+                    "peak_ram_mib": 256,
+                },
+            }
+
+        self.patch_attr("post_cpu_runtime_smoke", fake_post_cpu_runtime_smoke)
+
+        result = asyncio.run(main.run_model_runtime_smoke(manifest, auth))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["runtime"], "audio-cpu")
+        self.assertEqual(result["load_time_ms"], 0)
+        self.assertGreater(result["run_time_ms"], 0)
+        self.assertEqual(result["peak_vram_mib"], 0)
+        self.assertEqual(result["peak_ram_mib"], 256)
+        self.assertEqual(calls[0]["runtime"], "audio-cpu")
+        self.assertEqual(fake_database.leases, [])
+        self.assertEqual(fake_database.releases, [])
 
     def test_model_runtime_smoke_uses_gpu_preparation_and_records_peak_metrics(self) -> None:
         data = b"tiny model"

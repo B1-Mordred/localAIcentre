@@ -9,8 +9,10 @@ import json
 import math
 import os
 import re
+import resource
 import shutil
 import subprocess
+import sys
 import tempfile
 import wave
 from contextlib import suppress
@@ -777,6 +779,16 @@ async def json_body(request: Request) -> dict[str, Any]:
     return {}
 
 
+def process_peak_ram_mib() -> int:
+    with suppress(Exception):
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if value > 0:
+            if sys.platform == "darwin":
+                return max(1, math.ceil(value / (1024 * 1024)))
+            return max(1, math.ceil(value / 1024))
+    return 1
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     engine = configured_engine()
@@ -849,12 +861,14 @@ async def runtime_smoke(request: Request) -> Any:
             "details": engine_details(),
             "measurements": {
                 "peak_vram_mib": 0,
+                "peak_ram_mib": process_peak_ram_mib(),
                 "placeholder": placeholder,
             },
         }
 
     measurements: dict[str, Any] = {
         "peak_vram_mib": 0,
+        "peak_ram_mib": process_peak_ram_mib(),
         "placeholder": placeholder,
     }
     if modality == "embedding":
