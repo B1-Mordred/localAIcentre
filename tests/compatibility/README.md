@@ -43,8 +43,11 @@ The same path has an opt-in Python compatibility test:
 
 ```bash
 export B1_REMOTE_NODES_LIVE_TEST=1
+install -d -m 0700 ~/.config/b1-ai-hub
+install -m 0600 /dev/null ~/.config/b1-ai-hub/comfyui-remote-nodes.key
+# Paste the scoped remote-node API key into ~/.config/b1-ai-hub/comfyui-remote-nodes.key.
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
-export B1_AI_HUB_API_KEY=...
+export B1_AI_HUB_API_KEY_FILE=~/.config/b1-ai-hub/comfyui-remote-nodes.key
 export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
 export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
 export B1_REMOTE_NODES_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/remote-nodes-non-comfy.json

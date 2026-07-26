@@ -1456,17 +1456,27 @@ Default model: chat-default`
     {
       id: "external-comfyui",
       label: "External ComfyUI",
-      code: `export B1_API_BASE=${API_BASE}
-export B1_API_KEY=<B1_API_KEY>
+      code: `mkdir -p ~/.config/b1-ai-hub
+install -m 600 /dev/null ~/.config/b1-ai-hub/comfyui-remote-nodes.key
+# paste the scoped API key into ~/.config/b1-ai-hub/comfyui-remote-nodes.key
+export B1_AI_HUB_API_BASE=${API_BASE}
+export B1_AI_HUB_API_KEY_FILE=~/.config/b1-ai-hub/comfyui-remote-nodes.key
+export B1_AI_HUB_DOWNLOAD_DIR=~/ComfyUI/output/b1-ai-hub
+# optional when Caddy's internal CA is not trusted globally:
+# export B1_AI_HUB_CA_FILE=~/.config/b1-ai-hub/b1-caddy-root.crt
 python -m pip install ./integrations/comfyui-b1-remote-nodes`
     },
     {
       id: "modelhub-sync",
       label: "Model Hub Sync",
-      code: `python -m pip install ./integrations/b1-model-client
+      code: `mkdir -p ~/.config/b1-ai-hub
+install -m 600 /dev/null ~/.config/b1-ai-hub/modelhub-client.key
+# paste the one-time Model Hub client key into ~/.config/b1-ai-hub/modelhub-client.key
+python -m pip install ./integrations/b1-model-client
 export B1_MODELHUB_URL=https://models.ai.b1.germering
-export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>
+export B1_MODELHUB_TOKEN_FILE=~/.config/b1-ai-hub/modelhub-client.key
 b1-model-client plan --cache ~/.cache/b1-ai-hub/models chat-default
+# add --accept-license only after reviewing gated licences in the plan
 b1-model-client sync --cache ~/.cache/b1-ai-hub/models chat-default`
     },
     {

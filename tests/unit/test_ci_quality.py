@@ -154,6 +154,8 @@ class CiQualityGateTests(unittest.TestCase):
         target = self.makefile_text[target_start:target_end]
 
         self.assertIn("B1_QUALITY_PYTHON ?= python3.12", self.makefile_text)
+        self.assertIn("B1_PIP_DEFAULT_TIMEOUT ?= 180", self.makefile_text)
+        self.assertIn("B1_PIP_RETRIES ?= 8", self.makefile_text)
         quality_image_line = next(
             line for line in self.makefile_text.splitlines() if line.startswith("B1_QUALITY_PYTHON_IMAGE ?=")
         )
@@ -169,6 +171,9 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("generate_openapi.py --output docs/openapi.json --check", target)
         self.assertIn("generate_openapi_client.py --check", target)
         self.assertIn("pip install PyYAML==6.0.2", target)
+        self.assertIn('PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)"', target)
+        self.assertIn('PIP_RETRIES="$(B1_PIP_RETRIES)"', target)
+        self.assertIn("PIP_DISABLE_PIP_VERSION_CHECK=1", target)
         self.assertIn("$(MAKE) validate openapi-check", target)
         self.assertIn("$(MAKE) frontend", target)
 

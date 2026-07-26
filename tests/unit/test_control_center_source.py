@@ -6,12 +6,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CENTER = ROOT / "web" / "control-center" / "src" / "main.tsx"
+EXTERNAL_CONSUMERS_DOC = ROOT / "docs" / "external-consumers.md"
+REMOTE_NODES_README = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "README.md"
+REMOTE_NODES_EXAMPLES_README = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples" / "README.md"
+REMOTE_NODES_COMPATIBILITY_README = ROOT / "tests" / "compatibility" / "README.md"
 
 
 class ControlCenterSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = CONTROL_CENTER.read_text(encoding="utf-8")
+        cls.external_consumer_docs = {
+            "external-consumers": EXTERNAL_CONSUMERS_DOC.read_text(encoding="utf-8"),
+            "remote-nodes": REMOTE_NODES_README.read_text(encoding="utf-8"),
+            "remote-node-examples": REMOTE_NODES_EXAMPLES_README.read_text(encoding="utf-8"),
+            "remote-node-compatibility": REMOTE_NODES_COMPATIBILITY_README.read_text(encoding="utf-8"),
+        }
 
     def test_dashboard_surfaces_recovery_required_job_metric(self) -> None:
         self.assertIn("recovery_required_last_hour: number;", self.source)
@@ -71,12 +81,29 @@ class ControlCenterSourceTests(unittest.TestCase):
             self.assertIn(f'label: "{label}"', self.source)
         self.assertIn("python -m pip install ./integrations/b1-model-client", self.source)
         self.assertIn("B1_MODELHUB_URL=https://models.ai.b1.germering", self.source)
+        self.assertIn("B1_MODELHUB_TOKEN_FILE=~/.config/b1-ai-hub/modelhub-client.key", self.source)
+        self.assertIn("install -m 600 /dev/null ~/.config/b1-ai-hub/modelhub-client.key", self.source)
         self.assertIn("b1-model-client plan --cache ~/.cache/b1-ai-hub/models chat-default", self.source)
+        self.assertIn("add --accept-license only after reviewing gated licences in the plan", self.source)
         self.assertIn("b1-model-client sync --cache ~/.cache/b1-ai-hub/models chat-default", self.source)
         self.assertIn("https://voice.ai.b1.germering", self.source)
         self.assertIn("python -m pip install ./integrations/comfyui-b1-remote-nodes", self.source)
+        self.assertIn("B1_AI_HUB_API_BASE=", self.source)
+        self.assertIn("B1_AI_HUB_API_KEY_FILE=~/.config/b1-ai-hub/comfyui-remote-nodes.key", self.source)
+        self.assertIn("B1_AI_HUB_DOWNLOAD_DIR=~/ComfyUI/output/b1-ai-hub", self.source)
+        self.assertIn("install -m 600 /dev/null ~/.config/b1-ai-hub/comfyui-remote-nodes.key", self.source)
         self.assertIn("<B1_API_KEY>", self.source)
-        self.assertIn("<B1_MODELHUB_KEY>", self.source)
+        self.assertNotIn("export B1_API_BASE=", self.source)
+        self.assertNotIn("export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>", self.source)
+
+    def test_remote_node_docs_prefer_key_file_credentials(self) -> None:
+        for name, text in self.external_consumer_docs.items():
+            with self.subTest(name=name):
+                self.assertIn("B1_AI_HUB_API_KEY_FILE", text)
+                self.assertNotIn("export B1_API_BASE=", text)
+        for name in ("external-consumers", "remote-nodes", "remote-node-compatibility"):
+            with self.subTest(name=name):
+                self.assertIn("comfyui-remote-nodes.key", self.external_consumer_docs[name])
 
     def test_external_access_handles_admin_only_credential_routes(self) -> None:
         self.assertIn("apiClientsAdminOnly", self.source)
