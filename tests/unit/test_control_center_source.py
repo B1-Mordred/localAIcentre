@@ -379,6 +379,12 @@ class ControlCenterSourceTests(unittest.TestCase):
     def test_models_tab_runs_installed_model_smoke_tests(self) -> None:
         self.assertIn("type ModelSmokeTestResult", self.source)
         self.assertIn("const [smokeResult, setSmokeResult]", self.source)
+        self.assertIn("type ModelAcceptanceMeasurementCoverage", self.source)
+        self.assertIn("const [acceptanceCoverage, setAcceptanceCoverage]", self.source)
+        self.assertIn("modelPayload.acceptance_model_measurements", self.source)
+        self.assertIn("Acceptance Measurements", self.source)
+        self.assertIn("Model-smoke coverage: {acceptanceCoverage.status}", self.source)
+        self.assertIn("modelAcceptanceMeasurementLine", self.source)
         self.assertIn("const smokeTestModel = (record: ModelRecord)", self.source)
         self.assertIn("/admin/models/${modelVersionPath(record)}/smoke-test", self.source)
         self.assertIn("body: JSON.stringify({ persist: true })", self.source)

@@ -46,6 +46,58 @@ def manifest_payload(sha256: str, size: int) -> dict[str, Any]:
     }
 
 
+def measured_manifest_payload(alias: str, runtime: str, *, model_id: str | None = None, version: str = "1.0.0") -> dict[str, Any]:
+    data = f"{alias}:{runtime}:{version}".encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    payload = {
+        **manifest_payload(digest, len(data)),
+        "id": model_id or alias.replace("-", "_"),
+        "version": version,
+        "display_name": f"{alias} model",
+        "aliases": [alias],
+        "preferred_runtime": runtime,
+        "runtimes": [runtime],
+    }
+    payload["measurements"] = {
+        "schema": "b1-ai-hub-model-measurements/v1",
+        "source": "control-plane",
+        "updated_at": "2026-07-24T12:00:00+00:00",
+        "original_resource_estimate": payload["resource_estimate"],
+        "latest_resource_estimate": payload["resource_estimate"],
+        "runs": [
+            {
+                "id": f"modelsmoke_{alias}",
+                "type": "install-smoke",
+                "status": "ok",
+                "runtime": runtime,
+                "model_alias": alias,
+                "resolved_model_version": f"{payload['id']}@{version}",
+                "started_at": "2026-07-24T12:00:00+00:00",
+                "completed_at": "2026-07-24T12:00:03+00:00",
+                "duration_ms": 3000,
+                "run_time_ms": 500,
+                "peak_vram_mib": 4096,
+                "peak_ram_mib": 2048,
+                "unsafe_extra": "not public",
+            }
+        ],
+    }
+    return payload
+
+
+def model_record_from_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": payload["id"],
+        "version": payload["version"],
+        "display_name": payload["display_name"],
+        "modality": payload["modality"],
+        "preferred_runtime": payload["preferred_runtime"],
+        "status": "installed",
+        "resource_label": "expected",
+        "manifest": payload,
+    }
+
+
 class FakeDatabase:
     def __init__(
         self,
@@ -1577,6 +1629,119 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(result["model"]["resource_label"], "offload-required")
             self.assertEqual(audit_events[0]["event_type"], "model.smoke_tested")
             self.assertTrue(audit_events[0]["metadata"]["persisted"])
+
+    def test_acceptance_model_measurement_coverage_passes_for_default_aliases(self) -> None:
+        runtime_by_alias = {
+            "chat-default": "localai",
+            "image-default": "comfyui",
+            "tts-quality": "voicebox",
+            "tts-fast": "audio-cpu",
+            "stt-default": "audio-cpu",
+            "image-edit": "comfyui",
+            "video-text": "comfyui",
+        }
+        manifests = {
+            alias: measured_manifest_payload(alias, runtime)
+            for alias, runtime in runtime_by_alias.items()
+        }
+        aliases = [
+            {
+                "id": alias,
+                "status": "installed",
+                "modality": manifests[alias]["modality"],
+                "preferred_runtime": runtime,
+                "runtimes": [runtime],
+                "resource_label": "expected",
+                "resolved_model": {
+                    "id": manifests[alias]["id"],
+                    "version": manifests[alias]["version"],
+                    "display_name": manifests[alias]["display_name"],
+                },
+            }
+            for alias, runtime in runtime_by_alias.items()
+        ]
+        records = [model_record_from_manifest(manifest) for manifest in manifests.values()]
+
+        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+
+        self.assertEqual(coverage["status"], "ok")
+        self.assertEqual(coverage["missing_aliases"], [])
+        gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
+        self.assertEqual(gpu_group["status"], "ok")
+        chat = next(item for item in gpu_group["measurements"] if item["alias"] == "chat-default")
+        self.assertTrue(chat["ready"])
+        self.assertEqual(chat["latest_ok_run"]["peak_vram_mib"], 4096)
+        self.assertNotIn("unsafe_extra", chat["latest_ok_run"])
+
+    def test_acceptance_model_measurement_coverage_reports_missing_smoke_and_runtime_mismatch(self) -> None:
+        chat_manifest = measured_manifest_payload("chat-default", "audio-cpu")
+        image_manifest = measured_manifest_payload("image-default", "comfyui")
+        image_manifest["measurements"]["runs"] = []
+        aliases = [
+            {
+                "id": "chat-default",
+                "status": "installed",
+                "preferred_runtime": "audio-cpu",
+                "runtimes": ["audio-cpu"],
+                "resolved_model": {"id": chat_manifest["id"], "version": chat_manifest["version"]},
+            },
+            {
+                "id": "image-default",
+                "status": "installed",
+                "preferred_runtime": "comfyui",
+                "runtimes": ["comfyui"],
+                "resolved_model": {"id": image_manifest["id"], "version": image_manifest["version"]},
+            },
+        ]
+        records = [model_record_from_manifest(chat_manifest), model_record_from_manifest(image_manifest)]
+
+        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+
+        self.assertEqual(coverage["status"], "incomplete")
+        self.assertIn("chat-default", coverage["missing_aliases"])
+        self.assertIn("image-default", coverage["missing_aliases"])
+        localai_group = next(group for group in coverage["groups"] if group["id"] == "localai_runtime")
+        chat = localai_group["measurements"][0]
+        self.assertIn("does not match expected runtime localai", "; ".join(chat["blockers"]))
+        gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
+        image = next(item for item in gpu_group["measurements"] if item["alias"] == "image-default")
+        self.assertIn("no persisted ok model smoke measurement exists", image["blockers"])
+
+    def test_admin_models_includes_acceptance_measurement_coverage(self) -> None:
+        manifest = measured_manifest_payload("chat-default", "localai")
+        record = model_record_from_manifest(manifest)
+
+        class FakeCatalog:
+            def to_catalog(self) -> dict[str, Any]:
+                return {
+                    "aliases": [
+                        {
+                            "id": "chat-default",
+                            "status": "installed",
+                            "preferred_runtime": "localai",
+                            "runtimes": ["localai"],
+                            "resolved_model": {
+                                "id": manifest["id"],
+                                "version": manifest["version"],
+                                "display_name": manifest["display_name"],
+                            },
+                        }
+                    ],
+                    "profiles": [],
+                    "models": [],
+                }
+
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase(record, [record])
+            self.patch_common(Path(tmp), fake_database, audit_events)
+            self.patch_attr("catalog_snapshot", lambda: FakeCatalog())
+
+            result = asyncio.run(main.admin_models())
+
+        self.assertIn("acceptance_model_measurements", result)
+        self.assertEqual(result["acceptance_model_measurements"]["status"], "incomplete")
+        self.assertEqual(result["acceptance_model_measurements"]["groups"][0]["measurements"][0]["alias"], "chat-default")
 
     def test_model_smoke_runtime_job_forwards_manifest_runtime_smoke_payload(self) -> None:
         data = b"tiny model"

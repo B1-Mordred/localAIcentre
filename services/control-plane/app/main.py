@@ -120,6 +120,30 @@ SERVICE_LOG_SECRET_PATTERNS = [
     (re.compile(r"\bb1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "<redacted>"),
     (re.compile(r"\bb1adm_[A-Za-z0-9_-]+\b"), "<redacted>"),
 ]
+ACCEPTANCE_MODEL_MEASUREMENT_GROUPS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "localai_runtime",
+        "label": "LocalAI runtime acceptance",
+        "aliases": (("chat-default", "localai"),),
+    },
+    {
+        "id": "gpu_acceptance",
+        "label": "RTX 3060 GPU acceptance",
+        "aliases": (("chat-default", "localai"), ("image-default", "comfyui"), ("tts-quality", "voicebox")),
+    },
+    {
+        "id": "installed_workflows",
+        "label": "Installed workflow acceptance",
+        "aliases": (
+            ("chat-default", "localai"),
+            ("tts-fast", "audio-cpu"),
+            ("stt-default", "audio-cpu"),
+            ("image-default", "comfyui"),
+            ("image-edit", "comfyui"),
+            ("video-text", "comfyui"),
+        ),
+    },
+)
 COMFYUI_QUEUE_CANCEL_KEYS = {"delete", "cancel", "prompt_id", "prompt_ids"}
 COMFYUI_PROMPT_KNOWN_TOP_LEVEL_KEYS = {"client_id", "extra_data", "front", "number", "prompt"}
 COMFYUI_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
@@ -4795,6 +4819,139 @@ def public_model_record(row: dict[str, Any]) -> dict[str, Any]:
     return jsonable_encoder(public)
 
 
+def compact_model_smoke_run(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: run.get(key)
+        for key in (
+            "id",
+            "type",
+            "status",
+            "runtime",
+            "model_alias",
+            "resolved_model_version",
+            "started_at",
+            "completed_at",
+            "duration_ms",
+            "load_time_ms",
+            "run_time_ms",
+            "peak_vram_mib",
+            "peak_ram_mib",
+            "resource_estimate",
+        )
+        if key in run
+    }
+
+
+def latest_ok_model_smoke_run(manifest_payload: dict[str, Any], resolved_model_version: str, alias: str) -> tuple[dict[str, Any] | None, int]:
+    measurements = manifest_payload.get("measurements") if isinstance(manifest_payload.get("measurements"), dict) else {}
+    runs = measurements.get("runs") if isinstance(measurements.get("runs"), list) else []
+    manifest_aliases = manifest_payload.get("aliases") if isinstance(manifest_payload.get("aliases"), list) else []
+    ok_runs = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("status") == "ok"
+        and run.get("resolved_model_version") == resolved_model_version
+        and (run.get("model_alias") == alias or alias in manifest_aliases)
+    ]
+    return (compact_model_smoke_run(ok_runs[-1]) if ok_runs else None, len(ok_runs))
+
+
+def model_measurement_coverage_for_alias(
+    alias_id: str,
+    aliases_by_id: dict[str, dict[str, Any]],
+    records_by_ref: dict[str, dict[str, Any]],
+    expected_runtime: str | None = None,
+) -> dict[str, Any]:
+    alias_record = aliases_by_id.get(alias_id)
+    if not isinstance(alias_record, dict):
+        return {
+            "alias": alias_id,
+            "ready": False,
+            "status": "missing_alias",
+            "expected_runtime": expected_runtime,
+            "blockers": [f"alias {alias_id} is not present"],
+        }
+    blockers: list[str] = []
+    if alias_record.get("status") != "installed":
+        blockers.append("alias is not backed by an installed model manifest")
+    resolved = alias_record.get("resolved_model") if isinstance(alias_record.get("resolved_model"), dict) else {}
+    model_id = str(resolved.get("id") or "")
+    model_version = str(resolved.get("version") or "")
+    resolved_model_version = f"{model_id}@{model_version}" if model_id and model_version else ""
+    if not resolved_model_version:
+        blockers.append("alias lacks resolved immutable model evidence")
+    model_record = records_by_ref.get(resolved_model_version)
+    if resolved_model_version and model_record is None:
+        blockers.append("resolved model is absent from installed model records")
+    manifest = model_record.get("manifest") if isinstance(model_record, dict) and isinstance(model_record.get("manifest"), dict) else {}
+    measurements = manifest.get("measurements") if isinstance(manifest.get("measurements"), dict) else {}
+    latest_ok_run, ok_run_count = latest_ok_model_smoke_run(manifest, resolved_model_version, alias_id)
+    runtime = str((latest_ok_run or {}).get("runtime") or alias_record.get("preferred_runtime") or (model_record or {}).get("preferred_runtime") or "")
+    if latest_ok_run is None:
+        blockers.append("no persisted ok model smoke measurement exists")
+    if expected_runtime and runtime != expected_runtime:
+        blockers.append(f"measurement runtime {runtime or 'unknown'} does not match expected runtime {expected_runtime}")
+    return {
+        "alias": alias_id,
+        "ready": not blockers,
+        "status": alias_record.get("status"),
+        "modality": alias_record.get("modality"),
+        "expected_runtime": expected_runtime,
+        "preferred_runtime": alias_record.get("preferred_runtime"),
+        "runtime": runtime,
+        "runtimes": alias_record.get("runtimes") or [],
+        "resource_label": alias_record.get("resource_label") or (model_record or {}).get("resource_label"),
+        "resolved_model_version": resolved_model_version,
+        "model_id": model_id or None,
+        "model_version": model_version or None,
+        "display_name": resolved.get("display_name") or (model_record or {}).get("display_name"),
+        "measurement_available": latest_ok_run is not None,
+        "ok_run_count": ok_run_count,
+        "measurements_updated_at": measurements.get("updated_at") if isinstance(measurements, dict) else "",
+        "latest_resource_estimate": measurements.get("latest_resource_estimate") if isinstance(measurements, dict) else {},
+        "latest_ok_run": latest_ok_run or {},
+        "blockers": blockers,
+    }
+
+
+def acceptance_model_measurement_coverage(aliases: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
+    aliases_by_id = {str(item.get("id")): item for item in aliases if isinstance(item, dict) and item.get("id")}
+    records_by_ref = {
+        f"{item.get('id')}@{item.get('version')}": item
+        for item in records
+        if isinstance(item, dict) and item.get("id") and item.get("version")
+    }
+    groups: list[dict[str, Any]] = []
+    all_required_aliases: set[str] = set()
+    all_missing_aliases: set[str] = set()
+    for group in ACCEPTANCE_MODEL_MEASUREMENT_GROUPS:
+        entries: list[dict[str, Any]] = []
+        for alias_id, expected_runtime in group["aliases"]:
+            all_required_aliases.add(alias_id)
+            entry = model_measurement_coverage_for_alias(alias_id, aliases_by_id, records_by_ref, expected_runtime)
+            if not entry["ready"]:
+                all_missing_aliases.add(alias_id)
+            entries.append(entry)
+        missing = [entry["alias"] for entry in entries if not entry["ready"]]
+        groups.append(
+            {
+                "id": group["id"],
+                "label": group["label"],
+                "status": "ok" if not missing else "incomplete",
+                "required_aliases": [alias for alias, _runtime in group["aliases"]],
+                "missing_aliases": missing,
+                "measurements": entries,
+            }
+        )
+    return {
+        "status": "ok" if not all_missing_aliases else "incomplete",
+        "required_aliases": sorted(all_required_aliases),
+        "missing_aliases": sorted(all_missing_aliases),
+        "groups": groups,
+    }
+
+
 def public_model_alias_policy(row: dict[str, Any]) -> dict[str, Any]:
     return jsonable_encoder(
         {
@@ -8562,13 +8719,16 @@ async def admin_models(authorization: str | None = Header(default=None)) -> dict
     require_model_admin(auth)
     catalog = catalog_snapshot()
     catalog_payload = catalog.to_catalog()
+    aliases = catalog_payload["aliases"]
+    records = [public_model_record(row) for row in await database.list_model_records()]
     return {
         "object": "list",
-        "aliases": catalog_payload["aliases"],
+        "aliases": aliases,
         "profiles": catalog_payload["profiles"],
         "catalog": catalog_payload["models"],
         "alias_policies": [public_model_alias_policy(row) for row in await database.list_model_alias_policies()],
-        "records": [public_model_record(row) for row in await database.list_model_records()],
+        "records": records,
+        "acceptance_model_measurements": acceptance_model_measurement_coverage(aliases, records),
     }
 
 

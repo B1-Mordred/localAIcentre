@@ -838,6 +838,45 @@ type ModelSmokeTestResult = {
   persisted: boolean;
 };
 
+type ModelAcceptanceMeasurementEntry = {
+  alias: string;
+  ready: boolean;
+  status?: string;
+  modality?: string;
+  expected_runtime?: string | null;
+  preferred_runtime?: string;
+  runtime?: string;
+  resource_label?: string;
+  resolved_model_version?: string;
+  display_name?: string;
+  measurement_available?: boolean;
+  ok_run_count?: number;
+  measurements_updated_at?: string;
+  latest_ok_run?: {
+    peak_vram_mib?: number | null;
+    peak_ram_mib?: number | null;
+    run_time_ms?: number | null;
+    completed_at?: string;
+  };
+  blockers?: string[];
+};
+
+type ModelAcceptanceMeasurementGroup = {
+  id: string;
+  label: string;
+  status: string;
+  required_aliases: string[];
+  missing_aliases: string[];
+  measurements: ModelAcceptanceMeasurementEntry[];
+};
+
+type ModelAcceptanceMeasurementCoverage = {
+  status: string;
+  required_aliases: string[];
+  missing_aliases: string[];
+  groups: ModelAcceptanceMeasurementGroup[];
+};
+
 type ModelResourceEstimate = {
   vram_gib: number;
   ram_gib: number;
@@ -1851,6 +1890,22 @@ function runtimeSmokeLine(carrier?: RuntimeSmokeCarrier | null): string {
   return `${runtimeText} / ${shape}${detail?.timeout_seconds ? ` / ${detail.timeout_seconds}s timeout` : ""}`;
 }
 
+function modelAcceptanceMeasurementLine(entry: ModelAcceptanceMeasurementEntry): string {
+  if (!entry.measurement_available) return entry.blockers?.[0] ?? "measurement missing";
+  const run = entry.latest_ok_run ?? {};
+  const resource = [
+    run.peak_vram_mib !== undefined && run.peak_vram_mib !== null ? `VRAM ${run.peak_vram_mib} MiB` : "",
+    run.peak_ram_mib !== undefined && run.peak_ram_mib !== null ? `RAM ${run.peak_ram_mib} MiB` : "",
+    run.run_time_ms !== undefined && run.run_time_ms !== null ? `run ${formatMs(run.run_time_ms)}` : ""
+  ].filter(Boolean).join(" / ");
+  return [
+    entry.resolved_model_version || "unresolved",
+    entry.runtime || "runtime unknown",
+    resource,
+    entry.ok_run_count ? `${entry.ok_run_count} ok run${entry.ok_run_count === 1 ? "" : "s"}` : ""
+  ].filter(Boolean).join(" / ");
+}
+
 function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: AdminMetrics | null }) {
   const policy: Partial<ResourcePolicyValues> = status?.resource_policy ?? {};
   const lease = status?.scheduler_lease;
@@ -1933,6 +1988,7 @@ function Models() {
   const [removalPlan, setRemovalPlan] = useState<ModelRemovalPlan | null>(null);
   const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
   const [smokeResult, setSmokeResult] = useState<ModelSmokeTestResult | null>(null);
+  const [acceptanceCoverage, setAcceptanceCoverage] = useState<ModelAcceptanceMeasurementCoverage | null>(null);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
 
@@ -1972,6 +2028,7 @@ function Models() {
         setProfiles(modelPayload.profiles ?? []);
         setCatalog(modelPayload.catalog ?? []);
         setRecords(modelPayload.records ?? []);
+        setAcceptanceCoverage(modelPayload.acceptance_model_measurements ?? null);
         setDownloads(downloadPayload.data ?? []);
         setDownloadSecrets(secretPayload.data ?? []);
         setMessage("ready");
@@ -2396,6 +2453,33 @@ function Models() {
           <small>Configured smoke: {runtimeSmokeLine(smokeResult.model)}{smokeResult.smoke_test.hook?.strategy ? ` / hook ${smokeResult.smoke_test.hook.strategy}` : ""}</small>
           {(smokeResult.smoke_test.error || smokeResult.smoke_test.reason) && <small>{smokeResult.smoke_test.error ?? smokeResult.smoke_test.reason}</small>}
         </div>
+      )}
+      {acceptanceCoverage && (
+        <>
+          <div className="subsection-title">
+            <ListChecks size={16} />
+            <h3>Acceptance Measurements</h3>
+          </div>
+          <div className="one-time-key">
+            <strong>Model-smoke coverage: {acceptanceCoverage.status}</strong>
+            <small>{acceptanceCoverage.required_aliases.length} required aliases / {acceptanceCoverage.missing_aliases.length ? `missing ${acceptanceCoverage.missing_aliases.join(", ")}` : "all measured"}</small>
+          </div>
+          <table>
+            <thead><tr><th>Suite</th><th>Status</th><th>Alias</th><th>Measurement</th><th>Blockers</th></tr></thead>
+            <tbody>
+              {acceptanceCoverage.groups.flatMap((group) => group.measurements.map((entry) => (
+                <tr key={`${group.id}:${entry.alias}`}>
+                  <td>{group.label}<small>{group.id}</small></td>
+                  <td><span className={statusPillClass(entry.ready ? "ok" : "warning")}>{entry.ready ? "ready" : "missing"}</span><small>expects {entry.expected_runtime ?? "any runtime"}</small></td>
+                  <td><code>{entry.alias}</code><small>{entry.status ?? "unknown"} / {entry.display_name ?? "unresolved"}</small></td>
+                  <td>{modelAcceptanceMeasurementLine(entry)}{entry.measurements_updated_at && <small>updated {formatDateTime(entry.measurements_updated_at)}</small>}</td>
+                  <td>{entry.blockers?.length ? entry.blockers.join("; ") : "none"}</td>
+                </tr>
+              )))}
+              {!acceptanceCoverage.groups.length && <tr><td colSpan={5}>No acceptance measurement groups loaded</td></tr>}
+            </tbody>
+          </table>
+        </>
       )}
       <table>
         <thead><tr><th>Alias</th><th>Status</th><th>Runtime</th><th>Policy</th><th>Actions</th></tr></thead>
