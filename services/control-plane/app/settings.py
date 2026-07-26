@@ -253,7 +253,7 @@ def load_settings() -> Settings:
         gpu_job_runner_interval_seconds=_int("B1_GPU_JOB_RUNNER_INTERVAL_SECONDS", 1),
         gpu_job_runner_lease_ttl_seconds=_int("B1_GPU_JOB_RUNNER_LEASE_TTL_SECONDS", 300),
         gpu_default_idle_timeout_seconds=_int("B1_GPU_DEFAULT_IDLE_TIMEOUT_SECONDS", 300),
-        sync_inference_lease_ttl_seconds=_int("B1_SYNC_INFERENCE_LEASE_TTL_SECONDS", 7200),
+        sync_inference_lease_ttl_seconds=_int("B1_SYNC_INFERENCE_LEASE_TTL_SECONDS", 300),
         comfyui_prompt_wait_timeout_seconds=_int("B1_COMFY_PROMPT_WAIT_TIMEOUT_SECONDS", 120),
         comfyui_prompt_lease_ttl_seconds=_int("B1_COMFY_PROMPT_LEASE_TTL_SECONDS", 7200),
         comfyui_prompt_poll_seconds=_int("B1_COMFY_PROMPT_POLL_SECONDS", 2),

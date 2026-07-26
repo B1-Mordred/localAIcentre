@@ -237,6 +237,62 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
             ],
         )
 
+    def test_openai_streaming_response_background_releases_unconsumed_lease(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class FakeAdapter:
+            def openai_payload(self, payload: dict[str, Any], resolution: Any) -> dict[str, Any]:
+                forwarded = dict(payload)
+                forwarded["model"] = resolution.model_id
+                return forwarded
+
+            def openai_url(self, path: str) -> str:
+                raise AssertionError("stream body must not be opened before the response is consumed")
+
+        async def acquire_inference_lease(resolution: Any, operation: str, owner_id: str | None = None) -> str | None:
+            calls.append({"lease": "acquire", "runtime": resolution.runtime, "operation": operation, "owner_id": owner_id})
+            return "lease_chat"
+
+        async def prepare_sync_gpu_runtime(resolution: Any, operation: str) -> bool:
+            calls.append({"prepare": "runtime", "runtime": resolution.runtime, "operation": operation})
+            return True
+
+        async def mark_sync_gpu_runtime_idle(resolution: Any, operation: str) -> None:
+            calls.append({"idle": "runtime", "runtime": resolution.runtime, "operation": operation})
+
+        async def release_inference_lease(owner: str | None) -> None:
+            calls.append({"lease": "release", "owner": owner})
+
+        self.patch_attr("openai_runtime_adapter", lambda resolution: FakeAdapter())
+        self.patch_attr("acquire_inference_lease", acquire_inference_lease)
+        self.patch_attr("prepare_sync_gpu_runtime", prepare_sync_gpu_runtime)
+        self.patch_attr("mark_sync_gpu_runtime_idle", mark_sync_gpu_runtime_idle)
+        self.patch_attr("release_inference_lease", release_inference_lease)
+
+        response = asyncio.run(
+            main.call_openai_runtime_stream(
+                "/v1/chat/completions",
+                {"model": "chat-default", "messages": [{"role": "user", "content": "hello"}], "stream": True},
+                self.resolution(),
+                "chat",
+                owner_id="client_1",
+            )
+        )
+
+        self.assertIsNotNone(response)
+        self.assertIsNotNone(response.background)
+        asyncio.run(response.background())
+
+        self.assertEqual(
+            calls,
+            [
+                {"lease": "acquire", "runtime": "localai", "operation": "chat", "owner_id": "client_1"},
+                {"prepare": "runtime", "runtime": "localai", "operation": "chat"},
+                {"idle": "runtime", "runtime": "localai", "operation": "chat"},
+                {"lease": "release", "owner": "lease_chat"},
+            ],
+        )
+
     def test_lease_renewal_helper_renews_waiting_synchronous_call(self) -> None:
         calls: list[Any] = []
         original_wait = main.asyncio.wait

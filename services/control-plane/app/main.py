@@ -27,6 +27,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Path as ApiPath, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
@@ -3537,6 +3538,20 @@ async def call_openai_runtime_stream(
         await release_inference_lease(owner)
         raise
 
+    finalized = False
+    finalize_lock = asyncio.Lock()
+
+    async def finalize_stream() -> None:
+        nonlocal finalized
+        async with finalize_lock:
+            if finalized:
+                return
+            finalized = True
+            if prepared:
+                with suppress(Exception):
+                    await mark_sync_gpu_runtime_idle(resolution, operation)
+            await release_inference_lease(owner)
+
     async def chunks():
         last_renewed = datetime.now(tz=UTC)
         renew_interval = max(15, min(60, settings.sync_inference_lease_ttl_seconds // 3))
@@ -3590,12 +3605,9 @@ async def call_openai_runtime_stream(
             yield f"data: {json.dumps(error)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            if prepared:
-                with suppress(Exception):
-                    await mark_sync_gpu_runtime_idle(resolution, operation)
-            await release_inference_lease(owner)
+            await finalize_stream()
 
-    return StreamingResponse(chunks(), media_type="text/event-stream")
+    return StreamingResponse(chunks(), media_type="text/event-stream", background=BackgroundTask(finalize_stream))
 
 
 def media_job_links(job_id: str) -> dict[str, str]:
