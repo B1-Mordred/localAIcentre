@@ -29,6 +29,7 @@ Before changing the target host or existing deployment:
 6. Use pinned image versions or immutable digests. Do not use floating `latest` tags in the production Compose file.
 7. Prefer official upstream images. If an official image is unavailable or unsuitable, build a minimal reproducible image from a pinned release/commit and document why.
 8. Make only required host changes. The application stack belongs in Docker; the NVIDIA driver, Docker Engine, Compose v2, DNS, and NVIDIA Container Toolkit remain host prerequisites.
+9. Treat the appliance hostname/FQDN as target-system identity. The host OS may set or validate the hostname, but IP address, gateway, routes, resolver settings, and other network properties must be acquired by the host DHCP client or a DHCP reservation. The repository, bootstrap, Compose files, and cutover tooling must not configure a static host IP.
 
 Ask the user only when an action is destructive, a required secret/domain choice is unavailable, or two materially different behaviours cannot safely be inferred.
 
@@ -75,6 +76,8 @@ Support these virtual hosts; make them configurable through bootstrap values:
 | `https://api.ai.b1.germering/` | Unified inference and job API |
 
 Use Caddy as the sole TLS/reverse-proxy entry point. Support a Caddy internal CA for LAN DNS. Document how to distribute/trust its root certificate. Make externally supplied certificates possible without source changes.
+
+The LAN virtual hosts must resolve to the DHCP-assigned address for the target system hostname. `B1_EXPECTED_TARGET_HOST` validates the observed system hostname/FQDN during inventory, cutover, and acceptance; it must not be used to configure static host networking.
 
 Some legacy ComfyUI clients require `http://host:8188` and cannot set an API prefix or authentication header. Provide an optional, disabled-by-default legacy listener that terminates at the scheduler-aware compatibility proxy, never directly at ComfyUI. It must be controlled by an explicit Compose override/profile and restricted by IP/CIDR allowlists.
 
@@ -701,7 +704,7 @@ Implement scripts and documentation that:
 5. Import model metadata or redownload through Model Hub; never assume Ollama blob layout is directly reusable by LocalAI.
 6. Validate accounts/chats, chat inference, API, TTS, image, video, native ComfyUI API, Model Hub, and external integrations.
 7. Stop only the identified old-stack services during the cutover window.
-8. Activate production DNS/routes.
+8. Activate production LAN DNS/routes to the DHCP-assigned appliance address without configuring a static host IP from the B1 repository.
 9. Retain the old stack and volumes stopped/read-only for rollback.
 10. Provide a tested command/procedure to revert DNS/routes and restart the old stack.
 

@@ -53,6 +53,7 @@ MODEL_MEASUREMENT_RUN_FIELDS = (
     "peak_vram_mib",
     "peak_ram_mib",
     "resource_estimate",
+    "hook",
 )
 MEDIA_JOB_LINK_NAMES = ("self", "events", "artifacts", "cancel")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -259,8 +260,78 @@ class LiveApiClient:
             raise AssertionError(f"{method} {path} returned non-JSON body: {raw[:200]!r}") from exc
 
 
+def compact_measurement_hook(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "status",
+        "reason",
+        "action",
+        "strategy",
+        "runtime",
+        "message",
+        "model",
+        "model_alias",
+        "resolved_model_version",
+        "engine",
+        "placeholder",
+        "gpu_lease_required",
+    ):
+        item = value.get(key)
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            compact[key] = item
+    measurements = value.get("measurements")
+    if isinstance(measurements, dict):
+        safe_measurements: dict[str, Any] = {}
+        for key, item in measurements.items():
+            if isinstance(key, str) and len(key) <= 128 and (isinstance(item, (str, int, float, bool)) or item is None):
+                safe_measurements[key] = item
+        if safe_measurements:
+            compact["measurements"] = safe_measurements
+    return compact
+
+
 def compact_measurement_run(run: dict[str, Any]) -> dict[str, Any]:
-    return {key: run[key] for key in MODEL_MEASUREMENT_RUN_FIELDS if key in run}
+    compact = {key: run[key] for key in MODEL_MEASUREMENT_RUN_FIELDS if key in run and key != "hook"}
+    hook = compact_measurement_hook(run.get("hook"))
+    if hook:
+        compact["hook"] = hook
+    return compact
+
+
+def persisted_model_smoke_hook_blockers(alias: str, resolved_model_version: str, runtime: str, latest_ok_run: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    hook = latest_ok_run.get("hook") if isinstance(latest_ok_run.get("hook"), dict) else {}
+    if not hook:
+        return ["latest run runtime hook proof is missing"]
+    hook_status = str(hook.get("status") or "").strip().lower()
+    if hook_status != "ok":
+        blockers.append("latest run runtime hook status is not ok")
+    hook_runtime = str(hook.get("runtime") or "").strip().lower()
+    expected_runtime = str(runtime or "").strip().lower()
+    if hook_runtime and expected_runtime and hook_runtime != expected_runtime:
+        blockers.append("latest run runtime hook does not match measurement runtime")
+    hook_alias = str(hook.get("model_alias") or "").strip()
+    if hook_alias and hook_alias != alias:
+        blockers.append("latest run runtime hook alias does not match required alias")
+    hook_resolved = str(hook.get("resolved_model_version") or "").strip()
+    if hook_resolved and hook_resolved != resolved_model_version:
+        blockers.append("latest run runtime hook resolved model does not match installed version")
+    measurements = hook.get("measurements") if isinstance(hook.get("measurements"), dict) else {}
+    hook_placeholder = hook.get("placeholder")
+    measurement_placeholder = measurements.get("placeholder")
+    if hook_placeholder is True or measurement_placeholder is True:
+        blockers.append("latest run runtime hook reported placeholder output")
+    engine = str(hook.get("engine") or "").strip().lower()
+    if engine == "scaffold":
+        blockers.append("latest run runtime hook used scaffold engine")
+    if expected_runtime == "audio-cpu":
+        if hook_placeholder is not False and measurement_placeholder is not False:
+            blockers.append("CPU-only model smoke did not prove placeholder=false")
+        if not engine:
+            blockers.append("CPU-only model smoke hook engine is missing")
+    return blockers
 
 
 def model_record_ref(record: dict[str, Any]) -> str:
@@ -340,6 +411,12 @@ def measured_model_alias(client: LiveApiClient, alias: str, *, expected_runtime:
         raise AssertionError(
             f"alias {alias!r} resolved to {resolved_model_version}, but no persisted ok model smoke measurement exists; "
             "run the Control Center model smoke test after installing the model before creating handoff evidence"
+        )
+    hook_blockers = persisted_model_smoke_hook_blockers(alias, resolved_model_version, runtime, latest_ok_run)
+    if hook_blockers:
+        raise AssertionError(
+            f"alias {alias!r} resolved to {resolved_model_version}, but persisted model smoke hook proof is incomplete: "
+            + "; ".join(hook_blockers)
         )
     return summary
 

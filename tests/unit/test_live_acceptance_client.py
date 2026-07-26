@@ -371,6 +371,20 @@ class LiveAcceptanceClientTests(unittest.TestCase):
                                     "run_time_ms": 2000,
                                     "peak_vram_mib": 6144,
                                     "peak_ram_mib": 8192,
+                                    "hook": {
+                                        "status": "ok",
+                                        "runtime": "localai",
+                                        "model_alias": "chat-default",
+                                        "resolved_model_version": "b1-chat@1.0.0",
+                                        "engine": "localai",
+                                        "placeholder": None,
+                                        "measurements": {
+                                            "peak_vram_mib": 6144,
+                                            "peak_ram_mib": 8192,
+                                            "unsafe_nested": {"ignored": True},
+                                        },
+                                        "unsafe_extra": "ignored",
+                                    },
                                     "unsafe_extra": "ignored",
                                 }
                             ],
@@ -391,6 +405,10 @@ class LiveAcceptanceClientTests(unittest.TestCase):
         self.assertTrue(summary["measurement_available"])
         self.assertEqual(summary["resolved_model_version"], "b1-chat@1.0.0")
         self.assertEqual(summary["latest_ok_run"]["peak_vram_mib"], 6144)
+        self.assertEqual(summary["latest_ok_run"]["hook"]["status"], "ok")
+        self.assertEqual(summary["latest_ok_run"]["hook"]["engine"], "localai")
+        self.assertNotIn("unsafe_extra", summary["latest_ok_run"]["hook"])
+        self.assertNotIn("unsafe_nested", summary["latest_ok_run"]["hook"]["measurements"])
         self.assertNotIn("unsafe_extra", summary["latest_ok_run"])
 
     def test_measured_model_alias_requires_successful_smoke_measurement(self) -> None:
@@ -412,6 +430,110 @@ class LiveAcceptanceClientTests(unittest.TestCase):
             client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
             with self.assertRaisesRegex(AssertionError, "no persisted ok model smoke measurement"):
                 live_stack.measured_model_alias(client, "chat-default")
+        finally:
+            live_stack.urlopen = original
+
+    def test_measured_model_alias_requires_runtime_hook_proof(self) -> None:
+        payload = {
+            "aliases": [
+                {
+                    "id": "chat-default",
+                    "status": "installed",
+                    "preferred_runtime": "localai",
+                    "resolved_model": {"id": "b1-chat", "version": "1.0.0"},
+                }
+            ],
+            "records": [
+                {
+                    "id": "b1-chat",
+                    "version": "1.0.0",
+                    "preferred_runtime": "localai",
+                    "manifest": {
+                        "aliases": ["chat-default"],
+                        "measurements": {
+                            "runs": [
+                                {
+                                    "id": "modelsmoke-1",
+                                    "type": "install-smoke",
+                                    "status": "ok",
+                                    "runtime": "localai",
+                                    "model_alias": "chat-default",
+                                    "resolved_model_version": "b1-chat@1.0.0",
+                                    "duration_ms": 5000,
+                                    "run_time_ms": 2000,
+                                    "peak_vram_mib": 6144,
+                                    "peak_ram_mib": 8192,
+                                }
+                            ]
+                        },
+                    },
+                }
+            ],
+        }
+
+        original = live_stack.urlopen
+        try:
+            live_stack.urlopen = lambda *args, **kwargs: FakePayloadResponse(payload)  # type: ignore[assignment]
+            client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
+            with self.assertRaisesRegex(AssertionError, "runtime hook proof is missing"):
+                live_stack.measured_model_alias(client, "chat-default", expected_runtime="localai")
+        finally:
+            live_stack.urlopen = original
+
+    def test_measured_model_alias_rejects_cpu_placeholder_hook_proof(self) -> None:
+        payload = {
+            "aliases": [
+                {
+                    "id": "tts-fast",
+                    "status": "installed",
+                    "preferred_runtime": "audio-cpu",
+                    "runtimes": ["audio-cpu"],
+                    "resolved_model": {"id": "b1-tts-fast", "version": "1.0.0"},
+                }
+            ],
+            "records": [
+                {
+                    "id": "b1-tts-fast",
+                    "version": "1.0.0",
+                    "preferred_runtime": "audio-cpu",
+                    "manifest": {
+                        "aliases": ["tts-fast"],
+                        "measurements": {
+                            "runs": [
+                                {
+                                    "id": "modelsmoke-tts",
+                                    "type": "install-smoke",
+                                    "status": "ok",
+                                    "runtime": "audio-cpu",
+                                    "model_alias": "tts-fast",
+                                    "resolved_model_version": "b1-tts-fast@1.0.0",
+                                    "duration_ms": 500,
+                                    "run_time_ms": 100,
+                                    "peak_vram_mib": 0,
+                                    "peak_ram_mib": 256,
+                                    "hook": {
+                                        "status": "ok",
+                                        "runtime": "audio-cpu",
+                                        "model_alias": "tts-fast",
+                                        "resolved_model_version": "b1-tts-fast@1.0.0",
+                                        "engine": "scaffold",
+                                        "placeholder": True,
+                                        "measurements": {"peak_vram_mib": 0, "peak_ram_mib": 256, "placeholder": True},
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                }
+            ],
+        }
+
+        original = live_stack.urlopen
+        try:
+            live_stack.urlopen = lambda *args, **kwargs: FakePayloadResponse(payload)  # type: ignore[assignment]
+            client = live_stack.LiveApiClient("https://api.ai.b1.germering", api_key="b1k_public.secret")
+            with self.assertRaisesRegex(AssertionError, "reported placeholder output"):
+                live_stack.measured_model_alias(client, "tts-fast", expected_runtime="audio-cpu")
         finally:
             live_stack.urlopen = original
 
