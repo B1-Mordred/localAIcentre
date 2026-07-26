@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -12,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_proxy() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("b1_localai_proxy", ROOT / "deploy" / "localai" / "b1_localai_proxy.py")
+    localai_dir = ROOT / "deploy" / "localai"
+    if str(localai_dir) not in sys.path:
+        sys.path.insert(0, str(localai_dir))
+    spec = importlib.util.spec_from_file_location("b1_localai_proxy", localai_dir / "b1_localai_proxy.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load LocalAI proxy")
     module = importlib.util.module_from_spec(spec)
