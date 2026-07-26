@@ -20,6 +20,7 @@ B1_WORKFLOWS_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/installed-workflows.json
 B1_LOCALAI_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/localai-runtime.json
 B1_GPU_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/cross-runtime-gpu.json
 B1_RESTART_RECONCILIATION_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/restart-reconciliation.json
+B1_RESTART_RECONCILIATION_AUTO_DRILL ?= 1
 B1_NATIVE_COMFYUI_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/native-comfyui.json
 B1_NATIVE_COMFYUI_PROMPT_FILE ?= $(CURDIR)/workflows/acceptance/native-comfyui-smoke-prompt.json
 B1_LEGACY_COMFY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/legacy-comfy-listener.json
@@ -165,7 +166,7 @@ gpu-acceptance:
 	B1_GPU_ACCEPTANCE_LIVE_TEST=1 B1_GPU_ACCEPTANCE_EVIDENCE="$(B1_GPU_ACCEPTANCE_EVIDENCE)" python3 -m unittest tests.integration.test_live_cross_runtime_gpu -v
 
 restart-reconciliation-acceptance:
-	B1_RESTART_RECONCILIATION_LIVE_TEST=1 B1_RESTART_RECONCILIATION_EVIDENCE="$(B1_RESTART_RECONCILIATION_EVIDENCE)" python3 -m unittest tests.integration.test_live_restart_reconciliation -v
+	B1_RESTART_RECONCILIATION_LIVE_TEST=1 B1_RESTART_RECONCILIATION_AUTO_DRILL="$(B1_RESTART_RECONCILIATION_AUTO_DRILL)" B1_RESTART_RECONCILIATION_EVIDENCE="$(B1_RESTART_RECONCILIATION_EVIDENCE)" python3 -m unittest tests.integration.test_live_restart_reconciliation -v
 
 compatibility:
 	python3 -m unittest discover -s tests/compatibility -v
@@ -188,8 +189,8 @@ voicebox-compatibility:
 external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility
 
 # Requires the target host acceptance window, installed real models, workflow job files,
-# scoped API keys, reviewed backup/migration/rollback artifacts, and the
-# restart-reconciliation drill state documented in tests/.
+# scoped API keys, and reviewed backup/migration/rollback artifacts. The
+# restart-reconciliation target self-seeds a bounded drill by default.
 operator-live-acceptance:
 	$(MAKE) repository-quality-evidence
 	$(MAKE) acceptance-preflight

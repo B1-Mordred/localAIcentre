@@ -228,7 +228,7 @@ B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json 
 make security-acceptance
 ```
 
-After all required live-test environment variables are set and the restart-reconciliation drill state has been prepared, the operator can run the live evidence group:
+After all required live-test environment variables are set, the operator can run the live evidence group. The restart-reconciliation target now self-seeds a bounded synthetic drill by default, restarts only `control-plane`, proves runner recovery through the live API, writes evidence, and cleans up the temporary drill rows/API client. Set `B1_RESTART_RECONCILIATION_AUTO_DRILL=0` only when running a manually prepared maintenance-window drill with `B1_RESTART_RECONCILIATION_STARTED_AFTER`.
 
 ```bash
 make acceptance-preflight
