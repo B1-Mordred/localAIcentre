@@ -2602,6 +2602,8 @@ function Models() {
 function Runtimes() {
   const [health, setHealth] = useState<RuntimeAdapterStatus[]>([]);
   const [readiness, setReadiness] = useState<SelfTestCheck | null>(null);
+  const [composeReadiness, setComposeReadiness] = useState<SelfTestCheck | null>(null);
+  const [composeSelection, setComposeSelection] = useState<Record<string, unknown> | null>(null);
   const [deploymentMode, setDeploymentMode] = useState("unknown");
   const [productionRequired, setProductionRequired] = useState<string[]>([]);
   const [externalConfigs, setExternalConfigs] = useState<ExternalRuntimeConfig[]>([]);
@@ -2637,6 +2639,8 @@ function Runtimes() {
       .then((payload) => {
         setHealth(payload.health ?? []);
         setReadiness(payload.readiness ?? null);
+        setComposeReadiness(payload.compose_readiness ?? null);
+        setComposeSelection(objectOrNull(payload.compose_selection));
         setDeploymentMode(payload.runtime_deployment_mode ?? "unknown");
         setProductionRequired(Array.isArray(payload.production_required_runtimes) ? payload.production_required_runtimes : []);
         setMessage("ready");
@@ -2922,6 +2926,10 @@ function Runtimes() {
     { name: "voicebox", status: "pending", requires_gpu: true, native_api: true },
     { name: "audio-cpu", status: "pending", requires_gpu: false }
   ];
+  const composeFiles = stringList(composeSelection?.selected_file_basenames);
+  const composeProfiles = stringList(composeSelection?.selected_profiles);
+  const composeMissing = stringList(composeSelection?.missing_files)
+    .concat(stringList(composeSelection?.missing_profiles).map((item) => `profile:${item}`));
 
   return (
     <div className="panel-grid">
@@ -2936,6 +2944,14 @@ function Runtimes() {
             <strong>Runtime readiness: {readiness.status}</strong>
             <small>{readiness.detail}</small>
             <small>mode: {deploymentMode} / required: {productionRequired.length ? productionRequired.join(", ") : "none"}</small>
+          </div>
+        )}
+        {composeReadiness && (
+          <div className="one-time-key">
+            <strong>Compose selection: {composeReadiness.status}</strong>
+            <small>{composeReadiness.detail}</small>
+            <small>files: {composeFiles.length ? composeFiles.join(", ") : "none"} / profiles: {composeProfiles.length ? composeProfiles.join(", ") : "none"}</small>
+            {composeMissing.length ? <small>missing: {composeMissing.join(", ")}</small> : <small>all required runtime overlays selected</small>}
           </div>
         )}
       </section>

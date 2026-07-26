@@ -184,6 +184,15 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn('capabilities.native_api ? "native API" : ""', self.source)
         self.assertIn('capabilities.external ? "external data" : "local LAN"', self.source)
 
+    def test_runtimes_tab_surfaces_compose_selection_readiness(self) -> None:
+        self.assertIn("composeReadiness", self.source)
+        self.assertIn("composeSelection", self.source)
+        self.assertIn("payload.compose_readiness", self.source)
+        self.assertIn("payload.compose_selection", self.source)
+        self.assertIn("Compose selection: {composeReadiness.status}", self.source)
+        self.assertIn("all required runtime overlays selected", self.source)
+        self.assertIn("profile:${item}", self.source)
+
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:
         self.assertIn("type VoiceSampleArtifact", self.source)
         self.assertIn("type VoiceProfileForm", self.source)

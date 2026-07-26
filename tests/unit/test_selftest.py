@@ -110,6 +110,82 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(result["status"], "warning")
         self.assertIn("development mode permits bootstrapping only", result["detail"])
 
+    def test_compose_selection_check_passes_when_required_overlays_are_selected(self) -> None:
+        result = selftest.compose_selection_check(
+            {
+                "format": "b1-ai-hub-compose-selection/v1",
+                "status": "ok",
+                "raw_compose_file": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml",
+                "raw_compose_profiles": "",
+                "selected_file_basenames": [
+                    "compose.yaml",
+                    "compose.production-comfyui.yaml",
+                    "compose.production-localai.yaml",
+                ],
+                "selected_profiles": [],
+                "production_required_runtimes": ["localai", "comfyui", "audio-cpu"],
+                "required_files": [
+                    "compose.yaml",
+                    "compose.production-comfyui.yaml",
+                    "compose.production-localai.yaml",
+                ],
+                "required_profiles": [],
+                "missing_files": [],
+                "missing_profiles": [],
+            },
+            "production",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("Compose files and profiles are selected", result["detail"])
+
+    def test_compose_selection_check_fails_missing_production_overlay(self) -> None:
+        result = selftest.compose_selection_check(
+            {
+                "format": "b1-ai-hub-compose-selection/v1",
+                "status": "blocked",
+                "raw_compose_file": "compose.yaml:compose.production-localai.yaml",
+                "raw_compose_profiles": "",
+                "selected_file_basenames": ["compose.yaml", "compose.production-localai.yaml"],
+                "selected_profiles": [],
+                "production_required_runtimes": ["localai", "comfyui", "voicebox"],
+                "required_files": [
+                    "compose.yaml",
+                    "compose.production-comfyui.yaml",
+                    "compose.production-localai.yaml",
+                    "compose.production-voicebox.yaml",
+                ],
+                "required_profiles": ["voicebox"],
+                "missing_files": ["compose.production-comfyui.yaml", "compose.production-voicebox.yaml"],
+                "missing_profiles": ["voicebox"],
+            },
+            "production",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("compose.production-comfyui.yaml", result["detail"])
+        self.assertIn("missing Compose profiles: voicebox", result["detail"])
+        self.assertEqual(result["data"]["missing_profiles"], ["voicebox"])
+
+    def test_compose_selection_check_warns_for_development_missing_overlay(self) -> None:
+        result = selftest.compose_selection_check(
+            {
+                "format": "b1-ai-hub-compose-selection/v1",
+                "status": "blocked",
+                "selected_file_basenames": ["compose.yaml"],
+                "selected_profiles": [],
+                "production_required_runtimes": ["comfyui"],
+                "required_files": ["compose.yaml", "compose.production-comfyui.yaml"],
+                "required_profiles": [],
+                "missing_files": ["compose.production-comfyui.yaml"],
+                "missing_profiles": [],
+            },
+            "development",
+        )
+
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("development mode permits bootstrapping only", result["detail"])
+
     def test_runtime_agent_mutation_guard_passes_for_hardened_status(self) -> None:
         result = selftest.runtime_agent_mutation_guard_check(
             {

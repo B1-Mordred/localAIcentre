@@ -6488,6 +6488,11 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
     health = await asyncio.gather(*(adapter.health() for adapter in adapters))
     runtime_states = {row["runtime"]: jsonable_encoder(row) for row in await database.list_runtime_states()}
     service_inventory, service_error = await runtime_agent_get("/v1/services")
+    compose_selection = acceptance.compose_selection_snapshot()
+    compose_readiness = selftest_policy.compose_selection_check(
+        compose_selection,
+        settings.runtime_deployment_mode,
+    )
     readiness = selftest_policy.runtime_production_readiness_check(
         health,
         settings.runtime_deployment_mode,
@@ -6499,6 +6504,8 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
         "runtime_deployment_mode": settings.runtime_deployment_mode,
         "production_required_runtimes": list(settings.runtime_production_required),
         "readiness": readiness,
+        "compose_selection": compose_selection,
+        "compose_readiness": compose_readiness,
         "runtime_agent_services": service_inventory or {"services": [], "error": service_error or "runtime-agent service inventory unavailable"},
         "adapters": registry.public_adapters(),
         "runtime_states": runtime_states,
@@ -7109,6 +7116,12 @@ async def build_self_test_report(subject_id: str) -> dict[str, Any]:
     checks.append(selftest_policy.check_http_result("runtime-agent:status", agent_status, agent_error))
     checks.append(selftest_policy.runtime_agent_mutation_guard_check(agent_status))
     checks.append(selftest_policy.check_http_result("runtime-agent:services", service_inventory, service_error))
+    checks.append(
+        selftest_policy.compose_selection_check(
+            acceptance.compose_selection_snapshot(),
+            settings.runtime_deployment_mode,
+        )
+    )
     checks.append(
         selftest_policy.runtime_production_readiness_check(
             runtime_health,

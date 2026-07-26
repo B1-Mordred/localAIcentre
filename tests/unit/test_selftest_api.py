@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -34,6 +35,59 @@ class SelfTestApiTests(unittest.TestCase):
         original = main.settings
         main.settings = replace(main.settings, **changes)
         self.addCleanup(lambda: setattr(main, "settings", original))
+
+    def patch_auth(self, scopes: set[str]) -> None:
+        auth = main.AuthContext(subject_id="admin_1", role=main.Role.ADMIN, scopes=frozenset(scopes))
+
+        async def authenticate(_: str | None = None) -> Any:
+            return auth
+
+        self.patch_attr("authenticate", authenticate)
+
+    def test_admin_runtimes_exposes_compose_selection_readiness(self) -> None:
+        class FakeAdapter:
+            external = False
+
+            async def health(self) -> dict[str, Any]:
+                return {"name": "localai", "status": "ok", "details": {"version": "pinned"}}
+
+        class FakeDatabase:
+            async def list_runtime_states(self) -> list[dict[str, Any]]:
+                return []
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/services")
+            return {"services": []}, None
+
+        def compose_selection_snapshot() -> dict[str, Any]:
+            return {
+                "format": "b1-ai-hub-compose-selection/v1",
+                "status": "blocked",
+                "raw_compose_file": "compose.yaml:compose.production-localai.yaml",
+                "raw_compose_profiles": "",
+                "selected_file_basenames": ["compose.yaml", "compose.production-localai.yaml"],
+                "selected_profiles": [],
+                "production_required_runtimes": ["localai", "comfyui"],
+                "required_files": ["compose.yaml", "compose.production-comfyui.yaml", "compose.production-localai.yaml"],
+                "required_profiles": [],
+                "missing_files": ["compose.production-comfyui.yaml"],
+                "missing_profiles": [],
+            }
+
+        self.patch_auth({"runtimes:read"})
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "comfyui"))
+        self.patch_attr("database", FakeDatabase())
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+        self.patch_attr("runtime_registry_snapshot", lambda: SimpleNamespace(adapters={"localai": FakeAdapter()}, public_adapters=lambda: []))
+        original_compose_selection = main.acceptance.compose_selection_snapshot
+        main.acceptance.compose_selection_snapshot = compose_selection_snapshot
+        self.addCleanup(lambda: setattr(main.acceptance, "compose_selection_snapshot", original_compose_selection))
+
+        result = asyncio.run(main.admin_runtimes())
+
+        self.assertEqual(result["compose_readiness"]["status"], "failed")
+        self.assertEqual(result["compose_selection"]["missing_files"], ["compose.production-comfyui.yaml"])
+        self.assertEqual(result["readiness"]["status"], "failed")
 
     def test_runtime_unload_probe_uses_agent_dry_run(self) -> None:
         self.patch_settings(self_test_unload_runtime="localai")

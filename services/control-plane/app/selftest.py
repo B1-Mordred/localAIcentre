@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 VALID_RUNTIME_DEPLOYMENT_MODES = {"development", "production"}
+COMPOSE_SELECTION_FORMAT = "b1-ai-hub-compose-selection/v1"
 B1_PLACEHOLDER_LABEL = "b1.ai-hub.placeholder"
 B1_RUNTIME_KIND_LABEL = "b1.ai-hub.runtime.kind"
 TRUE_LABEL_VALUES = {"1", "true", "yes", "on"}
@@ -86,6 +87,12 @@ def _number(value: Any) -> float | None:
     if parsed < 0:
         return None
     return parsed
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _largest_gpu_device(gpu: dict[str, Any]) -> dict[str, Any] | None:
@@ -180,6 +187,68 @@ def hardware_resource_policy_check(
         return check(name, "ok", "observed GPU/RAM satisfy the effective resource policy and reserves", data)
 
     detail = "; ".join(warnings)
+    if mode != "production":
+        detail += "; development mode permits bootstrapping only"
+    return check(name, failure_status, detail, data)
+
+
+def compose_selection_check(selection: dict[str, Any] | None, deployment_mode: str) -> dict[str, Any]:
+    name = "deployment:compose-selection"
+    mode = deployment_mode.strip().lower()
+    failure_status = "failed" if mode == "production" else "warning"
+    data: dict[str, Any] = {
+        "deployment_mode": mode,
+        "format": None,
+        "status": "unavailable",
+        "raw_compose_file": "",
+        "raw_compose_profiles": "",
+        "selected_file_basenames": [],
+        "selected_profiles": [],
+        "production_required_runtimes": [],
+        "required_files": [],
+        "required_profiles": [],
+        "missing_files": [],
+        "missing_profiles": [],
+    }
+
+    if not isinstance(selection, dict):
+        detail = "Compose selection snapshot is unavailable"
+        if mode != "production":
+            detail += "; development mode permits bootstrapping only"
+        return check(name, failure_status, detail, data)
+
+    data.update(
+        {
+            "format": str(selection.get("format") or ""),
+            "status": str(selection.get("status") or "unknown"),
+            "raw_compose_file": str(selection.get("raw_compose_file") or ""),
+            "raw_compose_profiles": str(selection.get("raw_compose_profiles") or ""),
+            "selected_file_basenames": _string_list(selection.get("selected_file_basenames")),
+            "selected_profiles": _string_list(selection.get("selected_profiles")),
+            "production_required_runtimes": _string_list(selection.get("production_required_runtimes")),
+            "required_files": _string_list(selection.get("required_files")),
+            "required_profiles": _string_list(selection.get("required_profiles")),
+            "missing_files": _string_list(selection.get("missing_files")),
+            "missing_profiles": _string_list(selection.get("missing_profiles")),
+        }
+    )
+
+    if data["format"] != COMPOSE_SELECTION_FORMAT:
+        detail = f"Compose selection snapshot has unsupported format {data['format'] or 'missing'}"
+        return check(name, "failed", detail, data)
+
+    blockers: list[str] = []
+    if data["missing_files"]:
+        blockers.append("missing Compose files: " + ", ".join(data["missing_files"]))
+    if data["missing_profiles"]:
+        blockers.append("missing Compose profiles: " + ", ".join(data["missing_profiles"]))
+    if data["status"] != "ok" and not blockers:
+        blockers.append(f"Compose selection status is {data['status']}")
+
+    if not blockers:
+        return check(name, "ok", "required production Compose files and profiles are selected", data)
+
+    detail = "; ".join(blockers)
     if mode != "production":
         detail += "; development mode permits bootstrapping only"
     return check(name, failure_status, detail, data)
