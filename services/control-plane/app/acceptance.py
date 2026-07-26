@@ -125,6 +125,21 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
             "profile": "monitoring",
         },
     ],
+    "compose_builds": [
+        {"file": "compose.yaml", "service": "open-webui", "context": "./deploy/open-webui", "component": "open-webui"},
+        {"file": "compose.yaml", "service": "control-plane", "context": "./services/control-plane", "component": "control-plane"},
+        {"file": "compose.yaml", "service": "control-center", "context": "./web/control-center", "component": "control-center"},
+        {"file": "compose.yaml", "service": "media-studio", "context": "./web/media-studio", "component": "media-studio"},
+        {"file": "compose.yaml", "service": "runtime-agent", "context": "./services/runtime-agent", "component": "runtime-agent"},
+        {"file": "compose.yaml", "service": "localai", "context": "./services/mock-runtime", "component": "mock-runtime"},
+        {"file": "compose.yaml", "service": "comfyui", "context": "./services/mock-runtime", "component": "mock-runtime"},
+        {"file": "compose.yaml", "service": "voicebox", "context": "./services/mock-runtime", "component": "mock-runtime"},
+        {"file": "compose.yaml", "service": "audio-cpu", "context": "./services/audio-cpu", "component": "audio-cpu"},
+        {"file": "compose.yaml", "service": "artifact-server", "context": "./services/artifact-server", "component": "artifact-server"},
+        {"file": "compose.production-localai.yaml", "service": "localai", "context": "./deploy/localai", "component": "localai"},
+        {"file": "compose.production-comfyui.yaml", "service": "comfyui", "context": "./deploy/comfyui", "component": "comfyui"},
+        {"file": "compose.production-voicebox.yaml", "service": "voicebox", "context": "./deploy/voicebox", "component": "voicebox"},
+    ],
     "dockerfile_bases": [
         {
             "file": "deploy/open-webui/Dockerfile",
@@ -183,6 +198,12 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
         {
             "file": "services/audio-cpu/Dockerfile",
             "component": "audio-cpu",
+            "stage": "final",
+            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+        },
+        {
+            "file": "services/mock-runtime/Dockerfile",
+            "component": "mock-runtime",
             "stage": "final",
             "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
         },
@@ -3464,6 +3485,7 @@ DOCKERFILE_PIN_FILES = (
     ("runtime-agent", "services/runtime-agent/Dockerfile"),
     ("artifact-server", "services/artifact-server/Dockerfile"),
     ("audio-cpu", "services/audio-cpu/Dockerfile"),
+    ("mock-runtime", "services/mock-runtime/Dockerfile"),
     ("control-center", "web/control-center/Dockerfile"),
     ("media-studio", "web/media-studio/Dockerfile"),
     ("b1-model-client", "integrations/b1-model-client/Dockerfile"),
@@ -3472,6 +3494,8 @@ ARG_DEFAULT_RE = re.compile(r"^ARG\s+([A-Z0-9_]+)=(.*)$")
 FROM_RE = re.compile(r"^FROM\s+([^\s]+)(?:\s+AS\s+([^\s]+))?")
 COMPOSE_SERVICE_RE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(?:#.*)?$")
 COMPOSE_IMAGE_RE = re.compile(r"^\s{4}image:\s*(.+?)\s*(?:#.*)?$")
+COMPOSE_BUILD_RE = re.compile(r"^\s{4}build:\s*(.*?)\s*(?:#.*)?$")
+COMPOSE_BUILD_CONTEXT_RE = re.compile(r"^\s{6}context:\s*(.+?)\s*(?:#.*)?$")
 
 
 def _json_clone(value: dict[str, Any]) -> dict[str, Any]:
@@ -3483,6 +3507,20 @@ def _strip_yaml_scalar(value: str) -> str:
     if (stripped.startswith('"') and stripped.endswith('"')) or (stripped.startswith("'") and stripped.endswith("'")):
         return stripped[1:-1]
     return stripped
+
+
+def _normalize_build_context(value: str) -> str:
+    context = _strip_yaml_scalar(value).strip()
+    while context.startswith("./"):
+        context = context[2:]
+    return context.replace("\\", "/").rstrip("/")
+
+
+def _known_build_context_components() -> dict[str, str]:
+    return {
+        _normalize_build_context(str(Path(relative_path).parent)): component
+        for component, relative_path in DOCKERFILE_PIN_FILES
+    }
 
 
 def _image_default_ref(image_ref: str) -> str:
@@ -3653,6 +3691,53 @@ def _parse_compose_images(repo_root: Path) -> list[dict[str, Any]]:
     return images
 
 
+def _parse_compose_builds(repo_root: Path) -> list[dict[str, Any]]:
+    builds: list[dict[str, Any]] = []
+    known_contexts = _known_build_context_components()
+    for relative_path in COMPOSE_PIN_FILES:
+        text = _read_repo_text(repo_root, relative_path)
+        if text is None:
+            continue
+        service = ""
+        pending_build_service = ""
+        for line in text.splitlines():
+            if match := COMPOSE_SERVICE_RE.match(line):
+                service = match.group(1)
+                pending_build_service = ""
+                continue
+            if match := COMPOSE_BUILD_RE.match(line):
+                build_value = _strip_yaml_scalar(match.group(1))
+                pending_build_service = service if not build_value else ""
+                if build_value:
+                    context = _normalize_build_context(build_value)
+                    item: dict[str, Any] = {
+                        "file": relative_path,
+                        "service": service or "unknown",
+                        "context": build_value,
+                        "normalized_context": context,
+                        "component": known_contexts.get(context, ""),
+                    }
+                    if relative_path == "compose.monitoring.yaml":
+                        item["profile"] = "monitoring"
+                    builds.append(item)
+                continue
+            if pending_build_service and (match := COMPOSE_BUILD_CONTEXT_RE.match(line)):
+                build_value = _strip_yaml_scalar(match.group(1))
+                context = _normalize_build_context(build_value)
+                item = {
+                    "file": relative_path,
+                    "service": pending_build_service,
+                    "context": build_value,
+                    "normalized_context": context,
+                    "component": known_contexts.get(context, ""),
+                }
+                if relative_path == "compose.monitoring.yaml":
+                    item["profile"] = "monitoring"
+                builds.append(item)
+                pending_build_service = ""
+    return builds
+
+
 def _parse_dockerfile_bases(repo_root: Path) -> list[dict[str, Any]]:
     bases: list[dict[str, Any]] = []
     for component, relative_path in DOCKERFILE_PIN_FILES:
@@ -3742,11 +3827,17 @@ def _deployment_pin_integrity(pins: dict[str, Any]) -> dict[str, Any]:
     floating_latest_refs: list[str] = []
     unpinned_refs: list[str] = []
     missing_runtime_pins: list[str] = []
+    missing_build_pins: list[str] = []
     missing_sections = [
         section
-        for section in ("compose_images", "dockerfile_bases", "runtime_sources")
+        for section in ("compose_images", "compose_builds", "dockerfile_bases", "runtime_sources")
         if not isinstance(pins.get(section), list) or not pins.get(section)
     ]
+    pinned_components = {
+        str(item.get("component") or "")
+        for item in pins.get("dockerfile_bases") or []
+        if isinstance(item, dict) and _image_pin_type(str(item.get("image") or item.get("default_image") or "")) != "unpinned"
+    }
     for section, label_key in (("compose_images", "service"), ("dockerfile_bases", "component")):
         for item in pins.get(section) or []:
             if not isinstance(item, dict):
@@ -3757,6 +3848,15 @@ def _deployment_pin_integrity(pins: dict[str, Any]) -> dict[str, Any]:
                 floating_latest_refs.append(ref_label)
             elif pin_type == "unpinned":
                 unpinned_refs.append(ref_label)
+    for item in pins.get("compose_builds") or []:
+        if not isinstance(item, dict):
+            continue
+        ref_label = f"{item.get('file', 'compose')}:{item.get('service', 'unknown')}"
+        component = str(item.get("component") or "").strip()
+        if not component:
+            missing_build_pins.append(f"{ref_label}.build_context")
+        elif component not in pinned_components:
+            missing_build_pins.append(f"{component}.dockerfile_base")
     for source in pins.get("runtime_sources") or []:
         if not isinstance(source, dict):
             continue
@@ -3770,6 +3870,7 @@ def _deployment_pin_integrity(pins: dict[str, Any]) -> dict[str, Any]:
     return {
         "floating_latest_refs": floating_latest_refs,
         "unpinned_refs": unpinned_refs,
+        "missing_build_pins": missing_build_pins,
         "missing_runtime_pins": missing_runtime_pins,
         "missing_sections": missing_sections,
     }
@@ -3777,7 +3878,10 @@ def _deployment_pin_integrity(pins: dict[str, Any]) -> dict[str, Any]:
 
 def _deployment_pin_status(pins: dict[str, Any]) -> str:
     integrity = pins.get("integrity") if isinstance(pins.get("integrity"), dict) else _deployment_pin_integrity(pins)
-    has_findings = any(bool(integrity.get(key)) for key in ("floating_latest_refs", "unpinned_refs", "missing_runtime_pins", "missing_sections"))
+    has_findings = any(
+        bool(integrity.get(key))
+        for key in ("floating_latest_refs", "unpinned_refs", "missing_build_pins", "missing_runtime_pins", "missing_sections")
+    )
     return "ok" if pins.get("format") == DEPLOYMENT_PINS_FORMAT and not has_findings else "blocked"
 
 
@@ -3788,6 +3892,16 @@ def _normalize_deployment_pins(pins: dict[str, Any] | None) -> dict[str, Any]:
     normalized["compose_images"] = [
         _annotate_image_pin(item)
         for item in (normalized.get("compose_images") or [])
+        if isinstance(item, dict)
+    ]
+    known_contexts = _known_build_context_components()
+    normalized["compose_builds"] = [
+        {
+            **item,
+            "normalized_context": _normalize_build_context(str(item.get("context") or item.get("normalized_context") or "")),
+            "component": str(item.get("component") or known_contexts.get(_normalize_build_context(str(item.get("context") or "")), "")),
+        }
+        for item in (normalized.get("compose_builds") or [])
         if isinstance(item, dict)
     ]
     normalized["dockerfile_bases"] = [
@@ -3807,8 +3921,9 @@ def deployment_pins_snapshot(repo_root: Path | None = None) -> dict[str, Any]:
     if repo_root is None or not (repo_root / "compose.yaml").is_file():
         return _normalize_deployment_pins(BUNDLED_DEPLOYMENT_PINS)
     compose_images = _parse_compose_images(repo_root)
+    compose_builds = _parse_compose_builds(repo_root)
     dockerfile_bases = _parse_dockerfile_bases(repo_root)
-    if not compose_images or not dockerfile_bases:
+    if not compose_images or not compose_builds or not dockerfile_bases:
         fallback = _normalize_deployment_pins(BUNDLED_DEPLOYMENT_PINS)
         fallback["source"] = "bundled"
         fallback["repository_parse_error"] = "repository deployment pin files were incomplete or unreadable"
@@ -3819,6 +3934,7 @@ def deployment_pins_snapshot(repo_root: Path | None = None) -> dict[str, Any]:
             "schema_version": 1,
             "source": "repository",
             "compose_images": compose_images,
+            "compose_builds": compose_builds,
             "dockerfile_bases": dockerfile_bases,
             "runtime_sources": _runtime_sources_from_repo(repo_root, dockerfile_bases),
         }
@@ -3957,6 +4073,8 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("deployment pin manifest contains floating latest image refs: " + ", ".join(pin_integrity["floating_latest_refs"]))
     if pin_integrity.get("unpinned_refs"):
         blockers.append("deployment pin manifest contains unpinned image refs: " + ", ".join(pin_integrity["unpinned_refs"]))
+    if pin_integrity.get("missing_build_pins"):
+        blockers.append("deployment pin manifest is missing Compose build pins: " + ", ".join(pin_integrity["missing_build_pins"]))
     if pin_integrity.get("missing_runtime_pins"):
         blockers.append("deployment pin manifest is missing runtime source pins: " + ", ".join(pin_integrity["missing_runtime_pins"]))
     if pin_integrity.get("missing_sections"):
@@ -4961,7 +5079,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     pin_summary_rows.append(["source", _format_value(deployment_pins.get("source") or "unavailable")])
     pin_summary_rows.append(["status", _format_value(deployment_pins.get("status") or "unknown")])
     integrity = deployment_pins.get("integrity") if isinstance(deployment_pins.get("integrity"), dict) else {}
-    for key in ("floating_latest_refs", "unpinned_refs", "missing_runtime_pins", "missing_sections"):
+    for key in ("floating_latest_refs", "unpinned_refs", "missing_build_pins", "missing_runtime_pins", "missing_sections"):
         values = integrity.get(key) if isinstance(integrity.get(key), list) else []
         pin_summary_rows.append([key, ", ".join(str(item) for item in values) if values else "none"])
     compose_pin_rows = [["Service", "File", "Image", "Pin"]]
@@ -4973,6 +5091,17 @@ def markdown_report(report: dict[str, Any]) -> str:
                     _format_value(item.get("file")),
                     _format_value(item.get("default_image") or item.get("image")),
                     _format_value(item.get("pin_type")),
+                ]
+            )
+    compose_build_rows = [["Service", "File", "Context", "Component"]]
+    for item in deployment_pins.get("compose_builds") or []:
+        if isinstance(item, dict):
+            compose_build_rows.append(
+                [
+                    _format_value(item.get("service")),
+                    _format_value(item.get("file")),
+                    _format_value(item.get("normalized_context") or item.get("context")),
+                    _format_value(item.get("component") or "unmatched"),
                 ]
             )
     base_pin_rows = [["Component", "Stage", "File", "Base Image", "Pin"]]
@@ -5132,6 +5261,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             + _table(compose_selection_rows)
             + "\n\n### Compose Images\n\n"
             + (_table(compose_pin_rows) if len(compose_pin_rows) > 1 else "No Compose image pins recorded.")
+            + "\n\n### Compose Build Contexts\n\n"
+            + (_table(compose_build_rows) if len(compose_build_rows) > 1 else "No Compose build context pins recorded.")
             + "\n\n### Dockerfile Base Images\n\n"
             + (_table(base_pin_rows) if len(base_pin_rows) > 1 else "No Dockerfile base image pins recorded.")
             + "\n\n### Runtime Source Pins\n\n"

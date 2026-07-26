@@ -2407,6 +2407,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(repository["status"], "ok")
         self.assertEqual(repository["integrity"]["floating_latest_refs"], [])
         self.assertEqual(repository["integrity"]["unpinned_refs"], [])
+        self.assertEqual(repository["integrity"]["missing_build_pins"], [])
         self.assertEqual(repository["integrity"]["missing_runtime_pins"], [])
         self.assertEqual(repository["integrity"]["missing_sections"], [])
         self.assertEqual(bundled["source"], "bundled")
@@ -2428,6 +2429,13 @@ class AcceptanceReportTests(unittest.TestCase):
             compose[("compose.monitoring.yaml", "prometheus")],
             "prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
         )
+        builds = {
+            (item["file"], item["service"]): (item["normalized_context"], item["component"])
+            for item in repository["compose_builds"]
+        }
+        self.assertEqual(builds[("compose.yaml", "control-plane")], ("services/control-plane", "control-plane"))
+        self.assertEqual(builds[("compose.yaml", "localai")], ("services/mock-runtime", "mock-runtime"))
+        self.assertEqual(builds[("compose.production-comfyui.yaml", "comfyui")], ("deploy/comfyui", "comfyui"))
 
         bases = {
             (item["file"], item["component"], item["stage"]): item["default_image"]
@@ -2444,6 +2452,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(
             bases[("deploy/voicebox/Dockerfile", "voicebox", "backend-builder")],
             "python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
+        )
+        self.assertEqual(
+            bases[("services/mock-runtime/Dockerfile", "mock-runtime", "final")],
+            "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
         )
 
         repository_runtimes = {item["runtime"]: item for item in repository["runtime_sources"]}
@@ -2491,6 +2503,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "format": acceptance.DEPLOYMENT_PINS_FORMAT,
                 "source": "test",
                 "compose_images": [{"file": "compose.yaml", "service": "bad", "image": "example.invalid/bad:latest"}],
+                "compose_builds": [{"file": "compose.yaml", "service": "bad-build", "context": "./unknown"}],
                 "dockerfile_bases": [],
                 "runtime_sources": [{"runtime": "comfyui", "upstream_commit": "f" * 40}],
             }
@@ -2501,6 +2514,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["deployment_pins_ready"])
         blockers = "; ".join(report["acceptance_blockers"])
         self.assertIn("deployment pin manifest contains floating latest image refs", blockers)
+        self.assertIn("deployment pin manifest is missing Compose build pins", blockers)
         self.assertIn("deployment pin manifest is missing runtime source pins: comfyui.tarball_sha256", blockers)
         self.assertIn("deployment pin manifest is missing sections: dockerfile_bases", blockers)
 
