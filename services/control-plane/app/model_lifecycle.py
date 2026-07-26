@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -707,6 +708,8 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def hardlink_blob_into_view(target: Path, link_path: Path, view_root: Path) -> dict[str, Any]:
     ensure_directory_inside(link_path.parent, view_root)
+    if target.is_symlink() or not target.is_file():
+        raise ModelLifecycleError(f"blob target is not a regular file: {target}")
     if link_path.is_symlink():
         raise ModelLifecycleError(f"runtime view refuses symlinked file path: {link_path}")
     if link_path.exists():
@@ -719,6 +722,18 @@ def hardlink_blob_into_view(target: Path, link_path: Path, view_root: Path) -> d
     try:
         os.link(target, link_path)
     except OSError as exc:
+        if exc.errno == errno.EXDEV:
+            try:
+                shutil.copyfile(target, link_path)
+                copied_size = link_path.stat().st_size
+                if copied_size != target.stat().st_size or sha256_file(link_path) != sha256_file(target):
+                    raise ModelLifecycleError(f"copied runtime view file failed verification: {link_path}")
+                link_path.chmod(0o644)
+            except Exception:
+                with suppress(FileNotFoundError):
+                    link_path.unlink()
+                raise
+            return {"view_path": str(link_path), "blob_path": str(target), "link_type": "copy-exdev", "status": "copied"}
         raise ModelLifecycleError(f"failed to link blob into runtime view: {exc}") from exc
     return {"view_path": str(link_path), "blob_path": str(target), "link_type": "hardlink", "status": "linked"}
 

@@ -19,14 +19,15 @@ The underlying unittest module remains available for isolated harness debugging:
 python3 -m unittest discover -s tests/smoke -v
 ```
 
-When testing through `https://127.0.0.1` or another temporary address, set the routed host explicitly:
+Before LAN DNS is configured, keep the real virtual-host URLs and temporarily resolve them to the local gateway. This preserves TLS SNI and Caddy virtual-host routing while still testing the local machine:
 
 ```bash
-export B1_AI_HUB_API_BASE=https://127.0.0.1
-export B1_SMOKE_HOST_HEADER=api.ai.b1.germering
-export B1_SMOKE_OPEN_WEBUI_BASE=https://127.0.0.1
-export B1_SMOKE_OPEN_WEBUI_HOST_HEADER=ai.b1.germering
+export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_SMOKE_OPEN_WEBUI_BASE=https://ai.b1.germering
+export B1_SMOKE_RESOLVE_HOSTS=api.ai.b1.germering=127.0.0.1,ai.b1.germering=127.0.0.1
 ```
+
+`B1_SMOKE_HOST_HEADER` and `B1_SMOKE_OPEN_WEBUI_HOST_HEADER` remain available for non-TLS or externally terminated harnesses, but they are not a substitute for correct HTTPS SNI.
 
 For the default Caddy internal CA, either trust the generated root certificate on the test machine or pass it directly:
 
@@ -66,6 +67,7 @@ Useful knobs:
 - `B1_SMOKE_TTS_RUNTIME_POLICY`, default `non_comfy_only`
 - `B1_SMOKE_TTS_VOICE`, default `default`
 - `B1_SMOKE_OPEN_WEBUI_BASE`, default `https://ai.b1.germering`
+- `B1_SMOKE_RESOLVE_HOSTS`, optional `host=address` list for pre-DNS local gateway testing while preserving HTTPS SNI
 - `B1_SMOKE_OPEN_WEBUI_HOST_HEADER`, optional routed host override for temporary gateway addresses
 - `B1_SMOKE_ALLOW_PLACEHOLDER=1`, development-only; lets the unittest finish against scaffold audio but records incomplete evidence
 - `B1_SMOKE_EVIDENCE`, optional machine-readable handoff evidence path

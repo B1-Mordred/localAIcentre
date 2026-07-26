@@ -315,6 +315,7 @@ services:
       - app
       - data
       - runtime
+      - egress
     healthcheck:
       <<: *python-health
       test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
@@ -609,3 +610,4 @@ networks:
     internal: true
   runtime:
     internal: true
+  egress: {}

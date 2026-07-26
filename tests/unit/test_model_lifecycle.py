@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -543,6 +544,33 @@ class ModelLifecycleTests(unittest.TestCase):
                 "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_q4.onnx",
             )
 
+    def test_seed_piper_download_plan_is_stageable(self) -> None:
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        manifest = catalog.get_manifest("b1-piper-en-us-amy-low")
+        self.assertIsNotNone(manifest)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = model_lifecycle.build_download_plan(
+                manifest,
+                Path(tmp),
+                policy=ResourcePolicy(),
+                known_aliases=set(catalog.aliases_by_id),
+                model_profiles=catalog.list_profiles(),
+            )
+
+        self.assertTrue(plan["can_download"], plan["blockers"])
+        self.assertEqual(plan["status"], "downloadable")
+        self.assertEqual(plan["file_count"], 2)
+        self.assertEqual(plan["files"][0]["source_type"], "huggingface")
+        self.assertEqual(
+            plan["files"][0]["source_url"],
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/low/en_US-amy-low.onnx",
+        )
+        self.assertEqual(
+            plan["files"][1]["source_url"],
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/low/en_US-amy-low.onnx.json",
+        )
+
     def test_download_url_builders_reject_encoded_file_path_controls(self) -> None:
         direct_payload = manifest_payload(
             "5" * 64,
@@ -817,6 +845,38 @@ class ModelLifecycleTests(unittest.TestCase):
                 ).is_file()
             )
             self.assertTrue(blob_path.is_file())
+
+    def test_runtime_views_copy_verified_blobs_when_hardlink_crosses_devices(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        original_link = model_lifecycle.os.link
+
+        def exdev_link(
+            source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        ) -> None:
+            raise OSError(errno.EXDEV, "Invalid cross-device link", source, destination)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            blob_path = blob_dir / digest
+            blob_path.write_bytes(data)
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+
+            try:
+                model_lifecycle.os.link = exdev_link
+                views = model_lifecycle.create_runtime_views(manifest, root)
+            finally:
+                model_lifecycle.os.link = original_link
+
+            view_file = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0" / "chat-small.gguf"
+            self.assertTrue(view_file.is_file())
+            self.assertFalse(os.path.samefile(blob_path, view_file))
+            self.assertEqual(view_file.read_bytes(), data)
+            self.assertEqual(views[0]["files"][0]["link_type"], "copy-exdev")
+            self.assertEqual(views[0]["files"][0]["status"], "copied")
 
     def test_blob_quarantine_requires_quarantined_model_and_refuses_shared_blobs(self) -> None:
         data = b"shared blob"

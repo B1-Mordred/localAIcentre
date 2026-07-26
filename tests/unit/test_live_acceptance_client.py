@@ -312,6 +312,57 @@ class LiveAcceptanceClientTests(unittest.TestCase):
 
         self.assertNotIn("called", seen)
 
+    def test_resolve_hosts_env_parses_comma_and_space_separated_entries(self) -> None:
+        raw = "api.ai.b1.germering=127.0.0.1, ai.b1.germering=127.0.0.1\nCOMFY.AI.B1.GERMERING.=::1"
+
+        self.assertEqual(
+            live_stack.parse_resolve_hosts(raw),
+            {
+                "api.ai.b1.germering": "127.0.0.1",
+                "ai.b1.germering": "127.0.0.1",
+                "comfy.ai.b1.germering": "::1",
+            },
+        )
+
+    def test_resolve_hosts_rejects_schemes_and_paths(self) -> None:
+        with self.assertRaisesRegex(ValueError, "schemes or paths"):
+            live_stack.parse_resolve_hosts("https://api.ai.b1.germering=127.0.0.1")
+        with self.assertRaisesRegex(ValueError, "schemes or paths"):
+            live_stack.parse_resolve_hosts("api.ai.b1.germering=127.0.0.1/healthz")
+
+    def test_resolve_hosts_redirects_socket_lookup_without_rewriting_url(self) -> None:
+        seen: dict[str, Any] = {}
+        original_urlopen = live_stack.urlopen
+        original_getaddrinfo = live_stack.socket.getaddrinfo
+
+        def fake_getaddrinfo(*args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+            seen["getaddrinfo_args"] = args
+            return []
+
+        def fake_urlopen(request: Any, timeout: float = 0, context: Any | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            live_stack.socket.getaddrinfo("api.ai.b1.germering", 443)
+            return FakeResponse()
+
+        try:
+            live_stack.urlopen = fake_urlopen
+            live_stack.socket.getaddrinfo = fake_getaddrinfo
+            client = live_stack.LiveApiClient(
+                "https://api.ai.b1.germering",
+                api_key="b1k_public.secret",
+                tls_verify=False,
+                resolve_hosts={"api.ai.b1.germering": "127.0.0.1"},
+            )
+            status, _headers, payload = client.json_request("GET", "/healthz")
+        finally:
+            live_stack.urlopen = original_urlopen
+            live_stack.socket.getaddrinfo = original_getaddrinfo
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"status": "ok"})
+        self.assertEqual(seen["url"], "https://api.ai.b1.germering/healthz")
+        self.assertEqual(seen["getaddrinfo_args"][0], "127.0.0.1")
+
     def test_media_job_link_uses_server_links_and_validates_shape(self) -> None:
         job = {
             "id": "job_1",

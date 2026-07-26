@@ -125,6 +125,8 @@ class BootstrapTests(unittest.TestCase):
                 path = root / "artifacts" / "temporary" / relative
                 self.assertTrue(path.is_dir(), relative)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o775)
+            self.assertTrue((root / "artifacts").is_dir())
+            self.assertEqual((root / "artifacts").stat().st_mode & 0o777, 0o775)
             for relative in ("generations", "profiles", "captures", "cache"):
                 path = root / "data" / "voicebox" / relative
                 self.assertTrue(path.is_dir(), relative)
@@ -137,6 +139,9 @@ class BootstrapTests(unittest.TestCase):
                 path = root / "data" / monitoring_data_dir
                 self.assertTrue(path.is_dir(), monitoring_data_dir)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o775)
+            self.assertTrue((root / "models" / "blobs").is_dir())
+            self.assertEqual((root / "models" / "blobs").stat().st_mode & 0o777, 0o775)
+            self.assertEqual((root / "models" / "blobs" / ".partial").stat().st_mode & 0o777, 0o775)
             for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
                 self.assertTrue((root / "models" / "runtime-views" / runtime).is_dir())
                 self.assertEqual((root / "models" / "runtime-views" / runtime).stat().st_mode & 0o777, 0o775)

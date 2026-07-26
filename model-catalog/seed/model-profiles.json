@@ -83,7 +83,7 @@
       "preferred_runtimes": ["audio-cpu"],
       "target_class": "Piper/Kokoro-class CPU speech engine",
       "selection_guidance": "Keep a fast CPU profile available for ordinary speech requests that should not take the GPU lease.",
-      "resource_estimate": { "vram_gib": 0.0, "ram_gib": 0.4, "disk_gib": 0.2 },
+      "resource_estimate": { "vram_gib": 0.0, "ram_gib": 0.6, "disk_gib": 0.2 },
       "target_resource_label": "recommended",
       "runtime_policy": "cpu-resident",
       "default_limits": { "cpu_resident_allowed": true },

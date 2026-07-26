@@ -4,14 +4,16 @@ import hashlib
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import time
 import unittest
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -25,6 +27,7 @@ from tests.support.evidence import write_private_json  # noqa: E402
 
 TERMINAL_STATES = {"completed", "cancelled", "failed", "expired", "recovery_required"}
 ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
+RESOLVE_HOSTS_ENV = "B1_SMOKE_RESOLVE_HOSTS"
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
@@ -64,6 +67,55 @@ def env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_resolve_host(hostname: str) -> str:
+    return hostname.strip().lower().rstrip(".")
+
+
+def parse_resolve_hosts(raw: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in re.split(r"[,\s]+", raw.strip()):
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"{RESOLVE_HOSTS_ENV} entries must use host=address: {item!r}")
+        host, address = item.split("=", 1)
+        host = normalize_resolve_host(host)
+        address = address.strip()
+        if not host or not address:
+            raise ValueError(f"{RESOLVE_HOSTS_ENV} entries require a non-empty host and address: {item!r}")
+        if "://" in host or "/" in host or "/" in address:
+            raise ValueError(f"{RESOLVE_HOSTS_ENV} entries must not include schemes or paths: {item!r}")
+        mapping[host] = address
+    return mapping
+
+
+@contextmanager
+def temporary_host_resolution(resolve_hosts: dict[str, str]) -> Iterator[None]:
+    if not resolve_hosts:
+        yield
+        return
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def mapped_getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[Any, ...]]:
+        lookup_host = host.decode("ascii", errors="ignore") if isinstance(host, bytes) else str(host or "")
+        mapped_host = resolve_hosts.get(normalize_resolve_host(lookup_host))
+        return original_getaddrinfo(mapped_host or host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = mapped_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
 
 
 def media_job_link(job: dict[str, Any], link_name: str, fallback_suffix: str = "") -> str:
@@ -177,12 +229,14 @@ class LiveApiClient:
         tls_verify: bool = True,
         ca_file: str = "",
         allow_insecure_http: bool | None = None,
+        resolve_hosts: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") + "/"
         self.api_key = api_key
         self.host_header = host_header
         self.timeout_seconds = timeout_seconds
         self.allow_insecure_http = env_flag(ALLOW_INSECURE_HTTP_ENV) if allow_insecure_http is None else allow_insecure_http
+        self.resolve_hosts = dict(resolve_hosts) if resolve_hosts is not None else parse_resolve_hosts(os.getenv(RESOLVE_HOSTS_ENV, ""))
         self.context = self.ssl_context(tls_verify, ca_file)
 
     def ssl_context(self, tls_verify: bool, ca_file: str) -> ssl.SSLContext | None:
@@ -222,8 +276,9 @@ class LiveApiClient:
         req = Request(urljoin(self.base_url, path.lstrip("/")), data=data, headers=request_headers, method=method)
         self.enforce_token_transport_security(req.full_url)
         try:
-            with urlopen(req, timeout=self.timeout_seconds, context=self.context) as response:
-                return response.status, dict(response.headers), response.read()
+            with temporary_host_resolution(self.resolve_hosts):
+                with urlopen(req, timeout=self.timeout_seconds, context=self.context) as response:
+                    return response.status, dict(response.headers), response.read()
         except HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
         except URLError as exc:
@@ -447,6 +502,7 @@ class LiveStackSmokeTests(unittest.TestCase):
             timeout_seconds=timeout_seconds,
             tls_verify=tls_verify,
             ca_file=ca_file,
+            resolve_hosts=cls.client.resolve_hosts,
         )
         cls.job_timeout_seconds = float(os.getenv("B1_SMOKE_JOB_TIMEOUT_SECONDS", "120"))
         cls.allow_placeholder = env_flag("B1_SMOKE_ALLOW_PLACEHOLDER", False)
@@ -465,6 +521,7 @@ class LiveStackSmokeTests(unittest.TestCase):
                 "generated_at": datetime.now(tz=UTC).isoformat(),
                 "base_url": cls.client.base_url,
                 "open_webui_base_url": cls.open_webui_client.base_url,
+                "resolve_hosts": cls.client.resolve_hosts,
                 "status": status,
                 "required_checks": list(SMOKE_REQUIRED_CHECKS),
                 "checks": cls.checks,
@@ -685,6 +742,7 @@ class LiveStackSmokeTests(unittest.TestCase):
             timeout_seconds=self.client.timeout_seconds,
             tls_verify=os.getenv("B1_SMOKE_TLS_VERIFY", "1").strip().lower() not in {"0", "false", "no"},
             ca_file=os.getenv("B1_SMOKE_CA_FILE", ""),
+            resolve_hosts=self.client.resolve_hosts,
         )
         status, _, payload = admin_client.json_request("GET", "/admin/self-test", require_auth=True)
         if status == 403:

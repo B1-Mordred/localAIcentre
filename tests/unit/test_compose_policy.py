@@ -245,6 +245,20 @@ class ComposePolicyTests(unittest.TestCase):
         for name in ("app", "data", "runtime"):
             self.assertTrue(networks[name].get("internal"), name)
 
+    def test_only_control_plane_has_model_download_egress(self) -> None:
+        networks = self.compose["networks"]
+        self.assertIn("egress", networks)
+        self.assertFalse(networks["egress"].get("internal", False))
+
+        services_with_egress = sorted(
+            name
+            for name, service in self.compose["services"].items()
+            if "egress" in service.get("networks", [])
+        )
+        self.assertEqual(services_with_egress, ["control-plane"])
+        for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
+            self.assertNotIn("egress", self.compose["services"][runtime].get("networks", []), runtime)
+
     def test_bootstrap_precedes_stateful_services(self) -> None:
         for name in ("postgres", "redis", "control-plane", "runtime-agent"):
             depends_on = self.compose["services"][name].get("depends_on", {})
