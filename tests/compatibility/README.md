@@ -2,6 +2,8 @@
 
 Compatibility tests will cover native ComfyUI REST/WebSocket clients, the optional legacy `:8188` listener, external ComfyUI B1 remote nodes, Model Hub clients, and Voicebox remote/server mode.
 
+When an evidence path is configured, compatibility harnesses write JSON atomically with `0640` permissions and refuse symlink targets or symlinked parent directories.
+
 ## Native ComfyUI Compatibility
 
 The native ComfyUI compatibility path uses the public `comfy.ai.b1.germering` gateway endpoint, not the internal `comfyui` container port. It verifies metadata routes including node-specific `/object_info/{node}`, native image and mask uploads, native prompt submission, `Idempotency-Key` replay of the same native `prompt_id`, native WebSocket events, native history listing and prompt lookup, native queue deletion, targeted interrupt, and `/view` artifact retrieval for every returned history artifact.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import tempfile
@@ -14,8 +13,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "integrations" / "b1-model-client"))
 
+from tests.support.evidence import write_private_json  # noqa: E402
 from b1_model_client import __main__ as client  # noqa: E402
 
 
@@ -67,24 +68,18 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in MODELHUB_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": MODELHUB_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.base_url,
-                    "status": status,
-                    "required_checks": list(MODELHUB_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": MODELHUB_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.base_url,
+                "status": status,
+                "required_checks": list(MODELHUB_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
         )
 
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:

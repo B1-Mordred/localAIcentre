@@ -5,6 +5,7 @@ import json
 import os
 import re
 import ssl
+import sys
 import time
 import unittest
 import uuid
@@ -14,6 +15,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tests.support.evidence import write_private_json  # noqa: E402
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed", "expired", "recovery_required"}
@@ -373,25 +380,19 @@ class LiveStackSmokeTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in SMOKE_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": SMOKE_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.client.base_url,
-                    "open_webui_base_url": cls.open_webui_client.base_url,
-                    "status": status,
-                    "required_checks": list(SMOKE_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": SMOKE_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.client.base_url,
+                "open_webui_base_url": cls.open_webui_client.base_url,
+                "status": status,
+                "required_checks": list(SMOKE_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
         )
 
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:

@@ -19,6 +19,11 @@ from typing import Any
 
 NATIVE_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-native-comfyui-compatibility/v1"
 DEFAULT_NATIVE_COMFYUI_PROMPT_FILE = Path(__file__).resolve().parents[2] / "workflows" / "acceptance" / "native-comfyui-smoke-prompt.json"
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tests.support.evidence import write_private_json  # noqa: E402
+
 TINY_COMFYUI_SMOKE_CLASS = "B1RuntimeTinyImage"
 NATIVE_COMFYUI_REQUIRED_CHECKS = (
     "object_info_accessible",
@@ -237,26 +242,20 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in NATIVE_COMFYUI_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": NATIVE_COMFYUI_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.base_url,
-                    "api_base_url": cls.api_base_url,
-                    "prompt": cls.prompt_metadata,
-                    "status": status,
-                    "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": NATIVE_COMFYUI_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.base_url,
+                "api_base_url": cls.api_base_url,
+                "prompt": cls.prompt_metadata,
+                "status": status,
+                "required_checks": list(NATIVE_COMFYUI_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
         )
 
     @classmethod

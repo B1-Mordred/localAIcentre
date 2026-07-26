@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import ssl
+import sys
 import unittest
 import urllib.error
 import urllib.parse
@@ -14,6 +15,12 @@ from datetime import UTC, datetime
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tests.support.evidence import write_private_json  # noqa: E402
 
 
 SECURITY_EVIDENCE_FORMAT = "b1-ai-hub-security-acceptance/v1"
@@ -138,25 +145,19 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in SECURITY_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": SECURITY_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.api_base,
-                    "comfy_base_url": cls.comfy_base,
-                    "status": status,
-                    "required_checks": list(SECURITY_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": SECURITY_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.api_base,
+                "comfy_base_url": cls.comfy_base,
+                "status": status,
+                "required_checks": list(SECURITY_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
         )
 
     @classmethod

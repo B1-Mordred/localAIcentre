@@ -16,8 +16,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
+from tests.support.evidence import write_private_json  # noqa: E402
 from test_live_stack import (  # noqa: E402
     LiveApiClient,
     TERMINAL_STATES,
@@ -175,27 +177,21 @@ class LiveInstalledWorkflowAcceptanceTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in INSTALLED_WORKFLOWS_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": INSTALLED_WORKFLOWS_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.client.base_url,
-                    "status": status,
-                    "required_checks": list(INSTALLED_WORKFLOWS_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                    "required_model_aliases": sorted(cls.required_model_aliases),
-                    "model_measurements": cls.model_measurements,
-                    "media_artifacts": cls.media_artifact_proofs,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": INSTALLED_WORKFLOWS_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.client.base_url,
+                "status": status,
+                "required_checks": list(INSTALLED_WORKFLOWS_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+                "required_model_aliases": sorted(cls.required_model_aliases),
+                "model_measurements": cls.model_measurements,
+                "media_artifacts": cls.media_artifact_proofs,
+            },
         )
 
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:

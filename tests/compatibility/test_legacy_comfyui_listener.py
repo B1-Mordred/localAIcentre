@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import ssl
+import sys
 import unittest
 import urllib.parse
 import urllib.request
@@ -11,6 +12,12 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tests.support.evidence import write_private_json  # noqa: E402
 
 
 LEGACY_COMFYUI_EVIDENCE_FORMAT = "b1-ai-hub-legacy-comfyui-listener/v1"
@@ -52,24 +59,18 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in LEGACY_COMFYUI_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": LEGACY_COMFYUI_EVIDENCE_FORMAT,
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.base_url,
-                    "status": status,
-                    "required_checks": list(LEGACY_COMFYUI_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.samples,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": LEGACY_COMFYUI_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.base_url,
+                "status": status,
+                "required_checks": list(LEGACY_COMFYUI_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
         )
 
     @classmethod

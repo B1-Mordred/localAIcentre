@@ -236,6 +236,8 @@ make operator-live-acceptance
 
 `make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
 
+Live harness evidence is written atomically with `0640` permissions and refuses symlink targets or symlinked parent directories, so handoff JSON cannot be redirected outside the reviewed backup root.
+
 Generate backup, migration, and rollback handoff evidence after B1 backup verification, alternate-directory restore rehearsal, old-stack migration review, and rollback rehearsal:
 
 ```text

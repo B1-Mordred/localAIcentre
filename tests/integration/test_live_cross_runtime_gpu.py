@@ -12,8 +12,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "smoke"))
 
+from tests.support.evidence import write_private_json  # noqa: E402
 from test_live_stack import (  # noqa: E402
     LiveApiClient,
     TERMINAL_STATES,
@@ -150,27 +152,21 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in GPU_ACCEPTANCE_REQUIRED_CHECKS) else "incomplete"
-        path.write_text(
-            json.dumps(
-                {
-                    "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "base_url": cls.client.base_url,
-                    "status": status,
-                    "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
-                    "checks": cls.checks,
-                    "samples": cls.evidence,
-                    "vram_samples": cls.vram_samples,
-                    "required_model_aliases": sorted(cls.required_model_aliases),
-                    "model_measurements": cls.model_measurements,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_private_json(
+            path,
+            {
+                "format": "b1-ai-hub-cross-runtime-gpu-acceptance/v1",
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.client.base_url,
+                "status": status,
+                "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.evidence,
+                "vram_samples": cls.vram_samples,
+                "required_model_aliases": sorted(cls.required_model_aliases),
+                "model_measurements": cls.model_measurements,
+            },
         )
 
     def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
