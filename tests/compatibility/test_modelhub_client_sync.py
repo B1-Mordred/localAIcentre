@@ -119,6 +119,52 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
         partial.write_bytes(content)
         return partial_size
 
+    def cache_blob_evidence(self, cache: Path, blob: str, expected_size: int) -> dict[str, Any]:
+        target = cache / "blobs" / blob
+        partial = target.with_suffix(".partial")
+        cache_root = cache.resolve()
+        blob_path = target.resolve(strict=True)
+        relative_path = ""
+        path_within_cache_root = False
+        try:
+            relative_path = blob_path.relative_to(cache_root).as_posix()
+            path_within_cache_root = True
+        except ValueError:
+            pass
+        target_stat = target.stat()
+        evidence: dict[str, Any] = {
+            "cache_root": str(cache_root),
+            "cached_blob_relative_path": relative_path,
+            "path_within_cache_root": path_within_cache_root,
+            "cached_blob_size": target_stat.st_size,
+            "cached_blob_file_sha256": client.sha256_file(target),
+            "cached_blob_is_regular_file": client.is_regular_file_no_symlink(target),
+            "cached_blob_is_symlink": target.is_symlink(),
+            "partial_removed": not partial.exists() and not partial.is_symlink(),
+            "expected_size_matches_file": target_stat.st_size == expected_size,
+            "expected_sha256_matches_file": client.sha256_file(target) == blob,
+            "posix_mode_checked": os.name != "nt",
+        }
+        if os.name != "nt":
+            cache_mode = cache.stat().st_mode & 0o777
+            blobs_mode = target.parent.stat().st_mode & 0o777
+            target_mode = target_stat.st_mode & 0o777
+            state_file = client.state_path(cache)
+            state_mode = state_file.stat().st_mode & 0o777 if state_file.exists() else 0
+            evidence.update(
+                {
+                    "cache_root_mode": oct(cache_mode),
+                    "blob_dir_mode": oct(blobs_mode),
+                    "cached_blob_mode": oct(target_mode),
+                    "state_file_mode": oct(state_mode),
+                    "cache_root_private": cache_mode == client.PRIVATE_DIR_MODE,
+                    "blob_dir_private": blobs_mode == client.PRIVATE_DIR_MODE,
+                    "cached_blob_private": target_mode == client.PRIVATE_FILE_MODE,
+                    "state_file_private": state_mode == client.PRIVATE_FILE_MODE,
+                }
+            )
+        return evidence
+
     def validate_blob_head_metadata(self, action: dict[str, Any]) -> None:
         blob = str(action["blob"]).lower()
         expected_size = int(action["expected_size"])
@@ -245,7 +291,13 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
             target = cache / "blobs" / blob
             self.assertTrue(target.is_file())
             self.assertFalse(target.with_suffix(".partial").exists())
-            self.assertEqual(client.sha256_file(target), blob)
+            file_evidence = self.cache_blob_evidence(cache, blob, int(action["expected_size"]))
+            self.assertEqual(file_evidence["cached_blob_file_sha256"], blob)
+            self.assertTrue(file_evidence["path_within_cache_root"])
+            self.assertEqual(file_evidence["cached_blob_relative_path"], f"blobs/{blob}")
+            self.assertTrue(file_evidence["cached_blob_is_regular_file"])
+            self.assertFalse(file_evidence["cached_blob_is_symlink"])
+            self.assertTrue(file_evidence["partial_removed"])
             self.record_check(
                 "range_resume_downloaded",
                 model=self.sync_model,
@@ -253,11 +305,29 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
                 expected_size=int(action["expected_size"]),
                 partial_size=partial_size,
                 final_size=target.stat().st_size,
+                final_sha256=file_evidence["cached_blob_file_sha256"],
+                partial_removed=file_evidence["partial_removed"],
+                cached_blob_relative_path=file_evidence["cached_blob_relative_path"],
+                path_within_cache_root=file_evidence["path_within_cache_root"],
+                cached_blob_is_regular_file=file_evidence["cached_blob_is_regular_file"],
+                cached_blob_is_symlink=file_evidence["cached_blob_is_symlink"],
             )
 
             state = client.load_state(cache)
             self.assertIn(blob, state["managed_blobs"])
-            self.record_check("cache_state_managed", model=self.sync_model, managed_blob_count=len(state["managed_blobs"]))
+            managed_entry = state["managed_blobs"][blob]
+            self.assertEqual(managed_entry.get("sha256"), blob)
+            self.assertEqual(int(managed_entry.get("size_bytes") or 0), int(action["expected_size"]))
+            self.record_check(
+                "cache_state_managed",
+                model=self.sync_model,
+                managed_blob_count=len(state["managed_blobs"]),
+                managed_blob_sha256=blob,
+                managed_blob_size=int(action["expected_size"]),
+                managed_entry_sha256=str(managed_entry.get("sha256") or ""),
+                managed_entry_size=int(managed_entry.get("size_bytes") or 0),
+                **file_evidence,
+            )
 
             unmanaged = cache / "blobs" / "operator-unmanaged-file"
             unmanaged.write_text("do not prune", encoding="utf-8")
@@ -293,6 +363,11 @@ class ModelHubClientSyncCompatibilityTests(unittest.TestCase):
                 "accept_licenses": self.accept_licenses,
                 "synced_blob": str(action["blob"]).lower(),
                 "synced_size": int(action["expected_size"]),
+                "cached_blob_file_sha256": file_evidence["cached_blob_file_sha256"],
+                "cached_blob_size": file_evidence["cached_blob_size"],
+                "cached_blob_relative_path": file_evidence["cached_blob_relative_path"],
+                "path_within_cache_root": file_evidence["path_within_cache_root"],
+                "partial_removed": file_evidence["partial_removed"],
             }
         )
 

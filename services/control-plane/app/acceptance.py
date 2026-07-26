@@ -820,6 +820,7 @@ def _modelhub_integrity_summary(payload: dict[str, Any]) -> dict[str, Any]:
     range_size = _positive_int(range_check.get("expected_size"))
     partial_size = _positive_int(range_check.get("partial_size"))
     final_size = _positive_int(range_check.get("final_size"))
+    final_sha256 = _normalized_sha256(range_check.get("final_sha256") or range_check.get("download_sha256"))
     if not range_blob:
         missing.append("range_resume_downloaded.blob")
     elif plan_blob and range_blob != plan_blob:
@@ -836,10 +837,64 @@ def _modelhub_integrity_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("range_resume_downloaded.final_size")
     elif range_size and final_size != range_size:
         missing.append("range_resume_downloaded.final_size_matches_expected_size")
+    if not final_sha256:
+        missing.append("range_resume_downloaded.final_sha256")
+    elif range_blob and final_sha256 != range_blob:
+        missing.append("range_resume_downloaded.final_sha256_matches_blob")
+    if range_check.get("partial_removed") is not True:
+        missing.append("range_resume_downloaded.partial_removed")
 
     cache_state = checks.get("cache_state_managed") if isinstance(checks.get("cache_state_managed"), dict) else {}
     if _positive_int(cache_state.get("managed_blob_count")) < 1:
         missing.append("cache_state_managed.managed_blob_count")
+    cache_blob = _normalized_sha256(cache_state.get("managed_blob_sha256") or cache_state.get("cached_blob_sha256"))
+    managed_entry_sha256 = _normalized_sha256(cache_state.get("managed_entry_sha256"))
+    cached_file_sha256 = _normalized_sha256(cache_state.get("cached_blob_file_sha256"))
+    managed_blob_size = _positive_int(cache_state.get("managed_blob_size"))
+    managed_entry_size = _positive_int(cache_state.get("managed_entry_size"))
+    cached_blob_size = _positive_int(cache_state.get("cached_blob_size"))
+    expected_relative_path = f"blobs/{cache_blob}" if cache_blob else ""
+    relative_path = str(cache_state.get("cached_blob_relative_path") or "").strip()
+    if not cache_blob:
+        missing.append("cache_state_managed.managed_blob_sha256")
+    elif plan_blob and cache_blob != plan_blob:
+        missing.append("cache_state_managed.managed_blob_matches_plan")
+    if not managed_entry_sha256:
+        missing.append("cache_state_managed.managed_entry_sha256")
+    elif cache_blob and managed_entry_sha256 != cache_blob:
+        missing.append("cache_state_managed.managed_entry_sha256_matches_blob")
+    if not cached_file_sha256:
+        missing.append("cache_state_managed.cached_blob_file_sha256")
+    elif cache_blob and cached_file_sha256 != cache_blob:
+        missing.append("cache_state_managed.cached_blob_file_sha256_matches_blob")
+    if not managed_blob_size:
+        missing.append("cache_state_managed.managed_blob_size")
+    elif plan_size and managed_blob_size != plan_size:
+        missing.append("cache_state_managed.managed_blob_size_matches_plan")
+    if not managed_entry_size:
+        missing.append("cache_state_managed.managed_entry_size")
+    elif plan_size and managed_entry_size != plan_size:
+        missing.append("cache_state_managed.managed_entry_size_matches_plan")
+    if not cached_blob_size:
+        missing.append("cache_state_managed.cached_blob_size")
+    elif plan_size and cached_blob_size != plan_size:
+        missing.append("cache_state_managed.cached_blob_size_matches_plan")
+    if cache_state.get("path_within_cache_root") is not True:
+        missing.append("cache_state_managed.path_within_cache_root")
+    if not relative_path or (expected_relative_path and relative_path != expected_relative_path):
+        missing.append("cache_state_managed.cached_blob_relative_path")
+    if cache_state.get("cached_blob_is_regular_file") is not True:
+        missing.append("cache_state_managed.cached_blob_is_regular_file")
+    if cache_state.get("cached_blob_is_symlink") is not False:
+        missing.append("cache_state_managed.cached_blob_is_symlink")
+    if cache_state.get("partial_removed") is not True:
+        missing.append("cache_state_managed.partial_removed")
+    if cache_state.get("posix_mode_checked") is True:
+        for key in ("cache_root_private", "blob_dir_private", "cached_blob_private", "state_file_private"):
+            if cache_state.get(key) is not True:
+                missing.append(f"cache_state_managed.{key}")
+    elif cache_state.get("posix_mode_checked") is not False:
+        missing.append("cache_state_managed.posix_mode_checked")
 
     prune = checks.get("dry_run_prune_safe") if isinstance(checks.get("dry_run_prune_safe"), dict) else {}
     if prune.get("unmanaged_files_ignored") is not True:
@@ -855,11 +910,25 @@ def _modelhub_integrity_summary(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         sample_blob = _normalized_sha256(sample.get("synced_blob"))
         sample_size = _positive_int(sample.get("synced_size"))
-        if sample_blob and sample_size and (not plan_blob or sample_blob == plan_blob) and (not plan_size or sample_size == plan_size):
+        sample_file_sha256 = _normalized_sha256(sample.get("cached_blob_file_sha256"))
+        sample_file_size = _positive_int(sample.get("cached_blob_size"))
+        sample_relative_path = str(sample.get("cached_blob_relative_path") or "").strip()
+        expected_sample_path = f"blobs/{sample_blob}" if sample_blob else ""
+        if (
+            sample_blob
+            and sample_size
+            and sample_file_sha256 == sample_blob
+            and sample_file_size == sample_size
+            and sample.get("path_within_cache_root") is True
+            and sample.get("partial_removed") is True
+            and sample_relative_path == expected_sample_path
+            and (not plan_blob or sample_blob == plan_blob)
+            and (not plan_size or sample_size == plan_size)
+        ):
             sample_ok = True
             break
     if not sample_ok:
-        missing.append("samples.modelhub-client-sync.synced_blob_and_size")
+        missing.append("samples.modelhub-client-sync.cached_blob_file_proof")
 
     return {
         "verified_blob": plan_blob,

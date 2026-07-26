@@ -78,6 +78,115 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def sample_modelhub_cache_file_evidence(blob: str = "a" * 64, size: int = 12) -> dict[str, Any]:
+    return {
+        "cache_root": "/tmp/b1-modelhub-compat/cache",
+        "cached_blob_relative_path": f"blobs/{blob}",
+        "path_within_cache_root": True,
+        "cached_blob_size": size,
+        "cached_blob_file_sha256": blob,
+        "cached_blob_is_regular_file": True,
+        "cached_blob_is_symlink": False,
+        "partial_removed": True,
+        "expected_size_matches_file": True,
+        "expected_sha256_matches_file": True,
+        "posix_mode_checked": True,
+        "cache_root_mode": "0o700",
+        "blob_dir_mode": "0o700",
+        "cached_blob_mode": "0o600",
+        "state_file_mode": "0o600",
+        "cache_root_private": True,
+        "blob_dir_private": True,
+        "cached_blob_private": True,
+        "state_file_private": True,
+    }
+
+
+def sample_modelhub_checks(blob: str = "a" * 64, size: int = 12) -> dict[str, Any]:
+    cache_file_evidence = sample_modelhub_cache_file_evidence(blob, size)
+    return {
+        "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
+        "download_plan_created": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:37:00+00:00",
+            "blob": blob,
+            "expected_size": size,
+        },
+        "head_metadata_validated": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:37:30+00:00",
+            "blob": blob,
+            "expected_size": size,
+            "etag": f'"sha256:{blob}"',
+            "checksum": blob,
+            "accept_ranges": "bytes",
+        },
+        "etag_if_none_match_validated": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:37:45+00:00",
+            "blob": blob,
+            "etag": f'"sha256:{blob}"',
+            "checksum": blob,
+        },
+        "range_resume_downloaded": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:38:00+00:00",
+            "blob": blob,
+            "expected_size": size,
+            "partial_size": 5,
+            "final_size": size,
+            "final_sha256": blob,
+            "partial_removed": True,
+            "cached_blob_relative_path": f"blobs/{blob}",
+            "path_within_cache_root": True,
+            "cached_blob_is_regular_file": True,
+            "cached_blob_is_symlink": False,
+        },
+        "cache_state_managed": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:39:00+00:00",
+            "managed_blob_count": 1,
+            "managed_blob_sha256": blob,
+            "managed_blob_size": size,
+            "managed_entry_sha256": blob,
+            "managed_entry_size": size,
+            **cache_file_evidence,
+        },
+        "dry_run_prune_safe": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:39:00+00:00",
+            "unmanaged_files_ignored": True,
+        },
+        "inference_only_download_blocked": {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:40:00+00:00",
+            "action_count": 1,
+        },
+    }
+
+
+def sample_modelhub_client_sync_payload(blob: str = "a" * 64, size: int = 12) -> dict[str, Any]:
+    return {
+        "format": "b1-ai-hub-modelhub-client-sync/v1",
+        "generated_at": "2026-07-24T12:40:00+00:00",
+        "base_url": "https://models.ai.b1.germering",
+        "status": "ok",
+        "checks": sample_modelhub_checks(blob, size),
+        "samples": [
+            {
+                "label": "modelhub-client-sync",
+                "synced_blob": blob,
+                "synced_size": size,
+                "cached_blob_file_sha256": blob,
+                "cached_blob_size": size,
+                "cached_blob_relative_path": f"blobs/{blob}",
+                "path_within_cache_root": True,
+                "partial_removed": True,
+            }
+        ],
+    }
+
+
 def sample_artifact_proof(url: str, byte_count: int, sha256: str, mime_type: str, *, index: int = 0, kind: str = "") -> dict[str, Any]:
     artifact_kind = kind or mime_type.split("/", 1)[0]
     return {
@@ -1337,46 +1446,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             ],
             "missing_checks": [],
             "missing_integrity_evidence": [],
-            "checks": {
-                "catalog_visible": {"status": "ok", "recorded_at": "2026-07-24T12:36:00+00:00"},
-                "download_plan_created": {
-                    "status": "ok",
-                    "recorded_at": "2026-07-24T12:37:00+00:00",
-                    "blob": "a" * 64,
-                    "expected_size": 12,
-                },
-                "head_metadata_validated": {
-                    "status": "ok",
-                    "recorded_at": "2026-07-24T12:37:30+00:00",
-                    "blob": "a" * 64,
-                    "expected_size": 12,
-                    "etag": '"sha256:' + "a" * 64 + '"',
-                    "checksum": "a" * 64,
-                    "accept_ranges": "bytes",
-                },
-                "etag_if_none_match_validated": {
-                    "status": "ok",
-                    "recorded_at": "2026-07-24T12:37:45+00:00",
-                    "blob": "a" * 64,
-                    "etag": '"sha256:' + "a" * 64 + '"',
-                    "checksum": "a" * 64,
-                },
-                "range_resume_downloaded": {
-                    "status": "ok",
-                    "recorded_at": "2026-07-24T12:38:00+00:00",
-                    "blob": "a" * 64,
-                    "expected_size": 12,
-                    "partial_size": 5,
-                    "final_size": 12,
-                },
-                "cache_state_managed": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00", "managed_blob_count": 1},
-                "dry_run_prune_safe": {"status": "ok", "recorded_at": "2026-07-24T12:39:00+00:00", "unmanaged_files_ignored": True},
-                "inference_only_download_blocked": {
-                    "status": "ok",
-                    "recorded_at": "2026-07-24T12:40:00+00:00",
-                    "action_count": 1,
-                },
-            },
+            "checks": sample_modelhub_checks(),
             "sample_count": 1,
             "sample_labels": ["modelhub-client-sync"],
         },
@@ -3510,6 +3580,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("download_plan_created.blob", snapshot["missing_integrity_evidence"])
         self.assertIn("head_metadata_validated.etag", snapshot["missing_integrity_evidence"])
         self.assertIn("range_resume_downloaded.final_size", snapshot["missing_integrity_evidence"])
+        self.assertIn("range_resume_downloaded.final_sha256", snapshot["missing_integrity_evidence"])
+        self.assertIn("cache_state_managed.cached_blob_file_sha256", snapshot["missing_integrity_evidence"])
+        self.assertIn("cache_state_managed.cached_blob_relative_path", snapshot["missing_integrity_evidence"])
+        self.assertIn("samples.modelhub-client-sync.cached_blob_file_proof", snapshot["missing_integrity_evidence"])
 
         live_evidence = sample_live_evidence(modelhub_client_sync=snapshot)
         report = sample_report(live_evidence=live_evidence)
@@ -3522,6 +3596,28 @@ class AcceptanceReportTests(unittest.TestCase):
             + ", ".join(str(item) for item in snapshot["missing_integrity_evidence"]),
             report["acceptance_blockers"],
         )
+
+    def test_modelhub_snapshot_accepts_complete_cache_file_evidence(self) -> None:
+        snapshot = acceptance.modelhub_evidence_snapshot(sample_modelhub_client_sync_payload())
+
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertEqual(snapshot["missing_integrity_evidence"], [])
+        self.assertEqual(snapshot["verified_blob"], "a" * 64)
+        self.assertEqual(snapshot["verified_size_bytes"], 12)
+
+    def test_modelhub_snapshot_rejects_mismatched_cached_blob_file(self) -> None:
+        payload = sample_modelhub_client_sync_payload()
+        mismatched_blob = "b" * 64
+        payload["checks"]["range_resume_downloaded"]["final_sha256"] = mismatched_blob
+        payload["checks"]["cache_state_managed"]["cached_blob_file_sha256"] = mismatched_blob
+        payload["samples"][0]["cached_blob_file_sha256"] = mismatched_blob
+
+        snapshot = acceptance.modelhub_evidence_snapshot(payload)
+
+        self.assertIn("range_resume_downloaded.final_sha256_matches_blob", snapshot["missing_integrity_evidence"])
+        self.assertIn("cache_state_managed.cached_blob_file_sha256_matches_blob", snapshot["missing_integrity_evidence"])
+        self.assertIn("samples.modelhub-client-sync.cached_blob_file_proof", snapshot["missing_integrity_evidence"])
 
     def test_report_blocks_handoff_when_modelhub_integrity_summary_is_absent(self) -> None:
         live_evidence = sample_live_evidence()
@@ -4235,43 +4331,7 @@ class AcceptanceReportTests(unittest.TestCase):
             )
             modelhub = evidence_root / "modelhub-client-sync.json"
             modelhub.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-modelhub-client-sync/v1",
-                        "generated_at": "2026-07-24T12:40:00+00:00",
-                        "base_url": "https://models.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "catalog_visible": {"status": "ok"},
-                            "download_plan_created": {"status": "ok", "blob": "a" * 64, "expected_size": 12},
-                            "head_metadata_validated": {
-                                "status": "ok",
-                                "blob": "a" * 64,
-                                "expected_size": 12,
-                                "etag": '"sha256:' + "a" * 64 + '"',
-                                "checksum": "a" * 64,
-                                "accept_ranges": "bytes",
-                            },
-                            "etag_if_none_match_validated": {
-                                "status": "ok",
-                                "blob": "a" * 64,
-                                "etag": '"sha256:' + "a" * 64 + '"',
-                                "checksum": "a" * 64,
-                            },
-                            "range_resume_downloaded": {
-                                "status": "ok",
-                                "blob": "a" * 64,
-                                "expected_size": 12,
-                                "partial_size": 5,
-                                "final_size": 12,
-                            },
-                            "cache_state_managed": {"status": "ok", "managed_blob_count": 1},
-                            "dry_run_prune_safe": {"status": "ok", "unmanaged_files_ignored": True},
-                            "inference_only_download_blocked": {"status": "ok", "action_count": 1},
-                        },
-                        "samples": [{"label": "modelhub-client-sync", "synced_blob": "a" * 64, "synced_size": 12}],
-                    }
-                ),
+                json.dumps(sample_modelhub_client_sync_payload()),
                 encoding="utf-8",
             )
             voicebox = evidence_root / "voicebox-remote.json"
