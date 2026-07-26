@@ -448,8 +448,11 @@ type RollbackRehearsalStatus = {
     name?: string;
     sha256?: string;
     resource_count?: number;
+    resource_counts_by_type?: Record<string, number>;
+    resources_sha256?: string;
     rollback_command_count?: number;
     rollback_operator_action_count?: number;
+    rollback_actions_sha256?: string;
     reason?: string;
   };
   report: {
@@ -462,6 +465,8 @@ type RollbackRehearsalStatus = {
     cutover_plan_sha256?: string;
     rehearsed_by?: string;
     resource_count?: number;
+    resource_counts_by_type?: Record<string, number>;
+    resources_sha256?: string;
     reason?: string;
   };
 };
@@ -641,6 +646,7 @@ const ACCEPTANCE_LIVE_EVIDENCE_DETAIL_FIELDS = [
 const ACCEPTANCE_PRESERVED_RESOURCE_SECTIONS = [
   ["containers_to_restart_for_rollback", "Rollback containers"],
   ["containers_to_stop_during_cutover", "Cutover stop list"],
+  ["systemd_services_to_restart_for_rollback", "Systemd services"],
   ["docker_volumes_preserved", "Docker volumes"],
   ["host_paths_preserved", "Host paths"]
 ] as const;

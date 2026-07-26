@@ -12,6 +12,12 @@ CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 ROLLBACK_REHEARSAL_FORMAT = "b1-ai-hub-rollback-rehearsal/v1"
 CUTOVER_PLAN_NAME_RE = re.compile(r"cutover-plan(?:-[0-9]{8}[-t]?[0-9]{6}z?)?\.json", re.IGNORECASE)
 ROLLBACK_REPORT_NAME = "rollback-rehearsal.json"
+PRESERVED_RESOURCE_KEYS = (
+    "containers_to_restart_for_rollback",
+    "systemd_services_to_restart_for_rollback",
+    "docker_volumes_preserved",
+    "host_paths_preserved",
+)
 
 
 class RollbackRehearsalError(RuntimeError):
@@ -48,6 +54,45 @@ def coerce_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list):
         raise RollbackRehearsalError(f"{label} must be a list")
     return value
+
+
+def canonical_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def coerce_text_list(value: Any, label: str) -> list[str]:
+    items = coerce_list(value, label)
+    output: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, str) or not item.strip():
+            raise RollbackRehearsalError(f"{label}[{index}] must be a non-empty string")
+        normalized = item.strip()
+        if normalized in seen:
+            raise RollbackRehearsalError(f"{label} contains duplicate resource: {normalized}")
+        seen.add(normalized)
+        output.append(normalized)
+    return sorted(output)
+
+
+def normalized_preserved_resources(old_scope: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        key: coerce_text_list(old_scope.get(key), f"old_stack_scope.{key}")
+        for key in PRESERVED_RESOURCE_KEYS
+    }
+
+
+def preserved_resources_sha256(resources: dict[str, list[str]]) -> str:
+    return canonical_sha256({key: sorted(resources.get(key, [])) for key in PRESERVED_RESOURCE_KEYS})
+
+
+def preserved_resource_counts(resources: dict[str, list[str]]) -> dict[str, int]:
+    return {key: len(resources.get(key, [])) for key in PRESERVED_RESOURCE_KEYS}
+
+
+def rollback_actions_sha256(commands: list[Any], operator_actions: list[Any]) -> str:
+    return canonical_sha256({"commands": commands, "operator_actions": operator_actions})
 
 
 def resolve_backup_child(root: Path, name: str, *, expected: str) -> Path:
@@ -93,20 +138,7 @@ def validate_cutover_plan(plan: dict[str, Any], cutover_plan_path: Path) -> dict
         raise RollbackRehearsalError("cutover plan does not forbid old-stack deletion")
 
     old_scope = plan.get("old_stack_scope") if isinstance(plan.get("old_stack_scope"), dict) else {}
-    resources = {
-        "containers_to_restart_for_rollback": coerce_list(
-            old_scope.get("containers_to_restart_for_rollback"),
-            "old_stack_scope.containers_to_restart_for_rollback",
-        ),
-        "docker_volumes_preserved": coerce_list(
-            old_scope.get("docker_volumes_preserved"),
-            "old_stack_scope.docker_volumes_preserved",
-        ),
-        "host_paths_preserved": coerce_list(
-            old_scope.get("host_paths_preserved"),
-            "old_stack_scope.host_paths_preserved",
-        ),
-    }
+    resources = normalized_preserved_resources(old_scope)
     resource_count = sum(len(items) for items in resources.values())
     if resource_count <= 0:
         raise RollbackRehearsalError("cutover plan lists no preserved rollback resources")
@@ -129,8 +161,11 @@ def validate_cutover_plan(plan: dict[str, Any], cutover_plan_path: Path) -> dict
         "cutover_plan_sha256": sha256_file(cutover_plan_path),
         "resources": resources,
         "resource_count": resource_count,
+        "resource_counts_by_type": preserved_resource_counts(resources),
+        "resources_sha256": preserved_resources_sha256(resources),
         "rollback_commands": commands,
         "rollback_operator_actions": operator_actions,
+        "rollback_actions_sha256": rollback_actions_sha256(commands, operator_actions),
     }
 
 
@@ -159,10 +194,13 @@ def build_report(
             "status": "ok",
             "command_count": len(summary["rollback_commands"]),
             "operator_action_count": len(summary["rollback_operator_actions"]),
+            "rollback_actions_sha256": summary["rollback_actions_sha256"],
         },
         "old_resources_preserved": {
             "status": "ok",
             "resource_count": summary["resource_count"],
+            "resource_counts_by_type": summary["resource_counts_by_type"],
+            "resources_sha256": summary["resources_sha256"],
             "resources": summary["resources"],
         },
     }
@@ -178,6 +216,7 @@ def build_report(
         "rollback": {
             "commands": summary["rollback_commands"],
             "operator_actions": summary["rollback_operator_actions"],
+            "actions_sha256": summary["rollback_actions_sha256"],
         },
     }
     if notes:
@@ -230,6 +269,8 @@ def summarize_report(path: Path) -> dict[str, Any]:
         "cutover_plan_sha256": payload.get("cutover_plan_sha256"),
         "rehearsed_by": payload.get("rehearsed_by"),
         "resource_count": (checks.get("old_resources_preserved") or {}).get("resource_count") if isinstance(checks.get("old_resources_preserved"), dict) else None,
+        "resource_counts_by_type": (checks.get("old_resources_preserved") or {}).get("resource_counts_by_type") if isinstance(checks.get("old_resources_preserved"), dict) else {},
+        "resources_sha256": (checks.get("old_resources_preserved") or {}).get("resources_sha256") if isinstance(checks.get("old_resources_preserved"), dict) else None,
     }
 
 
@@ -246,8 +287,11 @@ def status(backup_root: Path) -> dict[str, Any]:
             "name": cutover_plan["cutover_plan_name"],
             "sha256": cutover_plan["cutover_plan_sha256"],
             "resource_count": cutover_plan["resource_count"],
+            "resource_counts_by_type": cutover_plan["resource_counts_by_type"],
+            "resources_sha256": cutover_plan["resources_sha256"],
             "rollback_command_count": len(cutover_plan["rollback_commands"]),
             "rollback_operator_action_count": len(cutover_plan["rollback_operator_actions"]),
+            "rollback_actions_sha256": cutover_plan["rollback_actions_sha256"],
         }
     except RollbackRehearsalError as exc:
         cutover_status = {"available": False, "reason": str(exc)}

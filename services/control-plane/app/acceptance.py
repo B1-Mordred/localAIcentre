@@ -396,6 +396,12 @@ BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS = (
     "rollback_rehearsed",
     "old_resources_preserved",
 )
+PRESERVED_ROLLBACK_RESOURCE_KEYS = (
+    "containers_to_restart_for_rollback",
+    "systemd_services_to_restart_for_rollback",
+    "docker_volumes_preserved",
+    "host_paths_preserved",
+)
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
     ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
@@ -2201,6 +2207,29 @@ def _restart_reconciliation_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _preserved_resource_lists(resources: Any) -> dict[str, list[str]]:
+    source = resources if isinstance(resources, dict) else {}
+    return {key: sorted(_as_string_list(source.get(key))) for key in PRESERVED_ROLLBACK_RESOURCE_KEYS}
+
+
+def _preserved_resource_count(resources: dict[str, list[str]]) -> int:
+    return sum(len(resources.get(key, [])) for key in PRESERVED_ROLLBACK_RESOURCE_KEYS)
+
+
+def _preserved_resource_counts_by_type(resources: dict[str, list[str]]) -> dict[str, int]:
+    return {key: len(resources.get(key, [])) for key in PRESERVED_ROLLBACK_RESOURCE_KEYS}
+
+
+def _canonical_sha256(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _preserved_resources_sha256(resources: dict[str, list[str]]) -> str:
+    return _canonical_sha256({key: sorted(resources.get(key, [])) for key in PRESERVED_ROLLBACK_RESOURCE_KEYS})
+
+
 def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
@@ -2281,13 +2310,23 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     if cutover_resource_count < 1:
         missing.append("cutover_plan_reviewed.resource_count")
     resources = cutover.get("resources") if isinstance(cutover.get("resources"), dict) else {}
-    resource_lists = [
-        _as_string_list(resources.get("containers_to_restart_for_rollback")),
-        _as_string_list(resources.get("docker_volumes_preserved")),
-        _as_string_list(resources.get("host_paths_preserved")),
-    ]
-    if sum(len(items) for items in resource_lists) < 1:
+    resource_lists = _preserved_resource_lists(resources)
+    calculated_resource_count = _preserved_resource_count(resource_lists)
+    resource_counts_by_type = _preserved_resource_counts_by_type(resource_lists)
+    cutover_resources_sha256 = _normalized_sha256(cutover.get("resources_sha256"))
+    calculated_resources_sha256 = _preserved_resources_sha256(resource_lists)
+    if calculated_resource_count < 1:
         missing.append("cutover_plan_reviewed.resources")
+    if cutover_resource_count and calculated_resource_count != cutover_resource_count:
+        missing.append("cutover_plan_reviewed.resource_count_matches_resources")
+    if not cutover_resources_sha256:
+        missing.append("cutover_plan_reviewed.resources_sha256")
+    elif cutover_resources_sha256 != calculated_resources_sha256:
+        missing.append("cutover_plan_reviewed.resources_sha256_matches_resources")
+    cutover_counts = cutover.get("resource_counts_by_type") if isinstance(cutover.get("resource_counts_by_type"), dict) else {}
+    for key, count in resource_counts_by_type.items():
+        if _integer_value(cutover_counts.get(key)) != count:
+            missing.append(f"cutover_plan_reviewed.resource_counts_by_type.{key}")
 
     dns = cutover.get("dns_readiness") if isinstance(cutover.get("dns_readiness"), dict) else {}
     if dns.get("all_hosts_resolve") is not True:
@@ -2371,10 +2410,14 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
         operator_action_count = 0
     if command_count + operator_action_count < 1:
         missing.append("rollback_rehearsed.rollback_actions")
+    rollback_actions_sha256 = _normalized_sha256(rollback.get("rollback_actions_sha256"))
+    if not rollback_actions_sha256:
+        missing.append("rollback_rehearsed.rollback_actions_sha256")
 
     preserved = _check_record(checks, "old_resources_preserved")
     preserved_resource_count = _positive_int(preserved.get("resource_count"))
     rehearsal_resource_count = _positive_int(preserved.get("rehearsal_resource_count"))
+    preserved_resources_sha256 = _normalized_sha256(preserved.get("resources_sha256"))
     if not _nonempty_text(preserved.get("report")):
         missing.append("old_resources_preserved.report")
     if preserved_resource_count < 1:
@@ -2384,22 +2427,38 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     elif preserved_resource_count and rehearsal_resource_count != preserved_resource_count:
         missing.append("old_resources_preserved.rehearsal_resource_count_matches_cutover")
     preserved_resources = preserved.get("resources") if isinstance(preserved.get("resources"), dict) else {}
-    preserved_lists = [
-        _as_string_list(preserved_resources.get("containers_to_restart_for_rollback")),
-        _as_string_list(preserved_resources.get("docker_volumes_preserved")),
-        _as_string_list(preserved_resources.get("host_paths_preserved")),
-    ]
-    if sum(len(items) for items in preserved_lists) < 1:
+    preserved_lists = _preserved_resource_lists(preserved_resources)
+    preserved_calculated_count = _preserved_resource_count(preserved_lists)
+    preserved_calculated_resources_sha256 = _preserved_resources_sha256(preserved_lists)
+    if preserved_calculated_count < 1:
         missing.append("old_resources_preserved.resources")
+    if preserved_resource_count and preserved_calculated_count != preserved_resource_count:
+        missing.append("old_resources_preserved.resource_count_matches_resources")
+    if preserved_lists != resource_lists:
+        missing.append("old_resources_preserved.resources_match_cutover")
+    if not preserved_resources_sha256:
+        missing.append("old_resources_preserved.resources_sha256")
+    elif preserved_resources_sha256 != preserved_calculated_resources_sha256:
+        missing.append("old_resources_preserved.resources_sha256_matches_resources")
+    if preserved_resources_sha256 and preserved_resources_sha256 != calculated_resources_sha256:
+        missing.append("old_resources_preserved.resources_sha256_matches_cutover")
+    preserved_counts = preserved.get("resource_counts_by_type") if isinstance(preserved.get("resource_counts_by_type"), dict) else {}
+    for key, count in resource_counts_by_type.items():
+        if _integer_value(preserved_counts.get(key)) != count:
+            missing.append(f"old_resources_preserved.resource_counts_by_type.{key}")
 
     return {
         "backup_b1_files_verified": b1_files_verified,
         "backup_restore_files_verified": restore_files_verified,
         "backup_old_stack_files_verified": old_stack_files_verified,
         "backup_preserved_resource_count": preserved_resource_count,
+        "backup_preserved_resource_counts_by_type": resource_counts_by_type,
+        "backup_systemd_services_preserved_count": resource_counts_by_type["systemd_services_to_restart_for_rollback"],
+        "backup_preserved_resources_sha256": preserved_resources_sha256,
         "backup_b1_archive_sha256": b1_archive_sha256,
         "backup_old_stack_archive_sha256": old_stack_archive_sha256,
         "backup_rollback_cutover_plan_sha256": rollback_sha256,
+        "backup_rollback_actions_sha256": rollback_actions_sha256,
         "backup_open_webui_strategy": open_webui_strategy,
         "missing_backup_migration_rollback_evidence": missing,
     }
@@ -2533,11 +2592,13 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
     resources = {
         "containers_to_stop_during_cutover": _as_string_list(old_scope.get("containers_to_stop_during_cutover")),
         "containers_to_restart_for_rollback": _as_string_list(old_scope.get("containers_to_restart_for_rollback")),
+        "systemd_services_to_restart_for_rollback": _as_string_list(old_scope.get("systemd_services_to_restart_for_rollback")),
         "docker_volumes_preserved": _as_string_list(old_scope.get("docker_volumes_preserved")),
         "host_paths_preserved": _as_string_list(old_scope.get("host_paths_preserved")),
     }
     resource_count = (
         len(resources["containers_to_restart_for_rollback"])
+        + len(resources["systemd_services_to_restart_for_rollback"])
         + len(resources["docker_volumes_preserved"])
         + len(resources["host_paths_preserved"])
     )
@@ -3866,6 +3927,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     resources = preservation.get("resources") if isinstance(preservation.get("resources"), dict) else {}
     for key, label in (
         ("containers_to_restart_for_rollback", "container"),
+        ("systemd_services_to_restart_for_rollback", "systemd service"),
         ("docker_volumes_preserved", "docker volume"),
         ("host_paths_preserved", "host path"),
     ):

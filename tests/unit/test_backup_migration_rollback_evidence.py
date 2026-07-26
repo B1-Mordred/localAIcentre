@@ -116,6 +116,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                 "old_stack_scope": {
                     "reviewed_by": "operator",
                     "containers_to_restart_for_rollback": [],
+                    "systemd_services_to_restart_for_rollback": ["ollama.service"],
                     "docker_volumes_preserved": [],
                     "host_paths_preserved": [str(root / "old-stack" / "docker-compose.yaml")],
                 },
@@ -241,8 +242,15 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         self.assertEqual(len(payload["checks"]["b1_backup_verified"]["archive_sha256"]), 64)
         self.assertEqual(len(payload["checks"]["old_stack_backup_verified"]["archive_sha256"]), 64)
         self.assertEqual(len(payload["checks"]["rollback_rehearsed"]["cutover_plan_sha256"]), 64)
+        self.assertEqual(len(payload["checks"]["rollback_rehearsed"]["rollback_actions_sha256"]), 64)
         self.assertEqual(payload["checks"]["rollback_rehearsed"]["operator_action_count"], 2)
-        self.assertEqual(payload["checks"]["old_resources_preserved"]["rehearsal_resource_count"], 1)
+        self.assertEqual(payload["checks"]["old_resources_preserved"]["rehearsal_resource_count"], 2)
+        self.assertEqual(payload["checks"]["old_resources_preserved"]["resource_counts_by_type"]["systemd_services_to_restart_for_rollback"], 1)
+        self.assertEqual(len(payload["checks"]["old_resources_preserved"]["resources_sha256"]), 64)
+        self.assertEqual(
+            payload["checks"]["old_resources_preserved"]["resources"]["systemd_services_to_restart_for_rollback"],
+            ["ollama.service"],
+        )
         self.assertEqual(
             payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
             ["monitoring.ai.b1.germering"],
@@ -409,6 +417,50 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(rollback_report, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "old_resources_preserved"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_rollback_report_resource_set_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(rollback_report.read_text(encoding="utf-8"))
+            preserved = payload["checks"]["old_resources_preserved"]
+            preserved["resources"]["systemd_services_to_restart_for_rollback"] = []
+            preserved["resources"]["host_paths_preserved"].append(str(root / "different-old-stack" / "docker-compose.yaml"))
+            self.write_json(rollback_report, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "resources_sha256|resources do not match"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_rollback_report_action_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(rollback_report.read_text(encoding="utf-8"))
+            payload["rollback"]["operator_actions"] = ["Do something else"]
+            self.write_json(rollback_report, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "operator actions do not match"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

@@ -17,6 +17,7 @@ class RollbackRehearsalTests(unittest.TestCase):
     def write_cutover_plan(self, root: Path, *, warnings: list[str] | None = None, resources: dict | None = None) -> Path:
         old_resources = resources or {
             "containers_to_restart_for_rollback": ["old-open-webui"],
+            "systemd_services_to_restart_for_rollback": ["ollama.service"],
             "docker_volumes_preserved": ["open-webui-data"],
             "host_paths_preserved": [str(root / "old-stack" / "docker-compose.yaml")],
         }
@@ -63,8 +64,13 @@ class RollbackRehearsalTests(unittest.TestCase):
         self.assertEqual(report["rehearsed_by"], "operator")
         self.assertEqual(report["checks"]["rollback_commands_tested"]["status"], "ok")
         self.assertEqual(report["checks"]["rollback_commands_tested"]["command_count"], 1)
-        self.assertEqual(report["checks"]["old_resources_preserved"]["resource_count"], 3)
+        self.assertEqual(len(report["checks"]["rollback_commands_tested"]["rollback_actions_sha256"]), 64)
+        self.assertEqual(report["checks"]["old_resources_preserved"]["resource_count"], 4)
+        self.assertEqual(report["checks"]["old_resources_preserved"]["resource_counts_by_type"]["systemd_services_to_restart_for_rollback"], 1)
+        self.assertEqual(len(report["checks"]["old_resources_preserved"]["resources_sha256"]), 64)
+        self.assertEqual(report["checks"]["old_resources_preserved"]["resources"]["systemd_services_to_restart_for_rollback"], ["ollama.service"])
         self.assertEqual(report["rollback"]["commands"], ["docker compose -p old-ai up -d old-open-webui"])
+        self.assertEqual(len(report["rollback"]["actions_sha256"]), 64)
 
     def test_build_report_requires_explicit_operator_confirmations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +110,7 @@ class RollbackRehearsalTests(unittest.TestCase):
                 Path(tmp),
                 resources={
                     "containers_to_restart_for_rollback": [],
+                    "systemd_services_to_restart_for_rollback": [],
                     "docker_volumes_preserved": [],
                     "host_paths_preserved": [],
                 },
@@ -139,8 +146,12 @@ class RollbackRehearsalTests(unittest.TestCase):
             self.assertEqual(result["report"]["cutover_plan_name"], "cutover-plan-20260724-120000.json")
             status = rollback_rehearsal.status(root)
             self.assertTrue(status["cutover_plan"]["available"])
+            self.assertEqual(status["cutover_plan"]["resource_counts_by_type"]["systemd_services_to_restart_for_rollback"], 1)
+            self.assertEqual(len(status["cutover_plan"]["resources_sha256"]), 64)
+            self.assertEqual(len(status["cutover_plan"]["rollback_actions_sha256"]), 64)
             self.assertTrue(status["report"]["available"])
             self.assertEqual(status["report"]["cutover_plan_name"], "cutover-plan-20260724-120000.json")
+            self.assertEqual(len(status["report"]["resources_sha256"]), 64)
 
     def test_resolve_cutover_plan_rejects_names_outside_backup_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

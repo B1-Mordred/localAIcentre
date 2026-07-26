@@ -493,9 +493,18 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
     }
     resources = {
         "containers_to_restart_for_rollback": ["old-open-webui"],
+        "systemd_services_to_restart_for_rollback": ["ollama.service"],
         "docker_volumes_preserved": ["open-webui-data"],
         "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
     }
+    resource_counts_by_type = {
+        "containers_to_restart_for_rollback": 1,
+        "systemd_services_to_restart_for_rollback": 1,
+        "docker_volumes_preserved": 1,
+        "host_paths_preserved": 1,
+    }
+    resources_sha = acceptance._preserved_resources_sha256(resources)
+    rollback_actions_sha = "d" * 64
     return {
         "b1_backup_created": {
             "status": "ok",
@@ -547,7 +556,9 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
             "status": "ok",
             "recorded_at": "2026-07-24T12:51:00+00:00",
             "path": "/srv/b1-ai-hub/backups/cutover-plan.json",
-            "resource_count": 3,
+            "resource_count": 4,
+            "resource_counts_by_type": resource_counts_by_type,
+            "resources_sha256": resources_sha,
             "resources": resources,
             "dns_readiness": {
                 "all_hosts_resolve": True,
@@ -614,13 +625,16 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
             "cutover_plan_sha256": cutover_plan_sha,
             "command_count": 1,
             "operator_action_count": 2,
+            "rollback_actions_sha256": rollback_actions_sha,
         },
         "old_resources_preserved": {
             "status": "ok",
             "recorded_at": "2026-07-24T12:56:00+00:00",
             "report": "/srv/b1-ai-hub/backups/rollback-rehearsal.json",
-            "resource_count": 3,
-            "rehearsal_resource_count": 3,
+            "resource_count": 4,
+            "rehearsal_resource_count": 4,
+            "resource_counts_by_type": resource_counts_by_type,
+            "resources_sha256": resources_sha,
             "resources": resources,
         },
     }
@@ -700,10 +714,11 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
         "resources": {
             "containers_to_stop_during_cutover": ["old-open-webui"],
             "containers_to_restart_for_rollback": ["old-open-webui"],
+            "systemd_services_to_restart_for_rollback": ["ollama.service"],
             "docker_volumes_preserved": ["open-webui-data"],
             "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
         },
-        "resource_count": 3,
+        "resource_count": 4,
     }
     payload.update(overrides)
     return payload
@@ -1692,10 +1707,26 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "backup_b1_files_verified": 12,
             "backup_restore_files_verified": 12,
             "backup_old_stack_files_verified": 4,
-            "backup_preserved_resource_count": 3,
+            "backup_preserved_resource_count": 4,
+            "backup_preserved_resource_counts_by_type": {
+                "containers_to_restart_for_rollback": 1,
+                "systemd_services_to_restart_for_rollback": 1,
+                "docker_volumes_preserved": 1,
+                "host_paths_preserved": 1,
+            },
+            "backup_systemd_services_preserved_count": 1,
+            "backup_preserved_resources_sha256": acceptance._preserved_resources_sha256(
+                {
+                    "containers_to_restart_for_rollback": ["old-open-webui"],
+                    "systemd_services_to_restart_for_rollback": ["ollama.service"],
+                    "docker_volumes_preserved": ["open-webui-data"],
+                    "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
+                }
+            ),
             "backup_b1_archive_sha256": "e" * 64,
             "backup_old_stack_archive_sha256": "f" * 64,
             "backup_rollback_cutover_plan_sha256": "c" * 64,
+            "backup_rollback_actions_sha256": "d" * 64,
             "backup_open_webui_strategy": "preserve-backed-up-sqlite-and-test-supported-open-webui-import",
             "checks": sample_backup_migration_rollback_checks(),
             "sample_count": 4,
@@ -4088,8 +4119,11 @@ class AcceptanceReportTests(unittest.TestCase):
             snapshot["missing_backup_migration_rollback_evidence"],
         )
         self.assertIn("cutover_plan_reviewed.dns_readiness.common_addresses", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("cutover_plan_reviewed.resources_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.cutover_plan_sha256", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("rollback_rehearsed.rollback_actions_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("old_resources_preserved.resources", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_resources_preserved.resources_sha256", snapshot["missing_backup_migration_rollback_evidence"])
 
         live_evidence = sample_live_evidence(backup_migration_rollback=snapshot)
         report = sample_report(live_evidence=live_evidence)
@@ -4101,12 +4135,37 @@ class AcceptanceReportTests(unittest.TestCase):
             "\n".join(report["acceptance_blockers"]),
         )
 
+    def test_backup_migration_rollback_snapshot_requires_preserved_resource_match(self) -> None:
+        checks = sample_backup_migration_rollback_checks()
+        checks["old_resources_preserved"] = {
+            **checks["old_resources_preserved"],
+            "resources": {
+                **checks["old_resources_preserved"]["resources"],
+                "systemd_services_to_restart_for_rollback": [],
+            },
+        }
+
+        snapshot = acceptance.backup_migration_rollback_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-backup-migration-rollback-acceptance/v1",
+                "generated_at": "2026-07-24T12:56:00+00:00",
+                "status": "ok",
+                "checks": checks,
+                "samples": [{"label": "rollback-runbook"}],
+            }
+        )
+
+        self.assertIn("old_resources_preserved.resource_count_matches_resources", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_resources_preserved.resources_match_cutover", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_resources_preserved.resources_sha256_matches_resources", snapshot["missing_backup_migration_rollback_evidence"])
+
     def test_report_blocks_handoff_when_cutover_plan_has_no_rollback_resources(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
                 resources={
                     "containers_to_stop_during_cutover": [],
                     "containers_to_restart_for_rollback": [],
+                    "systemd_services_to_restart_for_rollback": [],
                     "docker_volumes_preserved": [],
                     "host_paths_preserved": [],
                 },
@@ -4253,6 +4312,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "review_notes": "reviewed",
                     "containers_to_stop_during_cutover": ["old-open-webui"],
                     "containers_to_restart_for_rollback": ["old-open-webui"],
+                    "systemd_services_to_restart_for_rollback": ["ollama.service"],
                     "docker_volumes_preserved": ["open-webui-data"],
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
@@ -4277,7 +4337,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertTrue(snapshot["runtime_agent_socket_readiness"]["runtime_agent_group_access_ready"])
         self.assertFalse(snapshot["open_webui_preservation"]["operator_must_review_open_webui"])
         self.assertEqual(snapshot["resources"]["containers_to_restart_for_rollback"], ["old-open-webui"])
-        self.assertEqual(snapshot["resource_count"], 3)
+        self.assertEqual(snapshot["resources"]["systemd_services_to_restart_for_rollback"], ["ollama.service"])
+        self.assertEqual(snapshot["resource_count"], 4)
 
     def test_latest_live_evidence_snapshot_reads_latest_direct_supported_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4702,8 +4763,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(backup["backup_b1_files_verified"], 12)
         self.assertEqual(backup["backup_restore_files_verified"], 12)
         self.assertEqual(backup["backup_old_stack_files_verified"], 4)
-        self.assertEqual(backup["backup_preserved_resource_count"], 3)
+        self.assertEqual(backup["backup_preserved_resource_count"], 4)
+        self.assertEqual(backup["backup_systemd_services_preserved_count"], 1)
+        self.assertEqual(backup["backup_preserved_resource_counts_by_type"]["systemd_services_to_restart_for_rollback"], 1)
+        self.assertEqual(len(backup["backup_preserved_resources_sha256"]), 64)
         self.assertEqual(backup["backup_rollback_cutover_plan_sha256"], "c" * 64)
+        self.assertEqual(backup["backup_rollback_actions_sha256"], "d" * 64)
         self.assertEqual(backup["sample_count"], 4)
 
     def test_report_id_rejects_traversal(self) -> None:

@@ -226,6 +226,10 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
 
 
+def _preserved_resource_count(resources: dict[str, list[str]]) -> int:
+    return sum(len(resources.get(key, [])) for key in rollback_rehearsal.PRESERVED_RESOURCE_KEYS)
+
+
 def verify_cutover_dns_readiness(payload: dict[str, Any]) -> dict[str, Any]:
     dns = payload.get("dns_readiness") if isinstance(payload.get("dns_readiness"), dict) else {}
     if not dns:
@@ -367,28 +371,60 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
     if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
         raise EvidenceError("cutover plan safety invariants are incomplete")
     old_scope = payload.get("old_stack_scope") if isinstance(payload.get("old_stack_scope"), dict) else {}
-    resources = {
-        "containers_to_restart_for_rollback": old_scope.get("containers_to_restart_for_rollback") or [],
-        "docker_volumes_preserved": old_scope.get("docker_volumes_preserved") or [],
-        "host_paths_preserved": old_scope.get("host_paths_preserved") or [],
-    }
-    resource_count = sum(len(value) for value in resources.values() if isinstance(value, list))
+    try:
+        resources = rollback_rehearsal.normalized_preserved_resources(old_scope)
+    except rollback_rehearsal.RollbackRehearsalError as exc:
+        raise EvidenceError(str(exc)) from exc
+    resource_count = _preserved_resource_count(resources)
     if resource_count <= 0:
         raise EvidenceError("cutover plan lists no old resources for rollback")
+    rollback_phase = next(
+        (
+            phase
+            for phase in payload.get("phases") or []
+            if isinstance(phase, dict) and phase.get("name") == "rollback"
+        ),
+        {},
+    )
+    rollback_commands = rollback_phase.get("commands") if isinstance(rollback_phase.get("commands"), list) else []
+    rollback_operator_actions = (
+        rollback_phase.get("operator_actions") if isinstance(rollback_phase.get("operator_actions"), list) else []
+    )
+    if not rollback_commands and not rollback_operator_actions:
+        raise EvidenceError("cutover plan rollback phase contains no commands or operator actions")
+    rollback_actions_sha256 = rollback_rehearsal.rollback_actions_sha256(rollback_commands, rollback_operator_actions)
     return {
         "path": str(path.resolve()),
         "resources": resources,
         "resource_count": resource_count,
+        "resource_counts_by_type": rollback_rehearsal.preserved_resource_counts(resources),
+        "resources_sha256": rollback_rehearsal.preserved_resources_sha256(resources),
+        "rollback_command_count": len(rollback_commands),
+        "rollback_operator_action_count": len(rollback_operator_actions),
+        "rollback_actions_sha256": rollback_actions_sha256,
         "dns_readiness": dns_readiness,
         "hardware_readiness": hardware_readiness,
         "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
         "open_webui_preservation": open_webui_preservation,
         "reviewed_by": old_scope.get("reviewed_by"),
+        "_rollback_actions": {
+            "commands": rollback_commands,
+            "operator_actions": rollback_operator_actions,
+            "sha256": rollback_actions_sha256,
+        },
     }
 
 
-def verify_rollback_rehearsal(path: Path, cutover_plan_path: Path) -> dict[str, Any]:
+def verify_rollback_rehearsal(
+    path: Path,
+    cutover_plan_path: Path,
+    *,
+    expected_resources: dict[str, list[str]],
+    expected_resource_count: int,
+    expected_resources_sha256: str,
+    expected_rollback_actions: dict[str, Any],
+) -> dict[str, Any]:
     payload = load_json_file(path)
     validate_format(payload, ROLLBACK_REHEARSAL_FORMAT, "rollback rehearsal report")
     if payload.get("status") != "ok":
@@ -407,6 +443,33 @@ def verify_rollback_rehearsal(path: Path, cutover_plan_path: Path) -> dict[str, 
         raise EvidenceError("rollback rehearsal report is missing rollback_commands_tested=ok")
     if preserved_check.get("status") != "ok":
         raise EvidenceError("rollback rehearsal report is missing old_resources_preserved=ok")
+    if rollback_check.get("rollback_actions_sha256") != expected_rollback_actions.get("sha256"):
+        raise EvidenceError("rollback rehearsal report rollback_actions_sha256 does not match the cutover plan")
+    if int(rollback_check.get("command_count") or 0) != len(expected_rollback_actions.get("commands") or []):
+        raise EvidenceError("rollback rehearsal report command_count does not match the cutover plan")
+    if int(rollback_check.get("operator_action_count") or 0) != len(expected_rollback_actions.get("operator_actions") or []):
+        raise EvidenceError("rollback rehearsal report operator_action_count does not match the cutover plan")
+    rollback = payload.get("rollback") if isinstance(payload.get("rollback"), dict) else {}
+    if rollback.get("actions_sha256") != expected_rollback_actions.get("sha256"):
+        raise EvidenceError("rollback rehearsal report action digest does not match the cutover plan")
+    if rollback.get("commands") != expected_rollback_actions.get("commands"):
+        raise EvidenceError("rollback rehearsal report commands do not match the cutover plan")
+    if rollback.get("operator_actions") != expected_rollback_actions.get("operator_actions"):
+        raise EvidenceError("rollback rehearsal report operator actions do not match the cutover plan")
+    if int(preserved_check.get("resource_count") or 0) != expected_resource_count:
+        raise EvidenceError("rollback rehearsal report resource_count does not match the cutover plan")
+    if preserved_check.get("resources_sha256") != expected_resources_sha256:
+        raise EvidenceError("rollback rehearsal report resources_sha256 does not match the cutover plan")
+    reported_resources_raw = preserved_check.get("resources") if isinstance(preserved_check.get("resources"), dict) else {}
+    try:
+        reported_resources = {
+            key: rollback_rehearsal.coerce_text_list(reported_resources_raw.get(key), f"old_resources_preserved.resources.{key}")
+            for key in rollback_rehearsal.PRESERVED_RESOURCE_KEYS
+        }
+    except rollback_rehearsal.RollbackRehearsalError as exc:
+        raise EvidenceError(str(exc)) from exc
+    if reported_resources != expected_resources:
+        raise EvidenceError("rollback rehearsal report resources do not match the cutover plan")
     return payload
 
 
@@ -466,9 +529,17 @@ def build_evidence(
     checks["open_webui_migration_plan_reviewed"] = record_check(**open_webui)
 
     cutover = verify_cutover_plan(cutover_plan, inventory, old_stack_backup_path, open_webui_plan)
+    rollback_actions = cutover.pop("_rollback_actions")
     checks["cutover_plan_reviewed"] = record_check(**cutover)
 
-    rollback = verify_rollback_rehearsal(rollback_report, cutover_plan)
+    rollback = verify_rollback_rehearsal(
+        rollback_report,
+        cutover_plan,
+        expected_resources=cutover["resources"],
+        expected_resource_count=cutover["resource_count"],
+        expected_resources_sha256=cutover["resources_sha256"],
+        expected_rollback_actions=rollback_actions,
+    )
     rollback_checks = rollback.get("checks") if isinstance(rollback.get("checks"), dict) else {}
     rollback_commands = rollback_checks.get("rollback_commands_tested") if isinstance(rollback_checks.get("rollback_commands_tested"), dict) else {}
     rollback_preserved = rollback_checks.get("old_resources_preserved") if isinstance(rollback_checks.get("old_resources_preserved"), dict) else {}
@@ -479,11 +550,14 @@ def build_evidence(
         cutover_plan_sha256=rollback.get("cutover_plan_sha256"),
         command_count=rollback_commands.get("command_count"),
         operator_action_count=rollback_commands.get("operator_action_count"),
+        rollback_actions_sha256=rollback_commands.get("rollback_actions_sha256"),
     )
     checks["old_resources_preserved"] = record_check(
         report=str(rollback_report.resolve()),
         resource_count=cutover["resource_count"],
         rehearsal_resource_count=rollback_preserved.get("resource_count"),
+        resource_counts_by_type=cutover["resource_counts_by_type"],
+        resources_sha256=cutover["resources_sha256"],
         resources=cutover["resources"],
     )
     samples.append({"label": "rollback-runbook", "report": str(rollback_report.resolve()), "resource_count": cutover["resource_count"]})
