@@ -137,11 +137,14 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(open_webui["build"]["context"], "./deploy/open-webui")
         self.assertEqual(open_webui["environment"]["B1_OPEN_WEBUI_API_BASE_URL"], "${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}")
         self.assertEqual(open_webui["environment"]["B1_OPEN_WEBUI_API_KEY_FILE"], "/run/secrets/open_webui_api_key")
+        self.assertEqual(open_webui["environment"]["B1_OPEN_WEBUI_SECRET_KEY_FILE"], "/run/secrets/open_webui_secret_key")
+        self.assertEqual(open_webui["user"], "999:999")
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", open_webui.get("volumes", []))
         self.assertIn("bootstrap", open_webui.get("depends_on", {}))
         self.assertEqual(control_plane["environment"]["B1_OPEN_WEBUI_API_KEY_FILE"], "/run/secrets/open_webui_api_key")
         dockerfile = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4", dockerfile)
+        self.assertIn("chgrp -R 999 /app/backend/open_webui/static", dockerfile)
 
     def test_open_webui_is_local_only_by_default(self) -> None:
         environment = self.compose["services"]["open-webui"]["environment"]
@@ -614,7 +617,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/localai/data:/srv/b1-ai-hub/localai/data", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", volumes)
         self.assertEqual(service["healthcheck"]["test"], ["CMD", "curl", "-f", "http://127.0.0.1:8080/readyz"])
-        self.assertEqual(device["driver"], "${B1_LOCALAI_GPU_DRIVER:-nvidia.com/gpu}")
+        self.assertEqual(device["driver"], "${B1_LOCALAI_GPU_DRIVER:-nvidia}")
         self.assertEqual(device["count"], "${B1_LOCALAI_GPU_COUNT:-1}")
         self.assertEqual(device["capabilities"], ["gpu"])
 
@@ -702,7 +705,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/temporary/comfyui-temp:/srv/b1-ai-hub/comfyui/temp", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/comfyui:/srv/b1-ai-hub/cache", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", volumes)
-        self.assertEqual(device["driver"], "${B1_COMFYUI_GPU_DRIVER:-nvidia.com/gpu}")
+        self.assertEqual(device["driver"], "${B1_COMFYUI_GPU_DRIVER:-nvidia}")
         self.assertEqual(device["count"], "${B1_COMFYUI_GPU_COUNT:-1}")
         self.assertEqual(device["capabilities"], ["gpu"])
 
@@ -786,7 +789,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache", volumes)
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro", volumes)
-        self.assertEqual(device["driver"], "${B1_VOICEBOX_GPU_DRIVER:-nvidia.com/gpu}")
+        self.assertEqual(device["driver"], "${B1_VOICEBOX_GPU_DRIVER:-nvidia}")
         self.assertEqual(device["count"], "${B1_VOICEBOX_GPU_COUNT:-1}")
         self.assertEqual(device["capabilities"], ["gpu"])
 
@@ -818,7 +821,8 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assertIn("COPY b1_voicebox_proxy.py /usr/local/bin/b1_voicebox_proxy.py", dockerfile)
         self.assertIn("python /usr/local/bin/b1_voicebox_proxy.py", entrypoint)
-        self.assertIn("backend.main:app", proxy)
+        self.assertIn('"python", "-m", "backend.main"', proxy)
+        self.assertIn('"--data-dir", data_dir', proxy)
         for route in ("load", "warm", "smoke", "unload"):
             self.assertIn(f'if action == "{route}"', proxy)
         self.assertIn("websocket_proxy", proxy)

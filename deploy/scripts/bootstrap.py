@@ -82,6 +82,7 @@ SECRET_FILES = {
     "runtime_control_token": lambda: f"b1rctl_{secrets.token_urlsafe(32)}",
     "artifact_server_token": lambda: f"b1art_{secrets.token_urlsafe(32)}",
     "open_webui_api_key": lambda: f"b1k_{secrets.token_urlsafe(8)}.{secrets.token_urlsafe(32)}",
+    "open_webui_secret_key": lambda: secrets.token_urlsafe(48),
     "prometheus_scrape_token": lambda: f"b1prom_{secrets.token_urlsafe(32)}",
     "grafana_admin_password": lambda: secrets.token_urlsafe(32),
 }
@@ -96,6 +97,7 @@ RUNTIME_AGENT_MTLS_FILES = {
 }
 
 APP_WRITABLE_DIRS = [
+    "data/open-webui",
     "data/control-plane",
     "data/prometheus",
     "data/grafana",

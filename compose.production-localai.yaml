@@ -62,6 +62,6 @@ services:
       resources:
         reservations:
           devices:
-            - driver: ${B1_LOCALAI_GPU_DRIVER:-nvidia.com/gpu}
+            - driver: ${B1_LOCALAI_GPU_DRIVER:-nvidia}
               count: ${B1_LOCALAI_GPU_COUNT:-1}
               capabilities: [gpu]

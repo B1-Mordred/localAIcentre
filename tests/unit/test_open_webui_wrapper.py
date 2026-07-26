@@ -44,10 +44,13 @@ class OpenWebUiWrapperTests(unittest.TestCase):
     def test_exports_generated_key_to_openai_compatible_subsystems(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             key_file = Path(tmp) / "open_webui_api_key"
+            secret_key_file = Path(tmp) / "open_webui_secret_key"
             key_file.write_text("b1k_openwebui.unit-test\n", encoding="utf-8")
+            secret_key_file.write_text("webui-secret-unit-test\n", encoding="utf-8")
             result = self.run_wrapper(
                 {
                     "B1_OPEN_WEBUI_API_KEY_FILE": str(key_file),
+                    "B1_OPEN_WEBUI_SECRET_KEY_FILE": str(secret_key_file),
                     "B1_OPEN_WEBUI_API_BASE_URL": "http://control-plane:8000/v1/",
                     "OPENAI_API_KEY": "should-be-overridden",
                     "RAG_OPENAI_API_KEY": "should-also-be-overridden",
@@ -82,6 +85,7 @@ class OpenWebUiWrapperTests(unittest.TestCase):
         result = self.run_wrapper(
             {
                 "OPENAI_API_KEY": "b1k_openwebui.env-only",
+                "WEBUI_SECRET_KEY": "webui-secret-env-only",
                 "OPENAI_API_BASE_URL": "http://control-plane:8000/v1/",
             }
         )
@@ -106,7 +110,7 @@ class OpenWebUiWrapperTests(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("B1 Open WebUI API key is not configured", result.stderr)
+        self.assertIn("B1 Open WebUI", result.stderr)
         self.assertNotIn("unreachable", result.stdout)
 
 

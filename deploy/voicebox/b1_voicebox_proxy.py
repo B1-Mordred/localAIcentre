@@ -370,11 +370,11 @@ class VoiceboxProcessManager:
 def default_upstream_command() -> list[str]:
     host = os.getenv("B1_VOICEBOX_UPSTREAM_HOST", "127.0.0.1")
     port = os.getenv("B1_VOICEBOX_UPSTREAM_PORT", "17494")
-    log_level = os.getenv("B1_VOICEBOX_LOG_LEVEL", "info")
+    data_dir = os.getenv("B1_VOICEBOX_DATA_DIR", "/srv/b1-ai-hub/voicebox")
     configured = os.getenv("B1_VOICEBOX_UPSTREAM_COMMAND", "").strip()
     if configured:
         return configured.split()
-    return ["uvicorn", "backend.main:app", "--host", host, "--port", port, "--log-level", log_level]
+    return ["python", "-m", "backend.main", "--host", host, "--port", port, "--data-dir", data_dir]
 
 
 def upstream_http_base_url() -> str:

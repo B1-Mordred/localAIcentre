@@ -124,6 +124,7 @@ services:
   open-webui:
     build:
       context: ./deploy/open-webui
+    user: "999:999"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -134,6 +135,7 @@ services:
       WEBUI_URL: ${B1_OPEN_WEBUI_PUBLIC_URL:-https://ai.b1.germering}
       B1_OPEN_WEBUI_API_BASE_URL: ${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
+      B1_OPEN_WEBUI_SECRET_KEY_FILE: /run/secrets/open_webui_secret_key
       ENABLE_OPENAI_API: "true"
       ENABLE_PERSISTENT_CONFIG: "false"
       ENABLE_OAUTH_PERSISTENT_CONFIG: "false"

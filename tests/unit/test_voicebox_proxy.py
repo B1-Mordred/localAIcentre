@@ -145,6 +145,33 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertIn("status", info["capabilities"]["actions"])
         self.assertIn("unload", info["capabilities"]["actions"])
 
+    def test_default_upstream_command_uses_configured_data_dir(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "B1_VOICEBOX_UPSTREAM_HOST": "127.0.0.1",
+                "B1_VOICEBOX_UPSTREAM_PORT": "17494",
+                "B1_VOICEBOX_DATA_DIR": "/srv/b1-ai-hub/voicebox",
+            },
+            clear=False,
+        ):
+            command = self.proxy.default_upstream_command()
+
+        self.assertEqual(
+            command,
+            [
+                "python",
+                "-m",
+                "backend.main",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "17494",
+                "--data-dir",
+                "/srv/b1-ai-hub/voicebox",
+            ],
+        )
+
     def test_build_info_fails_closed_when_pinned_commit_is_invalid(self) -> None:
         with patch.dict(
             "os.environ",

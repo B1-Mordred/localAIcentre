@@ -1,7 +1,9 @@
 FROM ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4
 
 COPY b1-open-webui-entrypoint.sh /usr/local/bin/b1-open-webui-entrypoint.sh
-RUN chmod 0555 /usr/local/bin/b1-open-webui-entrypoint.sh
+RUN chmod 0555 /usr/local/bin/b1-open-webui-entrypoint.sh \
+    && chgrp -R 999 /app/backend/open_webui/static \
+    && chmod -R g+rwX /app/backend/open_webui/static
 
 ENTRYPOINT ["/usr/local/bin/b1-open-webui-entrypoint.sh"]
 CMD ["bash", "start.sh"]

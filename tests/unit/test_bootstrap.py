@@ -72,10 +72,12 @@ class BootstrapTests(unittest.TestCase):
             runtime_control_token_path = root / "secrets" / "runtime_control_token"
             artifact_token_path = root / "secrets" / "artifact_server_token"
             open_webui_key_path = root / "secrets" / "open_webui_api_key"
+            open_webui_secret_key_path = root / "secrets" / "open_webui_secret_key"
             self.assertIn("runtime_agent_token", first["created_secrets"])
             self.assertIn("runtime_control_token", first["created_secrets"])
             self.assertIn("artifact_server_token", first["created_secrets"])
             self.assertIn("open_webui_api_key", first["created_secrets"])
+            self.assertIn("open_webui_secret_key", first["created_secrets"])
             self.assertIn("prometheus_scrape_token", first["created_secrets"])
             self.assertIn("grafana_admin_password", first["created_secrets"])
             self.assertIn("runtime_agent_mtls_ca.crt", first["created_secrets"])
@@ -85,6 +87,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertNotIn("runtime_control_token", second["created_secrets"])
             self.assertNotIn("artifact_server_token", second["created_secrets"])
             self.assertNotIn("open_webui_api_key", second["created_secrets"])
+            self.assertNotIn("open_webui_secret_key", second["created_secrets"])
             self.assertNotIn("prometheus_scrape_token", second["created_secrets"])
             self.assertNotIn("grafana_admin_password", second["created_secrets"])
             self.assertNotIn("runtime_agent_mtls_ca.crt", second["created_secrets"])
@@ -95,10 +98,13 @@ class BootstrapTests(unittest.TestCase):
             self.assertGreaterEqual(len((root / "secrets" / "grafana_admin_password").read_text(encoding="utf-8").strip()), 32)
             open_webui_key = open_webui_key_path.read_text(encoding="utf-8").strip()
             self.assertTrue(open_webui_key.startswith("b1k_"))
+            self.assertGreaterEqual(len(open_webui_secret_key_path.read_text(encoding="utf-8").strip()), 32)
             self.assertEqual(token_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(runtime_control_token_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(artifact_token_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(open_webui_key_path.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(open_webui_secret_key_path.stat().st_mode & 0o777, 0o640)
+            self.assertEqual((root / "data" / "open-webui").stat().st_mode & 0o777, 0o775)
             self.assertTrue((root / "secrets" / "caddy-certs").is_dir())
             self.assertEqual((root / "secrets" / "caddy-certs").stat().st_mode & 0o777, 0o750)
             for filename in bootstrap.RUNTIME_AGENT_MTLS_FILES.values():

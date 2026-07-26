@@ -175,13 +175,13 @@ The override:
 - mounts `$B1_DATA_ROOT/models/runtime-views/localai` read-only at `/srv/b1-ai-hub/models`
 - creates writable LocalAI state at `$B1_DATA_ROOT/data/localai/{configuration,backends,data}` and `$B1_DATA_ROOT/cache/localai`
 - runs the B1 wrapper, proxy, and upstream LocalAI entrypoint as the bootstrap-managed non-root `B1_LOCALAI_UID:B1_LOCALAI_GID`
-- reserves one GPU by default through `B1_LOCALAI_GPU_DRIVER=nvidia.com/gpu` and `B1_LOCALAI_GPU_COUNT=1`
+- reserves one GPU by default through `B1_LOCALAI_GPU_DRIVER=nvidia` and `B1_LOCALAI_GPU_COUNT=1`
 - sets LocalAI's own backend guard rails with `LOCALAI_MAX_ACTIVE_BACKENDS=1`, `LOCALAI_WATCHDOG_IDLE=true`, `LOCALAI_WATCHDOG_IDLE_TIMEOUT=5m`, `LOCALAI_WATCHDOG_INTERVAL=1s`, and `LOCALAI_FORCE_EVICTION_WHEN_BUSY=false`
 - disables LocalAI's web UI and CORS by default because B1 gateway/control-plane UIs are the managed surfaces
 - implements `POST /b1/runtime/status`, `GET` or `POST /b1/runtime/build-info`, `POST /b1/runtime/load`, `POST /b1/runtime/warm`, `POST /b1/runtime/smoke`, and `POST /b1/runtime/unload` for scheduler-aware guardrail, readiness, smoke, and unload probes
 - health-checks `http://127.0.0.1:8080/readyz`
 
-Use `B1_LOCALAI_GPU_DRIVER=nvidia` only if the installed NVIDIA Container Toolkit still requires the legacy Compose driver name. The first LocalAI startup can take a long time while the image initializes or downloads runtime backends; the health check allows a one-hour start period for that reason.
+Use `B1_LOCALAI_GPU_DRIVER=nvidia.com/gpu` only on hosts deliberately configured for CDI-style GPU device selection. The default `nvidia` driver matches the Docker NVIDIA runtime reported by `docker info` on the target class. The first LocalAI startup can take a long time while the image initializes or downloads runtime backends; the health check allows a one-hour start period for that reason.
 
 By default the B1 lifecycle hooks are conservative: `status` reports guard rails and model count without model names, `build-info` reports pinned wrapper/upstream identity, model-list misses return `unconfirmed`, warm and smoke inference are disabled, and video smoke is disabled. For acceptance testing with installed model manifests, set `B1_LOCALAI_HOOK_STRICT_MODEL_LIST=true` and `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`; set `B1_LOCALAI_HOOK_WARM_ENABLED=true` only when a tiny warm inference is acceptable before the real request. The unload hook calls LocalAI's native `/backend/shutdown` endpoint for the resolved model. The GPU scheduler now tries the runtime unload hook first and uses runtime-agent restart only when graceful unload is unavailable or unconfirmed.
 
