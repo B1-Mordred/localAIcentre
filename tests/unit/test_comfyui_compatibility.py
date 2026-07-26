@@ -930,6 +930,103 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(fake.jobs, {})
         self.assertEqual(fake.leases, [])
 
+    def test_model_free_smoke_prompt_bypasses_hardware_admission_but_keeps_scheduler_lease(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+        main.settings = replace(
+            main.settings,
+            runtime_deployment_mode="production",
+            gpu_total_vram_gib=12.0,
+            gpu_reserve_vram_gib=1.5,
+            host_total_ram_gib=32.0,
+            host_reserve_ram_gib=6.0,
+        )
+        original_runtime_agent_get = main.runtime_agent_get
+        runtime_agent_calls: list[str] = []
+        forwarded: dict[str, Any] = {}
+        scheduled: list[dict[str, str]] = []
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any], str | None]:
+            runtime_agent_calls.append(path)
+            return (
+                {
+                    "gpu": {
+                        "available": True,
+                        "devices": [
+                            {
+                                "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+                                "memory_total_mib": 6144,
+                                "memory_free_mib": 4096,
+                            }
+                        ],
+                    },
+                    "memory": {
+                        "total_bytes": 31 * 1024**3,
+                        "available_bytes": 8 * 1024**3,
+                    },
+                },
+                None,
+            )
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            forwarded.update({"base_url": base_url, "path": path, "body": body})
+            return Response(
+                content=b'{"prompt_id":"prompt_native_smoke","number":0,"node_errors":{}}',
+                media_type="application/json",
+                status_code=200,
+            )
+
+        def schedule(job_id: str, prompt_id: str, lease_owner: str) -> None:
+            scheduled.append({"job_id": job_id, "prompt_id": prompt_id, "lease_owner": lease_owner})
+
+        main.runtime_agent_get = runtime_agent_get  # type: ignore[assignment]
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+        main.schedule_comfyui_prompt_tracker = schedule  # type: ignore[assignment]
+        request = FakeRequest(
+            {
+                "client_id": "client-1",
+                "prompt": {
+                    "1": {"class_type": "B1RuntimeTinyImage", "inputs": {"width": 64, "height": 64}},
+                    "2": {
+                        "class_type": "SaveImage",
+                        "inputs": {"filename_prefix": "b1-native-comfyui-smoke", "images": ["1", 0]},
+                    },
+                },
+            }
+        )
+
+        try:
+            response = asyncio.run(main.comfy_prompt(request))
+        finally:
+            main.runtime_agent_get = original_runtime_agent_get
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(forwarded["path"], "/prompt")
+        self.assertEqual(forwarded["body"], awaitable_body(request))
+        self.assertEqual(runtime_agent_calls, [])
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(len(fake.leases), 1)
+        self.assertEqual(fake.releases, [])
+        job = next(iter(fake.jobs.values()))
+        self.assertEqual(job["runtime"], "comfyui")
+        self.assertEqual(job["model_alias"], "comfyui-native")
+        self.assertEqual(job["resolved_model_version"], "comfyui-native-workflow@model-free-smoke")
+        self.assertEqual(job["native_prompt_id"], "prompt_native_smoke")
+        request_input = job["request_params"]["input"]
+        self.assertTrue(request_input["model_free_smoke"])
+        self.assertTrue(request_input["prompt_summary"]["model_free_smoke"])
+        self.assertEqual(request_input["prompt_summary"]["class_type_count"], 2)
+        self.assertEqual(
+            request_input["prompt_summary"]["class_type_digest"],
+            hashlib.sha256(b"B1RuntimeTinyImage\nSaveImage").hexdigest(),
+        )
+        states = [update["state"] for update in fake.updates if "state" in update]
+        self.assertEqual(states, ["validated", "queued", "waiting_for_gpu", "running"])
+        self.assertEqual(scheduled[0]["prompt_id"], "prompt_native_smoke")
+        self.assertEqual(scheduled[0]["lease_owner"], f"comfyui-prompt-{job['id']}")
+
     def test_prompt_prepare_failure_fails_without_forwarding_to_comfyui(self) -> None:
         fake = FakeDatabase()
         main.database = fake
