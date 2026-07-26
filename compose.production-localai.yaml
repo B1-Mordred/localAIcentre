@@ -7,6 +7,7 @@ services:
     image: ${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}
     build:
       context: ./deploy/localai
+      network: host
       args:
         B1_LOCALAI_UPSTREAM_VERSION: ${B1_LOCALAI_UPSTREAM_VERSION:-v4.7.1-gpu-nvidia-cuda-12}
         B1_LOCALAI_UPSTREAM_COMMIT: ${B1_LOCALAI_UPSTREAM_COMMIT:-b224c96db6f4b87306a33a808650bfce63b12588}
@@ -37,7 +38,9 @@ services:
       LOCALAI_DISABLE_WEBUI: ${B1_LOCALAI_DISABLE_WEBUI:-true}
       LOCALAI_ADDRESS: ${B1_LOCALAI_UPSTREAM_ADDRESS:-127.0.0.1:18080}
       LOCALAI_MODELS_PATH: /srv/b1-ai-hub/models
+      LOCALAI_MODELS_CONFIG_FILE: /srv/b1-ai-hub/localai/configuration/b1-managed-models.yaml
       LOCALAI_BACKENDS_PATH: /srv/b1-ai-hub/localai/backends
+      LOCALAI_BACKENDS_SYSTEM_PATH: /opt/b1/localai/backends
       LOCALAI_CONFIG_DIR: /srv/b1-ai-hub/localai/configuration
       LOCALAI_DATA_PATH: /srv/b1-ai-hub/localai/data
       LOCALAI_MAX_ACTIVE_BACKENDS: ${B1_LOCALAI_MAX_ACTIVE_BACKENDS:-1}

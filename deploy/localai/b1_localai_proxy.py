@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from b1_localai_config import sync_managed_configs
+
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -37,6 +39,8 @@ TTS_OPERATIONS = {"speech", "text-to-speech", "tts"}
 STT_OPERATIONS = {"transcription", "speech-to-text", "stt"}
 LOCALAI_PROXY_VERSION = "b1-localai-proxy/v0.2.0"
 LOCALAI_LIFECYCLE_ACTIONS = ["status", "build-info", "load", "warm", "smoke", "unload"]
+LAST_CONFIG_SYNC_AT = 0.0
+LAST_CONFIG_SYNC: dict[str, Any] = {"status": "unknown"}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -54,6 +58,22 @@ def env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def sync_managed_configs_if_needed(*, force: bool = False) -> dict[str, Any]:
+    global LAST_CONFIG_SYNC_AT, LAST_CONFIG_SYNC
+    if not env_bool("B1_LOCALAI_CONFIG_SYNC_ENABLED", True):
+        return {"status": "disabled"}
+    now = time.monotonic()
+    interval = max(1.0, env_float("B1_LOCALAI_CONFIG_SYNC_INTERVAL_SECONDS", 15.0))
+    if not force and now - LAST_CONFIG_SYNC_AT < interval:
+        return LAST_CONFIG_SYNC
+    try:
+        LAST_CONFIG_SYNC = sync_managed_configs()
+    except Exception as exc:
+        LAST_CONFIG_SYNC = {"status": "failed", "error": exc.__class__.__name__}
+    LAST_CONFIG_SYNC_AT = now
+    return LAST_CONFIG_SYNC
 
 
 def env_int(name: str, default: int) -> int:
@@ -164,6 +184,7 @@ def guardrail_status() -> dict[str, Any]:
 
 
 def status_response() -> dict[str, Any]:
+    config_sync = sync_managed_configs_if_needed()
     guardrails = guardrail_status()
     upstream_status = "unknown"
     upstream_http_status: int | None = None
@@ -194,6 +215,7 @@ def status_response() -> dict[str, Any]:
         upstream=os.getenv("B1_LOCALAI_UPSTREAM_URL", "http://127.0.0.1:18080"),
         guardrails=guardrails,
         model_probe=model_probe,
+        model_config_sync=config_sync,
         capabilities={"actions": LOCALAI_LIFECYCLE_ACTIONS},
         build_info=build_info_response(),
     )
@@ -422,6 +444,7 @@ def check_model_list(client: LocalAIClient, payload: dict[str, Any], action: str
 
 
 def handle_load(payload: dict[str, Any]) -> dict[str, Any]:
+    sync_managed_configs_if_needed(force=True)
     client = hook_timeout_client()
     list_result = check_model_list(client, payload, "load")
     if list_result is not None:
@@ -430,6 +453,7 @@ def handle_load(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_warm(payload: dict[str, Any]) -> dict[str, Any]:
+    sync_managed_configs_if_needed(force=True)
     client = hook_timeout_client()
     list_result = check_model_list(client, payload, "warm")
     if list_result is not None and list_result.get("status") not in {"unconfirmed"}:
@@ -440,6 +464,7 @@ def handle_warm(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_smoke(payload: dict[str, Any]) -> dict[str, Any]:
+    sync_managed_configs_if_needed(force=True)
     client = hook_timeout_client()
     list_result = check_model_list(client, payload, "smoke")
     if list_result is not None and list_result.get("status") not in {"unconfirmed"}:

@@ -19,6 +19,8 @@ mkdir -p \
   "${XDG_CACHE_HOME:-/srv/b1-ai-hub/cache/xdg}" \
   "${HF_HOME:-/srv/b1-ai-hub/cache/huggingface}"
 
+python3 /usr/local/bin/b1_localai_config.py
+
 /entrypoint.sh "$@" &
 localai_pid="$!"
 

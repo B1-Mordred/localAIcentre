@@ -44,6 +44,8 @@ LocalAI does not receive the authoritative model blob library. It receives only 
 $B1_DATA_ROOT/models/runtime-views/localai:/srv/b1-ai-hub/models:ro
 ```
 
+At startup, and again before scheduler lifecycle hooks such as `load`, `warm`, and `smoke`, the B1 wrapper scans read-only `manifest.b1.json` files in that runtime view and writes deterministic managed LocalAI YAML configs into `LOCALAI_CONFIG_DIR`. It also writes a combined `b1-managed-models.yaml`, and the production Compose override points `LOCALAI_MODELS_CONFIG_FILE` at that combined file. This lets a Model Hub installed GGUF expose the manifest ID as the LocalAI model name without giving LocalAI write access to the authoritative model library. The generated GGUF backend defaults to `llama`; the wrapper image bakes in the matching CUDA 12 `llama-cpp` backend from `quay.io/go-skynet/local-ai-backends@sha256:af63c83aea1761b9ae37e2932981b9078e2a41a20f98c687216dd1bb0b59e163` and exposes it through `LOCALAI_BACKENDS_SYSTEM_PATH`. Set `B1_LOCALAI_MANAGED_LLAMA_BACKEND` only when validating another backend on the target image. The wrapper only creates or removes files named `b1-managed-*.yaml` that contain the B1 managed marker; operator-created LocalAI config files are left untouched.
+
 Bootstrap creates the writable state used by the official container:
 
 ```text

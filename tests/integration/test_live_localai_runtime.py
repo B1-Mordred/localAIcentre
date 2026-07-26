@@ -218,7 +218,7 @@ class LiveLocalAiRuntimeAcceptanceTests(unittest.TestCase):
             "single_backend_enforced",
             active_gpu_runtimes=active,
             stage=state.get("stage"),
-            status=state.get("status"),
+            runtime_status=state.get("status"),
             model_alias=state.get("model_alias"),
             resolved_model_version=state.get("resolved_model_version"),
         )
