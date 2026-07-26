@@ -858,6 +858,38 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
         "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
     }
     payload = {
+        "repository_quality": {
+            "available": True,
+            "format": "b1-ai-hub-repository-quality-evidence/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/repository-quality.json",
+            "generated_at": "2026-07-24T12:10:00+00:00",
+            "base_url": "",
+            "status": "ok",
+            "source_commit": "c" * 40,
+            "source_branch": "agent/test",
+            "source_dirty": False,
+            "dirty_path_count": 0,
+            "command_count": 2,
+            "required_checks": list(acceptance.REPOSITORY_QUALITY_REQUIRED_CHECKS),
+            "missing_checks": [],
+            "missing_quality_evidence": [],
+            "checks": {
+                "quality_container": {
+                    "status": "ok",
+                    "command": "make quality-container",
+                    "recorded_at": "2026-07-24T12:10:00+00:00",
+                    "coverage": list(acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE["quality_container"]),
+                },
+                "secret_scan": {
+                    "status": "ok",
+                    "command": "make secret-scan",
+                    "recorded_at": "2026-07-24T12:10:00+00:00",
+                    "coverage": list(acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE["secret_scan"]),
+                },
+            },
+            "sample_count": 1,
+            "sample_labels": ["repository-quality"],
+        },
         "operator_preflight": {
             "available": True,
             "format": "b1-ai-hub-operator-live-acceptance-preflight/v1",
@@ -2040,6 +2072,10 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("## Operator Evidence", markdown)
             self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
+            self.assertIn("Repository quality gates", markdown)
+            self.assertIn("repository-quality.json", markdown)
+            self.assertIn("quality_container", markdown)
+            self.assertIn("make quality-container", markdown)
             self.assertIn("live-smoke.json", markdown)
             self.assertIn("Live stack smoke", markdown)
             self.assertIn("cross-runtime-gpu.json", markdown)
@@ -2090,6 +2126,47 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("handoff fresh-install command must be exactly: docker compose up -d", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_repository_quality_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["repository_quality"] = {"available": False, "reason": "missing"}
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["repository_quality_evidence_ready"])
+        self.assertFalse(summary["live_evidence_ready"])
+        self.assertIn("repository quality evidence is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_dirty_repository_quality_evidence(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["repository_quality"] = {
+            **live_evidence["repository_quality"],
+            "status": "incomplete",
+            "source_dirty": True,
+            "dirty_path_count": 2,
+            "missing_quality_evidence": ["source_dirty_false", "dirty_path_count_zero"],
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("repository quality evidence status is incomplete", blockers)
+        self.assertIn("repository quality evidence is missing detailed proof: source_dirty_false, dirty_path_count_zero", blockers)
+
+    def test_report_blocks_handoff_when_repository_quality_commit_mismatches_source(self) -> None:
+        live_evidence = sample_live_evidence()
+        live_evidence["repository_quality"] = {
+            **live_evidence["repository_quality"],
+            "source_commit": "d" * 40,
+        }
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn(
+            "repository quality evidence source commit does not match report source-control commit",
+            report["acceptance_blockers"],
+        )
 
     def test_deployment_pin_snapshot_reads_repository_and_matches_bundled_runtime_pins(self) -> None:
         repository = acceptance.deployment_pins_snapshot(ROOT)
@@ -4553,6 +4630,10 @@ class AcceptanceReportTests(unittest.TestCase):
             }
             ignored = evidence_root / "older.json"
             ignored.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+            repository_quality = evidence_root / "repository-quality.json"
+            repository_quality_payload = sample_live_evidence()["repository_quality"]
+            repository_quality_payload["samples"] = [{"label": label} for label in repository_quality_payload["sample_labels"]]
+            repository_quality.write_text(json.dumps(repository_quality_payload), encoding="utf-8")
             preflight = evidence_root / "operator-preflight.json"
             preflight_payload = sample_live_evidence()["operator_preflight"]
             preflight_payload["checks"] = list(preflight_payload["checks"].values())
@@ -4826,6 +4907,15 @@ class AcceptanceReportTests(unittest.TestCase):
 
             snapshot = acceptance.latest_live_evidence_snapshot(root)
 
+        quality_snapshot = snapshot["repository_quality"]
+        self.assertTrue(quality_snapshot["available"])
+        self.assertEqual(quality_snapshot["source_path"], str(repository_quality.resolve()))
+        self.assertEqual(quality_snapshot["status"], "ok")
+        self.assertEqual(quality_snapshot["missing_checks"], [])
+        self.assertEqual(quality_snapshot["missing_quality_evidence"], [])
+        self.assertEqual(quality_snapshot["source_commit"], "c" * 40)
+        self.assertFalse(quality_snapshot["source_dirty"])
+        self.assertEqual(quality_snapshot["command_count"], 2)
         preflight_snapshot = snapshot["operator_preflight"]
         self.assertTrue(preflight_snapshot["available"])
         self.assertEqual(preflight_snapshot["source_path"], str(preflight.resolve()))

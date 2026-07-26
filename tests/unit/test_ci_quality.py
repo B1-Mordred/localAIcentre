@@ -94,6 +94,7 @@ class CiQualityGateTests(unittest.TestCase):
 
     def test_makefile_exposes_live_acceptance_evidence_targets(self) -> None:
         expected_defaults = (
+            ("B1_REPOSITORY_QUALITY_EVIDENCE", "repository-quality.json"),
             ("B1_PREFLIGHT_EVIDENCE", "operator-preflight.json"),
             ("B1_SMOKE_EVIDENCE", "live-smoke.json"),
             ("B1_WORKFLOWS_EVIDENCE", "installed-workflows.json"),
@@ -116,6 +117,9 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("\nacceptance-preflight:", self.makefile_text)
         self.assertIn('deploy/scripts/acceptance_preflight.py --data-root "$(B1_DATA_ROOT)" --env-file "$(B1_ACCEPTANCE_ENV)"', self.makefile_text)
         self.assertIn('--output "$(B1_PREFLIGHT_EVIDENCE)"', self.makefile_text)
+        self.assertIn("\nrepository-quality-evidence:", self.makefile_text)
+        self.assertIn("repository_quality_evidence.py", self.makefile_text)
+        self.assertIn('B1_REPOSITORY_QUALITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/repository-quality.json', self.makefile_text)
 
         expected_targets = (
             ("live-smoke-acceptance", "B1_SMOKE_LIVE_TEST=1", "B1_SMOKE_EVIDENCE"),
@@ -145,7 +149,7 @@ class CiQualityGateTests(unittest.TestCase):
             "modelhub-compatibility voicebox-compatibility",
             self.makefile_text,
         )
-        self.assertIn("operator-live-acceptance: acceptance-preflight", self.makefile_text)
+        self.assertIn("operator-live-acceptance: repository-quality-evidence acceptance-preflight", self.makefile_text)
         self.assertIn("restart-reconciliation drill state documented in tests/.", self.makefile_text)
 
     def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:

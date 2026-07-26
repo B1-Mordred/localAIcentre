@@ -94,6 +94,14 @@ make acceptance-preflight
 
 The generated file contains no secrets by default. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE=https://$B1_HOST_CHAT` for the chat-host smoke proof. For temporary IP validation, edit `B1_SMOKE_OPEN_WEBUI_BASE` and `B1_SMOKE_OPEN_WEBUI_HOST_HEADER` in the generated file before preflight. Fill the blank restart reconciliation timestamp, Model Hub sync aliases, browser-session/password or split-scope key values before final `make operator-live-acceptance`. `make acceptance-preflight` does not call the deployed APIs; it only validates the local handoff environment, output paths, TLS CA file, safety gates, and edited workflow/prompt JSON so the live suite does not spend time on a run that would skip or produce incomplete evidence. It writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json`, and `make operator-live-acceptance` runs that preflight first.
 
+Before final handoff, record repository quality evidence from a clean checkout:
+
+```bash
+make repository-quality-evidence
+```
+
+The target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit and required local gate coverage. `make operator-live-acceptance` depends on this target, so final evidence cannot be collected from a dirty tree or without the broad local checks passing.
+
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...

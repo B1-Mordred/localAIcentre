@@ -23,6 +23,7 @@ B1_REMOTE_NODES_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/remote-nodes-non-comfy.
 B1_MODELHUB_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/modelhub-client-sync.json
 B1_VOICEBOX_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/voicebox-remote.json
 B1_SECURITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/security-acceptance.json
+B1_REPOSITORY_QUALITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/repository-quality.json
 B1_ACCEPTANCE_ENV ?= $(B1_BACKUP_ROOT)/acceptance/operator-live-acceptance.env
 B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
@@ -33,7 +34,7 @@ B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env bootstrap acceptance-env acceptance-preflight validate quality quality-local quality-container backend-python-quality-container compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env bootstrap acceptance-env acceptance-preflight validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
@@ -72,6 +73,9 @@ quality-container: compose-config legacy-compose-config monitoring-compose-confi
 
 backend-python-quality-container:
 	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -e PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)" -e PIP_RETRIES="$(B1_PIP_RETRIES)" -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check && python deploy/scripts/generate_openapi_client.py --check'
+
+repository-quality-evidence: quality-container secret-scan
+	python3 deploy/scripts/repository_quality_evidence.py --output "$(B1_REPOSITORY_QUALITY_EVIDENCE)" --force
 
 compose-config:
 	docker compose config --quiet
@@ -159,7 +163,7 @@ external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non
 
 # Requires the target host acceptance window, installed real models, workflow job files,
 # scoped API keys, and the restart-reconciliation drill state documented in tests/.
-operator-live-acceptance: acceptance-preflight live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
+operator-live-acceptance: repository-quality-evidence acceptance-preflight live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
 
 security:
 	python3 -m unittest discover -s tests/security -v

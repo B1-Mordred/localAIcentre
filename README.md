@@ -163,6 +163,14 @@ Before starting the full live group, run the non-network preflight. It parses th
 make acceptance-preflight
 ```
 
+Record repository quality evidence only after the source tree is clean and the broad local gates pass:
+
+```bash
+make repository-quality-evidence
+```
+
+That target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, clean/dirty state, and coverage labels consumed by the final handoff report.
+
 Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 
 ```bash
@@ -224,7 +232,7 @@ make acceptance-preflight
 make operator-live-acceptance
 ```
 
-`make operator-live-acceptance` also depends on `acceptance-preflight`, so a stale or unsafe local handoff environment stops before the live API/GPU tests run. The group writes operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
+`make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
 
 Generate backup, migration, and rollback handoff evidence after B1 backup verification, alternate-directory restore rehearsal, old-stack migration review, and rollback rehearsal:
 

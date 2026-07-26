@@ -35,6 +35,7 @@ LIVE_FLAGS = {
     "B1_RESTART_RECONCILIATION_LIVE_TEST": "1",
 }
 EVIDENCE_FILES = {
+    "B1_REPOSITORY_QUALITY_EVIDENCE": "repository-quality.json",
     "B1_PREFLIGHT_EVIDENCE": "operator-preflight.json",
     "B1_SMOKE_EVIDENCE": "live-smoke.json",
     "B1_WORKFLOWS_EVIDENCE": "installed-workflows.json",

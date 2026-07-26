@@ -413,6 +413,7 @@ type AcceptanceReportSummary = {
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
   cutover_dns_ready?: boolean;
+  repository_quality_evidence_ready?: boolean;
   operator_preflight_evidence_ready?: boolean;
   smoke_evidence_ready?: boolean;
   gpu_evidence_ready?: boolean;
@@ -632,6 +633,7 @@ const ACCEPTANCE_EVIDENCE_ITEMS = [
 ] as const;
 
 const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
+  ["repository_quality", "Repository quality"],
   ["operator_preflight", "Operator preflight"],
   ["live_stack_smoke", "Live stack smoke"],
   ["gpu_acceptance", "RTX 3060 GPU"],
@@ -648,6 +650,7 @@ const ACCEPTANCE_LIVE_EVIDENCE_SECTIONS = [
 ] as const;
 
 const ACCEPTANCE_LIVE_EVIDENCE_DETAIL_FIELDS = [
+  ["missing_quality_evidence", "quality proof"],
   ["missing_preflight_evidence", "preflight proof"],
   ["missing_smoke_evidence", "smoke proof"],
   ["missing_gpu_evidence", "GPU proof"],
@@ -5717,7 +5720,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.compose_selection_ready ? "Compose selection missing" : !report.model_measurement_coverage_ready ? "model smoke coverage missing" : !report.operator_evidence_ready ? "evidence missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.compose_selection_ready ? "Compose selection missing" : !report.model_measurement_coverage_ready ? "model smoke coverage missing" : !report.operator_evidence_ready ? "evidence missing" : !report.repository_quality_evidence_ready ? "repository quality proof missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>
@@ -5753,6 +5756,7 @@ function System() {
             <div><strong>Deployment Pins</strong><small>{selectedSummary.deployment_pins_ready ? "clean" : String(selectedDeploymentPins.status ?? "blocked")}</small></div>
             <div><strong>Compose Files</strong><small>{selectedSummary.compose_selection_ready ? "production overlays selected" : String(selectedComposeSelection.status ?? "blocked")}</small></div>
             <div><strong>Model smoke</strong><small>{selectedSummary.model_measurement_coverage_ready ? "all required aliases measured" : String(selectedModelMeasurementCoverage.status ?? "missing")}</small></div>
+            <div><strong>Repository quality</strong><small>{selectedSummary.repository_quality_evidence_ready ? "quality gates recorded" : "proof missing"}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedAcceptanceReportIsPreview ? "preview only" : selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>

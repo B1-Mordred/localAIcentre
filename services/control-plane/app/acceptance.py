@@ -399,6 +399,26 @@ BACKUP_MIGRATION_ROLLBACK_REQUIRED_CHECKS = (
     "rollback_rehearsed",
     "old_resources_preserved",
 )
+REPOSITORY_QUALITY_EVIDENCE_FORMAT = "b1-ai-hub-repository-quality-evidence/v1"
+REPOSITORY_QUALITY_REQUIRED_CHECKS = ("quality_container", "secret_scan")
+REPOSITORY_QUALITY_REQUIRED_COVERAGE = {
+    "quality_container": (
+        "compose_config",
+        "production_compose_config",
+        "caddy_config",
+        "python_compile",
+        "backend_unit_tests",
+        "openapi_schema_drift",
+        "openapi_client_drift",
+        "compatibility_offline_tests",
+        "security_offline_tests",
+        "frontend_control_center_build",
+        "frontend_control_center_audit",
+        "frontend_media_studio_build",
+        "frontend_media_studio_audit",
+    ),
+    "secret_scan": ("source_secret_scan",),
+}
 PRESERVED_ROLLBACK_RESOURCE_KEYS = (
     "containers_to_restart_for_rollback",
     "systemd_services_to_restart_for_rollback",
@@ -421,6 +441,7 @@ REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("security_review", "LAN-only, TLS, secrets, logs, CORS/CSRF, and runtime-agent security checks passed"),
 )
 LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("repository_quality", "repository quality gates"),
     ("operator_preflight", "operator live-acceptance preflight"),
     ("live_stack_smoke", "live stack smoke"),
     ("gpu_acceptance", "RTX 3060 GPU acceptance"),
@@ -2467,6 +2488,37 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _repository_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+    source_commit = _nonempty_text(payload.get("source_commit")).lower()
+    if not re.fullmatch(r"[a-f0-9]{40}", source_commit):
+        missing.append("source_commit")
+    if payload.get("source_dirty") is not False:
+        missing.append("source_dirty_false")
+    dirty_path_count = _integer_value(payload.get("dirty_path_count"))
+    if dirty_path_count not in (None, 0):
+        missing.append("dirty_path_count_zero")
+    for check_name, required_coverage in REPOSITORY_QUALITY_REQUIRED_COVERAGE.items():
+        check = _check_record(checks, check_name)
+        if not _nonempty_text(check.get("command")):
+            missing.append(f"{check_name}.command")
+        if not _nonempty_text(check.get("recorded_at")):
+            missing.append(f"{check_name}.recorded_at")
+        coverage = set(_as_string_list(check.get("coverage")))
+        for item in required_coverage:
+            if item not in coverage:
+                missing.append(f"{check_name}.coverage.{item}")
+    return {
+        "source_commit": source_commit,
+        "source_branch": _nonempty_text(payload.get("source_branch")),
+        "source_dirty": payload.get("source_dirty"),
+        "dirty_path_count": dirty_path_count if dirty_path_count is not None else 0,
+        "command_count": len(checks),
+        "missing_quality_evidence": missing,
+    }
+
+
 def _live_evidence_snapshot(
     payload: dict[str, Any],
     source_path: Path | None,
@@ -2804,8 +2856,20 @@ def backup_migration_rollback_evidence_snapshot(payload: dict[str, Any], source_
     )
 
 
+def repository_quality_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=REPOSITORY_QUALITY_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported repository quality evidence format",
+        required_checks=REPOSITORY_QUALITY_REQUIRED_CHECKS,
+        extra_fields=_repository_quality_summary(payload),
+    )
+
+
 def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
     return {
+        "repository_quality": {"available": False, "reason": reason, "root": str(root)},
         "operator_preflight": {"available": False, "reason": reason, "root": str(root)},
         "live_stack_smoke": {"available": False, "reason": reason, "root": str(root)},
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
@@ -2853,7 +2917,10 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
             continue
         if not isinstance(payload, dict):
             continue
-        if payload.get("format") == PREFLIGHT_EVIDENCE_FORMAT and "operator_preflight" not in found:
+        if payload.get("format") == REPOSITORY_QUALITY_EVIDENCE_FORMAT and "repository_quality" not in found:
+            snapshots["repository_quality"] = repository_quality_evidence_snapshot(payload, path.resolve())
+            found.add("repository_quality")
+        elif payload.get("format") == PREFLIGHT_EVIDENCE_FORMAT and "operator_preflight" not in found:
             snapshots["operator_preflight"] = preflight_evidence_snapshot(payload, path.resolve())
             found.add("operator_preflight")
         elif payload.get("format") == SMOKE_EVIDENCE_FORMAT and "live_stack_smoke" not in found:
@@ -3427,6 +3494,24 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("source-control evidence is unavailable")
     elif not re.fullmatch(r"[a-f0-9]{40}", source_commit):
         blockers.append("source-control evidence lacks a valid 40-character commit")
+    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    repository_quality = live_evidence.get("repository_quality") if isinstance(live_evidence.get("repository_quality"), dict) else {}
+    if repository_quality.get("available") is not True:
+        blockers.append("repository quality evidence is unavailable")
+    else:
+        if repository_quality.get("status") != "ok":
+            blockers.append(f"repository quality evidence status is {repository_quality.get('status', 'unknown')}")
+        missing_checks = repository_quality.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("repository quality evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_quality = repository_quality.get("missing_quality_evidence")
+        if not isinstance(missing_quality, list):
+            blockers.append("repository quality evidence lacks detailed test-result summary")
+        elif missing_quality:
+            blockers.append("repository quality evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_quality))
+        quality_commit = str(repository_quality.get("source_commit") or "").lower()
+        if re.fullmatch(r"[a-f0-9]{40}", source_commit) and quality_commit and source_commit != quality_commit:
+            blockers.append("repository quality evidence source commit does not match report source-control commit")
     deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
     if deployment_pins.get("status") != "ok":
         blockers.append("deployment pin manifest is not clean")
@@ -3445,7 +3530,6 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     coverage = report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
     blockers.extend(_model_measurement_coverage_blockers(coverage))
     blockers.extend(_live_evidence_freshness_failures(report).values())
-    live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     if preflight_evidence.get("available") is not True:
         blockers.append("operator live-acceptance preflight evidence is unavailable")
@@ -3936,6 +4020,7 @@ def build_report(
         "handoff": _normalize_handoff_context(handoff),
         "live_evidence": live_evidence
         or {
+            "repository_quality": {"available": False, "reason": "not supplied"},
             "operator_preflight": {"available": False, "reason": "not supplied"},
             "live_stack_smoke": {"available": False, "reason": "not supplied"},
             "gpu_acceptance": {"available": False, "reason": "not supplied"},
@@ -3985,9 +4070,15 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
         "generated_at",
         "base_url",
         "status",
+        "source_commit",
+        "source_branch",
+        "source_dirty",
+        "dirty_path_count",
+        "command_count",
         "sample_count",
     ):
-        summary_rows.append([key, _format_value(evidence.get(key))])
+        if key in evidence or key in {"available", "source_path", "generated_at", "base_url", "status", "sample_count"}:
+            summary_rows.append([key, _format_value(evidence.get(key))])
     missing_checks = evidence.get("missing_checks")
     if isinstance(missing_checks, list) and missing_checks:
         summary_rows.append(["missing_checks", ", ".join(str(item) for item in missing_checks)])
@@ -4021,13 +4112,16 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_preflight = evidence.get("missing_preflight_evidence")
     if isinstance(missing_preflight, list) and missing_preflight:
         summary_rows.append(["missing_preflight_evidence", ", ".join(str(item) for item in missing_preflight)])
+    missing_quality = evidence.get("missing_quality_evidence")
+    if isinstance(missing_quality, list) and missing_quality:
+        summary_rows.append(["missing_quality_evidence", ", ".join(str(item) for item in missing_quality)])
     failed_checks = evidence.get("failed_checks")
     if isinstance(failed_checks, list) and failed_checks:
         summary_rows.append(["failed_checks", ", ".join(str(item) for item in failed_checks)])
     warning_checks = evidence.get("warning_checks")
     if isinstance(warning_checks, list) and warning_checks:
         summary_rows.append(["warning_checks", ", ".join(str(item) for item in warning_checks)])
-    check_rows = [["Check", "Status", "Recorded"]]
+    check_rows = [["Check", "Status", "Recorded", "Command"]]
     checks = evidence.get("checks") if isinstance(evidence.get("checks"), dict) else {}
     for name in sorted(checks):
         check = checks.get(name)
@@ -4036,6 +4130,7 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
                 _format_value(name),
                 _format_value(check.get("status")),
                 _format_value(check.get("recorded_at")),
+                _format_value(check.get("command")),
             ])
     measurement_rows = [["Alias", "Resolved Model", "Runtime", "OK Runs", "Peak VRAM MiB", "Peak RAM MiB", "Run ms"]]
     measurements = evidence.get("model_measurements") if isinstance(evidence.get("model_measurements"), dict) else {}
@@ -4237,6 +4332,9 @@ def markdown_report(report: dict[str, Any]) -> str:
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     model_measurement_coverage = (
         report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
+    )
+    repository_quality_evidence = (
+        live_evidence.get("repository_quality") if isinstance(live_evidence.get("repository_quality"), dict) else {}
     )
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
@@ -4455,6 +4553,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             _model_measurement_coverage_markdown(model_measurement_coverage),
             "## Live Acceptance Evidence\n\n"
             + _live_evidence_markdown(
+                "Repository quality gates",
+                repository_quality_evidence,
+                "No repository quality gate evidence recorded.",
+            )
+            + "\n\n"
+            + _live_evidence_markdown(
                 "Operator live-acceptance preflight",
                 preflight_evidence,
                 "No operator preflight checks recorded.",
@@ -4589,6 +4693,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not _as_string_list(gpu_runtime_readiness.get("warnings"))
     )
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    repository_quality_evidence = (
+        live_evidence.get("repository_quality") if isinstance(live_evidence.get("repository_quality"), dict) else {}
+    )
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
@@ -4622,6 +4729,13 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     )
     model_measurement_coverage_ready = model_measurement_coverage.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
+    repository_quality_evidence_ready = (
+        repository_quality_evidence.get("available") is True
+        and repository_quality_evidence.get("status") == "ok"
+        and not repository_quality_evidence.get("missing_checks")
+        and repository_quality_evidence.get("missing_quality_evidence") == []
+        and "repository_quality" not in freshness_failures
+    )
     preflight_evidence_ready = (
         preflight_evidence.get("available") is True
         and preflight_evidence.get("status") in {"ok", "warning"}
@@ -4749,6 +4863,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "gpu_runtime_ready": gpu_runtime_ready,
         "runtime_agent_socket_ready": runtime_agent_socket_ready,
         "open_webui_preservation_ready": open_webui_preservation_ready,
+        "repository_quality_evidence_ready": repository_quality_evidence_ready,
         "operator_preflight_evidence_ready": preflight_evidence_ready,
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
@@ -4765,6 +4880,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "live_evidence_freshness_ready": not freshness_failures,
         "live_evidence_ready": (
             not freshness_failures
+            and repository_quality_evidence_ready
             and preflight_evidence_ready
             and smoke_evidence_ready
             and gpu_evidence_ready
