@@ -32,10 +32,13 @@ def assert_safe_output_path(path: Path) -> None:
 def write_private_json(path: Path, payload: dict[str, Any], *, include_source_metadata: bool = True) -> None:
     assert_safe_output_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    parent_stat = path.parent.stat()
     output = stamp_source_metadata(payload) if include_source_metadata else dict(payload)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
+        if os.geteuid() == 0:
+            os.fchown(fd, parent_stat.st_uid, parent_stat.st_gid)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(output, handle, indent=2, sort_keys=True)
             handle.write("\n")

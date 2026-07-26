@@ -60,6 +60,22 @@ class LiveEvidenceWriterTests(unittest.TestCase):
         self.assertFalse(payload["source_dirty"])
         self.assertEqual(payload["dirty_path_count"], 0)
 
+    def test_write_private_json_inherits_parent_owner_when_running_as_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acceptance" / "live-smoke.json"
+            path.parent.mkdir()
+            parent_stat = path.parent.stat()
+            fchown_calls: list[tuple[int, int, int]] = []
+
+            def fake_fchown(fd: int, uid: int, gid: int) -> None:
+                fchown_calls.append((fd, uid, gid))
+
+            with mock.patch.object(os, "geteuid", return_value=0), mock.patch.object(os, "fchown", side_effect=fake_fchown):
+                evidence.write_private_json(path, {"format": "test/v1", "status": "ok"})
+
+        self.assertEqual(len(fchown_calls), 1)
+        self.assertEqual(fchown_calls[0][1:], (parent_stat.st_uid, parent_stat.st_gid))
+
     def test_write_private_json_keeps_existing_source_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "acceptance" / "live-smoke.json"
