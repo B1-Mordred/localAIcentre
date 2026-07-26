@@ -536,6 +536,24 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertNotIn("cp .env.production.example .env", production_env_text)
         self.assertNotIn("#   make bootstrap\n#   docker compose up -d", production_env_text)
 
+    def test_host_network_policy_uses_system_hostname_and_dhcp(self) -> None:
+        env_text = (ROOT / ".env.example").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        migration = (ROOT / "docs" / "migration.md").read_text(encoding="utf-8")
+        docs = "\n".join([env_text, readme, installation, migration])
+        env_normalized = re.sub(r"\s+", " ", env_text)
+
+        self.assertIn("The target OS/system hostname defines", docs)
+        self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", env_text)
+        self.assertIn("hostname_authority=system-hostname", installation)
+        self.assertIn("system-defined hostname plus host-managed DHCP", migration)
+        self.assertIn("host IP/gateway/resolver properties should come", env_normalized)
+        self.assertIn("from DHCP or a DHCP reservation", env_normalized)
+        self.assertIn("does not configure a static host IP", docs)
+        self.assertNotIn("B1 configuration defines the appliance " + "hostname", docs)
+        self.assertNotIn("B1-defined " + "hostname", docs)
+
     def test_production_env_disables_development_placeholders_and_cloud_by_default(self) -> None:
         self.assertEqual(self.production_env["B1_CPU_AUDIO_ENGINE"], "piper")
         self.assertEqual(self.production_env["B1_CPU_EMBEDDING_ENGINE"], "onnx")
@@ -687,11 +705,21 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assertIn("COPY b1_runtime_hooks /opt/comfyui/custom_nodes/b1_runtime_hooks", dockerfile)
         self.assertIn('@PromptServer.instance.routes.post("/b1/runtime/{action}")', hooks)
+        self.assertIn('action == "status"', hooks)
         self.assertIn('action == "build-info"', hooks)
+        self.assertIn('"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]', hooks)
         self.assertIn("Comfy-Org/ComfyUI", hooks)
         self.assertIn("model_management.unload_all_models()", hooks)
         self.assertIn("B1RuntimeSmoke", hooks)
         self.assertIn("B1RuntimeTinyImage", hooks)
+
+    def test_production_comfyui_installation_docs_include_status_hooks(self) -> None:
+        installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+
+        self.assertIn("POST /b1/runtime/status", installation)
+        self.assertIn("/build-info", installation)
+        self.assertIn("memory availability, model-folder counts, lifecycle capabilities", installation)
+        self.assertIn("runtime lifecycle status", installation)
 
     def test_production_comfyui_override_points_control_plane_to_native_port(self) -> None:
         control_plane = self.production_comfyui_compose["services"]["control-plane"]

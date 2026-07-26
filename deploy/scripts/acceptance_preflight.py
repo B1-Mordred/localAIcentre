@@ -668,8 +668,8 @@ def validate_target_identity_payload(
         )
     if not observed_expected or not valid_hostname_reference(observed_expected):
         failures.append(f"{label} target identity does not record a valid system hostname/FQDN")
-    if payload.get("hostname_authority") != "b1-ai-hub-configuration":
-        failures.append(f"{label} target hostname must be defined by B1 configuration, not DHCP")
+    if payload.get("hostname_authority") != "system-hostname":
+        failures.append(f"{label} target hostname authority must be the system hostname, not DHCP")
     if payload.get("accepted") is not True:
         failures.append(f"{label} target identity is not accepted")
     if payload.get("operator_must_review_target_identity") is True:
@@ -690,8 +690,8 @@ def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[
         return [f"{label} DHCP/networking readiness is missing"]
     if payload.get("available") is False:
         failures.append(f"{label} DHCP/networking readiness is unavailable")
-    if payload.get("hostname_authority") != "b1-ai-hub-configuration":
-        failures.append(f"{label} target hostname must be defined by B1 configuration")
+    if payload.get("hostname_authority") != "system-hostname":
+        failures.append(f"{label} target hostname authority must be the system hostname")
     if payload.get("hostname_source") != "system-hostname":
         failures.append(f"{label} hostname must come from the target system hostname")
     if payload.get("network_property_source") != "host-dhcp-client":
@@ -722,12 +722,12 @@ def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
     data = {
         "expected_target_host": expected_target or "<unset>",
         "chat_host": chat_host or "<unset>",
-        "hostname_authority": "b1-ai-hub-configuration",
+        "hostname_authority": "system-hostname",
         "legacy_comfy_publish": env_value(ctx, "B1_LEGACY_COMFY_PUBLISH") or "<compose-default>",
         "legacy_comfy_allow_cidrs": split_words(env_value(ctx, "B1_LEGACY_COMFY_ALLOW_CIDRS")),
     }
     if not expected_target:
-        failures.append("B1_EXPECTED_TARGET_HOST must name the B1-defined target hostname/FQDN")
+        failures.append("B1_EXPECTED_TARGET_HOST must name the expected system hostname/FQDN")
     elif not valid_hostname_reference(expected_target):
         failures.append("B1_EXPECTED_TARGET_HOST must be a hostname/FQDN, not a URL, IP address, or host:port value")
 
@@ -760,7 +760,7 @@ def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
         )
     return ok(
         "target_network_policy",
-        "target hostname is B1-defined and host networking is DHCP-owned",
+        "target hostname is system-defined and host networking is DHCP-owned",
         **data,
     )
 

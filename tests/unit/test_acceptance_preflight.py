@@ -175,7 +175,7 @@ class AcceptancePreflightTests(unittest.TestCase):
               },
               "migration_readiness": {
                 "target_identity": {
-                  "hostname_authority": "b1-ai-hub-configuration",
+                  "hostname_authority": "system-hostname",
                   "expected_target_host": "ai.b1.germering",
                   "expected_short_hostname": "ai",
                   "observed_hostname": "ai",
@@ -189,12 +189,12 @@ class AcceptancePreflightTests(unittest.TestCase):
                   "warnings": []
                 },
                 "networking": {
-                  "hostname_authority": "b1-ai-hub-configuration",
+                  "hostname_authority": "system-hostname",
                   "hostname_source": "system-hostname",
                   "network_property_source": "host-dhcp-client",
                   "b1_manages_host_networking": false,
                   "b1_static_ip_configures": false,
-                  "expected_operator_networking": "B1-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+                  "expected_operator_networking": "system-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
                   "non_loopback_address_count": 1,
                   "dynamic_address_count": 1,
                   "default_route_interfaces": ["eth0"],
@@ -240,7 +240,7 @@ class AcceptancePreflightTests(unittest.TestCase):
               "warnings": [],
               "target_identity_readiness": {
                 "available": true,
-                "hostname_authority": "b1-ai-hub-configuration",
+                "hostname_authority": "system-hostname",
                 "expected_target_host": "ai.b1.germering",
                 "expected_short_hostname": "ai",
                 "observed_hostname": "ai",
@@ -255,7 +255,7 @@ class AcceptancePreflightTests(unittest.TestCase):
               },
               "networking_readiness": {
                 "available": true,
-                "hostname_authority": "b1-ai-hub-configuration",
+                "hostname_authority": "system-hostname",
                 "hostname_source": "system-hostname",
                 "network_property_source": "host-dhcp-client",
                 "b1_manages_host_networking": false,
@@ -521,7 +521,7 @@ class AcceptancePreflightTests(unittest.TestCase):
                   "format": "b1-ai-hub-host-inventory/v1",
                   "migration_readiness": {
                     "target_identity": {
-                      "hostname_authority": "b1-ai-hub-configuration",
+                      "hostname_authority": "system-hostname",
                       "expected_target_host": "ai.b1.germering",
                       "expected_short_hostname": "ai",
                       "observed_hostname": "ai",
@@ -535,7 +535,7 @@ class AcceptancePreflightTests(unittest.TestCase):
                       "warnings": []
                     },
                     "networking": {
-                      "hostname_authority": "b1-ai-hub-configuration",
+                      "hostname_authority": "system-hostname",
                       "hostname_source": "system-hostname",
                       "network_property_source": "host-dhcp-client",
                       "b1_manages_host_networking": false,

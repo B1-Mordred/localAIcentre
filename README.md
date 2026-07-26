@@ -150,7 +150,7 @@ Generate a sourceable live-acceptance environment file with all default URLs, CA
 make acceptance-env
 ```
 
-The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE` for the Open WebUI chat-host proof, `B1_EXPECTED_TARGET_HOST` for B1-defined hostname evidence, and DHCP-safe legacy ComfyUI listener defaults. Review it, fill the blank API-key, Model Hub, browser-session, restart-drill, and backup/migration/rollback artifact values, then source it before running the live acceptance targets:
+The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE` for the Open WebUI chat-host proof, `B1_EXPECTED_TARGET_HOST` for system-hostname evidence, and DHCP-safe legacy ComfyUI listener defaults. Review it, fill the blank API-key, Model Hub, browser-session, restart-drill, and backup/migration/rollback artifact values, then source it before running the live acceptance targets:
 
 ```bash
 export B1_ACCEPTANCE_API_KEY=...
@@ -291,7 +291,7 @@ For LAN TLS, the default Caddy configuration uses an internal CA. Control Center
 
 Do not run migration or cutover scripts against the existing host until the inventory report has been reviewed and backups have been verified. The old stack, volumes, model directories, and Open WebUI data must remain recoverable throughout development and cutover.
 
-B1 configuration defines the appliance hostname/FQDN through `B1_EXPECTED_TARGET_HOST` and the LAN virtual-host values. B1 AI Hub records the observed host identity, validates it against that configured name, records interfaces, DHCP/default-route evidence, resolver state, and LAN DNS records, but it does not configure a static host IP; use DHCP or a DHCP reservation and point the configured B1 virtual hosts at the assigned LAN address.
+The target OS/system hostname defines the appliance hostname/FQDN. `B1_EXPECTED_TARGET_HOST` and the LAN virtual-host values validate that observed identity during inventory, cutover, and acceptance. B1 AI Hub records interfaces, DHCP/default-route evidence, resolver state, and LAN DNS records, but it does not configure a static host IP; use DHCP or a DHCP reservation and point the configured B1 virtual hosts at the assigned LAN address.
 
 The migration command sequence is intentionally staged:
 

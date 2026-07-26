@@ -688,7 +688,7 @@ def sample_restart_reconciliation_checks() -> dict[str, dict[str, Any]]:
 def sample_target_identity_readiness(**overrides: Any) -> dict[str, Any]:
     payload = {
         "available": True,
-        "hostname_authority": "b1-ai-hub-configuration",
+        "hostname_authority": "system-hostname",
         "expected_target_host": "ai.b1.germering",
         "expected_short_hostname": "ai",
         "observed_hostname": "ai",
@@ -808,7 +808,7 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
             "target_identity_readiness": sample_target_identity_readiness(),
             "networking_readiness": {
                 "available": True,
-                "hostname_authority": "b1-ai-hub-configuration",
+                "hostname_authority": "system-hostname",
                 "hostname_source": "system-hostname",
                 "network_property_source": "host-dhcp-client",
                 "b1_manages_host_networking": False,
@@ -922,7 +922,7 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
         "target_identity_readiness": sample_target_identity_readiness(),
         "networking_readiness": {
             "available": True,
-            "hostname_authority": "b1-ai-hub-configuration",
+            "hostname_authority": "system-hostname",
             "hostname_source": "system-hostname",
             "network_property_source": "host-dhcp-client",
             "b1_manages_host_networking": False,
@@ -5479,7 +5479,7 @@ class AcceptanceReportTests(unittest.TestCase):
             cutover_preservation=sample_cutover_preservation(
                 networking_readiness={
                     "available": True,
-                    "hostname_authority": "b1-ai-hub-configuration",
+                    "hostname_authority": "system-hostname",
                     "hostname_source": "system-hostname",
                     "network_property_source": "host-dhcp-client",
                     "b1_manages_host_networking": False,

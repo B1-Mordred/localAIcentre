@@ -356,7 +356,7 @@ def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[s
         target_identity = {
             "available": False,
             "accepted": False,
-            "hostname_authority": "b1-ai-hub-configuration",
+            "hostname_authority": "system-hostname",
             "expected_target_host": PRODUCTION_HOSTS[0],
             "observed_hostname": identity.get("hostname"),
             "observed_fqdn": identity.get("fqdn"),
@@ -367,8 +367,8 @@ def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[s
         return target_identity, ["Target host identity readiness was not present in inventory; rerun inventory before cutover"]
 
     warnings = [str(item) for item in target_identity.get("warnings", []) if isinstance(item, str)]
-    if target_identity.get("hostname_authority") != "b1-ai-hub-configuration":
-        warnings.append("inventory target hostname is not declared as B1-defined configuration")
+    if target_identity.get("hostname_authority") != "system-hostname":
+        warnings.append("inventory target hostname authority is not the system hostname")
     if target_identity.get("accepted") is not True and not warnings:
         warnings.append("inventory host identity does not match the expected target host")
     if target_identity.get("operator_must_review_target_identity") is True and not warnings:
@@ -398,7 +398,7 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         return (
             {
                 "available": False,
-                "hostname_authority": "b1-ai-hub-configuration",
+                "hostname_authority": "system-hostname",
                 "hostname_source": "system-hostname",
                 "network_property_source": "host-dhcp-client",
                 "b1_manages_host_networking": False,
@@ -410,12 +410,12 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         )
 
     warnings = [str(item) for item in networking.get("warnings", []) if isinstance(item, str)]
-    if networking.get("hostname_authority") != "b1-ai-hub-configuration":
-        warnings.append("B1 hostname policy must be defined by B1 configuration, not DHCP")
+    if networking.get("hostname_authority") != "system-hostname":
+        warnings.append("target hostname policy must be defined by the system hostname, not DHCP")
     if networking.get("b1_static_ip_configures") is not False:
         warnings.append("B1 networking policy must not configure a static host IP address")
     if networking.get("hostname_source") != "system-hostname":
-        warnings.append("observed system hostname must match the B1-defined target hostname")
+        warnings.append("observed system hostname must match the expected target hostname")
     if networking.get("network_property_source") != "host-dhcp-client":
         warnings.append("B1 network properties must be acquired by the host DHCP client")
     try:
@@ -748,7 +748,7 @@ def build_plan(
                     "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
                     "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
-                    "Confirm networking_readiness shows the target hostname is defined by B1 configuration and host IP/gateway/resolver properties are acquired by DHCP or an operator-reviewed DHCP reservation.",
+                    "Confirm networking_readiness shows the target hostname is defined by the system hostname and host IP/gateway/resolver properties are acquired by DHCP or an operator-reviewed DHCP reservation.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",
                     "Confirm the verified old-stack backup is stored outside the old stack and is restorable.",
                     "Enable B1 maintenance mode before staging, cutover, rollback, or DNS route changes.",

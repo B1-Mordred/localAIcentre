@@ -629,12 +629,12 @@ def summarize_host_network(
         warnings.append("Inventory did not resolve any configured B1 virtual-host DNS records; verify LAN DNS before cutover")
 
     return {
-        "hostname_authority": "b1-ai-hub-configuration",
+        "hostname_authority": "system-hostname",
         "hostname_source": "system-hostname",
         "network_property_source": "host-dhcp-client",
         "b1_manages_host_networking": False,
         "b1_static_ip_configures": False,
-        "expected_operator_networking": "B1-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+        "expected_operator_networking": "system-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
         "interface_count": len(interfaces),
         "non_loopback_address_count": len(non_loopback_addresses),
         "dynamic_address_count": dynamic_address_count,
@@ -1455,7 +1455,7 @@ def summarize_target_identity(identity: dict[str, Any], expected_target_host: st
             f"platform_node={observed_platform_node or '<missing>'}"
         )
     return {
-        "hostname_authority": "b1-ai-hub-configuration",
+        "hostname_authority": "system-hostname",
         "expected_target_host": expected,
         "expected_short_hostname": expected_short,
         "observed_hostname": observed_hostname,
@@ -1635,7 +1635,7 @@ def main() -> None:
     parser.add_argument(
         "--expected-target-host",
         default=os.getenv("B1_EXPECTED_TARGET_HOST", os.getenv("B1_HOST_CHAT", DEFAULT_EXPECTED_TARGET_HOST)),
-        help="Expected B1-defined hostname/FQDN for target-host cutover evidence.",
+        help="Expected system hostname/FQDN for target-host cutover evidence.",
     )
     parser.add_argument("--scan-root", action="append", default=None, help="Root to scan for Compose files. May be repeated.")
     args = parser.parse_args()
