@@ -117,6 +117,30 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def sample_gpu_runtime_state_proof(expected_runtime: str, label: str, *, resolved_model_version: str | None = None) -> dict[str, Any]:
+    runtime_states = {
+        "localai": {"runtime": "localai", "status": "idle", "stage": "idle"},
+        "comfyui": {"runtime": "comfyui", "status": "idle", "stage": "idle"},
+        "voicebox": {"runtime": "voicebox", "status": "idle", "stage": "idle"},
+    }
+    runtime_states[expected_runtime] = {
+        "runtime": expected_runtime,
+        "status": "ok",
+        "stage": "running",
+        "active_model": expected_runtime,
+        "resolved_model_version": resolved_model_version or f"b1-{expected_runtime}@1.0.0",
+    }
+    return {
+        "label": label,
+        "expected_runtime": expected_runtime,
+        "active_gpu_runtimes": [expected_runtime],
+        "active_gpu_runtime_count": 1,
+        "no_split_brain": True,
+        "expected_runtime_resident": True,
+        "runtime_states": runtime_states,
+    }
+
+
 def sample_remote_node_surface_check() -> dict[str, Any]:
     required_classes = list(acceptance.REMOTE_NODES_REQUIRED_NODE_CLASSES)
     return {
@@ -1037,6 +1061,25 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
         ],
         "route_level_smoke": False,
     }
+    gpu_localai_state = sample_gpu_runtime_state_proof("localai", "after-localai-chat", resolved_model_version="b1-chat-default@1.0.0")
+    gpu_comfyui_state = sample_gpu_runtime_state_proof("comfyui", "after-comfyui-job", resolved_model_version="b1-image-default@1.0.0")
+    gpu_voicebox_state = sample_gpu_runtime_state_proof("voicebox", "after-voicebox-job", resolved_model_version="b1-tts-quality@1.0.0")
+    gpu_vram_samples = [
+        {
+            "label": label,
+            "gpu_memory_used_mib": used,
+            "gpu_memory_total_mib": 12288,
+            "reserve_mib": 1536,
+            "usable_mib": 10752,
+            "job_peak_vram_mib": peak,
+        }
+        for label, used, peak in (
+            ("initial-readiness", 512, 0),
+            ("after-localai-chat", 6144, 6144),
+            ("after-comfyui-job", 7168, 7168),
+            ("after-voicebox-job", 2048, 6144),
+        )
+    ]
     workflow_tts_sha = "2" * 64
     workflow_image_sha = "3" * 64
     workflow_edit_sha = "4" * 64
@@ -1247,6 +1290,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "recorded_at": "2026-07-24T12:29:30+00:00",
                     "chat_model": "chat-default",
                     "chat_resolved_model_version": "b1-chat-default@1.0.0",
+                    "after_runtime_state": gpu_localai_state,
                 },
                 "comfyui_switch_completed": {
                     "status": "ok",
@@ -1261,6 +1305,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "comfyui_verified_artifact_count": 1,
                     "comfyui_first_artifact_url": "/artifacts/comfyui/prompt_gpu_comfy_1/0.png",
                     "comfyui_first_artifact_sha256": gpu_comfy_artifact_sha,
+                    "after_runtime_state": gpu_comfyui_state,
                 },
                 "voicebox_switch_completed": {
                     "status": "ok",
@@ -1268,19 +1313,14 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "voicebox_model": "tts-quality",
                     "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
                     "voicebox_job_id": "job_gpu_voicebox_1",
+                    "after_runtime_state": gpu_voicebox_state,
                 },
                 "vram_reserve_enforced": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:31:00+00:00",
                     "sample_count": 4,
-                    "latest_sample": {
-                        "label": "after-voicebox-job",
-                        "gpu_memory_used_mib": 2048,
-                        "gpu_memory_total_mib": 12288,
-                        "reserve_mib": 1536,
-                        "usable_mib": 10752,
-                        "job_peak_vram_mib": 6144,
-                    },
+                    "latest_sample": gpu_vram_samples[-1],
+                    "samples": gpu_vram_samples,
                 },
                 "bounded_runtime_recovery_action": {
                     "status": "ok",
@@ -1293,6 +1333,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:30:00+00:00",
                     "runtime_order": ["localai", "comfyui", "voicebox"],
+                    "runtime_state_sequence": [gpu_localai_state, gpu_comfyui_state, gpu_voicebox_state],
                     "chat_model": "chat-default",
                     "chat_resolved_model_version": "b1-chat-default@1.0.0",
                     "comfyui_model": "image-default",
@@ -1307,6 +1348,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "voicebox_job_id": "job_gpu_voicebox_1",
                 },
             },
+            "vram_samples": gpu_vram_samples,
             "gpu_runtime_order": ["localai", "comfyui", "voicebox"],
             "gpu_switch_resolved_models": {
                 "localai": "b1-chat-default@1.0.0",
@@ -4376,6 +4418,45 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["gpu_evidence_ready"])
         self.assertIn("RTX 3060 GPU acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
 
+    def test_gpu_snapshot_requires_per_switch_runtime_state_proof(self) -> None:
+        gpu = sample_live_evidence()["gpu_acceptance"]
+        gpu["checks"]["localai_exclusive_gpu_residency"].pop("after_runtime_state")
+        gpu["checks"]["comfyui_switch_completed"].pop("after_runtime_state")
+        gpu["checks"]["voicebox_switch_completed"].pop("after_runtime_state")
+        gpu["checks"]["localai_comfyui_voicebox_switch"].pop("runtime_state_sequence")
+
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertIn("localai_exclusive_gpu_residency.after_runtime_state", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.after_runtime_state", snapshot["missing_gpu_evidence"])
+        self.assertIn("voicebox_switch_completed.after_runtime_state", snapshot["missing_gpu_evidence"])
+        self.assertIn("localai_comfyui_voicebox_switch.runtime_state_sequence", snapshot["missing_gpu_evidence"])
+
+    def test_gpu_snapshot_rejects_split_brain_runtime_state_proof(self) -> None:
+        gpu = sample_live_evidence()["gpu_acceptance"]
+        proof = gpu["checks"]["comfyui_switch_completed"]["after_runtime_state"]
+        proof["runtime_states"]["localai"] = {
+            "runtime": "localai",
+            "status": "ok",
+            "stage": "running",
+            "active_model": "chat-default",
+            "resolved_model_version": "b1-chat-default@1.0.0",
+        }
+        proof["active_gpu_runtimes"] = ["localai", "comfyui"]
+        proof["active_gpu_runtime_count"] = 2
+        proof["no_split_brain"] = False
+        gpu["checks"]["localai_comfyui_voicebox_switch"]["runtime_state_sequence"][1] = proof
+
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertIn("comfyui_switch_completed.after_runtime_state.no_split_brain", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.after_runtime_state.single_gpu_runtime", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.after_runtime_state.expected_runtime_active", snapshot["missing_gpu_evidence"])
+        self.assertIn(
+            "localai_comfyui_voicebox_switch.runtime_state_sequence.1.single_gpu_runtime",
+            snapshot["missing_gpu_evidence"],
+        )
+
     def test_report_blocks_handoff_for_missing_gpu_model_measurements(self) -> None:
         live_evidence = sample_live_evidence()
         live_evidence["gpu_acceptance"] = {
@@ -6677,6 +6758,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(gpu["missing_model_measurements"], [])
         self.assertEqual(gpu["missing_gpu_evidence"], [])
         self.assertEqual(gpu["gpu_runtime_order"], ["localai", "comfyui", "voicebox"])
+        self.assertEqual([item["expected_runtime"] for item in gpu["gpu_runtime_state_sequence"]], ["localai", "comfyui", "voicebox"])
+        self.assertEqual(gpu["gpu_runtime_state_sequence"][1]["active_gpu_runtimes"], ["comfyui"])
+        self.assertEqual(
+            gpu["gpu_vram_sample_labels"],
+            ["initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"],
+        )
         self.assertEqual(gpu["model_measurements"]["chat-default"]["resolved_model_version"], "b1-chat-default@1.0.0")
         self.assertEqual(gpu["sample_count"], 4)
         localai_snapshot = snapshot["localai_runtime"]

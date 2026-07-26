@@ -216,14 +216,31 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                 active.append((runtime, state))
         return active
 
+    def runtime_state_proof(self, runtimes: dict[str, Any], expected_runtime: str | None, label: str) -> dict[str, Any]:
+        states = runtimes.get("runtime_states")
+        self.assertIsInstance(states, dict)
+        active = self.active_gpu_runtime_states(runtimes)
+        active_names = [item[0] for item in active]
+        expected_resident = expected_runtime is None or active_names == [expected_runtime]
+        return {
+            "label": label,
+            "expected_runtime": expected_runtime,
+            "active_gpu_runtimes": active_names,
+            "active_gpu_runtime_count": len(active_names),
+            "no_split_brain": len(active_names) <= 1,
+            "expected_runtime_resident": expected_resident,
+            "runtime_states": {runtime: states.get(runtime) for runtime in sorted(GPU_RUNTIMES) if runtime in states},
+        }
+
     def assert_single_gpu_runtime(self, expected_runtime: str | None, label: str) -> dict[str, Any]:
         runtimes = self.admin_runtimes()
-        active = self.active_gpu_runtime_states(runtimes)
-        self.evidence.append({"label": label, "runtime_states": runtimes.get("runtime_states"), "active_gpu_runtimes": [item[0] for item in active]})
+        proof = self.runtime_state_proof(runtimes, expected_runtime, label)
+        self.evidence.append(proof)
+        active = proof["active_gpu_runtimes"]
         self.assertLessEqual(len(active), 1, f"{label}: more than one GPU runtime reports a resident model/pipeline: {active}")
         if expected_runtime is not None:
-            self.assertEqual([runtime for runtime, _ in active], [expected_runtime], f"{label}: expected only {expected_runtime} to remain GPU-resident")
-        return runtimes
+            self.assertEqual(active, [expected_runtime], f"{label}: expected only {expected_runtime} to remain GPU-resident")
+        return proof
 
     def assert_vram_within_policy(self, label: str) -> None:
         status = self.admin_status()
@@ -271,7 +288,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             "job_peak_vram_mib": peak_max,
         }
         self.__class__.vram_samples.append(sample)
-        self.record_check("vram_reserve_enforced", sample_count=len(self.__class__.vram_samples), latest_sample=sample)
+        self.record_check("vram_reserve_enforced", sample_count=len(self.__class__.vram_samples), latest_sample=sample, samples=list(self.__class__.vram_samples))
 
     def wait_for_terminal_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job.get("id") or "")
@@ -382,12 +399,13 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         }
         status, _, chat = self.client.json_request("POST", "/v1/chat/completions", body=chat_body, require_auth=True)
         self.assertEqual(status, 200, chat)
-        self.assert_single_gpu_runtime("localai", "after-localai-chat")
+        localai_runtime_state = self.assert_single_gpu_runtime("localai", "after-localai-chat")
         self.assert_vram_within_policy("after-localai-chat")
         self.record_check(
             "localai_exclusive_gpu_residency",
             chat_model=chat_model,
             chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
+            after_runtime_state=localai_runtime_state,
         )
 
         comfy_prompt_with_metadata = load_comfy_prompt_payload_with_metadata()
@@ -422,7 +440,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         comfy_native_prompt_id = str(comfy_job.get("native_prompt_id") or "")
         self.assertTrue(comfy_native_prompt_id, comfy_job)
         comfy_artifacts = self.verified_media_job_artifacts(comfy_job)
-        self.assert_single_gpu_runtime("comfyui", "after-comfyui-job")
+        comfyui_runtime_state = self.assert_single_gpu_runtime("comfyui", "after-comfyui-job")
         self.assert_vram_within_policy("after-comfyui-job")
         comfy_check_status = "incomplete" if comfy_prompt_metadata.get("route_level_smoke") is True else "ok"
         self.record_check(
@@ -438,6 +456,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             comfyui_verified_artifact_count=comfy_artifacts.get("verified_artifact_count"),
             comfyui_first_artifact_url=comfy_artifacts.get("first_artifact_url"),
             comfyui_first_artifact_sha256=comfy_artifacts.get("first_artifact_sha256"),
+            after_runtime_state=comfyui_runtime_state,
         )
 
         if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False):
@@ -458,17 +477,19 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(voicebox_job.get("state"), "completed", voicebox_job)
         self.assertEqual(voicebox_job.get("runtime"), "voicebox", voicebox_job)
-        self.assert_single_gpu_runtime("voicebox", "after-voicebox-job")
+        voicebox_runtime_state = self.assert_single_gpu_runtime("voicebox", "after-voicebox-job")
         self.assert_vram_within_policy("after-voicebox-job")
         self.record_check(
             "voicebox_switch_completed",
             voicebox_model=voicebox_model,
             voicebox_resolved_model_version=voicebox_measurement.get("resolved_model_version"),
             voicebox_job_id=voicebox_job.get("id"),
+            after_runtime_state=voicebox_runtime_state,
         )
         self.record_check(
             "localai_comfyui_voicebox_switch",
             runtime_order=["localai", "comfyui", "voicebox"],
+            runtime_state_sequence=[localai_runtime_state, comfyui_runtime_state, voicebox_runtime_state],
             chat_model=chat_model,
             chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
             comfyui_model=image_model,

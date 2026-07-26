@@ -186,7 +186,7 @@ B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.j
 make gpu-acceptance
 ```
 
-The GPU acceptance prompt must be a real installed ComfyUI API workflow. The bundled `native-comfyui-smoke-prompt.json` route-level smoke prompt can be allowed with `B1_GPU_ACCEPTANCE_ALLOW_COMFY_TINY_SMOKE=1` for a labelled dry run, but final handoff evidence remains incomplete unless the ComfyUI leg records non-tiny prompt metadata, the native prompt ID, and verified B1 artifact downloads.
+The GPU acceptance prompt must be a real installed ComfyUI API workflow. The bundled `native-comfyui-smoke-prompt.json` route-level smoke prompt can be allowed with `B1_GPU_ACCEPTANCE_ALLOW_COMFY_TINY_SMOKE=1` for a labelled dry run, but final handoff evidence remains incomplete unless the LocalAI, ComfyUI, and Voicebox legs each record scheduler runtime-state proof from `/admin/runtimes`, the combined switch record preserves that sequence, and the ComfyUI leg records non-tiny prompt metadata, the native prompt ID, and verified B1 artifact downloads.
 
 Run installed workflow acceptance after chat, CPU TTS/STT, image, edit, and short-video aliases are backed by real installed models with persisted successful model-smoke measurements:
 

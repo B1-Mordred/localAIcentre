@@ -1538,6 +1538,69 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _active_gpu_runtimes_from_state_proof(proof: dict[str, Any]) -> list[str]:
+    states = proof.get("runtime_states") if isinstance(proof.get("runtime_states"), dict) else {}
+    active = []
+    for runtime in sorted(GPU_MEASUREMENT_RUNTIMES):
+        state = states.get(runtime)
+        if not isinstance(state, dict):
+            continue
+        if state.get("active_model") or state.get("resolved_model_version"):
+            active.append(runtime)
+    return active
+
+
+def _runtime_state_proof_failures(proof: Any, expected_runtime: str, prefix: str) -> list[str]:
+    if not isinstance(proof, dict):
+        return [prefix]
+    failures: list[str] = []
+    states = proof.get("runtime_states") if isinstance(proof.get("runtime_states"), dict) else {}
+    if not states:
+        failures.append(f"{prefix}.runtime_states")
+    missing_state_rows = sorted(runtime for runtime in GPU_MEASUREMENT_RUNTIMES if runtime not in states)
+    if missing_state_rows:
+        failures.append(f"{prefix}.runtime_states.all_gpu_runtimes")
+    if _nonempty_text(proof.get("expected_runtime")) != expected_runtime:
+        failures.append(f"{prefix}.expected_runtime")
+
+    derived_active = _active_gpu_runtimes_from_state_proof(proof)
+    reported_active = sorted(_as_string_list(proof.get("active_gpu_runtimes")))
+    if reported_active != derived_active:
+        failures.append(f"{prefix}.active_gpu_runtimes_match_states")
+    active_count = _integer_value(proof.get("active_gpu_runtime_count"))
+    if active_count != len(derived_active):
+        failures.append(f"{prefix}.active_gpu_runtime_count")
+    if proof.get("no_split_brain") is not True:
+        failures.append(f"{prefix}.no_split_brain")
+    if len(derived_active) > 1:
+        failures.append(f"{prefix}.single_gpu_runtime")
+    if derived_active != [expected_runtime]:
+        failures.append(f"{prefix}.expected_runtime_active")
+    if proof.get("expected_runtime_resident") is not True:
+        failures.append(f"{prefix}.expected_runtime_resident")
+    return failures
+
+
+def _runtime_state_sequence_summary(sequence: Any) -> list[dict[str, Any]]:
+    if not isinstance(sequence, list):
+        return []
+    summary = []
+    for item in sequence:
+        if not isinstance(item, dict):
+            continue
+        summary.append(
+            {
+                "label": _nonempty_text(item.get("label")),
+                "expected_runtime": _nonempty_text(item.get("expected_runtime")),
+                "active_gpu_runtimes": _as_string_list(item.get("active_gpu_runtimes")),
+                "active_gpu_runtime_count": _integer_value(item.get("active_gpu_runtime_count")),
+                "no_split_brain": item.get("no_split_brain") is True,
+                "expected_runtime_resident": item.get("expected_runtime_resident") is True,
+            }
+        )
+    return summary
+
+
 def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
@@ -1552,6 +1615,13 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     chat_resolved = _resolved_model_version(localai.get("chat_resolved_model_version"))
     if not chat_resolved:
         missing.append("localai_exclusive_gpu_residency.chat_resolved_model_version")
+    missing.extend(
+        _runtime_state_proof_failures(
+            localai.get("after_runtime_state"),
+            "localai",
+            "localai_exclusive_gpu_residency.after_runtime_state",
+        )
+    )
 
     comfyui = _check_record(checks, "comfyui_switch_completed")
     comfyui_resolved = _resolved_model_version(comfyui.get("comfyui_resolved_model_version"))
@@ -1585,6 +1655,13 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if comfyui_verified_artifact_count < 1:
         missing.append("comfyui_switch_completed.comfyui_artifacts.verified_artifact_count")
     _require_artifact_collection_evidence(comfyui_artifacts, "comfyui_switch_completed.comfyui_artifacts", missing)
+    missing.extend(
+        _runtime_state_proof_failures(
+            comfyui.get("after_runtime_state"),
+            "comfyui",
+            "comfyui_switch_completed.after_runtime_state",
+        )
+    )
 
     voicebox = _check_record(checks, "voicebox_switch_completed")
     voicebox_resolved = _resolved_model_version(voicebox.get("voicebox_resolved_model_version"))
@@ -1592,11 +1669,30 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("voicebox_switch_completed.voicebox_resolved_model_version")
     if not _nonempty_text(voicebox.get("voicebox_job_id")):
         missing.append("voicebox_switch_completed.voicebox_job_id")
+    missing.extend(
+        _runtime_state_proof_failures(
+            voicebox.get("after_runtime_state"),
+            "voicebox",
+            "voicebox_switch_completed.after_runtime_state",
+        )
+    )
 
     switch = _check_record(checks, "localai_comfyui_voicebox_switch")
     runtime_order = _as_string_list(switch.get("runtime_order"))
     if runtime_order != ["localai", "comfyui", "voicebox"]:
         missing.append("localai_comfyui_voicebox_switch.runtime_order")
+    runtime_state_sequence = switch.get("runtime_state_sequence") if isinstance(switch.get("runtime_state_sequence"), list) else []
+    if len(runtime_state_sequence) != 3:
+        missing.append("localai_comfyui_voicebox_switch.runtime_state_sequence")
+    else:
+        for index, expected_runtime in enumerate(("localai", "comfyui", "voicebox")):
+            missing.extend(
+                _runtime_state_proof_failures(
+                    runtime_state_sequence[index],
+                    expected_runtime,
+                    f"localai_comfyui_voicebox_switch.runtime_state_sequence.{index}",
+                )
+            )
     switch_chat = _resolved_model_version(switch.get("chat_resolved_model_version"))
     switch_comfyui = _resolved_model_version(switch.get("comfyui_resolved_model_version"))
     switch_voicebox = _resolved_model_version(switch.get("voicebox_resolved_model_version"))
@@ -1630,6 +1726,14 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     vram_sample_count = _positive_int(vram.get("sample_count"))
     if vram_sample_count < 1:
         missing.append("vram_reserve_enforced.sample_count")
+    vram_samples = vram.get("samples") if isinstance(vram.get("samples"), list) else payload.get("vram_samples")
+    vram_samples = vram_samples if isinstance(vram_samples, list) else []
+    if len(vram_samples) < 4:
+        missing.append("vram_reserve_enforced.samples")
+    vram_sample_labels = [str(item.get("label") or "") for item in vram_samples if isinstance(item, dict)]
+    for label in ("initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"):
+        if label not in vram_sample_labels:
+            missing.append(f"vram_reserve_enforced.samples.{label}")
     latest_sample = vram.get("latest_sample") if isinstance(vram.get("latest_sample"), dict) else {}
     if _positive_int(latest_sample.get("gpu_memory_total_mib")) < 1:
         missing.append("vram_reserve_enforced.latest_sample.gpu_memory_total_mib")
@@ -1669,7 +1773,9 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "gpu_comfyui_native_prompt_id": comfyui_native_prompt_id,
         "gpu_comfyui_artifact_count": comfyui_artifact_count,
         "gpu_comfyui_verified_artifact_count": comfyui_verified_artifact_count,
+        "gpu_runtime_state_sequence": _runtime_state_sequence_summary(runtime_state_sequence),
         "gpu_vram_sample_count": vram_sample_count,
+        "gpu_vram_sample_labels": vram_sample_labels,
         "gpu_recovery_runtime": recovery_runtime,
         "missing_gpu_evidence": missing,
     }
