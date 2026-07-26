@@ -24,6 +24,32 @@ PRIVATE_SOURCE_NETS = [
     ipaddress.ip_network("fe80::/10"),
 ]
 HostnameResolver = Callable[[str, int | None], list[str]]
+UPDATE_HEALTH_GATE_FORMAT = "b1-ai-hub-update-health-gate/v1"
+UPDATE_HEALTH_REQUIRED_CHECKS = (
+    "database",
+    "redis",
+    "storage:data-root",
+    "storage:control-plane-data",
+    "storage:artifact-temporary",
+    "storage:backup-root",
+    "storage:restore-test-root",
+    "runtimes",
+    "runtime-agent:status",
+    "runtime-agent:mutation-guard",
+    "runtime-agent:services",
+    "deployment:compose-selection",
+    "runtimes:production-readiness",
+    "runtime-agent:metrics",
+    "gpu:nvml",
+    "hardware:resource-policy",
+    "tls:caddy-ca",
+    "tls:routing",
+    "runtime:comfyui-build-info",
+    "runtime:comfyui-status",
+    "inference:tiny",
+    "runtime-agent:unload",
+    "artifact:delivery",
+)
 
 
 class UpdatePolicyError(ValueError):
@@ -171,4 +197,55 @@ def build_update_preflight(target_version: str, image_refs: list[dict[str, Any]]
         "requires_self_test": True,
         "runtime_agent_image_action": "pinned_image_pull",
         "runtime_agent_rollback_action": "predefined_rollback",
+    }
+
+
+def _check_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    checks = report.get("checks") if isinstance(report, dict) else None
+    if not isinstance(checks, list):
+        return []
+    return [item for item in checks if isinstance(item, dict)]
+
+
+def update_health_gate(report: dict[str, Any]) -> dict[str, Any]:
+    report_status = str((report or {}).get("status") or "unknown").strip().lower()
+    checks = _check_rows(report or {})
+    by_name = {str(item.get("name") or ""): item for item in checks if str(item.get("name") or "").strip()}
+    missing = [name for name in UPDATE_HEALTH_REQUIRED_CHECKS if name not in by_name]
+    non_ok = []
+    for name in UPDATE_HEALTH_REQUIRED_CHECKS:
+        check = by_name.get(name)
+        if check is None:
+            continue
+        status = str(check.get("status") or "unknown").strip().lower()
+        if status != "ok":
+            non_ok.append(
+                {
+                    "name": name,
+                    "status": status,
+                    "detail": str(check.get("detail") or "")[:500],
+                }
+            )
+
+    blockers: list[str] = []
+    if report_status != "ok":
+        blockers.append(f"self-test status is {report_status}")
+    if missing:
+        blockers.append("missing required checks: " + ", ".join(missing))
+    if non_ok:
+        blockers.append(
+            "non-ok required checks: "
+            + ", ".join(f"{item['name']}={item['status']}" for item in non_ok)
+        )
+
+    ready = not blockers
+    return {
+        "format": UPDATE_HEALTH_GATE_FORMAT,
+        "status": "ready" if ready else "blocked",
+        "ready": ready,
+        "report_status": report_status,
+        "required_checks": list(UPDATE_HEALTH_REQUIRED_CHECKS),
+        "missing_checks": missing,
+        "non_ok_checks": non_ok,
+        "blockers": blockers,
     }

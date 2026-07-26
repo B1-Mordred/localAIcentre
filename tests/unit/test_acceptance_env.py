@@ -95,7 +95,7 @@ class AcceptanceEnvTests(unittest.TestCase):
             acceptance_env.generate_acceptance_env(config)
 
             command = (
-                "unset B1_SMOKE_EVIDENCE B1_BACKUP_ROOT; "
+                "unset B1_SMOKE_EVIDENCE B1_BACKUP_ROOT B1_ACCEPTANCE_REPORT_OUTPUT; "
                 "B1_ACCEPTANCE_API_KEY=test-token; "
                 f'. "{output}"; '
                 'printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE" "$B1_ACCEPTANCE_REPORT_OUTPUT" "$B1_EXPECTED_TARGET_HOST" "$B1_LEGACY_COMFY_PUBLISH"'

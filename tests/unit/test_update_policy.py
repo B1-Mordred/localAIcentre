@@ -15,6 +15,16 @@ from app import update_policy  # noqa: E402
 GOOD_DIGEST = "a" * 64
 
 
+def healthy_self_test() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "checks": [
+            {"name": name, "status": "ok", "detail": "ok"}
+            for name in update_policy.UPDATE_HEALTH_REQUIRED_CHECKS
+        ],
+    }
+
+
 class UpdatePolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.patch_resolver(["93.184.216.34"])
@@ -104,6 +114,33 @@ class UpdatePolicyTests(unittest.TestCase):
         self.patch_resolver([], raises=OSError("dns unavailable"))
         with self.assertRaisesRegex(update_policy.UpdatePolicyError, "could not be resolved safely"):
             update_policy.build_update_preflight("0.2.0", image_refs, "https://updates.example.org/release")
+
+    def test_update_health_gate_requires_all_ok_checks(self) -> None:
+        gate = update_policy.update_health_gate(healthy_self_test())
+
+        self.assertTrue(gate["ready"])
+        self.assertEqual(gate["status"], "ready")
+        self.assertEqual(gate["missing_checks"], [])
+        self.assertEqual(gate["non_ok_checks"], [])
+
+    def test_update_health_gate_blocks_degraded_missing_or_non_ok_proof(self) -> None:
+        payload = healthy_self_test()
+        payload["status"] = "degraded"
+        payload["checks"] = [
+            item
+            for item in payload["checks"]
+            if item["name"] not in {"tls:routing", "inference:tiny"}
+        ]
+        payload["checks"][0] = {"name": "database", "status": "warning", "detail": "read-only replica"}
+
+        gate = update_policy.update_health_gate(payload)
+
+        self.assertFalse(gate["ready"])
+        self.assertEqual(gate["status"], "blocked")
+        self.assertIn("self-test status is degraded", gate["blockers"])
+        self.assertEqual(gate["missing_checks"], ["tls:routing", "inference:tiny"])
+        self.assertEqual(gate["non_ok_checks"][0]["name"], "database")
+        self.assertEqual(gate["non_ok_checks"][0]["status"], "warning")
 
 
 if __name__ == "__main__":

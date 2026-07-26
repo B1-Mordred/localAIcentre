@@ -213,6 +213,12 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn('status === "not_required"', self.source)
         self.assertIn("caddyCa?.blockers", self.source)
 
+    def test_system_tab_surfaces_update_health_gate(self) -> None:
+        self.assertIn("update_health_gate?:", self.source)
+        self.assertIn("update health gate:", self.source)
+        self.assertIn("update.update_health_gate?.ready", self.source)
+        self.assertIn("update.update_health_gate?.blockers?.[0]", self.source)
+
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:
         self.assertIn("type VoiceSampleArtifact", self.source)
         self.assertIn("type VoiceProfileForm", self.source)

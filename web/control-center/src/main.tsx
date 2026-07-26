@@ -395,6 +395,13 @@ type UpdatePlan = {
   compose_override?: { path?: string; ready_for_promotion?: boolean; requires_image_pull_before_promotion?: boolean; not_pulled_services?: string[] };
   backup_name?: string | null;
   self_test?: { status?: string; checks?: unknown[] };
+  update_health_gate?: {
+    ready?: boolean;
+    status?: string;
+    blockers?: string[];
+    missing_checks?: string[];
+    non_ok_checks?: { name?: string; status?: string; detail?: string }[];
+  };
   promotion_result?: {
     status?: string;
     promotion_command?: { shell?: string; argv?: string[] };
@@ -5802,7 +5809,14 @@ function System() {
             <tr key={update.id}>
               <td><code>{update.target_version}</code><small>{update.id}</small></td>
               <td><span className={`status-pill ${["validated", "staged", "promotion_ready"].includes(update.status) ? "ok" : update.status.includes("failed") ? "failed" : "planned"}`}>{update.status}</span><small>{update.stage}</small>{update.failure_message && <small>{update.failure_message}</small>}</td>
-              <td>{update.backup_name ?? "none"}<small>{update.self_test?.status ? `self-test ${update.self_test.status}` : ""}</small></td>
+              <td>
+                {update.backup_name ?? "none"}
+                <small>{update.self_test?.status ? `self-test ${update.self_test.status}` : ""}</small>
+                <small>
+                  update health gate: {update.update_health_gate?.ready ? "ready" : "blocked"}
+                  {update.update_health_gate?.blockers?.[0] ? ` / ${update.update_health_gate.blockers[0]}` : ""}
+                </small>
+              </td>
               <td>
                 {update.image_refs.length}
                 <small>{update.image_refs.map((item) => item.service).join(", ")}</small>

@@ -88,6 +88,17 @@ def create_payload(image: str | None = None) -> Any:
     )
 
 
+def healthy_self_test(subject_id: str = "admin_1") -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "checks": [
+            {"name": name, "status": "ok", "detail": "ok"}
+            for name in update_policy.UPDATE_HEALTH_REQUIRED_CHECKS
+        ],
+    }
+
+
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class UpdateManagementApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -153,7 +164,7 @@ class UpdateManagementApiTests(unittest.TestCase):
             return {"name": label or "backup", "file_count": 1, "contains_sensitive_data": True, "postgres_dump_included": True}
 
         async def self_test(subject_id: str) -> dict[str, Any]:
-            return {"status": "ok", "subject_id": subject_id, "checks": []}
+            return healthy_self_test(subject_id)
 
         image_stage_calls: list[dict[str, Any]] = []
 
@@ -221,7 +232,9 @@ class UpdateManagementApiTests(unittest.TestCase):
                 authorization="Bearer key",
             )
         )
-        self.assertEqual(checked["status"], "validated")
+        self.assertEqual(checked["status"], "health_failed")
+        self.assertFalse(checked["update_health_gate"]["ready"])
+        self.assertIn("gpu:nvml=warning", checked["failure_message"])
         rolled_back = asyncio.run(
             main.admin_update_rollback(
                 created["id"],
@@ -277,6 +290,7 @@ class UpdateManagementApiTests(unittest.TestCase):
                     "stage": "health_check_completed",
                     "image_stage": image_stage,
                     "compose_override": compose_override,
+                    "self_test": healthy_self_test(),
                 }
             )
 
@@ -302,6 +316,40 @@ class UpdateManagementApiTests(unittest.TestCase):
         self.assertEqual(fake.audit_events[-1]["event_type"], "update.promotion_ready")
         self.assertTrue(fake.audit_events[-1]["metadata"]["reason_provided"])
         self.assertNotIn("reason", fake.audit_events[-1]["metadata"])
+
+    def test_promote_rejects_stale_validated_row_without_green_health_gate(self) -> None:
+        fake = FakeUpdateDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"admin:write"})
+        self.enable_maintenance()
+        created = asyncio.run(main.admin_update_plan_create(create_payload(), authorization="Bearer key"))
+        fake.rows[created["id"]].update(
+            {
+                "status": "validated",
+                "stage": "health_check_completed",
+                "self_test": {
+                    "status": "degraded",
+                    "subject_id": "admin_1",
+                    "checks": [{"name": "gpu:nvml", "status": "warning", "detail": "dev host"}],
+                },
+            }
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(
+                main.admin_update_promote(
+                    created["id"],
+                    main.UpdateActionRequest(reason="promote"),
+                    authorization="Bearer key",
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        failed = caught.exception.detail["update"]
+        self.assertEqual(failed["status"], "promotion_failed")
+        self.assertEqual(failed["stage"], "promotion_health_gate_failed")
+        self.assertFalse(failed["update_health_gate"]["ready"])
+        self.assertIn("update health-check gate blocked", failed["failure_message"])
 
 
 if __name__ == "__main__":

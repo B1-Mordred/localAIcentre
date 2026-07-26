@@ -93,13 +93,15 @@ Staging an update requires maintenance mode. The stage action creates a normal c
 
 With the default `B1_ENABLE_MUTATIONS=false`, image staging is a dry run. In that case the override is still generated, but it is marked `ready_for_promotion=false` and lists the services that still require an actual pull before promotion. When mutations are explicitly enabled during a maintenance window, runtime-agent pulls only the allowlisted service images pinned by digest; if all selected services report a real pull/already-present status, the override is marked ready.
 
-After the update is staged and health-checked, the Promote action verifies the stored override path, SHA-256, service list, image-stage results, and runtime-agent image inspection results before writing `promotion_result` to the update row. The handoff includes the fixed Compose command:
+Health-checking an update reruns `/admin/self-test` and applies an update health gate before the row can become `validated`. The gate requires the overall self-test to be `ok` and requires green evidence for database, Redis, writable storage, runtime health, runtime-agent status/services/metrics/mutation guard, production Compose selection, production runtime readiness, GPU/NVML, hardware resource policy, TLS/Caddy CA routing, ComfyUI build/status hooks, tiny inference, runtime unload, and artifact delivery. Missing, warning, degraded, or failed checks keep the row at `health_failed`; the Control Center shows the first blocker in the update list.
+
+After the update is staged and passes the health gate, the Promote action verifies the stored override path, SHA-256, service list, image-stage results, the persisted health-gate proof, and runtime-agent image inspection results before writing `promotion_result` to the update row. The handoff includes the fixed Compose command:
 
 ```bash
 docker compose -f compose.yaml -f /srv/b1-ai-hub/data/control-plane/updates/<update_id>/compose.images.yaml up -d --no-build <services...>
 ```
 
-Run that command from the repository root during the same maintenance window, then run Health-check again from Control Center. The control-plane image runs Alembic migrations before serving traffic, and health-check re-runs the self-test after the promoted image starts. Rollback calls only the predefined runtime-agent `/v1/rollback` action and stores whether the result was an actual rollback or the default dry-run plan. The update surface is a safe control record, image artifact, promotion preflight/handoff, migration-on-startup path, validation path, and rollback path; it does not expose arbitrary shell commands or Docker API passthrough.
+Run that command from the repository root during the same maintenance window, then run Health-check again from Control Center. The control-plane image runs Alembic migrations before serving traffic, and health-check re-runs the same gate after the promoted image starts. Rollback calls only the predefined runtime-agent `/v1/rollback` action and stores whether the result was an actual rollback or the default dry-run plan. The update surface is a safe control record, image artifact, promotion preflight/handoff, migration-on-startup path, validation path, and rollback path; it does not expose arbitrary shell commands or Docker API passthrough.
 
 ## System Self-Test
 

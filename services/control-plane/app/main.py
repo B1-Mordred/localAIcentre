@@ -6128,6 +6128,7 @@ def public_backup_schedule(row: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def public_update_plan(row: dict[str, Any]) -> dict[str, Any]:
+    self_test = row.get("self_test") or {}
     return {
         "id": row["id"],
         "target_version": row["target_version"],
@@ -6139,7 +6140,8 @@ def public_update_plan(row: dict[str, Any]) -> dict[str, Any]:
         "image_stage": row.get("image_stage") or [],
         "compose_override": row.get("compose_override") or {},
         "backup_name": row.get("backup_name"),
-        "self_test": row.get("self_test") or {},
+        "self_test": self_test,
+        "update_health_gate": update_policy.update_health_gate(self_test),
         "promotion_result": row.get("promotion_result") or {},
         "rollback_result": row.get("rollback_result") or {},
         "notes": row.get("notes") or "",
@@ -8254,14 +8256,17 @@ async def admin_update_health_check(update_id: str, payload: UpdateActionRequest
     if row["status"] not in {"staged", "validated", "promotion_ready", "health_failed"}:
         raise update_plan_conflict(f"update plan state {row['status']} cannot run health-check", row)
     self_test = await build_self_test_report(auth.subject_id)
-    status = "validated" if self_test["status"] != "failed" else "health_failed"
+    health_gate = update_policy.update_health_gate(self_test)
+    status = "validated" if health_gate["ready"] else "health_failed"
     updated = await database.update_update_plan(
         update_id,
         status=status,
         stage="health_check_completed" if status == "validated" else "health_check_failed",
         self_test=self_test,
         health_checked_at=datetime.now(tz=UTC),
-        failure_message=None if status == "validated" else "self-test failed during update health-check",
+        failure_message=None
+        if status == "validated"
+        else f"update health-check gate blocked: {'; '.join(health_gate['blockers'])[:450]}",
     )
     await record_audit_event(
         auth,
@@ -8269,7 +8274,13 @@ async def admin_update_health_check(update_id: str, payload: UpdateActionRequest
         target_type="update",
         target_id=update_id,
         summary=f"Ran update health-check for {update_id}",
-        metadata={"status": status, "self_test_status": self_test["status"], **freeform_reason_metadata(payload.reason)},
+        metadata={
+            "status": status,
+            "self_test_status": self_test["status"],
+            "update_health_ready": health_gate["ready"],
+            "update_health_blocker_count": len(health_gate["blockers"]),
+            **freeform_reason_metadata(payload.reason),
+        },
     )
     return public_update_plan(updated or row)
 
@@ -8285,6 +8296,33 @@ async def admin_update_promote(update_id: str, payload: UpdateActionRequest, aut
         raise HTTPException(status_code=404, detail="update plan not found")
     if row["status"] not in {"validated", "promotion_failed", "promotion_ready"}:
         raise update_plan_conflict(f"update plan state {row['status']} cannot be promoted", row)
+    health_gate = update_policy.update_health_gate(row.get("self_test") or {})
+    if not health_gate["ready"]:
+        updated = await database.update_update_plan(
+            update_id,
+            status="promotion_failed",
+            stage="promotion_health_gate_failed",
+            promotion_result={
+                "format": compose_override_policy.PROMOTION_FORMAT,
+                "status": "failed",
+                "error": "update health-check gate blocked",
+                "update_health_gate": health_gate,
+            },
+            failure_message=f"update health-check gate blocked: {'; '.join(health_gate['blockers'])[:450]}",
+        )
+        await record_audit_event(
+            auth,
+            "update.promotion_failed",
+            target_type="update",
+            target_id=update_id,
+            summary=f"Update promotion health gate failed for {update_id}",
+            metadata={
+                "update_health_ready": False,
+                "update_health_blocker_count": len(health_gate["blockers"]),
+                **freeform_reason_metadata(payload.reason),
+            },
+        )
+        raise HTTPException(status_code=409, detail={"message": "update health-check gate blocked", "update": public_update_plan(updated or row)})
 
     image_inspect_results: list[dict[str, Any]] = []
     try:
