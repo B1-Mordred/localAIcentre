@@ -601,6 +601,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     workflow_video_artifacts = sample_artifact_collection("job_workflow_video_1", workflow_video_proofs)
     remote_artifact_sha = "b" * 64
     voicebox_profile_id = "vp_acceptance1"
+    voicebox_sample_id = "sample_acceptance1"
+    voicebox_sample_url = "/artifacts/voicebox/references/operator/sample_acceptance1/sample.wav"
+    voicebox_sample_sha = "c" * 64
     voicebox_speech_sha = "d" * 64
     voicebox_identity = {
         "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
@@ -1400,6 +1403,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "voicebox_upstream_repository": voicebox_identity["upstream_repository"],
             "voicebox_upstream_version": voicebox_identity["upstream_version"],
             "voicebox_upstream_commit": voicebox_identity["upstream_commit"],
+            "voicebox_sample_artifact_url": voicebox_sample_url,
+            "voicebox_sample_artifact_sha256": voicebox_sample_sha,
             "voicebox_speech_mode": "speech_validated",
             "voicebox_websocket_mode": "websocket_validated",
             "missing_compatibility_evidence": [],
@@ -1425,13 +1430,21 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "profile_id": voicebox_profile_id,
                     "model_alias": "tts-quality",
                     "sample_artifact_count": 1,
+                    "sample_artifact_url": voicebox_sample_url,
+                    "sample_artifact_sha256": voicebox_sample_sha,
+                    "fetched_sample_artifact_count": 1,
+                    "fetched_sample_artifact_url": voicebox_sample_url,
+                    "fetched_sample_artifact_sha256": voicebox_sample_sha,
                 },
                 "sample_artifact_protected": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:42:15+00:00",
+                    "sample_id": voicebox_sample_id,
                     "sample_url_prefix": "/artifacts/voicebox/references/",
-                    "sample_artifact_url": "/artifacts/voicebox/references/sample.wav",
+                    "sample_artifact_url": voicebox_sample_url,
                     "sample_artifact_bytes": 3244,
+                    "sample_artifact_sha256": voicebox_sample_sha,
+                    "sample_artifact_mime_type": "audio/wav",
                     "profile_metadata_has_sample_payload": False,
                     "export_contains_raw_sample_bytes": False,
                 },
@@ -1442,12 +1455,21 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "export_format": "b1-ai-hub-voice-profile/v1",
                     "contains_sensitive_data": True,
                     "sample_artifact_count": 1,
+                    "exported_sample_artifact_url": voicebox_sample_url,
+                    "exported_sample_artifact_sha256": voicebox_sample_sha,
                 },
                 "profile_delete_audited": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:42:45+00:00",
                     "profile_id": voicebox_profile_id,
                     "deleted_status": "deleted",
+                    "audit_event_types": ["voice_profile.deleted", "voice_profile.exported", "voice_profile.sample_uploaded"],
+                    "sample_upload_audit_target_id": voicebox_sample_id,
+                    "profile_export_audit_target_id": voicebox_profile_id,
+                    "profile_delete_audit_target_id": voicebox_profile_id,
+                    "sample_upload_audit_bytes": 3244,
+                    "sample_upload_audit_sha256": voicebox_sample_sha,
+                    "audit_metadata_redacted": True,
                 },
                 "speech_or_limitation_recorded": {
                     "status": "ok",
@@ -2012,11 +2034,74 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("native_http_proxy_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("native_http_proxy_accessible.upstream_commit", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_lifecycle_validated.profile_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.sample_artifact_url", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.sample_artifact_sha256", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.fetched_sample_artifact_url", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.fetched_sample_artifact_sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("sample_artifact_protected.sample_artifact_url", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_id", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_artifact_sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_export_validated.export_format", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.exported_sample_artifact_url", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.exported_sample_artifact_sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("profile_delete_audited.deleted_status", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.audit_event_types", snapshot["missing_compatibility_evidence"])
         self.assertIn("speech_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
         self.assertIn("websocket_or_limitation_recorded.mode", snapshot["missing_compatibility_evidence"])
+
+    def test_voicebox_snapshot_requires_sample_hash_url_and_audit_consistency(self) -> None:
+        payload = sample_live_evidence()["voicebox_remote"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "profile_lifecycle_validated": {
+                    **payload["checks"]["profile_lifecycle_validated"],
+                    "fetched_sample_artifact_url": "/artifacts/voicebox/references/other.wav",
+                    "fetched_sample_artifact_sha256": "0" * 64,
+                },
+                "sample_artifact_protected": {
+                    **payload["checks"]["sample_artifact_protected"],
+                    "sample_artifact_url": "/artifacts/voicebox/references/mismatch.wav",
+                    "sample_artifact_sha256": "1" * 64,
+                    "sample_artifact_mime_type": "audio/mpeg",
+                },
+                "profile_export_validated": {
+                    **payload["checks"]["profile_export_validated"],
+                    "sample_artifact_count": 2,
+                    "exported_sample_artifact_url": "/artifacts/voicebox/references/export-mismatch.wav",
+                    "exported_sample_artifact_sha256": "2" * 64,
+                },
+                "profile_delete_audited": {
+                    **payload["checks"]["profile_delete_audited"],
+                    "audit_event_types": ["voice_profile.deleted"],
+                    "sample_upload_audit_target_id": "sample_other",
+                    "profile_export_audit_target_id": "vp_other",
+                    "profile_delete_audit_target_id": "vp_other",
+                    "sample_upload_audit_bytes": 1,
+                    "sample_upload_audit_sha256": "3" * 64,
+                    "audit_metadata_redacted": False,
+                },
+            },
+        }
+
+        snapshot = acceptance.voicebox_evidence_snapshot(payload)
+
+        self.assertIn("profile_lifecycle_validated.fetched_sample_artifact_url_matches_created", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_lifecycle_validated.fetched_sample_artifact_sha256_matches_created", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_artifact_url_matches_lifecycle", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_artifact_sha256_matches_lifecycle", snapshot["missing_compatibility_evidence"])
+        self.assertIn("sample_artifact_protected.sample_artifact_mime_type", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.sample_artifact_count_matches_lifecycle", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.exported_sample_artifact_url_matches_sample", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_export_validated.exported_sample_artifact_sha256_matches_sample", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.audit_event_types", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.sample_upload_audit_target_id_matches_sample", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.profile_export_audit_target_id_matches_profile", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.profile_delete_audit_target_id_matches_profile", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.sample_upload_audit_bytes_matches_sample", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.sample_upload_audit_sha256_matches_sample", snapshot["missing_compatibility_evidence"])
+        self.assertIn("profile_delete_audited.audit_metadata_redacted", snapshot["missing_compatibility_evidence"])
 
     def test_voicebox_snapshot_rejects_limitations_without_proxy_build_match(self) -> None:
         evidence = sample_live_evidence()["voicebox_remote"]
@@ -4029,6 +4114,9 @@ class AcceptanceReportTests(unittest.TestCase):
             native_job_id = "job_native_1"
             remote_artifact_sha = "e" * 64
             voicebox_profile_id = "vp_disk1"
+            voicebox_sample_id = "sample_disk1"
+            voicebox_sample_url = "/artifacts/voicebox/references/operator/sample_disk1/sample.wav"
+            voicebox_sample_sha = "c" * 64
             voicebox_speech_sha = "f" * 64
             voicebox_identity = {
                 "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
@@ -4213,12 +4301,20 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "profile_id": voicebox_profile_id,
                                 "model_alias": "tts-quality",
                                 "sample_artifact_count": 1,
+                                "sample_artifact_url": voicebox_sample_url,
+                                "sample_artifact_sha256": voicebox_sample_sha,
+                                "fetched_sample_artifact_count": 1,
+                                "fetched_sample_artifact_url": voicebox_sample_url,
+                                "fetched_sample_artifact_sha256": voicebox_sample_sha,
                             },
                             "sample_artifact_protected": {
                                 "status": "ok",
+                                "sample_id": voicebox_sample_id,
                                 "sample_url_prefix": "/artifacts/voicebox/references/",
-                                "sample_artifact_url": "/artifacts/voicebox/references/sample.wav",
+                                "sample_artifact_url": voicebox_sample_url,
                                 "sample_artifact_bytes": 3244,
+                                "sample_artifact_sha256": voicebox_sample_sha,
+                                "sample_artifact_mime_type": "audio/wav",
                                 "profile_metadata_has_sample_payload": False,
                                 "export_contains_raw_sample_bytes": False,
                             },
@@ -4228,8 +4324,21 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "export_format": "b1-ai-hub-voice-profile/v1",
                                 "contains_sensitive_data": True,
                                 "sample_artifact_count": 1,
+                                "exported_sample_artifact_url": voicebox_sample_url,
+                                "exported_sample_artifact_sha256": voicebox_sample_sha,
                             },
-                            "profile_delete_audited": {"status": "ok", "profile_id": voicebox_profile_id, "deleted_status": "deleted"},
+                            "profile_delete_audited": {
+                                "status": "ok",
+                                "profile_id": voicebox_profile_id,
+                                "deleted_status": "deleted",
+                                "audit_event_types": ["voice_profile.deleted", "voice_profile.exported", "voice_profile.sample_uploaded"],
+                                "sample_upload_audit_target_id": voicebox_sample_id,
+                                "profile_export_audit_target_id": voicebox_profile_id,
+                                "profile_delete_audit_target_id": voicebox_profile_id,
+                                "sample_upload_audit_bytes": 3244,
+                                "sample_upload_audit_sha256": voicebox_sample_sha,
+                                "audit_metadata_redacted": True,
+                            },
                             "speech_or_limitation_recorded": {
                                 "status": "ok",
                                 "mode": "speech_validated",

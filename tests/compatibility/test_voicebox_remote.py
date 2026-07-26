@@ -332,9 +332,12 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         sample_artifact = sample_response.get("artifact")
         self.assertIsInstance(sample_artifact, dict)
         sample_url = str(sample_artifact.get("url") or "")
+        sample_id = str(sample_artifact.get("sample_id") or "")
+        sample_sha256 = hashlib.sha256(sample_bytes).hexdigest()
         self.assertTrue(sample_url.startswith("/artifacts/voicebox/references/"), sample_artifact)
+        self.assertTrue(sample_id.startswith("sample_"), sample_artifact)
         self.assertEqual(sample_artifact.get("mime_type"), "audio/wav")
-        self.assertEqual(sample_artifact.get("sha256"), hashlib.sha256(sample_bytes).hexdigest())
+        self.assertEqual(sample_artifact.get("sha256"), sample_sha256)
         create_payload = {
             "display_name": display_name,
             "runtime": "voicebox",
@@ -362,26 +365,40 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         self.assertIsInstance(fetched_samples, list)
         self.assertEqual(len(fetched_samples), 1)
         self.assertEqual(fetched_samples[0].get("url"), sample_url)
+        self.assertEqual(fetched_samples[0].get("sha256"), sample_sha256)
         self.assertNotIn("sample_artifacts", fetched.get("metadata") or {})
         self.assertEqual(exported.get("format"), "b1-ai-hub-voice-profile/v1")
         self.assertIs(exported.get("contains_sensitive_data"), True)
         self.assertIn("raw voice sample bytes are exported only by the backup/artifact workflow", str(exported.get("note") or ""))
         exported_profile = exported.get("profile")
         self.assertIsInstance(exported_profile, dict)
-        self.assertEqual((exported_profile.get("sample_artifacts") or [{}])[0].get("url"), sample_url)
+        exported_samples = exported_profile.get("sample_artifacts") or []
+        self.assertIsInstance(exported_samples, list)
+        self.assertEqual(len(exported_samples), 1)
+        self.assertEqual(exported_samples[0].get("url"), sample_url)
+        self.assertEqual(exported_samples[0].get("sha256"), sample_sha256)
         self.assertEqual(deleted.get("status"), "deleted")
+        audit_proof = self.verify_voicebox_audit_events(profile_id, sample_id, sample_bytes=sample_bytes, sample_sha256=sample_sha256)
         self.record_check(
             "profile_lifecycle_validated",
             profile_id=profile_id,
             model_alias=model_alias,
             profile_type=create_payload["profile_type"],
             sample_artifact_count=len(fetched_samples),
+            sample_artifact_url=sample_url,
+            sample_artifact_sha256=sample_sha256,
+            fetched_sample_artifact_count=len(fetched_samples),
+            fetched_sample_artifact_url=fetched_samples[0].get("url"),
+            fetched_sample_artifact_sha256=fetched_samples[0].get("sha256"),
         )
         self.record_check(
             "sample_artifact_protected",
+            sample_id=sample_id,
             sample_url_prefix="/artifacts/voicebox/references/",
             sample_artifact_url=sample_url,
             sample_artifact_bytes=sample_artifact.get("bytes"),
+            sample_artifact_sha256=sample_artifact.get("sha256"),
+            sample_artifact_mime_type=sample_artifact.get("mime_type"),
             profile_metadata_has_sample_payload=False,
             export_contains_raw_sample_bytes=False,
         )
@@ -390,18 +407,28 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             profile_id=profile_id,
             export_format=exported.get("format"),
             contains_sensitive_data=exported.get("contains_sensitive_data"),
-            sample_artifact_count=len((exported_profile or {}).get("sample_artifacts") or []),
+            sample_artifact_count=len(exported_samples),
+            exported_sample_artifact_url=exported_samples[0].get("url"),
+            exported_sample_artifact_sha256=exported_samples[0].get("sha256"),
         )
-        self.verify_voicebox_audit_events(profile_id, str(sample_artifact.get("sample_id") or ""), sample_bytes=sample_bytes)
         self.record_check(
             "profile_delete_audited",
             profile_id=profile_id,
             deleted_status=deleted.get("status"),
+            **audit_proof,
         )
         self.samples.append({"label": "voice-profile-lifecycle", "profile_id": profile_id, "model_alias": model_alias})
-        self.samples.append({"label": "voice-sample-artifact", "profile_id": profile_id, "byte_count": sample_artifact.get("bytes")})
+        self.samples.append(
+            {
+                "label": "voice-sample-artifact",
+                "profile_id": profile_id,
+                "sample_id": sample_id,
+                "byte_count": sample_artifact.get("bytes"),
+                "sha256": sample_sha256,
+            }
+        )
 
-    def verify_voicebox_audit_events(self, profile_id: str, sample_id: str, *, sample_bytes: bytes) -> None:
+    def verify_voicebox_audit_events(self, profile_id: str, sample_id: str, *, sample_bytes: bytes, sample_sha256: str) -> dict[str, Any]:
         event_types = {"voice_profile.sample_uploaded", "voice_profile.exported", "voice_profile.deleted"}
         seen: dict[str, dict[str, Any]] = {}
         for event_type in sorted(event_types):
@@ -420,9 +447,21 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         missing = sorted(event_types.difference(seen))
         self.assertFalse(missing, f"missing Voicebox audit events: {missing}")
         upload_metadata = seen["voice_profile.sample_uploaded"].get("metadata") or {}
-        self.assertNotIn("sample_artifacts", seen["voice_profile.exported"].get("metadata") or {})
-        self.assertNotIn("sample_artifacts", seen["voice_profile.deleted"].get("metadata") or {})
+        exported_metadata = seen["voice_profile.exported"].get("metadata") or {}
+        deleted_metadata = seen["voice_profile.deleted"].get("metadata") or {}
+        self.assertNotIn("sample_artifacts", exported_metadata)
+        self.assertNotIn("sample_artifacts", deleted_metadata)
         self.assertEqual(upload_metadata.get("bytes"), len(sample_bytes))
+        self.assertEqual(upload_metadata.get("sha256"), sample_sha256)
+        return {
+            "audit_event_types": sorted(seen),
+            "sample_upload_audit_target_id": seen["voice_profile.sample_uploaded"].get("target_id"),
+            "profile_export_audit_target_id": seen["voice_profile.exported"].get("target_id"),
+            "profile_delete_audit_target_id": seen["voice_profile.deleted"].get("target_id"),
+            "sample_upload_audit_bytes": upload_metadata.get("bytes"),
+            "sample_upload_audit_sha256": upload_metadata.get("sha256"),
+            "audit_metadata_redacted": "sample_artifacts" not in exported_metadata and "sample_artifacts" not in deleted_metadata,
+        }
 
     def verify_speech_or_limitation(self) -> None:
         if env_flag("B1_VOICEBOX_SKIP_SPEECH", False):

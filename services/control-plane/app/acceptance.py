@@ -1732,17 +1732,50 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("profile_lifecycle_validated.profile_id")
     if not _nonempty_text(lifecycle.get("model_alias")):
         missing.append("profile_lifecycle_validated.model_alias")
-    if _positive_int(lifecycle.get("sample_artifact_count")) < 1:
+    lifecycle_sample_count = _positive_int(lifecycle.get("sample_artifact_count"))
+    fetched_sample_count = _positive_int(lifecycle.get("fetched_sample_artifact_count"))
+    lifecycle_sample_url = _nonempty_text(lifecycle.get("sample_artifact_url"))
+    fetched_sample_url = _nonempty_text(lifecycle.get("fetched_sample_artifact_url"))
+    lifecycle_sample_sha256 = _normalized_sha256(lifecycle.get("sample_artifact_sha256"))
+    fetched_sample_sha256 = _normalized_sha256(lifecycle.get("fetched_sample_artifact_sha256"))
+    if lifecycle_sample_count < 1:
         missing.append("profile_lifecycle_validated.sample_artifact_count")
+    if not lifecycle_sample_url.startswith("/artifacts/voicebox/references/"):
+        missing.append("profile_lifecycle_validated.sample_artifact_url")
+    if not lifecycle_sample_sha256:
+        missing.append("profile_lifecycle_validated.sample_artifact_sha256")
+    if fetched_sample_count != lifecycle_sample_count:
+        missing.append("profile_lifecycle_validated.fetched_sample_artifact_count")
+    if not fetched_sample_url:
+        missing.append("profile_lifecycle_validated.fetched_sample_artifact_url")
+    elif lifecycle_sample_url and fetched_sample_url != lifecycle_sample_url:
+        missing.append("profile_lifecycle_validated.fetched_sample_artifact_url_matches_created")
+    if not fetched_sample_sha256:
+        missing.append("profile_lifecycle_validated.fetched_sample_artifact_sha256")
+    elif lifecycle_sample_sha256 and fetched_sample_sha256 != lifecycle_sample_sha256:
+        missing.append("profile_lifecycle_validated.fetched_sample_artifact_sha256_matches_created")
 
     sample = _check_record(checks, "sample_artifact_protected")
+    sample_id = _nonempty_text(sample.get("sample_id"))
     sample_url = _nonempty_text(sample.get("sample_artifact_url"))
+    sample_sha256 = _normalized_sha256(sample.get("sample_artifact_sha256"))
+    sample_bytes = _positive_int(sample.get("sample_artifact_bytes"))
+    if not sample_id.startswith("sample_"):
+        missing.append("sample_artifact_protected.sample_id")
     if sample.get("sample_url_prefix") != "/artifacts/voicebox/references/" or not sample_url.startswith(
         "/artifacts/voicebox/references/"
     ):
         missing.append("sample_artifact_protected.sample_artifact_url")
-    if _positive_int(sample.get("sample_artifact_bytes")) < 1:
+    if lifecycle_sample_url and sample_url != lifecycle_sample_url:
+        missing.append("sample_artifact_protected.sample_artifact_url_matches_lifecycle")
+    if sample_bytes < 1:
         missing.append("sample_artifact_protected.sample_artifact_bytes")
+    if not sample_sha256:
+        missing.append("sample_artifact_protected.sample_artifact_sha256")
+    elif lifecycle_sample_sha256 and sample_sha256 != lifecycle_sample_sha256:
+        missing.append("sample_artifact_protected.sample_artifact_sha256_matches_lifecycle")
+    if _nonempty_text(sample.get("sample_artifact_mime_type")) != "audio/wav":
+        missing.append("sample_artifact_protected.sample_artifact_mime_type")
     if sample.get("profile_metadata_has_sample_payload") is not False:
         missing.append("sample_artifact_protected.profile_metadata_has_sample_payload_false")
     if sample.get("export_contains_raw_sample_bytes") is not False:
@@ -1755,14 +1788,44 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("profile_export_validated.export_format")
     if export.get("contains_sensitive_data") is not True:
         missing.append("profile_export_validated.contains_sensitive_data")
-    if _positive_int(export.get("sample_artifact_count")) < 1:
+    export_sample_count = _positive_int(export.get("sample_artifact_count"))
+    export_sample_url = _nonempty_text(export.get("exported_sample_artifact_url"))
+    export_sample_sha256 = _normalized_sha256(export.get("exported_sample_artifact_sha256"))
+    if export_sample_count < 1:
         missing.append("profile_export_validated.sample_artifact_count")
+    if export_sample_count != lifecycle_sample_count:
+        missing.append("profile_export_validated.sample_artifact_count_matches_lifecycle")
+    if not export_sample_url:
+        missing.append("profile_export_validated.exported_sample_artifact_url")
+    elif sample_url and export_sample_url != sample_url:
+        missing.append("profile_export_validated.exported_sample_artifact_url_matches_sample")
+    if not export_sample_sha256:
+        missing.append("profile_export_validated.exported_sample_artifact_sha256")
+    elif sample_sha256 and export_sample_sha256 != sample_sha256:
+        missing.append("profile_export_validated.exported_sample_artifact_sha256_matches_sample")
 
     delete = _check_record(checks, "profile_delete_audited")
     if _nonempty_text(delete.get("profile_id")) != profile_id:
         missing.append("profile_delete_audited.profile_id_matches_lifecycle")
     if delete.get("deleted_status") != "deleted":
         missing.append("profile_delete_audited.deleted_status")
+    audit_event_types = set(_as_string_list(delete.get("audit_event_types")))
+    expected_audit_events = {"voice_profile.sample_uploaded", "voice_profile.exported", "voice_profile.deleted"}
+    if not expected_audit_events.issubset(audit_event_types):
+        missing.append("profile_delete_audited.audit_event_types")
+    if _nonempty_text(delete.get("sample_upload_audit_target_id")) != sample_id:
+        missing.append("profile_delete_audited.sample_upload_audit_target_id_matches_sample")
+    if _nonempty_text(delete.get("profile_export_audit_target_id")) != profile_id:
+        missing.append("profile_delete_audited.profile_export_audit_target_id_matches_profile")
+    if _nonempty_text(delete.get("profile_delete_audit_target_id")) != profile_id:
+        missing.append("profile_delete_audited.profile_delete_audit_target_id_matches_profile")
+    if _positive_int(delete.get("sample_upload_audit_bytes")) != sample_bytes:
+        missing.append("profile_delete_audited.sample_upload_audit_bytes_matches_sample")
+    audit_sha256 = _normalized_sha256(delete.get("sample_upload_audit_sha256"))
+    if sample_sha256 and audit_sha256 != sample_sha256:
+        missing.append("profile_delete_audited.sample_upload_audit_sha256_matches_sample")
+    if delete.get("audit_metadata_redacted") is not True:
+        missing.append("profile_delete_audited.audit_metadata_redacted")
 
     speech = _check_record(checks, "speech_or_limitation_recorded")
     speech_mode = _nonempty_text(speech.get("mode"))
@@ -1802,6 +1865,8 @@ def _voicebox_compatibility_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "voicebox_upstream_repository": upstream_repository,
         "voicebox_upstream_version": upstream_version,
         "voicebox_upstream_commit": upstream_commit,
+        "voicebox_sample_artifact_url": sample_url,
+        "voicebox_sample_artifact_sha256": sample_sha256,
         "voicebox_speech_mode": speech_mode,
         "voicebox_websocket_mode": websocket_mode,
         "missing_compatibility_evidence": missing,
