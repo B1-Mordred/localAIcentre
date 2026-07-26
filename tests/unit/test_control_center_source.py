@@ -27,6 +27,9 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("recovery_required_last_hour: number;", self.source)
         self.assertIn("metrics?.jobs.recovery_required_last_hour", self.source)
         self.assertRegex(self.source, r"<Metric label=\"Jobs last hour\"[^>]+recovery")
+        self.assertIn("acceptance_model_measurements?: ModelAcceptanceMeasurementCoverage", self.source)
+        self.assertIn("status?.acceptance_model_measurements", self.source)
+        self.assertIn('label="Model smoke"', self.source)
 
     def test_recovery_required_jobs_are_terminal_but_retryable(self) -> None:
         self.assertRegex(self.source, r'TERMINAL_JOB_STATES = new Set\(\[[^\]]*"recovery_required"')

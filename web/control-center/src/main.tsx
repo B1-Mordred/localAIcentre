@@ -64,6 +64,7 @@ type AdminStatus = {
   resource_policy: ResourcePolicyValues;
   resource_policy_source?: string;
   admission?: AdmissionReport;
+  acceptance_model_measurements?: ModelAcceptanceMeasurementCoverage;
   maintenance?: MaintenanceState;
   external_providers_enabled: boolean;
   gpu_default_idle_timeout_seconds?: number;
@@ -1932,6 +1933,11 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
   const gpu = metrics?.gpu;
   const hostMemory = metrics?.host.memory;
   const admission = status?.admission;
+  const modelSmokeCoverage = status?.acceptance_model_measurements;
+  const modelSmokeMissing = modelSmokeCoverage?.missing_aliases ?? [];
+  const modelSmokeDetail = modelSmokeCoverage
+    ? (modelSmokeMissing.length ? `missing ${modelSmokeMissing.join(", ")}` : `${modelSmokeCoverage.required_aliases.length} required aliases measured`)
+    : "not loaded";
   const runtimeStateByName = Object.fromEntries((status?.runtime_states ?? []).map((runtime) => [runtime.runtime, runtime]));
   const gpuDetail = gpu?.available
     ? `${formatCount(gpu.utilization_gpu_percent_max)}% util, ${formatCount(gpu.temperature_c_max)}C max`
@@ -1954,6 +1960,7 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
           <Metric label="VRAM usable" value={`${policy.gpu_usable_vram_gib ?? 10.5} GiB`} detail={`${policy.gpu_reserve_vram_gib ?? 1.5} GiB reserved`} />
           <Metric label="CPU residency" value={policy.cpu_residency_enabled ? "enabled" : "disabled"} detail={`${policy.cpu_resident_aliases?.length ?? 0} aliases, ${policy.cpu_residency_max_ram_gib ?? 2} GiB cap`} />
           <Metric label="Admission" value={`${formatCount(admission?.queue?.owner_queued_jobs)} queued`} detail={`${formatCount(admission?.queue?.owner_jobs_last_hour)} jobs/hour, ${formatCount(admission?.queue?.global_queued_jobs)} global`} />
+          <Metric label="Model smoke" value={modelSmokeCoverage?.status ?? "unavailable"} detail={modelSmokeDetail} />
           <Metric label="Artifact headroom" value={formatHostBytes(admission?.storage.disk_free_bytes)} detail={`${formatHostBytes(admission?.policy.artifact_storage_reserve_bytes)} reserved`} />
           <Metric label="Idle unload" value={`${status?.gpu_default_idle_timeout_seconds ?? 300}s`} detail="blank alias policy uses this default" />
           <Metric label="External providers" value={status?.external_providers_enabled ? "enabled" : "disabled"} detail="LAN-local default" />

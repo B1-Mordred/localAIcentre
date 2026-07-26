@@ -68,6 +68,25 @@ class FakeMetricsDatabase:
         return {"owner": "gpu-runner", "epoch": 1}
 
 
+class FakeStatusDatabase:
+    async def job_counts_by_state(self) -> list[dict[str, Any]]:
+        return [{"state": "queued", "count": 2}]
+
+    async def get_scheduler_owner(self) -> dict[str, Any]:
+        return {"owner": "idle"}
+
+    async def list_runtime_states(self) -> list[dict[str, Any]]:
+        return [{"runtime": "localai", "status": "idle", "stage": "idle"}]
+
+    async def list_model_records(self) -> list[dict[str, Any]]:
+        return []
+
+
+class FakeStatusCatalog:
+    def to_catalog(self) -> dict[str, Any]:
+        return {"aliases": [], "profiles": [], "models": []}
+
+
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class AdminMetricsApiTests(unittest.TestCase):
     def patch_attr(self, name: str, value: Any) -> None:
@@ -179,6 +198,48 @@ class AdminMetricsApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             asyncio.run(main.admin_metrics(authorization="Bearer key", limit=500))
         self.assertEqual(caught.exception.status_code, 403)
+
+
+@unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
+class AdminStatusApiTests(unittest.TestCase):
+    def patch_attr(self, name: str, value: Any) -> None:
+        original = getattr(main, name)
+        setattr(main, name, value)
+        self.addCleanup(lambda: setattr(main, name, original))
+
+    def patch_auth(self, auth: Any) -> None:
+        async def authenticate(_: str | None = None) -> Any:
+            return auth
+
+        self.patch_attr("authenticate", authenticate)
+
+    def test_admin_status_includes_acceptance_model_smoke_coverage(self) -> None:
+        self.patch_auth(AuthContext(subject_id="admin_1", role=Role.ADMIN, scopes=frozenset({"admin:read"})))
+        self.patch_attr("database", FakeStatusDatabase())
+        self.patch_attr("catalog_snapshot", lambda: FakeStatusCatalog())
+
+        async def admission_report(subject_id: str) -> dict[str, Any]:
+            return {"queue": {"owner_id": subject_id, "owner_queued_jobs": 0}, "storage": {"root": "/srv/b1-ai-hub"}}
+
+        self.patch_attr("admission_report", admission_report)
+
+        result = asyncio.run(main.admin_status(authorization="Bearer key"))
+
+        self.assertEqual(result["queue"][0]["state"], "queued")
+        coverage = result["acceptance_model_measurements"]
+        self.assertEqual(coverage["status"], "incomplete")
+        self.assertIn("chat-default", coverage["missing_aliases"])
+        self.assertEqual(coverage["groups"][0]["id"], "localai_runtime")
+
+    def test_acceptance_model_smoke_snapshot_reports_unavailable_catalog(self) -> None:
+        self.patch_attr("catalog_snapshot", lambda: (_ for _ in ()).throw(main.CatalogError("missing alias seed")))
+        self.patch_attr("database", FakeStatusDatabase())
+
+        result = asyncio.run(main.acceptance_model_measurement_coverage_snapshot())
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["groups"], [])
+        self.assertIn("missing alias seed", result["reason"])
 
 
 if __name__ == "__main__":
