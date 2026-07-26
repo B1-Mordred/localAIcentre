@@ -367,6 +367,7 @@ class FakeDatabase:
         self.updates: list[dict[str, Any]] = []
         self.leases: list[dict[str, Any]] = []
         self.releases: list[str] = []
+        self.reservation_gates: list[dict[str, Any]] = []
 
     async def get_job_by_idempotency_key(self, owner: str, idempotency_key: str) -> dict[str, Any] | None:
         for row in self.jobs.values():
@@ -449,6 +450,23 @@ class FakeDatabase:
     async def release_scheduler_owner(self, owner: str) -> dict[str, Any]:
         self.releases.append(owner)
         return {"owner": owner, "released": True}
+
+    async def runtime_reservation_gate(
+        self,
+        owner_id: str,
+        runtime: str,
+        resolved_model_version: str,
+        gpu_runtimes: set[str] | frozenset[str] | tuple[str, ...] | list[str],
+    ) -> dict[str, Any]:
+        row = {
+            "owner_id": owner_id,
+            "runtime": runtime,
+            "resolved_model_version": resolved_model_version,
+            "gpu_runtimes": sorted(gpu_runtimes),
+            "allowed": True,
+        }
+        self.reservation_gates.append(row)
+        return row
 
 
 class FakeRuntimeControlRunner:
@@ -1213,6 +1231,111 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertNotIn("x-forwarded-for", forwarded_headers)
         self.assertNotIn("x-real-ip", forwarded_headers)
         self.assertEqual(websocket.sent_bytes, [b"voicebox-event"])
+
+    def test_voicebox_native_speech_passthrough_uses_scheduler_lease_and_preserves_body(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+        main.settings = replace(main.settings, voicebox_url="http://voicebox:17493", sync_inference_lease_ttl_seconds=90)
+        forwarded: dict[str, Any] = {}
+
+        async def proxy(
+            base_url: str,
+            path: str,
+            request: FakeRequest,
+            body: bytes | None = None,
+            timeout_seconds: float = 120.0,
+        ) -> Response:
+            forwarded.update(
+                {
+                    "base_url": base_url,
+                    "path": path,
+                    "method": request.method,
+                    "body": body,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            return Response(content=b"voicebox-audio", media_type="audio/wav", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+        payload = {
+            "model": "upstream-native-model",
+            "input": "private native speech text",
+            "voice": "native-voice",
+        }
+
+        response = asyncio.run(
+            main.compatibility_passthrough(
+                "v1/audio/speech",
+                FakeRequest(payload, method="POST", compatibility="voicebox-native"),
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"voicebox-audio")
+        self.assertEqual(fake.reservation_gates[0]["owner_id"], "client_1")
+        self.assertEqual(fake.reservation_gates[0]["runtime"], "voicebox")
+        self.assertEqual(fake.reservation_gates[0]["resolved_model_version"], "voicebox-native-speech@native")
+        self.assertEqual(len(fake.leases), 1)
+        self.assertTrue(fake.leases[0]["owner"].startswith("sync-voicebox-native-speech-"))
+        self.assertEqual(fake.leases[0]["ttl_seconds"], 90)
+        self.assertEqual(fake.releases, [fake.leases[0]["owner"]])
+        self.assertEqual(
+            runner.calls,
+            [
+                "unload_other_gpu_runtimes",
+                "verify_vram_or_recover",
+                "load_runtime_model",
+                "warm_runtime_model",
+                "record_runtime_idle_for_job",
+            ],
+        )
+        first_job = runner.jobs[0]
+        self.assertEqual(first_job["runtime"], "voicebox")
+        self.assertEqual(first_job["model_alias"], "voicebox-native")
+        self.assertEqual(first_job["resolved_model_version"], "voicebox-native-speech@native")
+        self.assertEqual(first_job["operation"], "voicebox-native-speech")
+        self.assertEqual(first_job["modality"], "tts")
+        self.assertEqual(forwarded["base_url"], "http://voicebox:17493")
+        self.assertEqual(forwarded["path"], "v1/audio/speech")
+        self.assertEqual(forwarded["method"], "POST")
+        self.assertEqual(forwarded["timeout_seconds"], 90.0)
+        self.assertEqual(json.loads(forwarded["body"].decode("utf-8")), payload)
+
+    def test_voicebox_native_read_passthrough_does_not_take_gpu_lease(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+        main.settings = replace(main.settings, voicebox_url="http://voicebox:17493")
+        proxied: list[dict[str, Any]] = []
+
+        async def proxy(
+            base_url: str,
+            path: str,
+            request: FakeRequest,
+            body: bytes | None = None,
+            timeout_seconds: float = 120.0,
+        ) -> Response:
+            proxied.append({"base_url": base_url, "path": path, "method": request.method})
+            return Response(content=b'{"ok":true}', media_type="application/json", status_code=200)
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        response = asyncio.run(
+            main.compatibility_passthrough(
+                "b1/runtime/build-info",
+                FakeRequest({}, method="GET", compatibility="voicebox-native"),
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(proxied, [{"base_url": "http://voicebox:17493", "path": "b1/runtime/build-info", "method": "GET"}])
+        self.assertEqual(fake.reservation_gates, [])
+        self.assertEqual(fake.leases, [])
+        self.assertEqual(fake.releases, [])
+        self.assertEqual(runner.calls, [])
 
     def test_websocket_events_update_job_progress_and_artifacts(self) -> None:
         fake = FakeDatabase()

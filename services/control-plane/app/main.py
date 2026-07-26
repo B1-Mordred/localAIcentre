@@ -2808,6 +2808,57 @@ def native_comfyui_resolution() -> RuntimeResolution:
     )
 
 
+def native_voicebox_resolution() -> RuntimeResolution:
+    return RuntimeResolution(
+        public_alias="voicebox-native",
+        model_id="voicebox-native-speech",
+        model_version="native",
+        resolved_model_version="voicebox-native-speech@native",
+        runtime="voicebox",
+        preferred_runtime="voicebox",
+        requires_gpu=True,
+        resource_label="expected",
+        runtime_policy="voicebox_native",
+    )
+
+
+def is_native_voicebox_speech_request(path: str, method: str) -> bool:
+    return method.upper() == "POST" and path.strip("/") == "v1/audio/speech"
+
+
+async def proxy_voicebox_compatibility(path: str, request: Request, auth: AuthContext) -> Response:
+    if not is_native_voicebox_speech_request(path, request.method):
+        return await proxy_http(settings.voicebox_url, path, request)
+
+    require_not_in_maintenance("voicebox/native-audio-speech")
+    body = await request.body()
+    resolution = native_voicebox_resolution()
+    lease_owner: str | None = None
+    runtime_prepared = False
+    try:
+        lease_owner = await acquire_inference_lease(resolution, "voicebox-native-speech", owner_id=auth.subject_id)
+        runtime_prepared = await prepare_sync_gpu_runtime(resolution, "voicebox-native-speech")
+        return await proxy_http_bytes(
+            settings.voicebox_url,
+            path,
+            request,
+            body=body,
+            timeout_seconds=float(settings.sync_inference_lease_ttl_seconds),
+        )
+    except RuntimePreparationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=runtime_prepare_error_detail(exc, resolution, "voicebox-native-speech"),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if runtime_prepared:
+            with suppress(Exception):
+                await mark_sync_gpu_runtime_idle(resolution, "voicebox-native-speech")
+        await release_inference_lease(lease_owner)
+
+
 def comfyui_native_runtime_job(job: dict[str, Any]) -> dict[str, Any]:
     resolution = native_comfyui_resolution()
     runtime_job = dict(job)
@@ -10841,6 +10892,6 @@ async def compatibility_passthrough(path: str, request: Request) -> Response:
         await require_http_compatibility_access(request, compatibility, compatibility_scope_for_method(request.method))
         return await proxy_comfyui_compatibility(path, request)
     if compatibility.startswith("voicebox"):
-        await require_http_compatibility_access(request, compatibility, compatibility_scope_for_method(request.method))
-        return await proxy_http(settings.voicebox_url, path, request)
+        auth = await require_http_compatibility_access(request, compatibility, compatibility_scope_for_method(request.method))
+        return await proxy_voicebox_compatibility(path, request, auth)
     raise HTTPException(status_code=404, detail="route not found")
