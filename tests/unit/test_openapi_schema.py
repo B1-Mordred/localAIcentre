@@ -213,6 +213,8 @@ class OpenApiSchemaTests(unittest.TestCase):
         self.assertIn("/admin/admission-policy", paths)
         self.assertIn("/admin/admission-policy/validate", paths)
         self.assertIn("/v1/models", paths)
+        self.assertIn("/v1/videos/generations", paths)
+        self.assertIn("/v1/videos/image-to-video", paths)
         self.assertIn("/v1/media/jobs/{job_id}/events", paths)
         self.assertIn("/admin/jobs", paths)
         self.assertIn("/admin/jobs/{job_id}/events", paths)

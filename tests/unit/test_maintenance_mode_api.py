@@ -249,6 +249,42 @@ class MaintenanceModeApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.detail["operation"], "images/edits")
         self.assertEqual(fake.inserted_jobs, [])
 
+    def test_video_generation_is_blocked_before_runtime_resolution(self) -> None:
+        fake = FakeMaintenanceDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"inference:write"})
+        self.enable_cached_maintenance()
+
+        def resolver(*_: Any, **__: Any) -> Any:
+            raise AssertionError("maintenance mode must block before video runtime resolution")
+
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.video_generations({"model": "video-text", "prompt": "short clip"}, authorization="Bearer key"))
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["operation"], "videos/generations")
+        self.assertEqual(fake.inserted_jobs, [])
+
+    def test_image_to_video_is_blocked_before_request_body_processing(self) -> None:
+        fake = FakeMaintenanceDatabase()
+        self.patch_attr("database", fake)
+        self.patch_auth(scopes={"inference:write"})
+        self.enable_cached_maintenance()
+
+        async def fail_body_parser(*_: Any, **__: Any) -> dict[str, Any]:
+            raise AssertionError("maintenance mode must block before image-to-video body processing")
+
+        self.patch_attr("media_image_input_from_request", fail_body_parser)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.image_to_video(FakeRequest(), authorization="Bearer key"))
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["operation"], "videos/image-to-video")
+        self.assertEqual(fake.inserted_jobs, [])
+
     def test_media_job_create_is_blocked_before_workflow_or_runtime_resolution(self) -> None:
         fake = FakeMaintenanceDatabase()
         self.patch_attr("database", fake)

@@ -1438,7 +1438,7 @@ def is_upload_file_value(value: Any) -> bool:
     return isinstance(value, UploadFile) or (hasattr(value, "filename") and hasattr(value, "read") and hasattr(value, "close"))
 
 
-async def image_edit_input_from_request(request: Request, auth: AuthContext) -> dict[str, Any]:
+async def media_image_input_from_request(request: Request, auth: AuthContext) -> dict[str, Any]:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type == "application/json":
         try:
@@ -1481,6 +1481,10 @@ async def image_edit_input_from_request(request: Request, auth: AuthContext) -> 
             filename=request.headers.get("X-B1-Filename"),
         )
     }
+
+
+async def image_edit_input_from_request(request: Request, auth: AuthContext) -> dict[str, Any]:
+    return await media_image_input_from_request(request, auth)
 
 
 async def transcription_input_from_request(request: Request) -> dict[str, Any]:
@@ -9310,6 +9314,71 @@ async def image_edits(
     job = await create_job_record(
         auth.subject_id,
         MediaJobCreate(modality="image", operation="edit", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
+        idempotency_key=normalized_idempotency_key,
+        resolution=resolution,
+    )
+    return openai_image_job_response(job)
+
+
+@app.post("/v1/videos/generations", status_code=202)
+async def video_generations(
+    payload: dict[str, Any],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "inference:write")
+    model = media_job_string_extension(payload, "model", "video-text")
+    runtime_policy = media_job_string_extension(payload, "runtime_policy", "any")
+    priority = media_job_string_extension(payload, "priority", "video")
+    job_payload = MediaJobCreate(
+        modality="video",
+        operation="text-to-video",
+        model=model,
+        input=payload,
+        priority=priority,
+        runtime_policy=runtime_policy,
+    )
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, job_payload)
+            return openai_image_job_response(existing)
+    require_not_in_maintenance("videos/generations")
+    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="text-to-video")
+    job = await create_job_record(
+        auth.subject_id,
+        job_payload,
+        idempotency_key=normalized_idempotency_key,
+        resolution=resolution,
+    )
+    return openai_image_job_response(job)
+
+
+@app.post("/v1/videos/image-to-video", status_code=202)
+async def image_to_video(
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "inference:write")
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_existing_job_endpoint(existing, modality="video", operation="image-to-video")
+            return openai_image_job_response(existing)
+    require_not_in_maintenance("videos/image-to-video")
+    payload = await media_image_input_from_request(request, auth)
+    model = payload.get("model") if isinstance(payload.get("model"), str) and payload.get("model") else "video-image"
+    runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
+    priority = media_job_string_extension(payload, "priority", "video")
+    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="image-to-video")
+    job = await create_job_record(
+        auth.subject_id,
+        MediaJobCreate(modality="video", operation="image-to-video", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
         idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )

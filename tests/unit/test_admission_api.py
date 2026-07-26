@@ -52,6 +52,20 @@ def resolution() -> Any:
     )
 
 
+def video_resolution(alias: str = "video-text", model_id: str = "video-model") -> Any:
+    return main.RuntimeResolution(
+        public_alias=alias,
+        model_id=model_id,
+        model_version="1.0.0",
+        resolved_model_version=f"{model_id}@1.0.0",
+        runtime="localai",
+        preferred_runtime="localai",
+        requires_gpu=True,
+        resource_label="expected",
+        runtime_policy="any",
+    )
+
+
 def cpu_resolution() -> Any:
     return main.RuntimeResolution(
         public_alias="tts-fast",
@@ -157,6 +171,10 @@ class FakeAdmissionDatabase:
             correlation_id=payload["correlation_id"],
             idempotency_key=payload.get("idempotency_key"),
             owner_id=payload["owner_id"],
+            modality=payload["modality"],
+            operation=payload["operation"],
+            model_alias=payload["model_alias"],
+            priority=payload["priority"],
             request_params=payload["request_params"],
             redacted_request=payload["redacted_request"],
             resolved_model_version=payload["resolved_model_version"],
@@ -494,6 +512,132 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
         self.assertEqual(inserted["request_params"]["priority"], "single_image")
         self.assertEqual(inserted["request_params"]["input"]["runtime_policy"], "non_comfy_only")
+
+    def test_video_generation_idempotency_returns_existing_before_alias_resolution(self) -> None:
+        payload = {"model": "video-text", "prompt": "short clip", "frames": 12}
+        existing_request = main.MediaJobCreate(
+            modality="video",
+            operation="text-to-video",
+            model="video-text",
+            input=payload,
+            priority="video",
+            runtime_policy="any",
+        ).model_dump()
+        existing = job_row(
+            idempotency_key="vid_1",
+            modality="video",
+            operation="text-to-video",
+            model_alias="video-text",
+            priority="video",
+            request_params=existing_request,
+        )
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+
+        def fail_resolver(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("idempotent video generation replay should not resolve mutable aliases")
+
+        self.patch_attr("resolve_catalog_alias_for_auth", fail_resolver)
+
+        result = asyncio.run(main.video_generations(payload, idempotency_key="vid_1"))
+
+        self.assertEqual(result["b1_job_id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
+
+    def test_video_generation_persists_runtime_policy_and_priority_extensions(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(artifact_storage_reserve_bytes=0)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+        resolver_calls: list[tuple[str, str, str, str | None]] = []
+
+        def resolver(model: str, modality: str, auth: Any, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            resolver_calls.append((model, modality, runtime_policy, operation))
+            return video_resolution(alias=model)
+
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+        payload = {
+            "model": "video-text",
+            "prompt": "short clip",
+            "runtime_policy": "non_comfy_only",
+            "priority": "video",
+            "frames": 12,
+        }
+
+        result = asyncio.run(main.video_generations(payload, authorization="Bearer key"))
+
+        self.assertTrue(result["b1_job_id"].startswith("job_"))
+        self.assertEqual(result["object"], "b1.async_job")
+        self.assertEqual(result["b1_status"], "queued")
+        self.assertEqual(result["b1_job_url"], f"/v1/media/jobs/{result['b1_job_id']}")
+        self.assertEqual(resolver_calls, [("video-text", "video", "non_comfy_only", "text-to-video")])
+        inserted = fake_database.inserted[0]
+        self.assertEqual(inserted["modality"], "video")
+        self.assertEqual(inserted["operation"], "text-to-video")
+        self.assertEqual(inserted["model_alias"], "video-text")
+        self.assertEqual(inserted["priority"], "video")
+        self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
+        self.assertEqual(inserted["request_params"]["priority"], "video")
+        self.assertEqual(inserted["request_params"]["input"]["runtime_policy"], "non_comfy_only")
+
+    def test_image_to_video_accepts_staged_input_and_persists_extensions(self) -> None:
+        fake_database = FakeAdmissionDatabase()
+        self.patch_attr("database", fake_database)
+        self.patch_settings(artifact_storage_reserve_bytes=0)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+        resolver_calls: list[tuple[str, str, str, str | None]] = []
+
+        async def parse_body(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "model": "video-image",
+                "prompt": "animate the image",
+                "image": {"source": "staged_upload", "path": "inputs/client/upload/image.png"},
+                "runtime_policy": "non_comfy_only",
+                "priority": "video",
+            }
+
+        def resolver(model: str, modality: str, auth: Any, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            resolver_calls.append((model, modality, runtime_policy, operation))
+            return video_resolution(alias=model, model_id="image-video-model")
+
+        self.patch_attr("media_image_input_from_request", parse_body)
+        self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+
+        result = asyncio.run(main.image_to_video(FakeRequest(body=b"not-read"), authorization="Bearer key"))
+
+        self.assertTrue(result["b1_job_id"].startswith("job_"))
+        self.assertEqual(resolver_calls, [("video-image", "video", "non_comfy_only", "image-to-video")])
+        inserted = fake_database.inserted[0]
+        self.assertEqual(inserted["modality"], "video")
+        self.assertEqual(inserted["operation"], "image-to-video")
+        self.assertEqual(inserted["model_alias"], "video-image")
+        self.assertEqual(inserted["priority"], "video")
+        self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
+        self.assertEqual(inserted["request_params"]["input"]["image"]["source"], "staged_upload")
+
+    def test_image_to_video_idempotency_returns_existing_job_without_reprocessing_body(self) -> None:
+        existing = job_row(
+            idempotency_key="i2v_1",
+            modality="video",
+            operation="image-to-video",
+            model_alias="video-image",
+            priority="video",
+            request_params=main.MediaJobCreate(modality="video", operation="image-to-video", model="video-image", priority="video").model_dump(),
+        )
+        fake_database = FakeAdmissionDatabase(existing=existing)
+        self.patch_attr("database", fake_database)
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"})))
+
+        async def fail_if_called(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("image-to-video request body should not be processed for an idempotent replay")
+
+        self.patch_attr("media_image_input_from_request", fail_if_called)
+
+        result = asyncio.run(main.image_to_video(FakeRequest(body=b"not read"), idempotency_key="i2v_1"))
+
+        self.assertEqual(result["b1_job_id"], "job_existing")
+        self.assertEqual(fake_database.inserted, [])
 
     def test_media_job_idempotency_returns_existing_before_workflow_or_alias_checks(self) -> None:
         payload = media_job_payload(input={"workflow_id": "workflow_1", "workflow_version": "1.0.0", "parameters": {"prompt": "castle"}})
