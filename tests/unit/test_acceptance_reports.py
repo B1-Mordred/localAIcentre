@@ -3090,6 +3090,41 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(report["model_measurement_coverage"]["blocked_count"], 1)
         self.assertEqual(report["model_measurement_coverage"]["next_actions"], [])
 
+    def test_database_model_smoke_coverage_rejects_runtime_mismatch(self) -> None:
+        coverage = sample_model_measurement_coverage()
+        image_measurement = coverage["groups"][1]["measurements"][1]
+        image_measurement["runtime"] = "localai"
+        image_measurement["latest_ok_run"]["runtime"] = "localai"
+
+        report = sample_report(model_measurement_coverage=coverage)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["model_measurement_coverage_ready"])
+        normalized = report["model_measurement_coverage"]
+        self.assertEqual(normalized["status"], "incomplete")
+        self.assertIn("image-default", normalized["missing_aliases"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("database model-smoke coverage RTX 3060 GPU acceptance/image-default", blockers)
+        self.assertIn("measurement runtime does not match expected runtime", blockers)
+        self.assertEqual(normalized["next_actions"][0]["alias"], "image-default")
+
+    def test_database_model_smoke_coverage_rejects_missing_resource_metrics(self) -> None:
+        coverage = sample_model_measurement_coverage()
+        image_measurement = coverage["groups"][1]["measurements"][1]
+        image_measurement["latest_ok_run"].pop("peak_vram_mib")
+        image_measurement["latest_resource_estimate"].pop("vram_gib")
+
+        report = sample_report(model_measurement_coverage=coverage)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        normalized = report["model_measurement_coverage"]
+        self.assertEqual(normalized["status"], "incomplete")
+        self.assertIn("image-default", normalized["missing_aliases"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("latest run peak_vram_mib is missing for GPU runtime", blockers)
+        self.assertIn("latest resource estimate vram_gib is missing for GPU runtime", blockers)
+
     def test_report_preserves_database_model_smoke_handoff_plan(self) -> None:
         coverage = sample_model_measurement_coverage()
         coverage["status"] = "incomplete"
@@ -3496,6 +3531,26 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_gpu_snapshot_rejects_model_smoke_runtime_mismatch(self) -> None:
+        gpu = json.loads(json.dumps(sample_live_evidence()["gpu_acceptance"]))
+        gpu["model_measurements"]["image-default"]["latest_ok_run"]["runtime"] = "localai"
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertIn("image-default", snapshot["missing_model_measurements"])
+        self.assertIn(
+            "latest run runtime does not match measurement runtime",
+            snapshot["model_measurement_blockers"]["image-default"],
+        )
+        report = sample_report(live_evidence=sample_live_evidence(gpu_acceptance=snapshot))
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["gpu_evidence_ready"])
+        self.assertIn(
+            "RTX 3060 GPU acceptance evidence has incomplete model-smoke proof:",
+            "\n".join(report["acceptance_blockers"]),
+        )
+
     def test_gpu_snapshot_rejects_route_level_comfyui_prompt_for_handoff(self) -> None:
         gpu = json.loads(json.dumps(sample_live_evidence()["gpu_acceptance"]))
         gpu["checks"]["comfyui_switch_completed"]["comfyui_prompt"] = {
@@ -3833,6 +3888,26 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn(
             "installed workflow evidence is missing measured model runs for aliases: video-text",
             report["acceptance_blockers"],
+        )
+
+    def test_installed_workflow_snapshot_rejects_cpu_audio_vram_usage(self) -> None:
+        workflows = json.loads(json.dumps(sample_live_evidence()["installed_workflows"]))
+        workflows["model_measurements"]["tts-fast"]["latest_ok_run"]["peak_vram_mib"] = 64
+        snapshot = acceptance.installed_workflows_evidence_snapshot(workflows)
+
+        self.assertIn("tts-fast", snapshot["missing_model_measurements"])
+        self.assertIn(
+            "CPU-only measurement reported GPU VRAM usage",
+            snapshot["model_measurement_blockers"]["tts-fast"],
+        )
+        report = sample_report(live_evidence=sample_live_evidence(installed_workflows=snapshot))
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["installed_workflows_evidence_ready"])
+        self.assertIn(
+            "installed workflow evidence has incomplete model-smoke proof:",
+            "\n".join(report["acceptance_blockers"]),
         )
 
     def test_report_blocks_handoff_when_installed_workflow_summary_is_absent(self) -> None:

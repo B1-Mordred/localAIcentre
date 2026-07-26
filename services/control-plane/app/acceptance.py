@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -23,6 +24,9 @@ CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 MAX_LIVE_EVIDENCE_BYTES = 4 * 1024 * 1024
 MAX_LIVE_EVIDENCE_AGE_SECONDS = 72 * 60 * 60
 MAX_LIVE_EVIDENCE_FUTURE_SKEW_SECONDS = 10 * 60
+GPU_MEASUREMENT_RUNTIMES = frozenset({"localai", "comfyui", "voicebox"})
+CPU_ONLY_MEASUREMENT_RUNTIMES = frozenset({"audio-cpu"})
+LOCAL_MEASUREMENT_RUNTIMES = GPU_MEASUREMENT_RUNTIMES | CPU_ONLY_MEASUREMENT_RUNTIMES
 DEFAULT_HANDOFF_HOSTS = {
     "chat": "ai.b1.germering",
     "control": "control.ai.b1.germering",
@@ -717,6 +721,15 @@ def _as_string_list(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float)) and str(item)]
 
 
+def _append_unique(items: list[str], value: str) -> None:
+    if value and value not in items:
+        items.append(value)
+
+
+def _runtime_name(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
 def _compact_model_measurement(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -727,7 +740,9 @@ def _compact_model_measurement(value: Any) -> dict[str, Any]:
         "status": str(value.get("status") or ""),
         "modality": str(value.get("modality") or ""),
         "runtime": str(value.get("runtime") or ""),
+        "expected_runtime": str(value.get("expected_runtime") or ""),
         "preferred_runtime": str(value.get("preferred_runtime") or ""),
+        "runtimes": _as_string_list(value.get("runtimes")),
         "resource_label": str(value.get("resource_label") or ""),
         "resolved_model_version": str(value.get("resolved_model_version") or ""),
         "model_id": str(value.get("model_id") or ""),
@@ -764,20 +779,96 @@ def _compact_model_measurement(value: Any) -> dict[str, Any]:
     }
 
 
-def _model_measurement_ok(alias: str, value: Any) -> bool:
+def _model_measurement_blockers(alias: str, value: Any, *, expected_runtime: str = "") -> list[str]:
     compact = _compact_model_measurement(value)
+    if not compact:
+        return ["model measurement is missing"]
+
+    blockers: list[str] = []
     latest_run = compact.get("latest_ok_run") if isinstance(compact.get("latest_ok_run"), dict) else {}
     resolved = str(compact.get("resolved_model_version") or "")
-    return (
-        bool(alias)
-        and compact.get("alias") == alias
-        and compact.get("status") == "installed"
-        and compact.get("measurement_available") is True
-        and int(compact.get("ok_run_count") or 0) > 0
-        and "@" in resolved
-        and latest_run.get("status") == "ok"
-        and latest_run.get("resolved_model_version") == resolved
-    )
+    runtime = _runtime_name(compact.get("runtime"))
+    expected = _runtime_name(expected_runtime or compact.get("expected_runtime"))
+    runtimes = [_runtime_name(item) for item in compact.get("runtimes") or [] if _runtime_name(item)]
+
+    if not alias:
+        blockers.append("required alias is missing")
+    elif compact.get("alias") != alias:
+        blockers.append("measurement alias does not match required alias")
+    if compact.get("status") != "installed":
+        blockers.append("model is not installed")
+    if compact.get("measurement_available") is not True:
+        blockers.append("measurement is not marked available")
+    if int(compact.get("ok_run_count") or 0) <= 0:
+        blockers.append("no persisted ok model smoke measurement exists")
+    if "@" not in resolved:
+        blockers.append("resolved model version is not immutable")
+
+    if not runtime:
+        blockers.append("measurement runtime is missing")
+    elif runtime not in LOCAL_MEASUREMENT_RUNTIMES:
+        blockers.append("measurement runtime is not a local handoff runtime")
+    if runtime and runtimes and runtime not in runtimes:
+        blockers.append("measurement runtime is not listed as a compatible runtime")
+    if expected and runtime and runtime != expected:
+        blockers.append("measurement runtime does not match expected runtime")
+    if expected and runtimes and expected not in runtimes:
+        blockers.append("expected runtime is not listed as a compatible runtime")
+
+    if latest_run.get("status") != "ok":
+        blockers.append("latest run status is not ok")
+    if latest_run.get("model_alias") != alias:
+        blockers.append("latest run model alias does not match required alias")
+    if latest_run.get("resolved_model_version") != resolved:
+        blockers.append("latest run resolved model version does not match installed version")
+    latest_runtime = _runtime_name(latest_run.get("runtime"))
+    if not latest_runtime:
+        blockers.append("latest run runtime is missing")
+    elif runtime and latest_runtime != runtime:
+        blockers.append("latest run runtime does not match measurement runtime")
+    elif expected and latest_runtime != expected:
+        blockers.append("latest run runtime does not match expected runtime")
+
+    if _positive_int(latest_run.get("duration_ms")) <= 0:
+        blockers.append("latest run duration_ms is missing")
+    load_time = _integer_value(latest_run.get("load_time_ms"))
+    if load_time is None or load_time < 0:
+        blockers.append("latest run load_time_ms is missing")
+    if _positive_int(latest_run.get("run_time_ms")) <= 0:
+        blockers.append("latest run run_time_ms is missing")
+    if _positive_int(latest_run.get("peak_ram_mib")) <= 0:
+        blockers.append("latest run peak_ram_mib is missing")
+
+    peak_vram = _integer_value(latest_run.get("peak_vram_mib"))
+    if runtime in GPU_MEASUREMENT_RUNTIMES:
+        if peak_vram is None or peak_vram <= 0:
+            blockers.append("latest run peak_vram_mib is missing for GPU runtime")
+    elif runtime in CPU_ONLY_MEASUREMENT_RUNTIMES:
+        if peak_vram is None:
+            blockers.append("latest run peak_vram_mib is missing for CPU runtime")
+        elif peak_vram != 0:
+            blockers.append("CPU-only measurement reported GPU VRAM usage")
+
+    estimate = compact.get("latest_resource_estimate") if isinstance(compact.get("latest_resource_estimate"), dict) else {}
+    if _positive_float(estimate.get("ram_gib")) <= 0:
+        blockers.append("latest resource estimate ram_gib is missing")
+    if _positive_float(estimate.get("disk_gib")) <= 0:
+        blockers.append("latest resource estimate disk_gib is missing")
+    estimate_vram = _float_value(estimate.get("vram_gib"))
+    if runtime in GPU_MEASUREMENT_RUNTIMES:
+        if estimate_vram is None or estimate_vram <= 0:
+            blockers.append("latest resource estimate vram_gib is missing for GPU runtime")
+    elif runtime in CPU_ONLY_MEASUREMENT_RUNTIMES:
+        if estimate_vram is None:
+            blockers.append("latest resource estimate vram_gib is missing for CPU runtime")
+        elif estimate_vram != 0:
+            blockers.append("CPU-only resource estimate requires zero vram_gib")
+
+    return blockers
+
+
+def _model_measurement_ok(alias: str, value: Any, *, expected_runtime: str = "") -> bool:
+    return not _model_measurement_blockers(alias, value, expected_runtime=expected_runtime)
 
 
 def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -788,11 +879,17 @@ def _model_measurement_summary(payload: dict[str, Any]) -> dict[str, Any]:
         for alias, item in raw_measurements.items()
         if isinstance(alias, str) and isinstance(item, dict)
     }
-    missing = [alias for alias in required_aliases if not _model_measurement_ok(alias, measurements.get(alias))]
+    measurement_blockers: dict[str, list[str]] = {}
+    for alias in required_aliases:
+        blockers = _model_measurement_blockers(alias, measurements.get(alias))
+        if blockers:
+            measurement_blockers[alias] = blockers
+    missing = [alias for alias in required_aliases if alias in measurement_blockers]
     return {
         "required_model_aliases": required_aliases,
         "model_measurements": measurements,
         "missing_model_measurements": missing,
+        "model_measurement_blockers": measurement_blockers,
     }
 
 
@@ -812,6 +909,19 @@ def _positive_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return parsed if parsed > 0 else 0
+
+
+def _float_value(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _positive_float(value: Any) -> float:
+    parsed = _float_value(value)
+    return parsed if parsed is not None and parsed > 0 else 0.0
 
 
 def _integer_value(value: Any) -> int | None:
@@ -3661,6 +3771,18 @@ def deployment_pins_snapshot(repo_root: Path | None = None) -> dict[str, Any]:
     )
 
 
+def _model_measurement_blocker_details(evidence: dict[str, Any]) -> str:
+    details = evidence.get("model_measurement_blockers")
+    if not isinstance(details, dict):
+        return ""
+    parts: list[str] = []
+    for alias in sorted(details):
+        blockers = _as_string_list(details.get(alias))
+        if blockers:
+            parts.append(f"{alias}: {', '.join(blockers)}")
+    return "; ".join(parts)
+
+
 def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     handoff = report.get("handoff") if isinstance(report.get("handoff"), dict) else {}
@@ -3840,6 +3962,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = gpu_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        model_details = _model_measurement_blocker_details(gpu_evidence)
+        if model_details:
+            blockers.append("RTX 3060 GPU acceptance evidence has incomplete model-smoke proof: " + model_details)
         missing_detail = gpu_evidence.get("missing_gpu_evidence")
         if not isinstance(missing_detail, list):
             blockers.append("RTX 3060 GPU acceptance evidence lacks detailed GPU summary")
@@ -3857,6 +3982,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = localai_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("LocalAI runtime acceptance evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        model_details = _model_measurement_blocker_details(localai_evidence)
+        if model_details:
+            blockers.append("LocalAI runtime acceptance evidence has incomplete model-smoke proof: " + model_details)
         missing_detail = localai_evidence.get("missing_localai_evidence")
         if not isinstance(missing_detail, list):
             blockers.append("LocalAI runtime acceptance evidence lacks detailed LocalAI summary")
@@ -3874,6 +4002,9 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         missing_models = installed_workflows_evidence.get("missing_model_measurements")
         if isinstance(missing_models, list) and missing_models:
             blockers.append("installed workflow evidence is missing measured model runs for aliases: " + ", ".join(str(item) for item in missing_models))
+        model_details = _model_measurement_blocker_details(installed_workflows_evidence)
+        if model_details:
+            blockers.append("installed workflow evidence has incomplete model-smoke proof: " + model_details)
         missing_detail = installed_workflows_evidence.get("missing_installed_workflow_evidence")
         if not isinstance(missing_detail, list):
             blockers.append("installed workflow evidence lacks detailed workflow summary")
@@ -4173,42 +4304,100 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
                 "count": _positive_int(item.get("count")) or len(_as_string_list(item.get("aliases"))),
             }
         )
+    required_aliases = _as_string_list(coverage.get("required_aliases"))
+    missing_aliases = _as_string_list(coverage.get("missing_aliases"))
+    validation_actions: list[dict[str, Any]] = []
+    validation_blockers_by_reason: dict[str, list[str]] = {}
+    action_aliases = {str(action.get("alias") or "") for action in next_actions if isinstance(action, dict)}
     groups: list[dict[str, Any]] = []
     for group in coverage.get("groups") or []:
         if not isinstance(group, dict):
             continue
         measurements: list[dict[str, Any]] = []
+        group_required_aliases = _as_string_list(group.get("required_aliases"))
+        group_missing_aliases = _as_string_list(group.get("missing_aliases"))
         for entry in group.get("measurements") or []:
             if not isinstance(entry, dict):
                 continue
             normalized_entry = dict(entry)
             normalized_entry["alias"] = str(normalized_entry.get("alias") or "")
-            normalized_entry["ready"] = bool(normalized_entry.get("ready"))
-            normalized_entry["blockers"] = _as_string_list(normalized_entry.get("blockers"))
+            expected_runtime = str(normalized_entry.get("expected_runtime") or "")
+            existing_blockers = _as_string_list(normalized_entry.get("blockers"))
+            validation_blockers = _model_measurement_blockers(
+                normalized_entry["alias"],
+                normalized_entry,
+                expected_runtime=expected_runtime,
+            )
+            blockers = list(existing_blockers)
+            for blocker in validation_blockers:
+                _append_unique(blockers, blocker)
+            normalized_entry["ready"] = bool(normalized_entry.get("ready")) and not blockers
+            normalized_entry["blockers"] = blockers
+            if normalized_entry["alias"] and blockers:
+                _append_unique(group_missing_aliases, normalized_entry["alias"])
+                _append_unique(missing_aliases, normalized_entry["alias"])
+                for blocker in validation_blockers:
+                    aliases = validation_blockers_by_reason.setdefault(blocker, [])
+                    _append_unique(aliases, normalized_entry["alias"])
+                if validation_blockers and normalized_entry["alias"] not in action_aliases:
+                    action_aliases.add(normalized_entry["alias"])
+                    validation_actions.append(
+                        {
+                            "suite": str(group.get("id") or ""),
+                            "suite_label": str(group.get("label") or group.get("id") or ""),
+                            "alias": normalized_entry["alias"],
+                            "expected_runtime": expected_runtime,
+                            "status": str(normalized_entry.get("status") or ""),
+                            "resolved_model_version": str(normalized_entry.get("resolved_model_version") or ""),
+                            "blockers": blockers,
+                            "action": (
+                                "Run the Control Center model smoke action for "
+                                f"{normalized_entry.get('resolved_model_version') or normalized_entry['alias']} "
+                                "and persist matching runtime/resource measurements before live acceptance."
+                            ),
+                        }
+                    )
             measurements.append(normalized_entry)
         groups.append(
             {
                 "id": str(group.get("id") or ""),
                 "label": str(group.get("label") or group.get("id") or ""),
                 "status": str(group.get("status") or "unknown"),
-                "required_aliases": _as_string_list(group.get("required_aliases")),
-                "missing_aliases": _as_string_list(group.get("missing_aliases")),
+                "required_aliases": group_required_aliases,
+                "missing_aliases": group_missing_aliases,
                 "measurements": measurements,
             }
         )
+    if validation_actions:
+        next_actions.extend(validation_actions)
+    for blocker, aliases in validation_blockers_by_reason.items():
+        if any(item.get("blocker") == blocker for item in blocker_summary):
+            continue
+        blocker_summary.append({"blocker": blocker, "aliases": aliases, "count": len(aliases)})
+    status = str(coverage.get("status") or "unknown")
+    if status == "ok" and missing_aliases:
+        status = "incomplete"
+    ready_aliases = _as_string_list(coverage.get("ready_aliases"))
+    if not ready_aliases and required_aliases:
+        ready_aliases = [alias for alias in required_aliases if alias not in missing_aliases]
+    else:
+        ready_aliases = [alias for alias in ready_aliases if alias not in missing_aliases]
+    blocked_count = max(_positive_int(coverage.get("blocked_count")) or 0, len(missing_aliases))
+    supplied_ready_count = _positive_int(coverage.get("ready_count"))
+    ready_count = min(supplied_ready_count, len(ready_aliases)) if supplied_ready_count else len(ready_aliases)
     return {
-        "status": str(coverage.get("status") or "unknown"),
-        "required_aliases": _as_string_list(coverage.get("required_aliases")),
-        "missing_aliases": _as_string_list(coverage.get("missing_aliases")),
-        "ready_aliases": _as_string_list(coverage.get("ready_aliases")),
-        "ready_count": _positive_int(coverage.get("ready_count")) or 0,
-        "blocked_count": _positive_int(coverage.get("blocked_count")) or len(_as_string_list(coverage.get("missing_aliases"))),
+        "status": status,
+        "required_aliases": required_aliases,
+        "missing_aliases": missing_aliases,
+        "ready_aliases": ready_aliases,
+        "ready_count": ready_count,
+        "blocked_count": blocked_count,
         "handoff_plan": {
-            "ready": coverage.get("status") == "ok",
-            "ready_aliases": _as_string_list(coverage.get("ready_aliases")),
-            "blocked_aliases": _as_string_list(coverage.get("missing_aliases")),
-            "ready_count": _positive_int(coverage.get("ready_count")) or 0,
-            "blocked_count": _positive_int(coverage.get("blocked_count")) or len(_as_string_list(coverage.get("missing_aliases"))),
+            "ready": status == "ok",
+            "ready_aliases": ready_aliases,
+            "blocked_aliases": missing_aliases,
+            "ready_count": ready_count,
+            "blocked_count": blocked_count,
             "next_actions": next_actions,
             "blocker_summary": blocker_summary,
         },
@@ -4409,6 +4598,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_models = evidence.get("missing_model_measurements")
     if isinstance(missing_models, list) and missing_models:
         summary_rows.append(["missing_model_measurements", ", ".join(str(item) for item in missing_models)])
+    model_blockers = _model_measurement_blocker_details(evidence)
+    if model_blockers:
+        summary_rows.append(["model_measurement_blockers", model_blockers])
     missing_smoke = evidence.get("missing_smoke_evidence")
     if isinstance(missing_smoke, list) and missing_smoke:
         summary_rows.append(["missing_smoke_evidence", ", ".join(str(item) for item in missing_smoke)])
