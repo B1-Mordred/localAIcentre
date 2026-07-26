@@ -644,6 +644,14 @@ type PreservedResourceDetail = {
   items: string[];
 };
 
+type CutoverNetworkDetail = {
+  key: string;
+  label: string;
+  status: string;
+  detail: string;
+  warnings: string[];
+};
+
 type DeploymentPinDetail = {
   key: string;
   subject: string;
@@ -3570,6 +3578,74 @@ function acceptancePreservedResourceRows(report: Record<string, unknown>): Prese
   }));
 }
 
+function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverNetworkDetail[] {
+  const preservation = objectOrNull(report.cutover_preservation) ?? {};
+  const targetIdentity = objectOrNull(preservation.target_identity_readiness) ?? {};
+  const networking = objectOrNull(preservation.networking_readiness) ?? {};
+
+  const targetWarnings = stringList(targetIdentity.warnings);
+  const targetMatches = ["hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected"]
+    .some((key) => targetIdentity[key] === true);
+  const observedNames = [
+    targetIdentity.observed_hostname,
+    targetIdentity.observed_fqdn,
+    targetIdentity.observed_platform_node
+  ]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  const targetReady = (
+    targetIdentity.available === true
+    && targetIdentity.accepted === true
+    && targetIdentity.hostname_authority === "system-hostname"
+    && targetIdentity.operator_must_review_target_identity !== true
+    && targetMatches
+    && targetWarnings.length === 0
+  );
+
+  const networkWarnings = stringList(networking.warnings);
+  const networkReady = (
+    networking.available === true
+    && networking.hostname_authority === "system-hostname"
+    && networking.hostname_source === "system-hostname"
+    && networking.network_property_source === "host-dhcp-client"
+    && networking.b1_manages_host_networking === false
+    && networking.b1_static_ip_configures === false
+    && Number(networking.non_loopback_address_count ?? 0) > 0
+    && Number(networking.default_route_address_count ?? 0) > 0
+    && Number(networking.default_route_count ?? 0) > 0
+    && networking.has_dhcp_default_route === true
+    && networking.operator_must_review_networking !== true
+    && networkWarnings.length === 0
+  );
+
+  return [
+    {
+      key: "target-host",
+      label: "Target hostname",
+      status: targetReady ? "ready" : "review required",
+      detail: [
+        `authority ${String(targetIdentity.hostname_authority ?? "unknown")}`,
+        `expected ${String(targetIdentity.expected_target_host ?? "unknown")}`,
+        `observed ${observedNames.join(", ") || "unknown"}`
+      ].join(" / "),
+      warnings: targetWarnings
+    },
+    {
+      key: "dhcp-networking",
+      label: "DHCP networking",
+      status: networkReady ? "ready" : "review required",
+      detail: [
+        `hostname source ${String(networking.hostname_source ?? "unknown")}`,
+        `network properties ${String(networking.network_property_source ?? "unknown")}`,
+        `static host IP ${booleanLabel(networking.b1_static_ip_configures)}`,
+        `DHCP default route ${booleanLabel(networking.has_dhcp_default_route)}`,
+        `${String(networking.non_loopback_address_count ?? 0)} non-loopback address${Number(networking.non_loopback_address_count ?? 0) === 1 ? "" : "es"}`
+      ].join(" / "),
+      warnings: networkWarnings
+    }
+  ];
+}
+
 function deploymentPinValue(item: Record<string, unknown>, key: string): string {
   return typeof item[key] === "string" && item[key] ? String(item[key]) : "";
 }
@@ -5517,6 +5593,9 @@ function System() {
   const selectedModelMeasurementCoverage = detailRecord(selectedReport.model_measurement_coverage);
   const selectedModelMeasurementRows = acceptanceModelMeasurementRows(selectedReport);
   const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
+  const selectedCutoverNetworkRows = acceptanceCutoverNetworkRows(selectedReport);
+  const selectedTargetHostReadiness = selectedCutoverNetworkRows.find((item) => item.key === "target-host");
+  const selectedDhcpNetworkReadiness = selectedCutoverNetworkRows.find((item) => item.key === "dhcp-networking");
   const selectedDeploymentPinRows = acceptanceDeploymentPinRows(selectedReport);
   const selectedDeploymentPinFindings = acceptanceDeploymentPinFindings(selectedReport);
   const selectedDeploymentPins = detailRecord(selectedReport.deployment_pins);
@@ -6000,6 +6079,8 @@ function System() {
             <div><strong>Deployment Pins</strong><small>{selectedSummary.deployment_pins_ready ? "clean" : String(selectedDeploymentPins.status ?? "blocked")}</small></div>
             <div><strong>Compose Files</strong><small>{selectedSummary.compose_selection_ready ? "production overlays selected" : String(selectedComposeSelection.status ?? "blocked")}</small></div>
             <div><strong>Model smoke</strong><small>{selectedSummary.model_measurement_coverage_ready ? "all required aliases measured" : String(selectedModelMeasurementCoverage.status ?? "missing")}</small></div>
+            <div><strong>Target Host</strong><small>{selectedTargetHostReadiness?.status ?? "review required"}</small></div>
+            <div><strong>DHCP Networking</strong><small>{selectedDhcpNetworkReadiness?.status ?? "review required"}</small></div>
             <div><strong>Repository quality</strong><small>{selectedSummary.repository_quality_evidence_ready ? "quality gates recorded" : "proof missing"}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
@@ -6033,6 +6114,23 @@ function System() {
                   </tr>
                 ))}
                 {!selectedHandoffCommands.length && <tr><td colSpan={2}>No handoff commands recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Target Host and DHCP</h4>
+            <table>
+              <thead><tr><th>Scope</th><th>Status</th><th>Evidence</th><th>Warnings</th></tr></thead>
+              <tbody>
+                {selectedCutoverNetworkRows.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.label}</td>
+                    <td><span className={statusPillClass(item.status)}>{item.status}</span></td>
+                    <td>{item.detail}</td>
+                    <td>{item.warnings.length ? item.warnings.join("; ") : "none"}</td>
+                  </tr>
+                ))}
+                {!selectedCutoverNetworkRows.length && <tr><td colSpan={4}>No target-host or DHCP readiness recorded</td></tr>}
               </tbody>
             </table>
           </div>
