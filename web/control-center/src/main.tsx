@@ -634,6 +634,7 @@ type ReportModelMeasurementDetail = {
   runtime: string;
   resolvedModel: string;
   okRuns: string;
+  hookProof: string;
   blockers: string[];
 };
 
@@ -863,6 +864,22 @@ type ModelRecord = {
   manifest?: RuntimeSmokeCarrier;
 };
 
+type ModelSmokeHookProof = {
+  status?: string | null;
+  reason?: string | null;
+  action?: string | null;
+  strategy?: string | null;
+  runtime?: string | null;
+  message?: string | null;
+  model?: string | null;
+  model_alias?: string | null;
+  resolved_model_version?: string | null;
+  engine?: string | null;
+  placeholder?: boolean | string | number | null;
+  gpu_lease_required?: boolean | null;
+  measurements?: Record<string, string | number | boolean | null>;
+};
+
 type ModelSmokeTestRun = {
   id: string;
   status: string;
@@ -878,11 +895,7 @@ type ModelSmokeTestRun = {
   peak_ram_mib?: number | null;
   error?: string;
   reason?: string;
-  hook?: {
-    status?: string | null;
-    strategy?: string | null;
-    reason?: string | null;
-  } | null;
+  hook?: ModelSmokeHookProof | null;
 };
 
 type ModelSmokeTestResult = {
@@ -914,6 +927,7 @@ type ModelAcceptanceMeasurementEntry = {
     peak_ram_mib?: number | null;
     run_time_ms?: number | null;
     completed_at?: string;
+    hook?: ModelSmokeHookProof | null;
   };
   blockers?: string[];
 };
@@ -2006,6 +2020,20 @@ function modelAcceptanceMeasurementLine(entry: ModelAcceptanceMeasurementEntry):
   ].filter(Boolean).join(" / ");
 }
 
+function modelSmokeHookProofLine(hook?: ModelSmokeHookProof | null): string {
+  if (!hook) return "hook proof missing";
+  const measurements = hook.measurements ?? {};
+  const placeholder = hook.placeholder ?? measurements.placeholder;
+  return [
+    hook.status ? `hook ${hook.status}` : "hook status missing",
+    hook.engine ? `engine ${hook.engine}` : "",
+    hook.runtime ? `runtime ${hook.runtime}` : "",
+    placeholder !== undefined && placeholder !== null ? `placeholder ${booleanLabel(placeholder)}` : "placeholder not reported",
+    hook.strategy ? `strategy ${hook.strategy}` : "",
+    hook.reason ? `reason ${hook.reason}` : ""
+  ].filter(Boolean).join(" / ");
+}
+
 function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: AdminMetrics | null }) {
   const policy: Partial<ResourcePolicyValues> = status?.resource_policy ?? {};
   const lease = status?.scheduler_lease;
@@ -2564,7 +2592,8 @@ function Models() {
             {smokeResult.measurement?.resource_label ? ` / ${smokeResult.measurement.resource_label}` : ""}
             {smokeResult.measurement?.resource_decision?.reason ? ` / ${smokeResult.measurement.resource_decision.reason}` : ""}
           </small>
-          <small>Configured smoke: {runtimeSmokeLine(smokeResult.model)}{smokeResult.smoke_test.hook?.strategy ? ` / hook ${smokeResult.smoke_test.hook.strategy}` : ""}</small>
+          <small>Configured smoke: {runtimeSmokeLine(smokeResult.model)}</small>
+          <small>Hook proof: {modelSmokeHookProofLine(smokeResult.smoke_test.hook)}</small>
           {(smokeResult.smoke_test.error || smokeResult.smoke_test.reason) && <small>{smokeResult.smoke_test.error ?? smokeResult.smoke_test.reason}</small>}
         </div>
       )}
@@ -2603,7 +2632,7 @@ function Models() {
             </>
           )}
           <table>
-            <thead><tr><th>Suite</th><th>Status</th><th>Alias</th><th>Measurement</th><th>Blockers</th></tr></thead>
+            <thead><tr><th>Suite</th><th>Status</th><th>Alias</th><th>Measurement</th><th>Hook Proof</th><th>Blockers</th></tr></thead>
             <tbody>
               {acceptanceCoverage.groups.flatMap((group) => group.measurements.map((entry) => (
                 <tr key={`${group.id}:${entry.alias}`}>
@@ -2611,10 +2640,11 @@ function Models() {
                   <td><span className={statusPillClass(entry.ready ? "ok" : "warning")}>{entry.ready ? "ready" : "missing"}</span><small>expects {entry.expected_runtime ?? "any runtime"}</small></td>
                   <td><code>{entry.alias}</code><small>{entry.status ?? "unknown"} / {entry.display_name ?? "unresolved"}</small></td>
                   <td>{modelAcceptanceMeasurementLine(entry)}{entry.measurements_updated_at && <small>updated {formatDateTime(entry.measurements_updated_at)}</small>}</td>
+                  <td>{modelSmokeHookProofLine(entry.latest_ok_run?.hook)}</td>
                   <td>{entry.blockers?.length ? entry.blockers.join("; ") : "none"}</td>
                 </tr>
               )))}
-              {!acceptanceCoverage.groups.length && <tr><td colSpan={5}>No acceptance measurement groups loaded</td></tr>}
+              {!acceptanceCoverage.groups.length && <tr><td colSpan={6}>No acceptance measurement groups loaded</td></tr>}
             </tbody>
           </table>
         </>
@@ -3511,6 +3541,8 @@ function acceptanceModelMeasurementRows(report: Record<string, unknown>): Report
       if (!entry) return;
       const alias = String(entry.alias ?? "");
       const runtime = String(entry.runtime ?? entry.expected_runtime ?? entry.preferred_runtime ?? "unknown");
+      const latestRun = objectOrNull(entry.latest_ok_run) ?? {};
+      const hookProof = objectOrNull(latestRun.hook) as ModelSmokeHookProof | null;
       rows.push({
         key: `${groupLabel}:${alias || index}`,
         group: groupLabel,
@@ -3520,6 +3552,7 @@ function acceptanceModelMeasurementRows(report: Record<string, unknown>): Report
         runtime,
         resolvedModel: String(entry.resolved_model_version ?? "not resolved"),
         okRuns: String(entry.ok_run_count ?? 0),
+        hookProof: modelSmokeHookProofLine(hookProof),
         blockers: stringList(entry.blockers)
       });
     });
@@ -6051,7 +6084,7 @@ function System() {
               <small>{stringList(selectedModelMeasurementCoverage.missing_aliases).length ? `missing ${stringList(selectedModelMeasurementCoverage.missing_aliases).join(", ")}` : "no missing aliases recorded"}</small>
             </div>
             <table>
-              <thead><tr><th>Suite</th><th>Alias</th><th>Status</th><th>Runtime</th><th>Resolved Model</th><th>OK Runs</th><th>Blockers</th></tr></thead>
+              <thead><tr><th>Suite</th><th>Alias</th><th>Status</th><th>Runtime</th><th>Resolved Model</th><th>OK Runs</th><th>Hook Proof</th><th>Blockers</th></tr></thead>
               <tbody>
                 {selectedModelMeasurementRows.map((item) => (
                   <tr key={item.key}>
@@ -6061,10 +6094,11 @@ function System() {
                     <td>{item.runtime}</td>
                     <td><code>{item.resolvedModel}</code></td>
                     <td>{item.okRuns}</td>
+                    <td>{item.hookProof}</td>
                     <td>{item.blockers.length ? item.blockers.join("; ") : "none"}</td>
                   </tr>
                 ))}
-                {!selectedModelMeasurementRows.length && <tr><td colSpan={7}>No database model-smoke coverage recorded</td></tr>}
+                {!selectedModelMeasurementRows.length && <tr><td colSpan={8}>No database model-smoke coverage recorded</td></tr>}
               </tbody>
             </table>
           </div>
