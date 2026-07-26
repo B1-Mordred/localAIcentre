@@ -116,9 +116,10 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append(shell_default_expression("B1_ACCEPTANCE_API_KEY", ""))
 
     lines.extend(section("Target host and DHCP policy"))
-    lines.append("# The target system owns the appliance hostname; IP, gateway, and resolver properties come from DHCP.")
+    lines.append("# B1 defines the appliance system hostname; IP, gateway, and resolver properties come from DHCP.")
     lines.append(shell_default_literal("B1_HOST_CHAT", config.host_chat))
-    lines.append(shell_default_expression("B1_EXPECTED_TARGET_HOST", "$B1_HOST_CHAT"))
+    lines.append(shell_default_expression("B1_APPLIANCE_HOSTNAME", "$B1_HOST_CHAT"))
+    lines.append(shell_default_expression("B1_EXPECTED_TARGET_HOST", "$B1_APPLIANCE_HOSTNAME"))
     lines.append(shell_default_literal("B1_LEGACY_COMFY_PUBLISH", "8188:8188"))
     lines.append(shell_default_expression("B1_LEGACY_COMFY_BIND", ""))
     lines.append(shell_default_literal("B1_LEGACY_COMFY_ALLOW_CIDRS", "192.168.2.0/24 100.64.0.0/10"))

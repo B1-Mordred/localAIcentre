@@ -124,7 +124,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(network["hostname_source"], "system-hostname")
         self.assertEqual(
             network["expected_operator_networking"],
-            "system-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+            "B1-defined system hostname plus host-managed DHCP lease/reservation and LAN DNS records",
         )
         self.assertFalse(network["b1_static_ip_configures"])
         self.assertTrue(network["has_dhcp_default_route"])

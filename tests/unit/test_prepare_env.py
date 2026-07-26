@@ -33,6 +33,7 @@ class PrepareEnvTests(unittest.TestCase):
             socket_path = root / "docker.sock"
             template.write_text(
                 "COMPOSE_FILE=compose.yaml\n"
+                "B1_APPLIANCE_HOSTNAME=old.example\n"
                 "B1_EXPECTED_TARGET_HOST=old.example\n"
                 "B1_DOCKER_GID=0\n",
                 encoding="utf-8",
@@ -51,10 +52,13 @@ class PrepareEnvTests(unittest.TestCase):
             content = output.read_text(encoding="utf-8")
             self.assertTrue(result["created"])
             self.assertEqual(result["docker_socket_gid"], gid)
+            self.assertEqual(result["appliance_hostname"], "ai.b1.germering")
             self.assertEqual(result["expected_target_host"], "ai.b1.germering")
+            self.assertEqual(result["hostname_authority"], "b1-appliance-config")
             self.assertEqual(result["network_property_source"], "host-dhcp-client")
             self.assertFalse(result["b1_static_ip_configures"])
             self.assertIn("B1_DOCKER_GID", result["updated_keys"])
+            self.assertIn("B1_APPLIANCE_HOSTNAME=ai.b1.germering", content)
             self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", content)
             self.assertIn(f"B1_DOCKER_GID={gid}", content)
             self.assertNotIn("B1_STATIC_IP", content)
@@ -82,7 +86,7 @@ class PrepareEnvTests(unittest.TestCase):
                 template=template,
                 output=output,
                 docker_socket=socket_path,
-                expected_target_host="ai.b1.germering",
+                appliance_hostname="ai.b1.germering",
                 update_existing=True,
             )
 
@@ -91,6 +95,8 @@ class PrepareEnvTests(unittest.TestCase):
             self.assertIn("CUSTOM_VALUE=kept", content)
             self.assertIn("B1_RUNTIME_PRODUCTION_REQUIRED=localai,comfyui,audio-cpu,voicebox", content)
             self.assertIn("B1_RUNTIME_PRODUCTION_REQUIRED", result["updated_keys"])
+            self.assertIn("B1_APPLIANCE_HOSTNAME=ai.b1.germering", content)
+            self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", content)
             self.assertIn(f"B1_DOCKER_GID={os.stat(socket_path).st_gid}", content)
 
     def test_prepare_appends_missing_docker_gid_key(self) -> None:
@@ -185,6 +191,25 @@ class PrepareEnvTests(unittest.TestCase):
 
         self.assertEqual(prepare_env.normalize_expected_target_host("AI.B1.GERMERING."), "ai.b1.germering")
         self.assertEqual(prepare_env.normalize_expected_target_host("ai"), "ai")
+
+    def test_prepare_rejects_conflicting_hostname_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / ".env.production.example"
+            output = root / ".env"
+            socket_path = root / "docker.sock"
+            template.write_text("B1_DOCKER_GID=0\n", encoding="utf-8")
+            sock = self.unix_socket(socket_path)
+            self.addCleanup(sock.close)
+
+            with self.assertRaisesRegex(prepare_env.PrepareEnvError, "must match"):
+                prepare_env.prepare_production_env(
+                    template=template,
+                    output=output,
+                    docker_socket=socket_path,
+                    appliance_hostname="ai.b1.germering",
+                    expected_target_host="other.b1.germering",
+                )
 
     def test_prepared_production_template_is_shell_sourceable_for_preflights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

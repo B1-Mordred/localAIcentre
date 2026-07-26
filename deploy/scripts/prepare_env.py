@@ -124,6 +124,7 @@ def prepare_production_env(
     template: Path,
     output: Path,
     docker_socket: Path,
+    appliance_hostname: str | None = None,
     expected_target_host: str | None = None,
     update_existing: bool = False,
 ) -> dict[str, Any]:
@@ -137,8 +138,25 @@ def prepare_production_env(
     source = source_path.read_text(encoding="utf-8")
     values = {"B1_DOCKER_GID": str(gid)}
     normalized_target_host = None
-    if expected_target_host is not None:
-        normalized_target_host = normalize_expected_target_host(expected_target_host)
+    if appliance_hostname is not None or expected_target_host is not None:
+        normalized_appliance_hostname = (
+            normalize_expected_target_host(appliance_hostname)
+            if appliance_hostname is not None
+            else None
+        )
+        normalized_expected_target = (
+            normalize_expected_target_host(expected_target_host)
+            if expected_target_host is not None
+            else None
+        )
+        normalized_target_host = normalized_appliance_hostname or normalized_expected_target
+        if (
+            normalized_appliance_hostname is not None
+            and normalized_expected_target is not None
+            and normalized_appliance_hostname != normalized_expected_target
+        ):
+            raise PrepareEnvError("B1_APPLIANCE_HOSTNAME and B1_EXPECTED_TARGET_HOST must match")
+        values["B1_APPLIANCE_HOSTNAME"] = normalized_target_host
         values["B1_EXPECTED_TARGET_HOST"] = normalized_target_host
     rendered, updated = render_env(source, values)
     write_private_text(output, rendered)
@@ -149,7 +167,9 @@ def prepare_production_env(
         "updated_keys": sorted(set(updated)),
         "docker_socket": str(docker_socket),
         "docker_socket_gid": gid,
+        "appliance_hostname": normalized_target_host,
         "expected_target_host": normalized_target_host,
+        "hostname_authority": "b1-appliance-config",
         "network_property_source": "host-dhcp-client",
         "b1_static_ip_configures": False,
     }
@@ -161,9 +181,14 @@ def main() -> None:
     parser.add_argument("--output", default=".env", help="Env file to create or update.")
     parser.add_argument("--docker-socket", default="/var/run/docker.sock", help="Host Docker socket used to derive B1_DOCKER_GID.")
     parser.add_argument(
+        "--appliance-hostname",
+        default=os.getenv("B1_APPLIANCE_HOSTNAME"),
+        help="B1-defined appliance system hostname/FQDN. IP/gateway/DNS properties remain DHCP-owned.",
+    )
+    parser.add_argument(
         "--expected-target-host",
         default=os.getenv("B1_EXPECTED_TARGET_HOST"),
-        help="System hostname/FQDN expected in migration and cutover evidence. IP/gateway/DNS properties remain DHCP-owned.",
+        help="Backward-compatible alias for the appliance hostname used in migration and cutover evidence.",
     )
     parser.add_argument("--update-existing", action="store_true", help="Update managed keys in an existing output file.")
     args = parser.parse_args()
@@ -171,6 +196,7 @@ def main() -> None:
         template=Path(args.template),
         output=Path(args.output),
         docker_socket=Path(args.docker_socket),
+        appliance_hostname=args.appliance_hostname,
         expected_target_host=args.expected_target_host,
         update_existing=args.update_existing,
     )
@@ -178,9 +204,9 @@ def main() -> None:
     keys = ", ".join(result["updated_keys"])
     print(f"{action} {result['output']}")
     print(f"set {keys} from {result['docker_socket']} gid {result['docker_socket_gid']}")
-    if result["expected_target_host"]:
+    if result["appliance_hostname"]:
         print(
-            f"target hostname evidence expects {result['expected_target_host']}; "
+            f"B1 appliance hostname is {result['appliance_hostname']}; "
             "host IP/gateway/resolver properties remain acquired by DHCP"
         )
 

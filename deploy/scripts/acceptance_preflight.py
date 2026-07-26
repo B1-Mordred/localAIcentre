@@ -664,7 +664,7 @@ def validate_target_identity_payload(
     observed_expected = normalized_hostname(payload.get("expected_target_host"))
     if expected and observed_expected and observed_expected not in {expected, expected.split(".", 1)[0]}:
         failures.append(
-            f"{label} target identity expected host {observed_expected} does not match B1_EXPECTED_TARGET_HOST={expected}"
+            f"{label} target identity expected host {observed_expected} does not match B1_APPLIANCE_HOSTNAME={expected}"
         )
     if not observed_expected or not valid_hostname_reference(observed_expected):
         failures.append(f"{label} target identity does not record a valid system hostname/FQDN")
@@ -716,20 +716,26 @@ def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[
 
 
 def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
-    expected_target = env_value(ctx, "B1_EXPECTED_TARGET_HOST") or env_value(ctx, "B1_HOST_CHAT")
+    appliance_hostname = env_value(ctx, "B1_APPLIANCE_HOSTNAME")
+    expected_target = appliance_hostname or env_value(ctx, "B1_EXPECTED_TARGET_HOST") or env_value(ctx, "B1_HOST_CHAT")
+    legacy_expected_target = env_value(ctx, "B1_EXPECTED_TARGET_HOST")
     chat_host = env_value(ctx, "B1_HOST_CHAT")
     failures = []
     data = {
+        "appliance_hostname": appliance_hostname or "<unset>",
         "expected_target_host": expected_target or "<unset>",
         "chat_host": chat_host or "<unset>",
-        "hostname_authority": "system-hostname",
+        "hostname_authority": "b1-appliance-config",
         "legacy_comfy_publish": env_value(ctx, "B1_LEGACY_COMFY_PUBLISH") or "<compose-default>",
         "legacy_comfy_allow_cidrs": split_words(env_value(ctx, "B1_LEGACY_COMFY_ALLOW_CIDRS")),
     }
     if not expected_target:
-        failures.append("B1_EXPECTED_TARGET_HOST must name the expected system hostname/FQDN")
+        failures.append("B1_APPLIANCE_HOSTNAME must name the expected system hostname/FQDN")
     elif not valid_hostname_reference(expected_target):
-        failures.append("B1_EXPECTED_TARGET_HOST must be a hostname/FQDN, not a URL, IP address, or host:port value")
+        failures.append("B1_APPLIANCE_HOSTNAME must be a hostname/FQDN, not a URL, IP address, or host:port value")
+    if legacy_expected_target and appliance_hostname:
+        if normalized_hostname(legacy_expected_target) != normalized_hostname(appliance_hostname):
+            failures.append("B1_EXPECTED_TARGET_HOST must match B1_APPLIANCE_HOSTNAME")
 
     if chat_host and not valid_hostname_reference(chat_host):
         failures.append("B1_HOST_CHAT must be a hostname/FQDN, not a URL, IP address, or host:port value")
@@ -738,7 +744,7 @@ def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
         normalized_chat = normalized_hostname(chat_host)
         allowed = {normalized_chat, normalized_chat.split(".", 1)[0]}
         if normalized_expected not in allowed:
-            failures.append("B1_EXPECTED_TARGET_HOST must match B1_HOST_CHAT or its short hostname")
+            failures.append("B1_APPLIANCE_HOSTNAME must match B1_HOST_CHAT or its short hostname")
 
     deprecated_bind = env_value(ctx, "B1_LEGACY_COMFY_BIND")
     if deprecated_bind:
@@ -824,7 +830,11 @@ def validate_backup_migration_payload(
 def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCheck:
     failures = []
     checked = []
-    expected_target_host = env_value(ctx, "B1_EXPECTED_TARGET_HOST") or env_value(ctx, "B1_HOST_CHAT")
+    expected_target_host = (
+        env_value(ctx, "B1_APPLIANCE_HOSTNAME")
+        or env_value(ctx, "B1_EXPECTED_TARGET_HOST")
+        or env_value(ctx, "B1_HOST_CHAT")
+    )
     for key, label, kind, expected_format in BACKUP_MIGRATION_ROLLBACK_INPUTS:
         raw = env_value(ctx, key)
         if not raw:

@@ -544,15 +544,15 @@ class ComposePolicyTests(unittest.TestCase):
         docs = "\n".join([env_text, readme, installation, migration])
         env_normalized = re.sub(r"\s+", " ", env_text)
 
-        self.assertIn("The target OS/system hostname defines", docs)
+        self.assertIn("B1_APPLIANCE_HOSTNAME is the B1-defined", docs)
+        self.assertIn("B1_APPLIANCE_HOSTNAME=ai.b1.germering", env_text)
         self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", env_text)
         self.assertIn("hostname_authority=system-hostname", installation)
-        self.assertIn("system-defined hostname plus host-managed DHCP", migration)
-        self.assertIn("host IP/gateway/resolver properties should come", env_normalized)
+        self.assertIn("B1-defined system hostname plus host-managed DHCP", migration)
+        self.assertIn("host IP/gateway/resolver properties", env_normalized)
+        self.assertIn("should come from DHCP", env_normalized)
         self.assertIn("from DHCP or a DHCP reservation", env_normalized)
         self.assertIn("does not configure a static host IP", docs)
-        self.assertNotIn("B1 configuration defines the appliance " + "hostname", docs)
-        self.assertNotIn("B1-defined " + "hostname", docs)
 
     def test_production_env_disables_development_placeholders_and_cloud_by_default(self) -> None:
         self.assertEqual(self.production_env["B1_CPU_AUDIO_ENGINE"], "piper")

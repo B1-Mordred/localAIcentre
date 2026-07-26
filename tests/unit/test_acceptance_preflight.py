@@ -194,7 +194,7 @@ class AcceptancePreflightTests(unittest.TestCase):
                   "network_property_source": "host-dhcp-client",
                   "b1_manages_host_networking": false,
                   "b1_static_ip_configures": false,
-                  "expected_operator_networking": "system-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+                  "expected_operator_networking": "B1-defined system hostname plus host-managed DHCP lease/reservation and LAN DNS records",
                   "non_loopback_address_count": 1,
                   "dynamic_address_count": 1,
                   "default_route_interfaces": ["eth0"],
@@ -585,7 +585,7 @@ class AcceptancePreflightTests(unittest.TestCase):
             root = Path(tmp)
             self.write_operator_files(root)
             env_file = self.generate_env_file(root)
-            report = self.run_report(root, env_file, {"B1_EXPECTED_TARGET_HOST": "192.168.2.100"})
+            report = self.run_report(root, env_file, {"B1_APPLIANCE_HOSTNAME": "192.168.2.100"})
 
         self.assertEqual(report["status"], "fail")
         policy = self.check_by_name(report, "target_network_policy")
