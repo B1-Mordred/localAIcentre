@@ -30,6 +30,7 @@ CORE_INTENDED_HOSTS = (
 )
 OPTIONAL_INTENDED_HOSTS = ("monitoring.ai.b1.germering",)
 INTENDED_HOSTS = CORE_INTENDED_HOSTS + OPTIONAL_INTENDED_HOSTS
+DEFAULT_EXPECTED_TARGET_HOST = CORE_INTENDED_HOSTS[0]
 
 COMMANDS = {
     "docker_ps_all": ["docker", "ps", "-a", "--format", "json"],
@@ -1431,12 +1432,49 @@ def inspect_host_identity() -> dict[str, Any]:
     }
 
 
+def normalize_hostname(value: Any) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def summarize_target_identity(identity: dict[str, Any], expected_target_host: str) -> dict[str, Any]:
+    expected = normalize_hostname(expected_target_host) or DEFAULT_EXPECTED_TARGET_HOST
+    expected_short = expected.split(".", 1)[0]
+    observed_hostname = normalize_hostname(identity.get("hostname"))
+    observed_fqdn = normalize_hostname(identity.get("fqdn"))
+    observed_platform_node = normalize_hostname(identity.get("platform_node"))
+    acceptable = {expected, expected_short}
+    hostname_matches = observed_hostname in acceptable
+    fqdn_matches = observed_fqdn in acceptable
+    platform_node_matches = observed_platform_node in acceptable
+    warnings: list[str] = []
+    if not any((hostname_matches, fqdn_matches, platform_node_matches)):
+        warnings.append(
+            f"Inventory host identity does not match expected target {expected}; "
+            f"observed hostname={observed_hostname or '<missing>'}, fqdn={observed_fqdn or '<missing>'}, "
+            f"platform_node={observed_platform_node or '<missing>'}"
+        )
+    return {
+        "expected_target_host": expected,
+        "expected_short_hostname": expected_short,
+        "observed_hostname": observed_hostname,
+        "observed_fqdn": observed_fqdn,
+        "observed_platform_node": observed_platform_node,
+        "hostname_matches_expected": hostname_matches,
+        "fqdn_matches_expected": fqdn_matches,
+        "platform_node_matches_expected": platform_node_matches,
+        "accepted": not warnings,
+        "operator_must_review_target_identity": bool(warnings),
+        "warnings": warnings,
+    }
+
+
 def build_inventory(
     *,
     b1_root: Path = Path("/srv/b1-ai-hub"),
     scan_roots: list[Path] | None = None,
     docker_socket_path: Path = DOCKER_SOCKET_PATH,
     configured_docker_gid: str | None = None,
+    expected_target_host: str = DEFAULT_EXPECTED_TARGET_HOST,
     command_runner: Callable[[list[str]], dict[str, Any]] = run,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1489,6 +1527,8 @@ def build_inventory(
         "default_routes": default_routes,
         "dhcp_policy": summarize_host_network(network_interfaces, default_routes, dns_records),
     }
+    host_identity = inspect_host_identity()
+    target_identity = summarize_target_identity(host_identity, expected_target_host)
 
     return {
         "created_at": created_at.astimezone(UTC).isoformat(),
@@ -1513,7 +1553,8 @@ def build_inventory(
             "socket": docker_socket,
         },
         "host": {
-            "identity": inspect_host_identity(),
+            "identity": host_identity,
+            "target_identity": target_identity,
             "systemd_services": systemd_rows,
             "systemd_service_inspects": systemd_service_inspects,
             "listening_tcp": listening_tcp,
@@ -1543,6 +1584,7 @@ def build_inventory(
             "open_webui_database_candidates": open_webui_databases,
         },
         "migration_readiness": {
+            "target_identity": target_identity,
             "port_review": analyze_listening_tcp(listening_tcp),
             "hardware_profile": summarize_hardware_profile(gpu_devices, host_memory),
             "gpu_container_runtime": summarize_gpu_container_runtime(
@@ -1557,6 +1599,7 @@ def build_inventory(
             "open_webui": summarize_open_webui_inventory(open_webui_databases),
             "open_webui_data_roots": summarize_open_webui_data_roots(open_webui_data_roots),
             "notes": [
+                "Target identity is non-mutating evidence; cutover acceptance rejects inventories from the wrong appliance hostname.",
                 "Port listeners are review evidence only; do not stop services from the inventory report.",
                 "SQLite metadata reads schema and aggregate counts only, not Open WebUI row contents.",
                 "Model directory scans are bounded and preserve symlinks/special files for operator review.",
@@ -1587,11 +1630,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Produce a read-only B1 AI Hub migration inventory.")
     parser.add_argument("--output", required=True)
     parser.add_argument("--b1-root", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"))
+    parser.add_argument(
+        "--expected-target-host",
+        default=os.getenv("B1_EXPECTED_TARGET_HOST", os.getenv("B1_HOST_CHAT", DEFAULT_EXPECTED_TARGET_HOST)),
+        help="Expected system hostname/FQDN for target-host cutover evidence.",
+    )
     parser.add_argument("--scan-root", action="append", default=None, help="Root to scan for Compose files. May be repeated.")
     args = parser.parse_args()
     output = absolute_path_without_symlink_resolution(args.output)
     scan_roots = [Path(item).resolve() for item in args.scan_root] if args.scan_root else None
-    inventory = build_inventory(b1_root=Path(args.b1_root).resolve(), scan_roots=scan_roots)
+    inventory = build_inventory(
+        b1_root=Path(args.b1_root).resolve(),
+        scan_roots=scan_roots,
+        expected_target_host=args.expected_target_host,
+    )
     write_private_json(output, inventory)
     print(f"wrote inventory: {output}")
 

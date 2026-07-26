@@ -291,7 +291,7 @@ For LAN TLS, the default Caddy configuration uses an internal CA. Control Center
 
 Do not run migration or cutover scripts against the existing host until the inventory report has been reviewed and backups have been verified. The old stack, volumes, model directories, and Open WebUI data must remain recoverable throughout development and cutover.
 
-The host system owns the appliance hostname. B1 AI Hub records the observed hostname, interfaces, DHCP/default-route evidence, resolver state, and LAN DNS records, but it does not configure a static host IP; use DHCP or a DHCP reservation and point the configured B1 virtual hosts at the assigned LAN address.
+The host system owns the appliance hostname. B1 AI Hub records the observed hostname, validates it against `B1_EXPECTED_TARGET_HOST`, records interfaces, DHCP/default-route evidence, resolver state, and LAN DNS records, but it does not configure a static host IP; use DHCP or a DHCP reservation and point the configured B1 virtual hosts at the assigned LAN address.
 
 The migration command sequence is intentionally staged:
 

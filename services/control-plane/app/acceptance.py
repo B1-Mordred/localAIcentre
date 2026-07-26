@@ -2691,6 +2691,20 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     inventory_count = _integer_value(inventory.get("container_classification_count"))
     if inventory_count is None or inventory_count < 0:
         missing.append("old_stack_inventory_reviewed.container_classification_count")
+    inventory_identity = inventory.get("target_identity") if isinstance(inventory.get("target_identity"), dict) else {}
+    if inventory_identity.get("accepted") is not True:
+        missing.append("old_stack_inventory_reviewed.target_identity.accepted")
+    if inventory_identity.get("operator_must_review_target_identity") is not False:
+        missing.append("old_stack_inventory_reviewed.target_identity.operator_must_review_target_identity_false")
+    if not _nonempty_text(inventory_identity.get("expected_target_host")):
+        missing.append("old_stack_inventory_reviewed.target_identity.expected_target_host")
+    if not _nonempty_text(inventory_identity.get("observed_hostname")) and not _nonempty_text(inventory_identity.get("observed_fqdn")):
+        missing.append("old_stack_inventory_reviewed.target_identity.observed_identity")
+    if not any(
+        inventory_identity.get(key) is True
+        for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+    ):
+        missing.append("old_stack_inventory_reviewed.target_identity.matches_expected")
 
     old_backup = _check_record(checks, "old_stack_backup_verified")
     old_stack_files_verified = _positive_int(old_backup.get("files_verified"))
@@ -2755,6 +2769,25 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
         missing.append("cutover_plan_reviewed.dns_readiness.operator_must_review_dns_false")
     if not _as_string_list(dns.get("common_addresses")):
         missing.append("cutover_plan_reviewed.dns_readiness.common_addresses")
+
+    target_identity = (
+        cutover.get("target_identity_readiness")
+        if isinstance(cutover.get("target_identity_readiness"), dict)
+        else {}
+    )
+    if target_identity.get("available") is not True:
+        missing.append("cutover_plan_reviewed.target_identity_readiness.available")
+    if target_identity.get("accepted") is not True:
+        missing.append("cutover_plan_reviewed.target_identity_readiness.accepted")
+    if target_identity.get("operator_must_review_target_identity") is not False:
+        missing.append("cutover_plan_reviewed.target_identity_readiness.operator_must_review_target_identity_false")
+    if not _nonempty_text(target_identity.get("expected_target_host")):
+        missing.append("cutover_plan_reviewed.target_identity_readiness.expected_target_host")
+    if not any(
+        target_identity.get(key) is True
+        for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+    ):
+        missing.append("cutover_plan_reviewed.target_identity_readiness.matches_expected")
 
     networking = cutover.get("networking_readiness") if isinstance(cutover.get("networking_readiness"), dict) else {}
     if networking.get("available") is not True:
@@ -3130,6 +3163,9 @@ def cutover_preservation_snapshot(plan: dict[str, Any], source_path: Path | None
         },
         "old_stack_backup_verification_status": str(verification.get("status") or ""),
         "dns_readiness": plan.get("dns_readiness") if isinstance(plan.get("dns_readiness"), dict) else {"available": False},
+        "target_identity_readiness": plan.get("target_identity_readiness")
+        if isinstance(plan.get("target_identity_readiness"), dict)
+        else {"available": False},
         "networking_readiness": plan.get("networking_readiness")
         if isinstance(plan.get("networking_readiness"), dict)
         else {"available": False},
@@ -4366,6 +4402,23 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             or dns_optional_divergent
         ):
             blockers.append("cutover DNS readiness requires operator review")
+        target_identity = (
+            preservation.get("target_identity_readiness")
+            if isinstance(preservation.get("target_identity_readiness"), dict)
+            else {}
+        )
+        if target_identity.get("available") is not True:
+            blockers.append("cutover target host identity readiness is unavailable")
+        elif (
+            target_identity.get("accepted") is not True
+            or target_identity.get("operator_must_review_target_identity") is True
+            or not any(
+                target_identity.get(key) is True
+                for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+            )
+            or _as_string_list(target_identity.get("warnings"))
+        ):
+            blockers.append("cutover target host identity readiness requires operator review")
         networking = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
         if networking.get("available") is not True:
             blockers.append("cutover host DHCP/networking readiness is unavailable")
@@ -4992,6 +5045,11 @@ def markdown_report(report: dict[str, Any]) -> str:
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    target_identity_readiness = (
+        preservation.get("target_identity_readiness")
+        if isinstance(preservation.get("target_identity_readiness"), dict)
+        else {}
+    )
     networking_readiness = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
@@ -5034,6 +5092,21 @@ def markdown_report(report: dict[str, Any]) -> str:
     ):
         if key in dns_readiness:
             preservation_summary_rows.append([f"dns.{key}", _format_value(dns_readiness.get(key))])
+    for key in (
+        "available",
+        "expected_target_host",
+        "expected_short_hostname",
+        "observed_hostname",
+        "observed_fqdn",
+        "observed_platform_node",
+        "hostname_matches_expected",
+        "fqdn_matches_expected",
+        "platform_node_matches_expected",
+        "accepted",
+        "operator_must_review_target_identity",
+    ):
+        if key in target_identity_readiness:
+            preservation_summary_rows.append([f"target_identity.{key}", _format_value(target_identity_readiness.get(key))])
     for key in (
         "hostname_source",
         "network_property_source",
@@ -5436,6 +5509,11 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     hardware_readiness = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
     gpu_runtime_readiness = preservation.get("gpu_runtime_readiness") if isinstance(preservation.get("gpu_runtime_readiness"), dict) else {}
     dns_readiness = preservation.get("dns_readiness") if isinstance(preservation.get("dns_readiness"), dict) else {}
+    target_identity_readiness = (
+        preservation.get("target_identity_readiness")
+        if isinstance(preservation.get("target_identity_readiness"), dict)
+        else {}
+    )
     networking_readiness = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
     runtime_agent_socket_readiness = (
         preservation.get("runtime_agent_socket_readiness")
@@ -5451,6 +5529,16 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not _as_string_list(dns_readiness.get("missing_hosts"))
         and not _as_string_list(dns_readiness.get("divergent_hosts"))
         and not _as_string_list(dns_readiness.get("optional_divergent_hosts"))
+    )
+    target_identity_ready = (
+        target_identity_readiness.get("available") is True
+        and target_identity_readiness.get("accepted") is True
+        and target_identity_readiness.get("operator_must_review_target_identity") is not True
+        and any(
+            target_identity_readiness.get(key) is True
+            for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+        )
+        and not _as_string_list(target_identity_readiness.get("warnings"))
     )
     networking_ready = (
         networking_readiness.get("available") is True
@@ -5651,6 +5739,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0
         and dns_ready
+        and target_identity_ready
         and networking_ready
         and hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True
@@ -5661,6 +5750,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and not cutover_warnings,
         "cutover_warnings_ready": not cutover_warnings,
         "cutover_dns_ready": dns_ready,
+        "cutover_target_identity_ready": target_identity_ready,
         "cutover_networking_ready": networking_ready,
         "cutover_hardware_ready": hardware_readiness.get("available") is True
         and hardware_readiness.get("accepted") is True

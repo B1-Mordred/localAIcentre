@@ -41,8 +41,22 @@ class CutoverPlanTests(unittest.TestCase):
         listening_tcp: list[dict[str, Any]] | None = None,
         dns_records: dict[str, list[str]] | None = None,
         networking: dict[str, Any] | None = None,
+        target_identity: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         records = dns_records if dns_records is not None else {host: ["192.168.2.100"] for host in cutover.PRODUCTION_HOSTS}
+        target_identity_payload = target_identity if target_identity is not None else {
+            "expected_target_host": "ai.b1.germering",
+            "expected_short_hostname": "ai",
+            "observed_hostname": "ai",
+            "observed_fqdn": "ai.b1.germering",
+            "observed_platform_node": "ai",
+            "hostname_matches_expected": True,
+            "fqdn_matches_expected": True,
+            "platform_node_matches_expected": True,
+            "accepted": True,
+            "operator_must_review_target_identity": False,
+            "warnings": [],
+        }
         networking_payload = networking if networking is not None else {
             "hostname_source": "system-hostname",
             "network_property_source": "host-dhcp-client",
@@ -102,6 +116,7 @@ class CutoverPlanTests(unittest.TestCase):
                     "warnings": [],
                 },
                 "networking": networking_payload,
+                "target_identity": target_identity_payload,
             },
             "classification": {
                 "containers": [
@@ -114,6 +129,11 @@ class CutoverPlanTests(unittest.TestCase):
                 ],
             },
             "host": {
+                "identity": {
+                    "hostname": target_identity_payload.get("observed_hostname"),
+                    "fqdn": target_identity_payload.get("observed_fqdn"),
+                    "platform_node": target_identity_payload.get("observed_platform_node"),
+                },
                 "dns": {
                     "intended_hosts": list(cutover.PRODUCTION_HOSTS) + list(cutover.OPTIONAL_PRODUCTION_HOSTS),
                     "core_hosts": list(cutover.PRODUCTION_HOSTS),
@@ -288,6 +308,10 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertEqual(plan["dns_readiness"]["common_addresses"], ["192.168.2.100"])
         self.assertEqual(plan["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
         self.assertEqual(plan["b1_ai_hub"]["optional_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertEqual(plan["b1_ai_hub"]["expected_target_host"], "ai.b1.germering")
+        self.assertTrue(plan["target_identity_readiness"]["accepted"])
+        self.assertTrue(plan["target_identity_readiness"]["fqdn_matches_expected"])
+        self.assertFalse(plan["target_identity_readiness"]["operator_must_review_target_identity"])
         self.assertEqual(plan["networking_readiness"]["hostname_source"], "system-hostname")
         self.assertEqual(plan["networking_readiness"]["network_property_source"], "host-dhcp-client")
         self.assertFalse(plan["networking_readiness"]["b1_static_ip_configures"])
@@ -356,6 +380,47 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(plan["networking_readiness"]["operator_must_review_networking"])
         self.assertTrue(any("Host DHCP/networking requires operator review" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_warns_when_target_identity_does_not_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inventory_path = self.write_json(
+                root / "inventory.json",
+                self.inventory(
+                    target_identity={
+                        "expected_target_host": "ai.b1.germering",
+                        "expected_short_hostname": "ai",
+                        "observed_hostname": "b1-5",
+                        "observed_fqdn": "b1-5",
+                        "observed_platform_node": "b1-5",
+                        "hostname_matches_expected": False,
+                        "fqdn_matches_expected": False,
+                        "platform_node_matches_expected": False,
+                        "accepted": False,
+                        "operator_must_review_target_identity": True,
+                        "warnings": ["Inventory host identity does not match expected target ai.b1.germering"],
+                    }
+                ),
+            )
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+            )
+
+        self.assertFalse(plan["target_identity_readiness"]["accepted"])
+        self.assertTrue(plan["target_identity_readiness"]["operator_must_review_target_identity"])
+        self.assertTrue(any("Target host identity requires operator review" in warning for warning in plan["warnings"]))
 
     def test_build_plan_warns_when_hardware_profile_is_below_initial_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

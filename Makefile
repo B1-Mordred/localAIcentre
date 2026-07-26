@@ -7,6 +7,8 @@ endif
 
 B1_DATA_ROOT ?= /srv/b1-ai-hub
 B1_BACKUP_ROOT ?= $(B1_DATA_ROOT)/backups
+B1_HOST_CHAT ?= ai.b1.germering
+B1_EXPECTED_TARGET_HOST ?= $(B1_HOST_CHAT)
 B1_BACKUP_ENCRYPTION_MODE ?= none
 B1_BACKUP_ENCRYPTION_KEY_FILE ?= $(B1_DATA_ROOT)/secrets/master_encryption_key
 B1_ROLLBACK_REHEARSAL_REPORT ?= $(B1_BACKUP_ROOT)/rollback-rehearsal.json
@@ -220,7 +222,7 @@ db-current:
 	docker compose run --rm control-plane python -m app.migrate current --verbose
 
 inventory:
-	python3 deploy/scripts/inventory.py --output "$(B1_BACKUP_ROOT)/inventory-$$(date +%Y%m%d-%H%M%S).json"
+	python3 deploy/scripts/inventory.py --output "$(B1_BACKUP_ROOT)/inventory-$$(date +%Y%m%d-%H%M%S).json" --expected-target-host "$(B1_EXPECTED_TARGET_HOST)"
 
 old-stack-scope:
 	@test -n "$(INVENTORY)" || (echo "INVENTORY=/path/to/inventory.json is required" >&2; exit 2)

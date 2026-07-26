@@ -127,6 +127,19 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(network["default_route_interfaces"], ["eno1"])
         self.assertEqual(network["default_route_address_count"], 1)
         self.assertFalse(network["operator_must_review_networking"])
+        target_identity = inventory.summarize_target_identity(
+            {"hostname": "ai", "fqdn": "ai.b1.germering", "platform_node": "ai"},
+            "ai.b1.germering",
+        )
+        self.assertTrue(target_identity["accepted"])
+        self.assertTrue(target_identity["hostname_matches_expected"])
+        self.assertTrue(target_identity["fqdn_matches_expected"])
+        mismatch_identity = inventory.summarize_target_identity(
+            {"hostname": "b1-5", "fqdn": "b1-5", "platform_node": "b1-5"},
+            "ai.b1.germering",
+        )
+        self.assertFalse(mismatch_identity["accepted"])
+        self.assertTrue(mismatch_identity["operator_must_review_target_identity"])
 
         roots = inventory.summarize_open_webui_data_roots(
             [
@@ -394,6 +407,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["host"]["identity"]["hostname"], "ai")
         self.assertEqual(report["host"]["identity"]["fqdn"], "ai.b1.germering")
         self.assertEqual(report["host"]["identity"]["machine"], "x86_64")
+        self.assertEqual(report["migration_readiness"]["target_identity"]["expected_target_host"], "ai.b1.germering")
+        self.assertTrue(report["migration_readiness"]["target_identity"]["accepted"])
+        self.assertTrue(report["migration_readiness"]["target_identity"]["fqdn_matches_expected"])
         classifications = {item["container"]: item["classification"] for item in report["classification"]["containers"]}
         self.assertEqual(classifications["old-open-webui"], "candidate-old-ai-stack-review-required")
         self.assertEqual(classifications["hermes-bot"], "preserve-unrelated")

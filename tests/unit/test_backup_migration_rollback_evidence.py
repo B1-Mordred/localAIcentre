@@ -59,12 +59,36 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
         return old_stack_backup.backup_old_stack(scope_path=scope_path, output_root=output_root or root / "backups", label="old-stack-unit")
 
     def create_plan_files(self, root: Path, old_stack_backup_dir: Path) -> tuple[Path, Path, Path, Path]:
+        target_identity = {
+            "expected_target_host": "ai.b1.germering",
+            "expected_short_hostname": "ai",
+            "observed_hostname": "ai",
+            "observed_fqdn": "ai.b1.germering",
+            "observed_platform_node": "ai",
+            "hostname_matches_expected": True,
+            "fqdn_matches_expected": True,
+            "platform_node_matches_expected": True,
+            "accepted": True,
+            "operator_must_review_target_identity": False,
+            "warnings": [],
+        }
         inventory_path = self.write_json(
             root / "inventory.json",
             {
                 "format": "b1-ai-hub-host-inventory/v1",
                 "classification": {"containers": []},
-                "migration_readiness": {"hardware_profile": {"accepted": True, "warnings": []}},
+                "host": {
+                    "identity": {
+                        "hostname": "ai",
+                        "fqdn": "ai.b1.germering",
+                        "platform_node": "ai",
+                    },
+                    "target_identity": target_identity,
+                },
+                "migration_readiness": {
+                    "hardware_profile": {"accepted": True, "warnings": []},
+                    "target_identity": target_identity,
+                },
             },
         )
         open_webui_plan = self.write_json(
@@ -131,6 +155,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     "optional_missing_hosts": ["monitoring.ai.b1.germering"],
                     "optional_divergent_hosts": [],
                 },
+                "target_identity_readiness": {"available": True, **target_identity},
                 "networking_readiness": {
                     "available": True,
                     "hostname_source": "system-hostname",
@@ -271,6 +296,8 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             payload["checks"]["cutover_plan_reviewed"]["dns_readiness"]["optional_missing_hosts"],
             ["monitoring.ai.b1.germering"],
         )
+        self.assertTrue(payload["checks"]["old_stack_inventory_reviewed"]["target_identity"]["accepted"])
+        self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["target_identity_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["gpu_runtime_readiness"]["accepted"])
@@ -390,6 +417,56 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.write_json(cutover_plan, payload)
 
             with self.assertRaisesRegex(evidence.EvidenceError, "cutover host DHCP/networking readiness requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_inventory_target_identity_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(inventory_path.read_text(encoding="utf-8"))
+            payload["migration_readiness"]["target_identity"]["accepted"] = False
+            payload["migration_readiness"]["target_identity"]["operator_must_review_target_identity"] = True
+            payload["migration_readiness"]["target_identity"]["warnings"] = [
+                "Inventory host identity does not match expected target ai.b1.germering"
+            ]
+            self.write_json(inventory_path, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "inventory target host identity requires operator review"):
+                evidence.build_evidence(
+                    b1_backup=b1_backup,
+                    restore_report=restore_report,
+                    inventory=inventory_path,
+                    old_stack_backup_path=old_stack,
+                    open_webui_plan=open_webui_plan,
+                    cutover_plan=cutover_plan,
+                    rollback_report=rollback_report,
+                )
+
+    def test_build_evidence_rejects_cutover_target_identity_requiring_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["target_identity_readiness"]["accepted"] = False
+            payload["target_identity_readiness"]["operator_must_review_target_identity"] = True
+            payload["target_identity_readiness"]["warnings"] = [
+                "Inventory host identity does not match expected target ai.b1.germering"
+            ]
+            self.write_json(cutover_plan, payload)
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "cutover target host identity readiness requires operator review"):
                 evidence.build_evidence(
                     b1_backup=b1_backup,
                     restore_report=restore_report,

@@ -345,6 +345,45 @@ def analyze_dns_readiness(
     )
 
 
+def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
+    target_identity = readiness.get("target_identity") if isinstance(readiness.get("target_identity"), dict) else {}
+    host = inventory.get("host") if isinstance(inventory.get("host"), dict) else {}
+    if not target_identity:
+        target_identity = host.get("target_identity") if isinstance(host.get("target_identity"), dict) else {}
+    if not target_identity:
+        identity = host.get("identity") if isinstance(host.get("identity"), dict) else {}
+        target_identity = {
+            "available": False,
+            "accepted": False,
+            "expected_target_host": PRODUCTION_HOSTS[0],
+            "observed_hostname": identity.get("hostname"),
+            "observed_fqdn": identity.get("fqdn"),
+            "observed_platform_node": identity.get("platform_node"),
+            "operator_must_review_target_identity": True,
+            "warnings": ["target host identity readiness was not present in inventory"],
+        }
+        return target_identity, ["Target host identity readiness was not present in inventory; rerun inventory before cutover"]
+
+    warnings = [str(item) for item in target_identity.get("warnings", []) if isinstance(item, str)]
+    if target_identity.get("accepted") is not True and not warnings:
+        warnings.append("inventory host identity does not match the expected target host")
+    if target_identity.get("operator_must_review_target_identity") is True and not warnings:
+        warnings.append("inventory target host identity is marked for operator review")
+    if not any(
+        target_identity.get(key) is True
+        for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+    ) and not warnings:
+        warnings.append("inventory host identity does not match the expected target host")
+    cutover_warnings = [f"Target host identity requires operator review before cutover: {warning}" for warning in warnings]
+    return {
+        **target_identity,
+        "available": True,
+        "operator_must_review_target_identity": bool(cutover_warnings),
+        "warnings": warnings,
+    }, cutover_warnings
+
+
 def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
     networking = readiness.get("networking") if isinstance(readiness.get("networking"), dict) else {}
@@ -605,6 +644,8 @@ def build_plan(
     warnings.extend(port_warnings)
     dns_readiness, dns_warnings = analyze_dns_readiness(inventory)
     warnings.extend(dns_warnings)
+    target_identity_readiness, target_identity_warnings = analyze_target_identity_readiness(inventory)
+    warnings.extend(target_identity_warnings)
     networking_readiness, networking_warnings = analyze_networking_readiness(inventory)
     warnings.extend(networking_warnings)
     hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
@@ -676,8 +717,10 @@ def build_plan(
             "production_ports": {"http": production_http_port, "https": production_https_port},
             "production_hosts": list(PRODUCTION_HOSTS),
             "optional_hosts": list(OPTIONAL_PRODUCTION_HOSTS),
+            "expected_target_host": target_identity_readiness.get("expected_target_host"),
         },
         "port_readiness": port_readiness,
+        "target_identity_readiness": target_identity_readiness,
         "hardware_readiness": hardware_readiness,
         "gpu_runtime_readiness": gpu_runtime_readiness,
         "runtime_agent_socket_readiness": runtime_agent_socket_readiness,
@@ -691,6 +734,7 @@ def build_plan(
                 "operator_actions": [
                     "Confirm the inventory is current and the old-stack scope includes only old AI resources.",
                     "Confirm no unrelated Hermes, Yggdrasil, Discord, DNS, database, or automation services are scoped.",
+                    "Confirm target_identity_readiness proves the inventory came from the intended appliance host.",
                     "Confirm temporary B1 staging ports are free and production port listeners are expected old-stack routes or reverse proxies.",
                     "Confirm hardware_readiness satisfies the initial 12 GB VRAM / 32 GB RAM profile or document a reduced-resource plan before cutover.",
                     "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
@@ -722,6 +766,7 @@ def build_plan(
                 "commands": [command for command in (stop_command, systemd_stop_command) if command],
                 "operator_actions": [
                     "Stop only the explicitly scoped old-stack containers and systemd services listed in this plan.",
+                    "Resolve target_identity_readiness warnings before treating the inventory as target-host cutover evidence.",
                     "Resolve any production port listener warnings from port_readiness before starting the production Compose project.",
                     "Resolve dns_readiness warnings before switching users or external clients to the B1 virtual hosts.",
                     "Resolve networking_readiness warnings before treating the inventory as target-host cutover evidence.",

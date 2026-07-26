@@ -684,6 +684,25 @@ def sample_restart_reconciliation_checks() -> dict[str, dict[str, Any]]:
     }
 
 
+def sample_target_identity_readiness(**overrides: Any) -> dict[str, Any]:
+    payload = {
+        "available": True,
+        "expected_target_host": "ai.b1.germering",
+        "expected_short_hostname": "ai",
+        "observed_hostname": "ai",
+        "observed_fqdn": "ai.b1.germering",
+        "observed_platform_node": "ai",
+        "hostname_matches_expected": True,
+        "fqdn_matches_expected": True,
+        "platform_node_matches_expected": True,
+        "accepted": True,
+        "operator_must_review_target_identity": False,
+        "warnings": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
     b1_archive_sha = "e" * 64
     old_archive_sha = "f" * 64
@@ -747,6 +766,7 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
             "recorded_at": "2026-07-24T12:48:00+00:00",
             "path": "/srv/b1-ai-hub/backups/inventory-20260724-120000.json",
             "container_classification_count": 3,
+            "target_identity": sample_target_identity_readiness(),
         },
         "old_stack_backup_verified": {
             "status": "ok",
@@ -783,6 +803,7 @@ def sample_backup_migration_rollback_checks() -> dict[str, dict[str, Any]]:
                 "optional_missing_hosts": ["monitoring.ai.b1.germering"],
                 "optional_divergent_hosts": [],
             },
+            "target_identity_readiness": sample_target_identity_readiness(),
             "networking_readiness": {
                 "available": True,
                 "hostname_source": "system-hostname",
@@ -895,6 +916,7 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
             "optional_missing_hosts": ["monitoring.ai.b1.germering"],
             "optional_divergent_hosts": [],
         },
+        "target_identity_readiness": sample_target_identity_readiness(),
         "networking_readiness": {
             "available": True,
             "hostname_source": "system-hostname",
@@ -5167,12 +5189,14 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("b1_backup_created.backup", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("b1_backup_verified.archive_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("b1_restore_rehearsed.restore_report", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("old_stack_inventory_reviewed.target_identity.accepted", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("old_stack_backup_verified.archive_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn(
             "open_webui_migration_plan_reviewed.backed_up_readable.accounts.database_count",
             snapshot["missing_backup_migration_rollback_evidence"],
         )
         self.assertIn("cutover_plan_reviewed.dns_readiness.common_addresses", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("cutover_plan_reviewed.target_identity_readiness.accepted", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("cutover_plan_reviewed.networking_readiness.has_dhcp_default_route", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("cutover_plan_reviewed.resources_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.cutover_plan_sha256", snapshot["missing_backup_migration_rollback_evidence"])
@@ -5321,6 +5345,29 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_dns_ready"])
         self.assertIn("cutover DNS readiness requires operator review", report["acceptance_blockers"])
 
+    def test_report_blocks_handoff_when_cutover_target_identity_requires_review(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                target_identity_readiness=sample_target_identity_readiness(
+                    observed_hostname="b1-5",
+                    observed_fqdn="b1-5",
+                    observed_platform_node="b1-5",
+                    hostname_matches_expected=False,
+                    fqdn_matches_expected=False,
+                    platform_node_matches_expected=False,
+                    accepted=False,
+                    operator_must_review_target_identity=True,
+                    warnings=["Inventory host identity does not match expected target ai.b1.germering"],
+                )
+            )
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        summary = acceptance.public_report_summary(report)
+        self.assertFalse(summary["cutover_preservation_ready"])
+        self.assertFalse(summary["cutover_target_identity_ready"])
+        self.assertIn("cutover target host identity readiness requires operator review", report["acceptance_blockers"])
+
     def test_report_blocks_handoff_when_cutover_networking_requires_review(self) -> None:
         report = sample_report(
             cutover_preservation=sample_cutover_preservation(
@@ -5400,6 +5447,7 @@ class AcceptanceReportTests(unittest.TestCase):
                     "host_paths_preserved": ["/srv/old-ai/docker-compose.yaml"],
                 },
                 "dns_readiness": sample_cutover_preservation()["dns_readiness"],
+                "target_identity_readiness": sample_cutover_preservation()["target_identity_readiness"],
                 "networking_readiness": sample_cutover_preservation()["networking_readiness"],
                 "hardware_readiness": sample_cutover_preservation()["hardware_readiness"],
                 "gpu_runtime_readiness": sample_cutover_preservation()["gpu_runtime_readiness"],
@@ -5416,6 +5464,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["source_path"], str(current.resolve()))
         self.assertEqual(snapshot["old_stack_backup_verification_status"], "verified")
         self.assertEqual(snapshot["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
+        self.assertTrue(snapshot["target_identity_readiness"]["accepted"])
         self.assertTrue(snapshot["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(snapshot["hardware_readiness"]["accepted"])
         self.assertTrue(snapshot["gpu_runtime_readiness"]["accepted"])

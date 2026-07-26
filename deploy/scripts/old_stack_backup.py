@@ -473,6 +473,8 @@ def build_scope_template(inventory: dict[str, Any], *, now: datetime | None = No
             "systemd_unit_paths": systemd_unit_candidate_paths(host.get("systemd_service_inspects") if isinstance(host, dict) else []),
         },
         "inventory_review": {
+            "target_identity": readiness.get("target_identity", {}),
+            "networking": readiness.get("networking", {}),
             "hardware_profile": readiness.get("hardware_profile", {}),
             "port_review": readiness.get("port_review", {}),
             "model_storage": readiness.get("model_storage", {}),

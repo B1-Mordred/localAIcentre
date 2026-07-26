@@ -131,9 +131,40 @@ def verify_inventory(path: Path) -> dict[str, Any]:
     payload = load_json_file(path)
     validate_format(payload, INVENTORY_FORMAT, "inventory")
     classification = payload.get("classification") if isinstance(payload.get("classification"), dict) else {}
+    readiness = payload.get("migration_readiness") if isinstance(payload.get("migration_readiness"), dict) else {}
+    target_identity = readiness.get("target_identity") if isinstance(readiness.get("target_identity"), dict) else {}
+    if not target_identity:
+        host = payload.get("host") if isinstance(payload.get("host"), dict) else {}
+        target_identity = host.get("target_identity") if isinstance(host.get("target_identity"), dict) else {}
+    if not target_identity:
+        raise EvidenceError("inventory target host identity readiness is missing")
+    warnings = _string_list(target_identity.get("warnings"))
+    if (
+        target_identity.get("accepted") is not True
+        or target_identity.get("operator_must_review_target_identity") is True
+        or warnings
+        or not any(
+            target_identity.get(key) is True
+            for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+        )
+    ):
+        raise EvidenceError("inventory target host identity requires operator review")
     return {
         "path": str(path.resolve()),
         "container_classification_count": len(classification.get("containers") or []),
+        "target_identity": {
+            "expected_target_host": target_identity.get("expected_target_host") or "",
+            "expected_short_hostname": target_identity.get("expected_short_hostname") or "",
+            "observed_hostname": target_identity.get("observed_hostname") or "",
+            "observed_fqdn": target_identity.get("observed_fqdn") or "",
+            "observed_platform_node": target_identity.get("observed_platform_node") or "",
+            "hostname_matches_expected": target_identity.get("hostname_matches_expected") is True,
+            "fqdn_matches_expected": target_identity.get("fqdn_matches_expected") is True,
+            "platform_node_matches_expected": target_identity.get("platform_node_matches_expected") is True,
+            "accepted": True,
+            "operator_must_review_target_identity": False,
+            "warnings": [],
+        },
     }
 
 
@@ -262,6 +293,44 @@ def verify_cutover_dns_readiness(payload: dict[str, Any]) -> dict[str, Any]:
         "divergent_hosts": divergent_hosts,
         "optional_missing_hosts": optional_missing_hosts,
         "optional_divergent_hosts": optional_divergent_hosts,
+    }
+
+
+def verify_cutover_target_identity_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    target_identity = (
+        payload.get("target_identity_readiness")
+        if isinstance(payload.get("target_identity_readiness"), dict)
+        else {}
+    )
+    if not target_identity:
+        raise EvidenceError("cutover target host identity readiness is missing")
+    warnings = _string_list(target_identity.get("warnings"))
+    if target_identity.get("available") is not True:
+        raise EvidenceError("cutover target host identity readiness is unavailable")
+    if (
+        target_identity.get("accepted") is not True
+        or target_identity.get("operator_must_review_target_identity") is True
+        or warnings
+    ):
+        raise EvidenceError("cutover target host identity readiness requires operator review")
+    if not any(
+        target_identity.get(key) is True
+        for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+    ):
+        raise EvidenceError("cutover target host identity does not match the expected host")
+    return {
+        "available": True,
+        "expected_target_host": target_identity.get("expected_target_host") or "",
+        "expected_short_hostname": target_identity.get("expected_short_hostname") or "",
+        "observed_hostname": target_identity.get("observed_hostname") or "",
+        "observed_fqdn": target_identity.get("observed_fqdn") or "",
+        "observed_platform_node": target_identity.get("observed_platform_node") or "",
+        "hostname_matches_expected": target_identity.get("hostname_matches_expected") is True,
+        "fqdn_matches_expected": target_identity.get("fqdn_matches_expected") is True,
+        "platform_node_matches_expected": target_identity.get("platform_node_matches_expected") is True,
+        "accepted": True,
+        "operator_must_review_target_identity": False,
+        "warnings": [],
     }
 
 
@@ -414,6 +483,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
     if payload.get("warnings"):
         raise EvidenceError("cutover plan still has warnings")
     dns_readiness = verify_cutover_dns_readiness(payload)
+    target_identity_readiness = verify_cutover_target_identity_readiness(payload)
     networking_readiness = verify_cutover_networking_readiness(payload)
     hardware_readiness = verify_cutover_hardware_readiness(payload)
     gpu_runtime_readiness = verify_cutover_gpu_runtime_readiness(payload)
@@ -455,6 +525,7 @@ def verify_cutover_plan(path: Path, inventory_path: Path, old_stack_backup_path:
         "rollback_operator_action_count": len(rollback_operator_actions),
         "rollback_actions_sha256": rollback_actions_sha256,
         "dns_readiness": dns_readiness,
+        "target_identity_readiness": target_identity_readiness,
         "networking_readiness": networking_readiness,
         "hardware_readiness": hardware_readiness,
         "gpu_runtime_readiness": gpu_runtime_readiness,
