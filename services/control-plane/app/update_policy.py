@@ -46,6 +46,8 @@ UPDATE_HEALTH_REQUIRED_CHECKS = (
     "tls:routing",
     "runtime:localai-build-info",
     "runtime:localai-status",
+    "runtime:audio-cpu-build-info",
+    "runtime:audio-cpu-status",
     "runtime:voicebox-build-info",
     "runtime:voicebox-status",
     "runtime:comfyui-build-info",

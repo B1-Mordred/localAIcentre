@@ -74,6 +74,11 @@ class AudioCpuRuntimeTests(unittest.TestCase):
                 "B1_CPU_RESIDENT_ALIASES": None,
                 "B1_HOST_TOTAL_RAM_GIB": None,
                 "B1_HOST_RESERVE_RAM_GIB": None,
+                "B1_AUDIO_CPU_RUNTIME_VERSION": None,
+                "B1_AUDIO_CPU_BASE_IMAGE": None,
+                "B1_AUDIO_CPU_PIPER_RELEASE": None,
+                "B1_AUDIO_CPU_PIPER_ASSET": None,
+                "B1_AUDIO_CPU_PIPER_SHA256": None,
             }
         )
         audio_cpu_main.clear_resident_caches()
@@ -236,6 +241,97 @@ with wave.open(str(output), "wb") as wav:
         self.assertIn(b"runtime_control_token_required", missing.body)
         self.assertEqual(accepted["status"], "ok")
         self.assertFalse(accepted["gpu_lease_required"])
+
+    def test_runtime_build_info_reports_pinned_cpu_audio_metadata(self) -> None:
+        self.patch_env({"B1_RUNTIME_CONTROL_TOKEN": "hook-token", "B1_RUNTIME_CONTROL_REQUIRE_AUTH": "true"})
+
+        missing = asyncio.run(audio_cpu_main.runtime_build_info(FakeRequest({}, headers={})))
+        accepted = asyncio.run(audio_cpu_main.runtime_build_info(FakeRequest({}, headers={"Authorization": "Bearer hook-token"})))
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(accepted["status"], "ok")
+        self.assertEqual(accepted["runtime"], "audio-cpu")
+        self.assertEqual(accepted["action"], "build-info")
+        self.assertEqual(accepted["component"], "b1-audio-cpu")
+        self.assertTrue(accepted["pinned"])
+        self.assertIn("@sha256:", accepted["base_image"])
+        self.assertEqual(accepted["piper_release"], "2023.11.14-2")
+        self.assertEqual(accepted["piper_asset_sha256"], "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992")
+        self.assertEqual(accepted["capabilities"]["actions"], ["status", "build-info", "smoke", "unload"])
+        self.assertFalse(accepted["capabilities"]["gpu_lease_required"])
+
+    def test_runtime_status_reports_real_engines_without_raw_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "models"
+            piper_view = model_root / "b1-piper-en-us-amy-low" / "v1"
+            piper_view.mkdir(parents=True)
+            (piper_view / "voice.onnx").write_bytes(b"voice")
+            (piper_view / "voice.onnx.json").write_text("{}", encoding="utf-8")
+            embedding_view = model_root / "b1-minilm-l6-v2-onnx-q4" / "v1"
+            embedding_view.mkdir(parents=True)
+            (embedding_view / "model.onnx").write_bytes(b"embedding")
+            (embedding_view / "tokenizer.json").write_text("{}", encoding="utf-8")
+            vosk_view = model_root / "b1-vosk-small-en-us-0.15" / "v1" / "vosk-model-small-en-us-0.15"
+            (vosk_view / "am").mkdir(parents=True)
+            (vosk_view / "conf").mkdir()
+            (vosk_view / "graph").mkdir()
+            (vosk_view / "am" / "final.mdl").write_bytes(b"vosk")
+            (vosk_view / "conf" / "model.conf").write_text("--sample-frequency=16000\n", encoding="utf-8")
+            (vosk_view / "graph" / "HCLr.fst").write_bytes(b"graph")
+            binary = self.fake_piper(root)
+            self.patch_env(
+                {
+                    "B1_CPU_AUDIO_ENGINE": "piper",
+                    "B1_CPU_EMBEDDING_ENGINE": "onnx",
+                    "B1_CPU_STT_ENGINE": "vosk",
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+                    "B1_CPU_AUDIO_MODEL_ROOT": str(model_root),
+                    "B1_ONNX_EMBEDDING_MODEL_ROOT": str(model_root),
+                    "B1_VOSK_STT_MODEL_ROOT": str(model_root),
+                    "B1_PIPER_BINARY": str(binary),
+                    "B1_PIPER_MODEL_PATH": None,
+                    "B1_PIPER_CONFIG_PATH": None,
+                }
+            )
+            self.patch_attr("onnx_embedding_dependency_status", lambda: [])
+            self.patch_attr("vosk_stt_dependency_status", lambda: [])
+            self.patch_attr("meminfo_available_ram_gib", lambda path="/proc/meminfo": 16.0)
+
+            status = asyncio.run(audio_cpu_main.runtime_status(FakeRequest({})))
+
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["runtime"], "audio-cpu")
+        self.assertEqual(status["action"], "status")
+        self.assertFalse(status["gpu_lease_required"])
+        self.assertEqual(status["capabilities"]["actions"], ["status", "build-info", "smoke", "unload"])
+        self.assertEqual(status["capabilities"]["operations"], {"speech": True, "transcription": True, "embeddings": True})
+        self.assertFalse(status["placeholder"]["enabled"])
+        self.assertEqual(status["placeholder"]["operations"], [])
+        self.assertEqual(status["engines"]["speech"]["engine"], "piper")
+        self.assertEqual(status["engines"]["embeddings"]["engine"], "onnx")
+        self.assertEqual(status["engines"]["transcription"]["engine"], "vosk")
+        self.assertTrue(status["engines"]["speech"]["available"])
+        self.assertTrue(status["engines"]["embeddings"]["available"])
+        self.assertTrue(status["engines"]["transcription"]["available"])
+        self.assertTrue(status["cpu_residency"]["headroom"]["ok"])
+        self.assertEqual(status["build_info"]["status"], "ok")
+        self.assertNotIn(str(model_root), str(status))
+        for probe in status["engines"].values():
+            self.assertNotIn("model_path", probe)
+            self.assertNotIn("model_root", probe)
+            self.assertNotIn("binary", probe)
+            self.assertIn("model_path_present", probe)
+
+    def test_runtime_status_degrades_for_enabled_scaffold_engines(self) -> None:
+        self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
+        status = asyncio.run(audio_cpu_main.runtime_status(FakeRequest({})))
+
+        self.assertEqual(status["status"], "degraded")
+        self.assertEqual(status["placeholder"]["operations"], ["speech", "embeddings", "transcription"])
+        self.assertEqual(status["engines"]["speech"]["engine"], "scaffold")
+        self.assertTrue(status["engines"]["speech"]["placeholder"])
+        self.assertFalse(status["gpu_lease_required"])
 
     def test_placeholder_endpoints_fail_when_policy_disables_them(self) -> None:
         self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false"})

@@ -4141,6 +4141,17 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("LocalAI status readiness check is absent")
         elif localai_status.get("status") != "ok":
             blockers.append(f"LocalAI status readiness check is {localai_status.get('status', 'unknown')}")
+    if "audio-cpu" in required_runtimes:
+        audio_cpu_build = _check_by_name(report.get("self_test") or {}, "runtime:audio-cpu-build-info")
+        if not audio_cpu_build:
+            blockers.append("audio-cpu build-info readiness check is absent")
+        elif audio_cpu_build.get("status") != "ok":
+            blockers.append(f"audio-cpu build-info readiness check is {audio_cpu_build.get('status', 'unknown')}")
+        audio_cpu_status = _check_by_name(report.get("self_test") or {}, "runtime:audio-cpu-status")
+        if not audio_cpu_status:
+            blockers.append("audio-cpu status readiness check is absent")
+        elif audio_cpu_status.get("status") != "ok":
+            blockers.append(f"audio-cpu status readiness check is {audio_cpu_status.get('status', 'unknown')}")
     if "voicebox" in required_runtimes:
         voicebox_build = _check_by_name(report.get("self_test") or {}, "runtime:voicebox-build-info")
         if not voicebox_build:

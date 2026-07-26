@@ -66,6 +66,12 @@ class SelfTestApiTests(unittest.TestCase):
         async def self_test_localai_status() -> dict[str, Any]:
             return {"name": "runtime:localai-status", "status": "ok", "detail": "ok"}
 
+        async def self_test_audio_cpu_build_info() -> dict[str, Any]:
+            return {"name": "runtime:audio-cpu-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_audio_cpu_status() -> dict[str, Any]:
+            return {"name": "runtime:audio-cpu-status", "status": "ok", "detail": "ok"}
+
         async def self_test_voicebox_build_info() -> dict[str, Any]:
             return {"name": "runtime:voicebox-build-info", "status": "ok", "detail": "ok"}
 
@@ -100,6 +106,8 @@ class SelfTestApiTests(unittest.TestCase):
         self.patch_attr("runtime_registry_snapshot", lambda: SimpleNamespace(adapters={"localai": FakeAdapter()}, public_adapters=lambda: []))
         self.patch_attr("self_test_localai_build_info", self_test_localai_build_info)
         self.patch_attr("self_test_localai_status", self_test_localai_status)
+        self.patch_attr("self_test_audio_cpu_build_info", self_test_audio_cpu_build_info)
+        self.patch_attr("self_test_audio_cpu_status", self_test_audio_cpu_status)
         self.patch_attr("self_test_voicebox_build_info", self_test_voicebox_build_info)
         self.patch_attr("self_test_voicebox_status", self_test_voicebox_status)
         self.patch_attr("self_test_comfyui_build_info", self_test_comfyui_build_info)
@@ -118,6 +126,8 @@ class SelfTestApiTests(unittest.TestCase):
             [
                 "runtime:localai-build-info",
                 "runtime:localai-status",
+                "runtime:audio-cpu-build-info",
+                "runtime:audio-cpu-status",
                 "runtime:voicebox-build-info",
                 "runtime:voicebox-status",
                 "runtime:comfyui-build-info",
@@ -307,6 +317,178 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertTrue(result["data"]["required"])
         self.assertEqual(result["data"]["status"]["guardrails"]["status"], "degraded")
+
+    def test_audio_cpu_build_info_self_test_passes_for_pinned_runtime(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "build-info",
+            "component": "b1-audio-cpu",
+            "runtime_version": "b1-audio-cpu/v0.1.0-b1",
+            "base_image": "python:3.12.11-slim-bookworm@sha256:" + "a" * 64,
+            "piper_release": "2023.11.14-2",
+            "piper_asset": "piper_linux_x86_64.tar.gz",
+            "piper_asset_sha256": "b" * 64,
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "smoke", "unload"], "gpu_lease_required": False},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(audio_cpu_url="http://audio-cpu:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["component"], "b1-audio-cpu")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://audio-cpu:8000/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_audio_cpu_status_self_test_passes_for_real_engines_and_redaction(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "build-info",
+            "component": "b1-audio-cpu",
+            "runtime_version": "b1-audio-cpu/v0.1.0-b1",
+            "base_image": "python:3.12.11-slim-bookworm@sha256:" + "a" * 64,
+            "piper_release": "2023.11.14-2",
+            "piper_asset": "piper_linux_x86_64.tar.gz",
+            "piper_asset_sha256": "b" * 64,
+            "pinned": True,
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "status",
+            "gpu_lease_required": False,
+            "capabilities": {
+                "actions": ["status", "build-info", "smoke", "unload"],
+                "operations": {"speech": True, "embeddings": True, "transcription": True},
+            },
+            "engines": {
+                "speech": {"engine": "piper", "available": True, "placeholder": False, "binary_present": True, "model_path_present": True, "config_path_present": True},
+                "embeddings": {"engine": "onnx", "available": True, "placeholder": False, "model_path_present": True, "tokenizer_path_present": True},
+                "transcription": {"engine": "vosk", "available": True, "placeholder": False, "model_path_present": True},
+            },
+            "placeholder": {"enabled": False, "operations": []},
+            "cpu_residency": {"enabled": True, "headroom": {"ok": True, "reserve_ram_gib": 6.0}},
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(audio_cpu_url="http://audio-cpu:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["engines"]["speech"]["engine"], "piper")
+        self.assertNotIn("/srv/b1-ai-hub/models", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://audio-cpu:8000/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_audio_cpu_status_self_test_fails_for_scaffold_engine(self) -> None:
+        payload = {
+            "status": "degraded",
+            "runtime": "audio-cpu",
+            "action": "status",
+            "gpu_lease_required": False,
+            "capabilities": {
+                "actions": ["status", "build-info", "smoke", "unload"],
+                "operations": {"speech": True, "embeddings": True, "transcription": True},
+            },
+            "engines": {
+                "speech": {"engine": "scaffold", "available": True, "placeholder": True},
+                "embeddings": {"engine": "scaffold", "available": True, "placeholder": True},
+                "transcription": {"engine": "scaffold", "available": True, "placeholder": True},
+            },
+            "placeholder": {"enabled": True, "operations": ["speech", "embeddings", "transcription"]},
+            "cpu_residency": {"enabled": True, "headroom": {"ok": True}},
+            "build_info": {},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["placeholder"]["operations"], ["speech", "embeddings", "transcription"])
 
     def test_voicebox_build_info_self_test_passes_for_pinned_proxy(self) -> None:
         payload = {

@@ -30,9 +30,26 @@ PIPER_ENGINE = "piper"
 ONNX_EMBEDDING_ENGINE = "onnx"
 VOSK_STT_ENGINE = "vosk"
 DEFAULT_PIPER_BINARY = "/opt/piper/piper"
+DEFAULT_AUDIO_CPU_RUNTIME_VERSION = "b1-audio-cpu/v0.1.0-b1"
+DEFAULT_AUDIO_CPU_BASE_IMAGE = "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7"
+DEFAULT_PIPER_RELEASE = "2023.11.14-2"
+DEFAULT_PIPER_ASSET = "piper_linux_x86_64.tar.gz"
+DEFAULT_PIPER_SHA256 = "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
 DEFAULT_CPU_RESIDENT_ALIASES = ("embedding-default", "tts-fast", "stt-default")
 SUPPORTED_ENGINES = {*PLACEHOLDER_ENGINES, PIPER_ENGINE, ONNX_EMBEDDING_ENGINE, VOSK_STT_ENGINE}
 SAFE_REF_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+IMAGE_DIGEST_RE = re.compile(r"^.+@sha256:[a-f0-9]{64}$")
+AUDIO_CPU_LIFECYCLE_ACTIONS = ("status", "build-info", "smoke", "unload")
+AUDIO_CPU_PACKAGE_PINS = {
+    "fastapi": "0.139.2",
+    "uvicorn": "0.35.0",
+    "pydantic": "2.11.7",
+    "numpy": "2.5.1",
+    "onnxruntime": "1.27.0",
+    "tokenizers": "0.23.1",
+    "vosk": "0.3.45",
+}
 
 
 class AudioCpuError(RuntimeError):
@@ -160,6 +177,26 @@ def list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 def placeholder_enabled() -> bool:
     return bool_env("B1_CPU_AUDIO_ENABLE_PLACEHOLDER", True)
+
+
+def audio_cpu_runtime_version() -> str:
+    return os.getenv("B1_AUDIO_CPU_RUNTIME_VERSION", DEFAULT_AUDIO_CPU_RUNTIME_VERSION).strip() or DEFAULT_AUDIO_CPU_RUNTIME_VERSION
+
+
+def audio_cpu_base_image() -> str:
+    return os.getenv("B1_AUDIO_CPU_BASE_IMAGE", DEFAULT_AUDIO_CPU_BASE_IMAGE).strip() or DEFAULT_AUDIO_CPU_BASE_IMAGE
+
+
+def audio_cpu_piper_release() -> str:
+    return os.getenv("B1_AUDIO_CPU_PIPER_RELEASE", DEFAULT_PIPER_RELEASE).strip() or DEFAULT_PIPER_RELEASE
+
+
+def audio_cpu_piper_asset() -> str:
+    return os.getenv("B1_AUDIO_CPU_PIPER_ASSET", DEFAULT_PIPER_ASSET).strip() or DEFAULT_PIPER_ASSET
+
+
+def audio_cpu_piper_sha256() -> str:
+    return os.getenv("B1_AUDIO_CPU_PIPER_SHA256", DEFAULT_PIPER_SHA256).strip().lower() or DEFAULT_PIPER_SHA256
 
 
 def configured_cpu_residency_enabled() -> bool:
@@ -760,6 +797,172 @@ def engine_details() -> dict[str, Any]:
     return details
 
 
+def audio_cpu_build_info() -> dict[str, Any]:
+    base_image = audio_cpu_base_image().lower()
+    piper_sha256 = audio_cpu_piper_sha256()
+    pinned = bool(IMAGE_DIGEST_RE.fullmatch(base_image) and SHA256_HEX_RE.fullmatch(piper_sha256))
+    return {
+        "status": "ok" if pinned else "unconfigured",
+        "runtime": "audio-cpu",
+        "action": "build-info",
+        "component": "b1-audio-cpu",
+        "runtime_version": audio_cpu_runtime_version(),
+        "base_image": audio_cpu_base_image(),
+        "piper_release": audio_cpu_piper_release(),
+        "piper_asset": audio_cpu_piper_asset(),
+        "piper_asset_sha256": piper_sha256,
+        "pinned": pinned,
+        "engines": {
+            "speech": PIPER_ENGINE,
+            "embeddings": ONNX_EMBEDDING_ENGINE,
+            "transcription": VOSK_STT_ENGINE,
+        },
+        "python_packages": dict(AUDIO_CPU_PACKAGE_PINS),
+        "capabilities": {
+            "actions": list(AUDIO_CPU_LIFECYCLE_ACTIONS),
+            "gpu_lease_required": False,
+        },
+    }
+
+
+def path_presence_fields(raw: dict[str, Any]) -> dict[str, bool]:
+    fields: dict[str, bool] = {}
+    for key in ("binary", "model_path", "config_path", "tokenizer_path", "model_root"):
+        if key in raw:
+            fields[f"{key}_present"] = bool(raw.get(key))
+    return fields
+
+
+def redacted_probe_status(raw: dict[str, Any], *, available: bool, placeholder: bool = False) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "engine": str(raw.get("engine") or "disabled"),
+        "available": bool(available),
+        "configured": bool(raw.get("engine")),
+        "placeholder": placeholder,
+        **path_presence_fields(raw),
+    }
+    reason = raw.get("reason")
+    if reason:
+        result["reason"] = str(reason)
+    for key in (
+        "timeout_seconds",
+        "max_text_chars",
+        "max_tokens",
+        "max_batch",
+        "normalize",
+        "language",
+        "max_audio_bytes",
+        "max_audio_seconds",
+        "words",
+    ):
+        if key in raw:
+            result[key] = raw[key]
+    return result
+
+
+def scaffold_probe_status(engine: str, *, available: bool) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "engine": engine,
+        "available": available,
+        "configured": True,
+        "placeholder": True,
+    }
+    if not available:
+        payload["reason"] = "placeholder_disabled"
+    return payload
+
+
+def disabled_probe_status(engine: str, *, reason: str) -> dict[str, Any]:
+    return {
+        "engine": engine or "disabled",
+        "available": False,
+        "configured": bool(engine),
+        "placeholder": engine in PLACEHOLDER_ENGINES,
+        "reason": reason,
+    }
+
+
+def audio_cpu_runtime_status() -> dict[str, Any]:
+    engine = configured_engine()
+    embedding_engine = configured_embedding_engine()
+    stt_engine = configured_stt_engine()
+    capabilities = operation_capabilities()
+
+    if engine == PIPER_ENGINE:
+        speech = redacted_probe_status(piper_status(), available=capabilities["speech"])
+    elif engine in PLACEHOLDER_ENGINES:
+        speech = scaffold_probe_status(engine, available=capabilities["speech"])
+    else:
+        speech = disabled_probe_status(engine, reason="unsupported_engine")
+
+    if embedding_engine == ONNX_EMBEDDING_ENGINE:
+        embeddings = redacted_probe_status(onnx_embedding_status(), available=capabilities["embeddings"])
+    elif embedding_engine in PLACEHOLDER_ENGINES:
+        embeddings = scaffold_probe_status(embedding_engine, available=capabilities["embeddings"])
+    elif embedding_engine:
+        embeddings = disabled_probe_status(embedding_engine, reason="unsupported_engine")
+    else:
+        embeddings = disabled_probe_status("", reason="engine_disabled")
+
+    if stt_engine == VOSK_STT_ENGINE:
+        transcription = redacted_probe_status(vosk_stt_status(), available=capabilities["transcription"])
+    elif stt_engine in PLACEHOLDER_ENGINES:
+        transcription = scaffold_probe_status(stt_engine, available=capabilities["transcription"])
+    elif stt_engine:
+        transcription = disabled_probe_status(stt_engine, reason="unsupported_engine")
+    else:
+        transcription = disabled_probe_status("", reason="engine_disabled")
+
+    operation_engines = {
+        "speech": engine,
+        "embeddings": embedding_engine,
+        "transcription": stt_engine,
+    }
+    placeholder_operations = [
+        operation
+        for operation, selected_engine in operation_engines.items()
+        if capabilities.get(operation) and selected_engine in PLACEHOLDER_ENGINES
+    ]
+    unsupported_engines = [
+        selected_engine
+        for selected_engine in operation_engines.values()
+        if selected_engine and selected_engine not in SUPPORTED_ENGINES
+    ]
+    build_info = audio_cpu_build_info()
+    residency = cpu_residency_details()
+    available = any(capabilities.values())
+    ready = bool(
+        available
+        and build_info.get("status") == "ok"
+        and not placeholder_operations
+        and not unsupported_engines
+        and residency.get("headroom", {}).get("ok") is True
+    )
+    status = "ok" if ready else "degraded" if available else "unconfigured"
+    return {
+        "status": status,
+        "runtime": "audio-cpu",
+        "action": "status",
+        "gpu_lease_required": False,
+        "capabilities": {
+            "actions": list(AUDIO_CPU_LIFECYCLE_ACTIONS),
+            "operations": capabilities,
+        },
+        "engines": {
+            "speech": speech,
+            "embeddings": embeddings,
+            "transcription": transcription,
+        },
+        "placeholder": {
+            "enabled": placeholder_enabled(),
+            "operations": placeholder_operations,
+        },
+        "unsupported_engines": unsupported_engines,
+        "cpu_residency": residency,
+        "build_info": build_info,
+    }
+
+
 def silence_wav(duration_seconds: float = 0.25, sample_rate: int = 16000) -> bytes:
     frames = int(duration_seconds * sample_rate)
     buffer = io.BytesIO()
@@ -805,6 +1008,42 @@ async def healthz() -> dict[str, Any]:
         "capabilities": capabilities,
         "details": engine_details(),
     }
+
+
+@app.get("/b1/runtime/build-info")
+async def runtime_build_info_get(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
+    return audio_cpu_build_info()
+
+
+@app.post("/b1/runtime/build-info")
+async def runtime_build_info(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
+    return audio_cpu_build_info()
+
+
+@app.get("/b1/runtime/status")
+async def runtime_status_get(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
+    return audio_cpu_runtime_status()
+
+
+@app.post("/b1/runtime/status")
+async def runtime_status(request: Request) -> Any:
+    auth_failure = runtime_control_auth_failure(getattr(request, "headers", {}))
+    if auth_failure is not None:
+        status, payload = auth_failure
+        return JSONResponse(payload, status_code=status)
+    return audio_cpu_runtime_status()
 
 
 @app.post("/b1/runtime/unload")

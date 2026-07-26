@@ -6890,6 +6890,8 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
     lifecycle_checks = await asyncio.gather(
         self_test_localai_build_info(),
         self_test_localai_status(),
+        self_test_audio_cpu_build_info(),
+        self_test_audio_cpu_status(),
         self_test_voicebox_build_info(),
         self_test_voicebox_status(),
         self_test_comfyui_build_info(),
@@ -7582,12 +7584,20 @@ def localai_build_info_required() -> bool:
     return settings.runtime_deployment_mode == "production" and "localai" in set(settings.runtime_production_required)
 
 
+def audio_cpu_build_info_required() -> bool:
+    return settings.runtime_deployment_mode == "production" and "audio-cpu" in set(settings.runtime_production_required)
+
+
 def voicebox_build_info_failure_status() -> str:
     return "failed" if voicebox_build_info_required() else "warning"
 
 
 def localai_build_info_failure_status() -> str:
     return "failed" if localai_build_info_required() else "warning"
+
+
+def audio_cpu_build_info_failure_status() -> str:
+    return "failed" if audio_cpu_build_info_required() else "warning"
 
 
 def comfyui_build_info_failure_status() -> str:
@@ -7620,6 +7630,22 @@ def voicebox_build_info_pinned(payload: dict[str, Any]) -> bool:
         and payload.get("pinned") is True
         and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
         and re.fullmatch(r"[0-9a-f]{64}", source_archive_sha256) is not None
+    )
+
+
+def audio_cpu_build_info_pinned(payload: dict[str, Any]) -> bool:
+    base_image = str(payload.get("base_image") or "").strip().lower()
+    piper_asset_sha256 = str(payload.get("piper_asset_sha256") or "").strip().lower()
+    return (
+        payload.get("status") == "ok"
+        and payload.get("runtime") == "audio-cpu"
+        and payload.get("action") == "build-info"
+        and payload.get("component") == "b1-audio-cpu"
+        and payload.get("pinned") is True
+        and re.fullmatch(r".+@sha256:[0-9a-f]{64}", base_image) is not None
+        and re.fullmatch(r"[0-9a-f]{64}", piper_asset_sha256) is not None
+        and bool(str(payload.get("runtime_version") or "").strip())
+        and bool(str(payload.get("piper_release") or "").strip())
     )
 
 
@@ -7703,6 +7729,52 @@ def voicebox_status_payload_ok(payload: dict[str, Any]) -> bool:
         return False
     action_names = {item for item in actions if isinstance(item, str)}
     return {"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(action_names)
+
+
+def audio_cpu_status_payload_ok(payload: dict[str, Any]) -> bool:
+    if payload.get("status") != "ok" or payload.get("runtime") != "audio-cpu" or payload.get("action") != "status":
+        return False
+    if payload.get("gpu_lease_required") is not False:
+        return False
+    capabilities = payload.get("capabilities")
+    engines = payload.get("engines")
+    placeholder = payload.get("placeholder")
+    cpu_residency = payload.get("cpu_residency")
+    build_info = payload.get("build_info")
+    if not isinstance(capabilities, dict) or not isinstance(engines, dict) or not isinstance(placeholder, dict):
+        return False
+    actions = capabilities.get("actions")
+    operations = capabilities.get("operations")
+    if not isinstance(actions, list) or not isinstance(operations, dict):
+        return False
+    action_names = {item for item in actions if isinstance(item, str)}
+    if not {"status", "build-info", "smoke", "unload"}.issubset(action_names):
+        return False
+    if operations.get("speech") is not True or operations.get("embeddings") is not True or operations.get("transcription") is not True:
+        return False
+    if placeholder.get("enabled") is not False:
+        return False
+    placeholder_operations = placeholder.get("operations")
+    if not isinstance(placeholder_operations, list) or placeholder_operations:
+        return False
+    expected_engines = {"speech": "piper", "embeddings": "onnx", "transcription": "vosk"}
+    forbidden_path_keys = {"binary", "model_path", "config_path", "tokenizer_path", "model_root"}
+    for operation, expected_engine in expected_engines.items():
+        probe = engines.get(operation)
+        if not isinstance(probe, dict):
+            return False
+        if probe.get("engine") != expected_engine or probe.get("available") is not True or probe.get("placeholder") is True:
+            return False
+        if forbidden_path_keys.intersection(probe):
+            return False
+    if not isinstance(cpu_residency, dict):
+        return False
+    headroom = cpu_residency.get("headroom")
+    if not isinstance(headroom, dict) or headroom.get("ok") is not True:
+        return False
+    if not isinstance(build_info, dict) or not audio_cpu_build_info_pinned(build_info):
+        return False
+    return True
 
 
 def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
@@ -7842,6 +7914,110 @@ async def self_test_voicebox_status() -> dict[str, Any]:
         voicebox_build_info_failure_status(),
         "Voicebox status hook did not report required process, redacted model-inventory, lifecycle, and pinned build metadata",
         {"required": voicebox_build_info_required(), "runtime": "voicebox", "url": url, "http_status": response.status_code, "status": payload},
+    )
+
+
+async def self_test_audio_cpu_build_info() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "audio-cpu" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:audio-cpu-build-info",
+            "ok",
+            "audio-cpu is not required by the production runtime policy",
+            {"required": False, "runtime": "audio-cpu"},
+        )
+    url = f"{settings.audio_cpu_url.rstrip('/')}/b1/runtime/build-info"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:audio-cpu-build-info",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu build-info hook is unreachable: {exc.__class__.__name__}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:audio-cpu-build-info",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu build-info hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:audio-cpu-build-info",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu build-info hook returned HTTP {response.status_code}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and audio_cpu_build_info_pinned(payload):
+        return selftest_policy.check(
+            "runtime:audio-cpu-build-info",
+            "ok",
+            "audio-cpu runtime reports pinned B1 image and Piper metadata",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "build_info": payload},
+        )
+    return selftest_policy.check(
+        "runtime:audio-cpu-build-info",
+        audio_cpu_build_info_failure_status(),
+        "audio-cpu build-info hook did not report pinned base image and Piper asset metadata",
+        {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "build_info": payload},
+    )
+
+
+async def self_test_audio_cpu_status() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "audio-cpu" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:audio-cpu-status",
+            "ok",
+            "audio-cpu is not required by the production runtime policy",
+            {"required": False, "runtime": "audio-cpu"},
+        )
+    url = f"{settings.audio_cpu_url.rstrip('/')}/b1/runtime/status"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:audio-cpu-status",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu status hook is unreachable: {exc.__class__.__name__}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:audio-cpu-status",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu status hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:audio-cpu-status",
+            audio_cpu_build_info_failure_status(),
+            f"audio-cpu status hook returned HTTP {response.status_code}",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and audio_cpu_status_payload_ok(payload):
+        return selftest_policy.check(
+            "runtime:audio-cpu-status",
+            "ok",
+            "audio-cpu runtime reports real CPU engines, redacted model probes, and residency headroom",
+            {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "status": payload},
+        )
+    return selftest_policy.check(
+        "runtime:audio-cpu-status",
+        audio_cpu_build_info_failure_status(),
+        "audio-cpu status hook did not report real non-placeholder CPU engines, redacted probes, residency headroom, and pinned build metadata",
+        {"required": audio_cpu_build_info_required(), "runtime": "audio-cpu", "url": url, "http_status": response.status_code, "status": payload},
     )
 
 
@@ -8114,6 +8290,8 @@ async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]
         self_test_runtime_unload(),
         self_test_localai_build_info(),
         self_test_localai_status(),
+        self_test_audio_cpu_build_info(),
+        self_test_audio_cpu_status(),
         self_test_voicebox_build_info(),
         self_test_voicebox_status(),
         self_test_comfyui_build_info(),

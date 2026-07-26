@@ -2212,6 +2212,61 @@ def sample_localai_status_check(status: str = "ok") -> dict[str, Any]:
     }
 
 
+def sample_audio_cpu_build_info_check(status: str = "ok") -> dict[str, Any]:
+    return {
+        "name": "runtime:audio-cpu-build-info",
+        "status": status,
+        "detail": "audio-cpu runtime reports pinned B1 image and Piper metadata" if status == "ok" else "audio-cpu build-info hook did not report pinned metadata",
+        "data": {
+            "required": True,
+            "runtime": "audio-cpu",
+            "build_info": {
+                "status": "ok" if status == "ok" else "unconfigured",
+                "runtime": "audio-cpu",
+                "action": "build-info",
+                "component": "b1-audio-cpu",
+                "runtime_version": "b1-audio-cpu/v0.1.0-b1",
+                "base_image": "python:3.12.11-slim-bookworm@sha256:" + ("a" * 64 if status == "ok" else ""),
+                "piper_release": "2023.11.14-2",
+                "piper_asset": "piper_linux_x86_64.tar.gz",
+                "piper_asset_sha256": "b" * 64 if status == "ok" else "",
+                "pinned": status == "ok",
+                "capabilities": {"actions": ["status", "build-info", "smoke", "unload"], "gpu_lease_required": False},
+            },
+        },
+    }
+
+
+def sample_audio_cpu_status_check(status: str = "ok") -> dict[str, Any]:
+    return {
+        "name": "runtime:audio-cpu-status",
+        "status": status,
+        "detail": "audio-cpu runtime reports lifecycle status" if status == "ok" else "audio-cpu status hook did not report lifecycle status",
+        "data": {
+            "required": True,
+            "runtime": "audio-cpu",
+            "status": {
+                "status": "ok" if status == "ok" else "degraded",
+                "runtime": "audio-cpu",
+                "action": "status",
+                "gpu_lease_required": False,
+                "capabilities": {
+                    "actions": ["status", "build-info", "smoke", "unload"],
+                    "operations": {"speech": True, "embeddings": True, "transcription": True},
+                },
+                "engines": {
+                    "speech": {"engine": "piper" if status == "ok" else "scaffold", "available": True, "placeholder": status != "ok", "binary_present": True, "model_path_present": True, "config_path_present": True},
+                    "embeddings": {"engine": "onnx" if status == "ok" else "scaffold", "available": True, "placeholder": status != "ok", "model_path_present": True, "tokenizer_path_present": True},
+                    "transcription": {"engine": "vosk" if status == "ok" else "scaffold", "available": True, "placeholder": status != "ok", "model_path_present": True},
+                },
+                "placeholder": {"enabled": False if status == "ok" else True, "operations": [] if status == "ok" else ["speech", "embeddings", "transcription"]},
+                "cpu_residency": {"enabled": True, "headroom": {"ok": True, "reserve_ram_gib": 6.0}},
+                "build_info": sample_audio_cpu_build_info_check(status)["data"]["build_info"],
+            },
+        },
+    }
+
+
 def sample_voicebox_build_info_check(status: str = "ok") -> dict[str, Any]:
     return {
         "name": "runtime:voicebox-build-info",
@@ -2345,6 +2400,8 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 sample_caddy_ca_check(),
                 sample_localai_build_info_check(),
                 sample_localai_status_check(),
+                sample_audio_cpu_build_info_check(),
+                sample_audio_cpu_status_check(),
                 sample_voicebox_build_info_check(),
                 sample_voicebox_status_check(),
                 sample_comfyui_build_info_check(),
@@ -3193,6 +3250,178 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("LocalAI status readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_required_audio_cpu_build_info_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_status_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("audio-cpu build-info readiness check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_required_audio_cpu_build_info_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_build_info_check("failed"),
+                    sample_audio_cpu_status_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("audio-cpu build-info readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_required_audio_cpu_status_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_build_info_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("audio-cpu status readiness check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_required_audio_cpu_status_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_build_info_check(),
+                    sample_audio_cpu_status_check("failed"),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("audio-cpu status readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_does_not_require_audio_cpu_build_info_when_audio_cpu_is_not_required(self) -> None:
+        report = sample_report(
+            compose_selection=sample_compose_selection(B1_RUNTIME_PRODUCTION_REQUIRED="localai,comfyui,voicebox"),
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            },
+        )
+
+        self.assertNotIn("audio-cpu build-info readiness check is absent", report["acceptance_blockers"])
+        self.assertNotIn("audio-cpu status readiness check is absent", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_required_voicebox_build_info_check(self) -> None:
         report = sample_report(
