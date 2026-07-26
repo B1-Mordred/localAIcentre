@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -599,7 +600,172 @@ def int_value(value: Any) -> int | None:
         return None
 
 
-def validate_backup_migration_payload(key: str, payload: dict[str, Any]) -> list[str]:
+def string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def normalized_hostname(value: Any) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def looks_like_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def valid_hostname_reference(value: str) -> bool:
+    raw = value.strip().lower().rstrip(".")
+    if not raw or "/" in raw or ":" in raw or "://" in raw or looks_like_ip_address(raw):
+        return False
+    labels = raw.split(".")
+    return all(
+        label
+        and len(label) <= 63
+        and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in labels
+    )
+
+
+def target_identity_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    readiness = payload.get("migration_readiness") if isinstance(payload.get("migration_readiness"), dict) else {}
+    target_identity = readiness.get("target_identity") if isinstance(readiness.get("target_identity"), dict) else {}
+    if target_identity:
+        return target_identity
+    host = payload.get("host") if isinstance(payload.get("host"), dict) else {}
+    return host.get("target_identity") if isinstance(host.get("target_identity"), dict) else {}
+
+
+def networking_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    readiness = payload.get("migration_readiness") if isinstance(payload.get("migration_readiness"), dict) else {}
+    networking = readiness.get("networking") if isinstance(readiness.get("networking"), dict) else {}
+    if networking:
+        return networking
+    host = payload.get("host") if isinstance(payload.get("host"), dict) else {}
+    network = host.get("network") if isinstance(host.get("network"), dict) else {}
+    return network.get("dhcp_policy") if isinstance(network.get("dhcp_policy"), dict) else {}
+
+
+def validate_target_identity_payload(
+    payload: dict[str, Any],
+    *,
+    label: str,
+    expected_target_host: str,
+) -> list[str]:
+    failures: list[str] = []
+    if not payload:
+        return [f"{label} target host identity readiness is missing"]
+
+    expected = normalized_hostname(expected_target_host)
+    observed_expected = normalized_hostname(payload.get("expected_target_host"))
+    if expected and observed_expected and observed_expected not in {expected, expected.split(".", 1)[0]}:
+        failures.append(
+            f"{label} target identity expected host {observed_expected} does not match B1_EXPECTED_TARGET_HOST={expected}"
+        )
+    if not observed_expected or not valid_hostname_reference(observed_expected):
+        failures.append(f"{label} target identity does not record a valid system hostname/FQDN")
+    if payload.get("accepted") is not True:
+        failures.append(f"{label} target identity is not accepted")
+    if payload.get("operator_must_review_target_identity") is True:
+        failures.append(f"{label} target identity requires operator review")
+    if string_list(payload.get("warnings")):
+        failures.append(f"{label} target identity still has warnings")
+    if not any(
+        payload.get(key) is True
+        for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
+    ):
+        failures.append(f"{label} target identity does not match the system hostname/FQDN")
+    return failures
+
+
+def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[str]:
+    failures: list[str] = []
+    if not payload:
+        return [f"{label} DHCP/networking readiness is missing"]
+    if payload.get("available") is False:
+        failures.append(f"{label} DHCP/networking readiness is unavailable")
+    if payload.get("hostname_source") != "system-hostname":
+        failures.append(f"{label} hostname must come from the target system hostname")
+    if payload.get("network_property_source") != "host-dhcp-client":
+        failures.append(f"{label} IP/gateway/DNS properties must be acquired by the host DHCP client")
+    if payload.get("b1_manages_host_networking") is not False:
+        failures.append(f"{label} must not let B1 AI Hub manage host networking")
+    if payload.get("b1_static_ip_configures") is not False:
+        failures.append(f"{label} must not configure a static host IP")
+    if payload.get("has_dhcp_default_route") is not True:
+        failures.append(f"{label} does not prove a DHCP-owned default route")
+    if payload.get("operator_must_review_networking") is True:
+        failures.append(f"{label} DHCP/networking requires operator review")
+    if string_list(payload.get("warnings")):
+        failures.append(f"{label} DHCP/networking still has warnings")
+    if (int_value(payload.get("non_loopback_address_count")) or 0) <= 0:
+        failures.append(f"{label} has no non-loopback host address evidence")
+    if (int_value(payload.get("default_route_address_count")) or 0) <= 0:
+        failures.append(f"{label} has no address on the default-route interface")
+    if (int_value(payload.get("default_route_count")) or 0) <= 0:
+        failures.append(f"{label} has no default-route evidence")
+    return failures
+
+
+def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
+    expected_target = env_value(ctx, "B1_EXPECTED_TARGET_HOST") or env_value(ctx, "B1_HOST_CHAT")
+    chat_host = env_value(ctx, "B1_HOST_CHAT")
+    failures = []
+    data = {
+        "expected_target_host": expected_target or "<unset>",
+        "chat_host": chat_host or "<unset>",
+        "legacy_comfy_publish": env_value(ctx, "B1_LEGACY_COMFY_PUBLISH") or "<compose-default>",
+        "legacy_comfy_allow_cidrs": split_words(env_value(ctx, "B1_LEGACY_COMFY_ALLOW_CIDRS")),
+    }
+    if not expected_target:
+        failures.append("B1_EXPECTED_TARGET_HOST must name the system-owned target hostname/FQDN")
+    elif not valid_hostname_reference(expected_target):
+        failures.append("B1_EXPECTED_TARGET_HOST must be a hostname/FQDN, not a URL, IP address, or host:port value")
+
+    if chat_host and not valid_hostname_reference(chat_host):
+        failures.append("B1_HOST_CHAT must be a hostname/FQDN, not a URL, IP address, or host:port value")
+    if expected_target and chat_host:
+        normalized_expected = normalized_hostname(expected_target)
+        normalized_chat = normalized_hostname(chat_host)
+        allowed = {normalized_chat, normalized_chat.split(".", 1)[0]}
+        if normalized_expected not in allowed:
+            failures.append("B1_EXPECTED_TARGET_HOST must match B1_HOST_CHAT or its short system hostname")
+
+    deprecated_bind = env_value(ctx, "B1_LEGACY_COMFY_BIND")
+    if deprecated_bind:
+        failures.append("B1_LEGACY_COMFY_BIND is deprecated because it bakes in host-address policy")
+        data["legacy_comfy_bind"] = deprecated_bind
+    publish = env_value(ctx, "B1_LEGACY_COMFY_PUBLISH")
+    if publish and publish.count(":") >= 2:
+        failures.append("B1_LEGACY_COMFY_PUBLISH must not include a static host IP; use port-only publishing such as 8188:8188")
+    open_cidrs = {"0.0.0.0/0", "::/0", "*", "any", "all"}
+    allow_cidrs = set(split_words(env_value(ctx, "B1_LEGACY_COMFY_ALLOW_CIDRS")))
+    if allow_cidrs & open_cidrs:
+        failures.append("B1_LEGACY_COMFY_ALLOW_CIDRS must not be open-world for the optional legacy listener")
+    if failures:
+        return fail(
+            "target_network_policy",
+            "target hostname and DHCP/network policy are not ready for final live acceptance",
+            failures=failures,
+            **data,
+        )
+    return ok(
+        "target_network_policy",
+        "target hostname is system-owned and host networking is DHCP-oriented",
+        **data,
+    )
+
+
+def validate_backup_migration_payload(
+    key: str,
+    payload: dict[str, Any],
+    *,
+    expected_target_host: str,
+) -> list[str]:
     failures: list[str] = []
     if key == "B1_BACKUP_DIR":
         if payload.get("postgres_dump_included") is not True:
@@ -619,12 +785,31 @@ def validate_backup_migration_payload(key: str, payload: dict[str, Any]) -> list
     elif key == "OPEN_WEBUI_PLAN":
         if payload.get("warnings"):
             failures.append("Open WebUI migration plan still has warnings")
+    elif key == "INVENTORY":
+        failures.extend(
+            validate_target_identity_payload(
+                target_identity_payload(payload),
+                label="inventory",
+                expected_target_host=expected_target_host,
+            )
+        )
+        failures.extend(validate_networking_payload(networking_payload(payload), label="inventory"))
     elif key == "CUTOVER_PLAN":
         safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
         if payload.get("warnings"):
             failures.append("cutover plan still has warnings")
         if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
             failures.append("cutover plan safety invariants are incomplete")
+        target_identity = payload.get("target_identity_readiness") if isinstance(payload.get("target_identity_readiness"), dict) else {}
+        networking = payload.get("networking_readiness") if isinstance(payload.get("networking_readiness"), dict) else {}
+        failures.extend(
+            validate_target_identity_payload(
+                target_identity,
+                label="cutover plan",
+                expected_target_host=expected_target_host,
+            )
+        )
+        failures.extend(validate_networking_payload(networking, label="cutover plan"))
     elif key == "ROLLBACK_REPORT":
         if payload.get("status") != "ok":
             failures.append("rollback rehearsal report status is not ok")
@@ -634,6 +819,7 @@ def validate_backup_migration_payload(key: str, payload: dict[str, Any]) -> list
 def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCheck:
     failures = []
     checked = []
+    expected_target_host = env_value(ctx, "B1_EXPECTED_TARGET_HOST") or env_value(ctx, "B1_HOST_CHAT")
     for key, label, kind, expected_format in BACKUP_MIGRATION_ROLLBACK_INPUTS:
         raw = env_value(ctx, key)
         if not raw:
@@ -649,7 +835,13 @@ def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCh
         input_failures = []
         if expected_format is not None and observed_format != expected_format:
             input_failures.append(f"unsupported format {observed_format or '<missing>'}")
-        input_failures.extend(validate_backup_migration_payload(key, payload))
+        input_failures.extend(
+            validate_backup_migration_payload(
+                key,
+                payload,
+                expected_target_host=expected_target_host,
+            )
+        )
         if input_failures:
             failures.append({"key": key, "label": label, "path": str(path), "failures": input_failures})
             continue
@@ -739,6 +931,7 @@ def run_preflight(ctx: PreflightContext) -> dict[str, Any]:
         check_workflow_files(ctx),
         check_backup_migration_rollback_inputs(ctx),
         check_production_topology(ctx),
+        check_target_network_policy(ctx),
     ]
     checks.extend(check_safety_gates(ctx))
     checks.extend(check_final_values(ctx))

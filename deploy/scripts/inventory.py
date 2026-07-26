@@ -1603,7 +1603,7 @@ def build_inventory(
                 "Port listeners are review evidence only; do not stop services from the inventory report.",
                 "SQLite metadata reads schema and aggregate counts only, not Open WebUI row contents.",
                 "Model directory scans are bounded and preserve symlinks/special files for operator review.",
-                "B1 AI Hub records observed host networking but does not configure hostnames, static IP addresses, gateways, or DNS servers.",
+                "B1 AI Hub records the target system hostname and observed host networking; IP address, gateway, and resolver properties must come from the host DHCP client or DHCP reservation, not repository or Compose static host-IP settings.",
             ],
         },
         "classification": {

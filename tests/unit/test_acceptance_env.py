@@ -35,6 +35,11 @@ class AcceptanceEnvTests(unittest.TestCase):
             text,
         )
         self.assertIn('export B1_ACCEPTANCE_API_KEY="${B1_ACCEPTANCE_API_KEY:-}"', text)
+        self.assertIn('export B1_HOST_CHAT="${B1_HOST_CHAT:-ai.b1.germering}"', text)
+        self.assertIn('export B1_EXPECTED_TARGET_HOST="${B1_EXPECTED_TARGET_HOST:-$B1_HOST_CHAT}"', text)
+        self.assertIn('export B1_LEGACY_COMFY_PUBLISH="${B1_LEGACY_COMFY_PUBLISH:-8188:8188}"', text)
+        self.assertIn('export B1_LEGACY_COMFY_BIND="${B1_LEGACY_COMFY_BIND:-}"', text)
+        self.assertIn('export B1_LEGACY_COMFY_ALLOW_CIDRS="${B1_LEGACY_COMFY_ALLOW_CIDRS:-192.168.2.0/24 100.64.0.0/10}"', text)
         self.assertIn('export B1_SMOKE_OPEN_WEBUI_BASE="${B1_SMOKE_OPEN_WEBUI_BASE:-https://ai.b1.germering}"', text)
         self.assertIn('export B1_SMOKE_OPEN_WEBUI_HOST_HEADER="${B1_SMOKE_OPEN_WEBUI_HOST_HEADER:-}"', text)
         self.assertIn('export B1_ACCEPTANCE_ALLOW_INSECURE_HTTP="false"', text)
@@ -80,6 +85,7 @@ class AcceptanceEnvTests(unittest.TestCase):
         config = acceptance_env.AcceptanceEnvConfig(data_root=Path("/srv/example"), host_chat="chat.test.lan")
         text = acceptance_env.render_acceptance_env(config)
 
+        self.assertIn('export B1_HOST_CHAT="${B1_HOST_CHAT:-chat.test.lan}"', text)
         self.assertIn('export B1_SMOKE_OPEN_WEBUI_BASE="${B1_SMOKE_OPEN_WEBUI_BASE:-https://chat.test.lan}"', text)
 
     def test_generated_file_is_sourceable_and_preserves_preexisting_key(self) -> None:
@@ -92,7 +98,7 @@ class AcceptanceEnvTests(unittest.TestCase):
                 "unset B1_SMOKE_EVIDENCE B1_BACKUP_ROOT; "
                 "B1_ACCEPTANCE_API_KEY=test-token; "
                 f'. "{output}"; '
-                'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE" "$B1_ACCEPTANCE_REPORT_OUTPUT"'
+                'printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n" "$B1_AI_HUB_API_KEY" "$B1_MODELHUB_TOKEN" "$B1_SMOKE_EVIDENCE" "$B1_SMOKE_OPEN_WEBUI_BASE" "$B1_ACCEPTANCE_REPORT_OUTPUT" "$B1_EXPECTED_TARGET_HOST" "$B1_LEGACY_COMFY_PUBLISH"'
             )
             result = subprocess.run(["bash", "-c", command], check=True, text=True, stdout=subprocess.PIPE)
             lines = result.stdout.splitlines()
@@ -102,6 +108,8 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertEqual(lines[2], "/srv/example/backups/acceptance/live-smoke.json")
         self.assertEqual(lines[3], "https://ai.b1.germering")
         self.assertEqual(lines[4], "/srv/example/backups/acceptance/operator-handoff-report-response.json")
+        self.assertEqual(lines[5], "ai.b1.germering")
+        self.assertEqual(lines[6], "8188:8188")
 
     def test_generate_writes_private_file_and_refuses_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

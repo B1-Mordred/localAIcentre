@@ -166,6 +166,45 @@ class AcceptancePreflightTests(unittest.TestCase):
             """
             {
               "format": "b1-ai-hub-host-inventory/v1",
+              "host": {
+                "identity": {
+                  "hostname": "ai",
+                  "fqdn": "ai.b1.germering",
+                  "platform_node": "ai"
+                }
+              },
+              "migration_readiness": {
+                "target_identity": {
+                  "expected_target_host": "ai.b1.germering",
+                  "expected_short_hostname": "ai",
+                  "observed_hostname": "ai",
+                  "observed_fqdn": "ai.b1.germering",
+                  "observed_platform_node": "ai",
+                  "hostname_matches_expected": true,
+                  "fqdn_matches_expected": true,
+                  "platform_node_matches_expected": true,
+                  "accepted": true,
+                  "operator_must_review_target_identity": false,
+                  "warnings": []
+                },
+                "networking": {
+                  "hostname_source": "system-hostname",
+                  "network_property_source": "host-dhcp-client",
+                  "b1_manages_host_networking": false,
+                  "b1_static_ip_configures": false,
+                  "expected_operator_networking": "host-managed DHCP lease/reservation plus LAN DNS records",
+                  "non_loopback_address_count": 1,
+                  "dynamic_address_count": 1,
+                  "default_route_interfaces": ["eth0"],
+                  "default_route_address_count": 1,
+                  "default_route_count": 1,
+                  "default_route_protocols": ["dhcp"],
+                  "has_dhcp_default_route": true,
+                  "dns_record_count": 7,
+                  "operator_must_review_networking": false,
+                  "warnings": []
+                }
+              },
               "classification": {"containers": []}
             }
             """,
@@ -197,6 +236,36 @@ class AcceptancePreflightTests(unittest.TestCase):
             {
               "format": "b1-ai-hub-cutover-plan/v1",
               "warnings": [],
+              "target_identity_readiness": {
+                "available": true,
+                "expected_target_host": "ai.b1.germering",
+                "expected_short_hostname": "ai",
+                "observed_hostname": "ai",
+                "observed_fqdn": "ai.b1.germering",
+                "observed_platform_node": "ai",
+                "hostname_matches_expected": true,
+                "fqdn_matches_expected": true,
+                "platform_node_matches_expected": true,
+                "accepted": true,
+                "operator_must_review_target_identity": false,
+                "warnings": []
+              },
+              "networking_readiness": {
+                "available": true,
+                "hostname_source": "system-hostname",
+                "network_property_source": "host-dhcp-client",
+                "b1_manages_host_networking": false,
+                "b1_static_ip_configures": false,
+                "non_loopback_address_count": 1,
+                "default_route_address_count": 1,
+                "default_route_count": 1,
+                "default_route_interfaces": ["eth0"],
+                "default_route_protocols": ["dhcp"],
+                "has_dhcp_default_route": true,
+                "dns_record_count": 7,
+                "operator_must_review_networking": false,
+                "warnings": []
+              },
               "safety": {
                 "deletes_nothing": true,
                 "old_stack_deletion_allowed": false
@@ -299,6 +368,7 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(self.check_by_name(report, "workflow_inputs")["status"], "ok")
         self.assertEqual(self.check_by_name(report, "backup_migration_rollback_inputs")["status"], "ok")
         self.assertEqual(self.check_by_name(report, "production_topology")["status"], "ok")
+        self.assertEqual(self.check_by_name(report, "target_network_policy")["status"], "ok")
         text = acceptance_preflight.human_report(report)
         self.assertNotIn("b1k_acceptance.secret", text)
         self.assertNotIn("correct horse battery staple", text)
@@ -435,6 +505,86 @@ class AcceptancePreflightTests(unittest.TestCase):
         check = self.check_by_name(report, "backup_migration_rollback_inputs")
         self.assertEqual(check["status"], "fail")
         self.assertIn("restore report does not record verified files", str(check["data"]))
+
+    def test_preflight_rejects_inventory_without_dhcp_network_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            self.write_json(
+                root / "backups" / "inventory-acceptance.json",
+                """
+                {
+                  "format": "b1-ai-hub-host-inventory/v1",
+                  "migration_readiness": {
+                    "target_identity": {
+                      "expected_target_host": "ai.b1.germering",
+                      "expected_short_hostname": "ai",
+                      "observed_hostname": "ai",
+                      "observed_fqdn": "ai.b1.germering",
+                      "observed_platform_node": "ai",
+                      "hostname_matches_expected": true,
+                      "fqdn_matches_expected": true,
+                      "platform_node_matches_expected": true,
+                      "accepted": true,
+                      "operator_must_review_target_identity": false,
+                      "warnings": []
+                    },
+                    "networking": {
+                      "hostname_source": "system-hostname",
+                      "network_property_source": "host-dhcp-client",
+                      "b1_manages_host_networking": false,
+                      "b1_static_ip_configures": false,
+                      "non_loopback_address_count": 1,
+                      "default_route_address_count": 1,
+                      "default_route_count": 1,
+                      "default_route_protocols": ["static"],
+                      "has_dhcp_default_route": false,
+                      "operator_must_review_networking": true,
+                      "warnings": ["Inventory did not prove a DHCP-owned default route"]
+                    }
+                  },
+                  "classification": {"containers": []}
+                }
+                """,
+            )
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file)
+
+        self.assertEqual(report["status"], "fail")
+        check = self.check_by_name(report, "backup_migration_rollback_inputs")
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("DHCP-owned default route", str(check["data"]))
+
+    def test_preflight_rejects_static_legacy_comfy_listener_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(
+                root,
+                env_file,
+                {
+                    "B1_LEGACY_COMFY_PUBLISH": "192.168.2.100:8188:8188",
+                    "B1_LEGACY_COMFY_BIND": "192.168.2.100",
+                },
+            )
+
+        self.assertEqual(report["status"], "fail")
+        policy = self.check_by_name(report, "target_network_policy")
+        self.assertEqual(policy["status"], "fail")
+        self.assertIn("static host IP", str(policy["data"]))
+
+    def test_preflight_rejects_target_host_configured_as_ip_address(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file, {"B1_EXPECTED_TARGET_HOST": "192.168.2.100"})
+
+        self.assertEqual(report["status"], "fail")
+        policy = self.check_by_name(report, "target_network_policy")
+        self.assertEqual(policy["status"], "fail")
+        self.assertIn("hostname/FQDN", str(policy["data"]))
 
     def test_preflight_rejects_plain_http_open_webui_smoke_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
