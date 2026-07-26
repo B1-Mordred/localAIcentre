@@ -13,7 +13,7 @@ Replace the existing local AI application stack on `ai.b1.germering` with a repr
 - OpenAI-compatible and asynchronous media APIs
 - automatic loading/unloading with at most one GPU-resident model or pipeline at a time
 
-The target machine is the existing LAN server `ai.b1.germering`, currently an RTX 3060 12 GB / 32 GB RAM–class system. Treat 32 GB RAM and 12 GB VRAM as hard initial constraints. The implementation must work now and make a later RAM/GPU upgrade easy.
+The target machine is the existing LAN server `ai.b1.germering`. Current host inventory shows an RTX 3060 Laptop 6 GB / 32 GB RAM–class system; use that as the active production resource envelope. Keep the original RTX 3060 12 GB / 32 GB profile as an upgrade target, and make a later RAM/GPU upgrade easy.
 
 ## Execution contract for Codex
 
@@ -237,7 +237,7 @@ The control plane is the authoritative coordinator and must implement:
 12. Configuration persistence and encrypted secret values.
 13. Update staging, maintenance mode, health validation, and rollback hooks.
 14. Audit logs for administrative changes and model/workflow operations.
-15. Resource admission control for the RTX 3060/32 GB profile.
+15. Resource admission control for the selected production hardware profile.
 
 Generate a master encryption key during bootstrap and store it as a file/Docker secret outside Git. Encrypt remote-provider credentials and other sensitive configuration at rest with an authenticated encryption scheme. Never log secrets, bearer tokens, voice samples, prompts, uploaded documents, or model-download credentials.
 
@@ -287,20 +287,20 @@ Implement a scheduler designed for one RTX 3060:
 - Reconcile active runtimes, GPU memory, queued jobs, and leases after any control-plane restart.
 - Prevent split-brain scheduling through an expiring Redis lease plus a PostgreSQL scheduler epoch/ownership record.
 
-Initial configurable RTX 3060 resource policy:
+Current configurable RTX 3060 Laptop 6 GB resource policy:
 
 ```yaml
 gpu:
-  total_vram_gib: 12
-  usable_vram_gib: 10.5
-  reserve_vram_gib: 1.5
+  total_vram_gib: 6
+  usable_vram_gib: 5
+  reserve_vram_gib: 1
   maximum_active_pipelines: 1
 host:
   total_ram_gib: 32
   reserve_ram_gib: 6
 llm:
-  default_context: 8192
-  maximum_context: 16384
+  default_context: 4096
+  maximum_context: 8192
   default_parallel_requests: 1
 comfyui:
   maximum_parallel_jobs: 1
@@ -763,7 +763,7 @@ Do not remove the old stack automatically after successful migration.
 - custom node install unavailable to non-admins
 - secrets/redacted payloads absent from logs
 
-### RTX 3060/32 GB acceptance test
+### RTX 3060 Laptop 6 GB / 32 GB acceptance test
 
 Run the default lightweight profile under representative chat, image, TTS, and short-video loads. The host must remain responsive, retain the configured RAM/VRAM reserves, avoid unbounded swap thrashing, and recover cleanly from OOM or cancelled jobs.
 
@@ -778,7 +778,7 @@ Do not hard-code rapidly changing model names as architectural dependencies. See
 - fast CPU TTS such as a Piper/Kokoro-class engine
 - scheduled quality/voice-cloning TTS
 - an SDXL-class or similarly capable low-VRAM image workflow
-- small/quantized 12 GB–validated video workflows with batch 1 and short clips
+- small/quantized 6 GB–validated video workflows with batch 1 and short clips
 
 Any seeded recommendation must show its exact tested version, licence, download source, measured hardware result, and date. The web UI must allow replacement without client reconfiguration because clients use aliases.
 

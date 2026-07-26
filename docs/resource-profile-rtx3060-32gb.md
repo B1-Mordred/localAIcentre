@@ -1,6 +1,6 @@
-# RTX 3060 / 32 GB Resource Profile
+# RTX 3060 12 GB / 32 GB Resource Profile
 
-Initial policy:
+Upgrade-target policy:
 
 ```yaml
 gpu:
@@ -20,7 +20,7 @@ comfyui:
   maximum_batch_size: 1
 ```
 
-The scheduler must keep at most one GPU-resident model or pipeline active. CPU-only embedding, TTS, or STT models may remain resident only when enabled by policy and when host RAM reserve remains available.
+The scheduler must keep at most one GPU-resident model or pipeline active. CPU-only embedding, TTS, or STT models may remain resident only when enabled by policy and when host RAM reserve remains available. The current `ai.b1.germering` host is a 6 GB RTX 3060 Laptop GPU and uses [resource-profile-rtx3060-laptop-6gb-32gb.md](./resource-profile-rtx3060-laptop-6gb-32gb.md) until hardware is upgraded.
 
 Target-host acceptance evidence is produced with:
 

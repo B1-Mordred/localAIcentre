@@ -2641,7 +2641,7 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("59afc3984868289f808d02fa5cd180edfb2de240", markdown)
             self.assertIn("d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083", markdown)
             self.assertIn("## Operator Evidence", markdown)
-            self.assertIn("RTX 3060/32 GB cross-runtime acceptance", markdown)
+            self.assertIn("RTX GPU cross-runtime acceptance", markdown)
             self.assertIn("## Live Acceptance Evidence", markdown)
             self.assertIn("Repository quality gates", markdown)
             self.assertIn("repository-quality.json", markdown)
@@ -4021,7 +4021,7 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(report["operator_handoff_ready"])
         self.assertFalse(acceptance.public_report_summary(report)["operator_evidence_ready"])
         self.assertIn(
-            "operator evidence missing: RTX 3060/32 GB cross-runtime acceptance completed with measured reserves",
+            "operator evidence missing: RTX GPU cross-runtime acceptance completed with measured selected-profile reserves",
             report["acceptance_blockers"],
         )
         self.assertIn(

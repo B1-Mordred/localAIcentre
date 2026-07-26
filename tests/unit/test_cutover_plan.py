@@ -620,7 +620,7 @@ class CutoverPlanTests(unittest.TestCase):
                 "profile": "rtx3060-32gb-initial",
                 "accepted": False,
                 "minimum_gpu_vram_mib": 12288,
-                "minimum_host_ram_mib": 32000,
+                "minimum_host_ram_mib": 31744,
                 "largest_gpu_vram_mib": 6144,
                 "host_total_ram_mib": 32168,
                 "warnings": ["largest detected GPU VRAM is 6144 MiB; required initial profile needs at least 12288 MiB"],
@@ -646,6 +646,44 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["hardware_readiness"]["accepted"])
         self.assertTrue(plan["hardware_readiness"]["operator_must_review_hardware"])
         self.assertTrue(any("Hardware profile requires operator review" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_accepts_selected_reduced_hardware_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inventory_payload = self.inventory()
+            inventory_payload["migration_readiness"]["hardware_profile"] = {
+                "profile": "rtx3060-laptop-6gb-32gb",
+                "profile_source": "environment",
+                "reduced_profile": True,
+                "accepted": True,
+                "minimum_gpu_vram_mib": 6144,
+                "minimum_host_ram_mib": 32000,
+                "largest_gpu_vram_mib": 6144,
+                "host_total_ram_mib": 32168,
+                "warnings": [],
+            }
+            inventory_path = self.write_json(root / "inventory.json", inventory_payload)
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            backup_dir = self.make_verified_backup(root, scope_path)
+            open_webui_plan_path = self.write_open_webui_plan(root / "open-webui-plan.json", inventory_path, backup_dir)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                open_webui_plan_path=open_webui_plan_path,
+            )
+
+        self.assertTrue(plan["hardware_readiness"]["accepted"])
+        self.assertFalse(plan["hardware_readiness"]["operator_must_review_hardware"])
+        self.assertFalse(any("Hardware profile requires operator review" in warning for warning in plan["warnings"]))
 
     def test_build_plan_warns_when_gpu_container_runtime_is_not_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

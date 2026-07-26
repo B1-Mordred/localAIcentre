@@ -190,10 +190,22 @@ class InventoryTests(unittest.TestCase):
         hardware = inventory.summarize_hardware_profile(
             [{"memory_total_mib": 6144, "name": "NVIDIA GeForce RTX 3060 Laptop GPU"}],
             {"mem": {"total_mib": 32168, "available_mib": 28000}},
+            profile=inventory.HARDWARE_PROFILE_PRESETS[inventory.INITIAL_PROFILE_NAME],
         )
         self.assertFalse(hardware["accepted"])
         self.assertEqual(hardware["largest_gpu_vram_mib"], 6144)
         self.assertTrue(any("12288 MiB" in warning for warning in hardware["warnings"]))
+
+        reduced_hardware = inventory.summarize_hardware_profile(
+            [{"memory_total_mib": 6144, "name": "NVIDIA GeForce RTX 3060 Laptop GPU"}],
+            {"mem": {"total_mib": 32168, "available_mib": 28000}},
+            profile=inventory.HARDWARE_PROFILE_PRESETS[inventory.REDUCED_6GB_PROFILE_NAME],
+        )
+        self.assertTrue(reduced_hardware["accepted"])
+        self.assertEqual(reduced_hardware["profile"], "rtx3060-laptop-6gb-32gb")
+        self.assertTrue(reduced_hardware["reduced_profile"])
+        self.assertEqual(reduced_hardware["minimum_gpu_vram_mib"], 6144)
+        self.assertEqual(reduced_hardware["minimum_host_ram_mib"], 31744)
 
         gpu_runtime = inventory.summarize_gpu_container_runtime(
             gpu_devices=[],

@@ -44,10 +44,10 @@ The image uses `extra_model_paths.yaml` to map B1 model views into ComfyUI folde
 The entrypoint starts:
 
 ```text
-python main.py --listen 0.0.0.0 --port 8188 --disable-auto-launch --log-stdout --extra-model-paths-config /opt/b1/comfyui/extra_model_paths.yaml --reserve-vram 1.5 --max-upload-size 256 --disable-api-nodes --cache-none
+python main.py --listen 0.0.0.0 --port 8188 --disable-auto-launch --log-stdout --extra-model-paths-config /opt/b1/comfyui/extra_model_paths.yaml --reserve-vram 1.0 --max-upload-size 256 --disable-api-nodes --cache-none --lowvram
 ```
 
-`--disable-api-nodes` keeps built-in API/cloud nodes from communicating with the internet. `HF_HUB_DISABLE_TELEMETRY=1` and `DO_NOT_TRACK=1` are also set. `--cache-none` and `--reserve-vram 1.5` are conservative defaults for the RTX 3060/32 GB profile; tune them only after measured runs.
+`--disable-api-nodes` keeps built-in API/cloud nodes from communicating with the internet. `HF_HUB_DISABLE_TELEMETRY=1` and `DO_NOT_TRACK=1` are also set. `--cache-none`, `--lowvram`, and `--reserve-vram 1.0` are conservative defaults for the current RTX 3060 Laptop 6 GB / 32 GB profile; tune them only after measured runs.
 
 Health checks use native `GET /system_stats` on internal port `8188`. The control plane uses `COMFYUI_URL=http://comfyui:8188`.
 
@@ -80,4 +80,4 @@ Hook behavior is intentionally bounded:
 - `unload` sets ComfyUI's native `unload_models` and `free_memory` flags and, when the queue is idle, immediately calls native model/cache cleanup.
 - `build-info` returns the B1 hook package version, `Comfy-Org/ComfyUI` upstream version, pinned upstream commit, and source archive SHA-256. `/admin/self-test` calls it and `status` over the internal runtime URL and fails in production when ComfyUI is required but the deployed runtime does not report pinned metadata or lifecycle/status evidence.
 
-Use `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or relative paths visible in ComfyUI model folders. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only if approved custom nodes introduce additional model folder keys that should participate in lifecycle checks. Production acceptance should install ComfyUI-backed manifests with `runtime_smoke.schema=b1-ai-hub-runtime-smoke/v1` and a small model-specific `runtime_smoke.comfyui.prompt`, then persist measured VRAM data for the exact published workflows and model manifests on the target RTX 3060/32 GB host.
+Use `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or relative paths visible in ComfyUI model folders. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only if approved custom nodes introduce additional model folder keys that should participate in lifecycle checks. Production acceptance should install ComfyUI-backed manifests with `runtime_smoke.schema=b1-ai-hub-runtime-smoke/v1` and a small model-specific `runtime_smoke.comfyui.prompt`, then persist measured VRAM data for the exact published workflows and model manifests on the target RTX 3060 Laptop 6 GB / 32 GB host.

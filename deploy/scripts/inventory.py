@@ -138,8 +138,25 @@ REVIEW_PORTS = {
     11438: "Ollama/OpenAI-compatible proxy",
 }
 INITIAL_PROFILE_NAME = "rtx3060-32gb-initial"
+REDUCED_6GB_PROFILE_NAME = "rtx3060-laptop-6gb-32gb"
 MIN_INITIAL_GPU_VRAM_MIB = 12 * 1024
+MIN_REDUCED_6GB_GPU_VRAM_MIB = 6 * 1024
 MIN_INITIAL_HOST_RAM_MIB = 32000
+MIN_REDUCED_6GB_HOST_RAM_MIB = 31 * 1024
+HARDWARE_PROFILE_PRESETS = {
+    INITIAL_PROFILE_NAME: {
+        "profile": INITIAL_PROFILE_NAME,
+        "minimum_gpu_vram_mib": MIN_INITIAL_GPU_VRAM_MIB,
+        "minimum_host_ram_mib": MIN_INITIAL_HOST_RAM_MIB,
+        "reduced_profile": False,
+    },
+    REDUCED_6GB_PROFILE_NAME: {
+        "profile": REDUCED_6GB_PROFILE_NAME,
+        "minimum_gpu_vram_mib": MIN_REDUCED_6GB_GPU_VRAM_MIB,
+        "minimum_host_ram_mib": MIN_REDUCED_6GB_HOST_RAM_MIB,
+        "reduced_profile": True,
+    },
+}
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
@@ -1203,26 +1220,75 @@ def summarize_open_webui_data_roots(roots: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def summarize_hardware_profile(gpu_devices: list[dict[str, Any]], memory: dict[str, Any]) -> dict[str, Any]:
+def parse_positive_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value.strip(), 10)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def selected_hardware_profile(environ: dict[str, str] | None = None) -> dict[str, Any]:
+    env = environ if environ is not None else os.environ
+    requested_profile = env.get("B1_HARDWARE_PROFILE", INITIAL_PROFILE_NAME).strip() or INITIAL_PROFILE_NAME
+    preset = HARDWARE_PROFILE_PRESETS.get(requested_profile)
+    profile = dict(preset or HARDWARE_PROFILE_PRESETS[INITIAL_PROFILE_NAME])
+    profile["profile"] = requested_profile
+    profile["profile_source"] = "preset" if preset else "custom"
+    env_min_gpu = parse_positive_int(env.get("B1_HARDWARE_MIN_GPU_VRAM_MIB"))
+    env_min_host = parse_positive_int(env.get("B1_HARDWARE_MIN_HOST_RAM_MIB"))
+    if env_min_gpu is not None:
+        profile["minimum_gpu_vram_mib"] = env_min_gpu
+        profile["profile_source"] = "environment"
+    if env_min_host is not None:
+        profile["minimum_host_ram_mib"] = env_min_host
+        profile["profile_source"] = "environment"
+    if preset is None and env_min_gpu is None:
+        profile["minimum_gpu_vram_mib"] = MIN_INITIAL_GPU_VRAM_MIB
+    if preset is None and env_min_host is None:
+        profile["minimum_host_ram_mib"] = MIN_INITIAL_HOST_RAM_MIB
+    profile["reduced_profile"] = int(profile["minimum_gpu_vram_mib"]) < MIN_INITIAL_GPU_VRAM_MIB
+    return profile
+
+
+def summarize_hardware_profile(
+    gpu_devices: list[dict[str, Any]],
+    memory: dict[str, Any],
+    *,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected_profile = profile or selected_hardware_profile()
+    minimum_gpu_vram_mib = int(selected_profile["minimum_gpu_vram_mib"])
+    minimum_host_ram_mib = int(selected_profile["minimum_host_ram_mib"])
     gpu_totals = [item.get("memory_total_mib") for item in gpu_devices if isinstance(item.get("memory_total_mib"), int)]
     largest_gpu_vram_mib = max(gpu_totals) if gpu_totals else None
     mem = memory.get("mem") if isinstance(memory.get("mem"), dict) else {}
     host_total_ram_mib = mem.get("total_mib") if isinstance(mem.get("total_mib"), int) else None
     host_available_ram_mib = mem.get("available_mib") if isinstance(mem.get("available_mib"), int) else None
-    gpu_ok = largest_gpu_vram_mib is not None and largest_gpu_vram_mib >= MIN_INITIAL_GPU_VRAM_MIB
-    ram_ok = host_total_ram_mib is not None and host_total_ram_mib >= MIN_INITIAL_HOST_RAM_MIB
+    gpu_ok = largest_gpu_vram_mib is not None and largest_gpu_vram_mib >= minimum_gpu_vram_mib
+    ram_ok = host_total_ram_mib is not None and host_total_ram_mib >= minimum_host_ram_mib
     warnings: list[str] = []
     if not gpu_ok:
         observed = "unavailable" if largest_gpu_vram_mib is None else f"{largest_gpu_vram_mib} MiB"
-        warnings.append(f"largest detected GPU VRAM is {observed}; required initial profile needs at least {MIN_INITIAL_GPU_VRAM_MIB} MiB")
+        warnings.append(
+            f"largest detected GPU VRAM is {observed}; selected hardware profile {selected_profile['profile']} needs at least {minimum_gpu_vram_mib} MiB"
+        )
     if not ram_ok:
         observed = "unavailable" if host_total_ram_mib is None else f"{host_total_ram_mib} MiB"
-        warnings.append(f"detected host RAM is {observed}; required initial profile needs at least {MIN_INITIAL_HOST_RAM_MIB} MiB")
+        warnings.append(
+            f"detected host RAM is {observed}; selected hardware profile {selected_profile['profile']} needs at least {minimum_host_ram_mib} MiB"
+        )
     return {
-        "profile": INITIAL_PROFILE_NAME,
+        "profile": selected_profile["profile"],
+        "profile_source": selected_profile.get("profile_source", "preset"),
+        "reduced_profile": bool(selected_profile.get("reduced_profile")),
         "accepted": gpu_ok and ram_ok,
-        "minimum_gpu_vram_mib": MIN_INITIAL_GPU_VRAM_MIB,
-        "minimum_host_ram_mib": MIN_INITIAL_HOST_RAM_MIB,
+        "minimum_gpu_vram_mib": minimum_gpu_vram_mib,
+        "minimum_host_ram_mib": minimum_host_ram_mib,
+        "initial_baseline_gpu_vram_mib": MIN_INITIAL_GPU_VRAM_MIB,
+        "initial_baseline_host_ram_mib": MIN_INITIAL_HOST_RAM_MIB,
         "detected_gpu_count": len(gpu_devices),
         "largest_gpu_vram_mib": largest_gpu_vram_mib,
         "host_total_ram_mib": host_total_ram_mib,

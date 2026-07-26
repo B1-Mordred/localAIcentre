@@ -24,7 +24,7 @@ args=(
   --output-directory "$output_dir"
   --temp-directory "$temp_dir"
   --user-directory "$user_dir"
-  --reserve-vram "${B1_COMFYUI_RESERVE_VRAM_GIB:-1.5}"
+  --reserve-vram "${B1_COMFYUI_RESERVE_VRAM_GIB:-1.0}"
   --max-upload-size "${B1_COMFYUI_MAX_UPLOAD_MB:-256}"
 )
 
@@ -36,7 +36,7 @@ if [ "${B1_COMFYUI_CACHE_NONE:-true}" = "true" ]; then
   args+=(--cache-none)
 fi
 
-if [ "${B1_COMFYUI_LOWVRAM:-false}" = "true" ]; then
+if [ "${B1_COMFYUI_LOWVRAM:-true}" = "true" ]; then
   args+=(--lowvram)
 fi
 

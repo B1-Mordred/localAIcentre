@@ -474,7 +474,7 @@ PRESERVED_ROLLBACK_RESOURCE_KEYS = (
 )
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
-    ("rtx3060_acceptance", "RTX 3060/32 GB cross-runtime acceptance completed with measured reserves"),
+    ("rtx3060_acceptance", "RTX GPU cross-runtime acceptance completed with measured selected-profile reserves"),
     ("chat_tts_image_video", "Chat, TTS/STT, image/edit, and short video workflows completed with installed models"),
     ("native_comfyui_compatibility", "Native ComfyUI REST and WebSocket compatibility was validated externally"),
     ("remote_nodes_non_comfy", "External ComfyUI remote nodes completed a non-Comfy operation with server ComfyUI stopped"),

@@ -896,7 +896,7 @@ def build_plan(
                     "Confirm no unrelated Hermes, Yggdrasil, Discord, DNS, database, or automation services are scoped.",
                     "Confirm target_identity_readiness proves the inventory came from the intended appliance host.",
                     "Confirm temporary B1 staging ports are free and production port listeners are expected old-stack routes or reverse proxies.",
-                    "Confirm hardware_readiness satisfies the initial 12 GB VRAM / 32 GB RAM profile or document a reduced-resource plan before cutover.",
+                    "Confirm hardware_readiness satisfies the selected production hardware profile, currently the RTX 3060 Laptop 6 GB / 32 GB profile on ai.b1.germering.",
                     "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
                     "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
