@@ -5055,13 +5055,23 @@ def latest_ok_model_smoke_run(manifest_payload: dict[str, Any], resolved_model_v
     measurements = manifest_payload.get("measurements") if isinstance(manifest_payload.get("measurements"), dict) else {}
     runs = measurements.get("runs") if isinstance(measurements.get("runs"), list) else []
     manifest_aliases = manifest_payload.get("aliases") if isinstance(manifest_payload.get("aliases"), list) else []
+    exact_runs = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("status") == "ok"
+        and run.get("resolved_model_version") == resolved_model_version
+        and run.get("model_alias") == alias
+    ]
+    if exact_runs:
+        return compact_model_smoke_run(exact_runs[-1]), len(exact_runs)
     ok_runs = [
         run
         for run in runs
         if isinstance(run, dict)
         and run.get("status") == "ok"
         and run.get("resolved_model_version") == resolved_model_version
-        and (run.get("model_alias") == alias or alias in manifest_aliases)
+        and alias in manifest_aliases
     ]
     return (compact_model_smoke_run(ok_runs[-1]) if ok_runs else None, len(ok_runs))
 

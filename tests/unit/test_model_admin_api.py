@@ -1701,6 +1701,43 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(chat["latest_ok_run"]["hook"]["status"], "ok")
         self.assertNotIn("unsafe_extra", chat["latest_ok_run"])
 
+    def test_model_measurement_coverage_prefers_exact_alias_run_for_shared_manifest(self) -> None:
+        manifest = measured_manifest_payload("image-default", "comfyui", model_id="shared-image")
+        manifest["aliases"] = ["image-default", "image-edit"]
+        edit_run = {
+            **manifest["measurements"]["runs"][0],
+            "id": "modelsmoke_image_edit",
+            "model_alias": "image-edit",
+            "hook": {
+                **manifest["measurements"]["runs"][0]["hook"],
+                "model_alias": "image-edit",
+            },
+        }
+        manifest["measurements"]["runs"].append(edit_run)
+        record = model_record_from_manifest(manifest)
+        resolved_model = {"id": manifest["id"], "version": manifest["version"], "display_name": manifest["display_name"]}
+        aliases_by_id = {
+            alias: {
+                "id": alias,
+                "status": "installed",
+                "modality": "image",
+                "preferred_runtime": "comfyui",
+                "runtimes": ["comfyui"],
+                "resource_label": "expected",
+                "resolved_model": resolved_model,
+            }
+            for alias in manifest["aliases"]
+        }
+        records_by_ref = {f"{record['id']}@{record['version']}": record}
+
+        default = main.model_measurement_coverage_for_alias("image-default", aliases_by_id, records_by_ref, expected_runtime="comfyui")
+        edit = main.model_measurement_coverage_for_alias("image-edit", aliases_by_id, records_by_ref, expected_runtime="comfyui")
+
+        self.assertTrue(default["ready"])
+        self.assertEqual(default["latest_ok_run"]["model_alias"], "image-default")
+        self.assertTrue(edit["ready"])
+        self.assertEqual(edit["latest_ok_run"]["model_alias"], "image-edit")
+
     def test_acceptance_model_measurement_coverage_includes_voicebox_when_required(self) -> None:
         runtime_by_alias = {
             "chat-default": "localai",
