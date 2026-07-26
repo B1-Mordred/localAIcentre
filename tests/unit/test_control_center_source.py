@@ -372,6 +372,17 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("formatProfileCompatibility(downloadPlan.profile_compatibility)", self.source)
         self.assertIn("profile_compatibility?:", self.source)
 
+    def test_models_tab_shows_model_removal_dependency_plans(self) -> None:
+        self.assertIn("type ModelRemovalPlan", self.source)
+        self.assertIn("dependent_model_profiles?: ModelProfileDependency[]", self.source)
+        self.assertIn("const [removalPlan, setRemovalPlan]", self.source)
+        self.assertIn("/removal-plan", self.source)
+        self.assertIn("Plan model record quarantine for ${record.display_name}", self.source)
+        self.assertIn("record quarantine {removalPlan.status}", self.source)
+        self.assertIn("removalPlan.dependent_model_profiles", self.source)
+        self.assertIn("(blobPlan.active_jobs ?? 0) > 0", self.source)
+        self.assertIn("blobPlan.dependent_model_profiles", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

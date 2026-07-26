@@ -879,6 +879,36 @@ type ProfileCompatibilityReport = {
   warnings: string[];
 };
 
+type ModelProfileDependency = {
+  id: string;
+  display_name?: string;
+  matched_aliases: string[];
+  target_class?: string;
+  runtime_policy?: string;
+  target_resource_label?: string;
+  resource_label?: string;
+  candidate_manifest?: boolean;
+};
+
+type ModelVoiceProfileDependency = {
+  id: string;
+  display_name?: string;
+  runtime?: string;
+  engine?: string;
+  model_alias?: string;
+  profile_type?: string;
+  status?: string;
+};
+
+type ModelRuntimeReservationDependency = {
+  id: string;
+  owner_id?: string;
+  runtime?: string;
+  model_alias?: string;
+  resolved_model_version?: string;
+  expires_at?: string;
+};
+
 type CatalogModel = {
   id: string;
   version: string;
@@ -1193,8 +1223,12 @@ type ModelBlobQuarantinePlan = {
   can_quarantine: boolean;
   blockers: string[];
   total_size_bytes: number;
-  active_jobs?: unknown[];
+  active_jobs?: number;
   dependent_workflows?: unknown[];
+  dependent_model_profiles?: ModelProfileDependency[];
+  dependent_voice_profiles?: ModelVoiceProfileDependency[];
+  active_voice_profiles?: ModelVoiceProfileDependency[];
+  active_runtime_reservations?: ModelRuntimeReservationDependency[];
   moved?: { path: string; sha256: string; quarantine_path: string; size_bytes: number }[];
   blobs: {
     path: string;
@@ -1207,6 +1241,22 @@ type ModelBlobQuarantinePlan = {
     referenced_by?: string[];
     blockers?: string[];
   }[];
+};
+
+type ModelRemovalPlan = {
+  model_ref: string;
+  model_status: string;
+  status: string;
+  can_quarantine: boolean;
+  blockers: string[];
+  quarantine: string;
+  active_jobs: number;
+  dependent_workflows: unknown[];
+  dependent_model_profiles: ModelProfileDependency[];
+  dependent_voice_profiles: ModelVoiceProfileDependency[];
+  active_voice_profiles: ModelVoiceProfileDependency[];
+  active_runtime_reservations: ModelRuntimeReservationDependency[];
+  model?: ModelRecord;
 };
 
 type JobRecord = {
@@ -1869,6 +1919,7 @@ function Models() {
   const [allowResourceOverride, setAllowResourceOverride] = useState(false);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
+  const [removalPlan, setRemovalPlan] = useState<ModelRemovalPlan | null>(null);
   const [blobPlan, setBlobPlan] = useState<ModelBlobQuarantinePlan | null>(null);
   const [smokeResult, setSmokeResult] = useState<ModelSmokeTestResult | null>(null);
   const [message, setMessage] = useState("idle");
@@ -2153,6 +2204,19 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
+  const planModelRemoval = (record: ModelRecord) => {
+    setBusy(true);
+    setMessage("planning model quarantine");
+    apiFetch(`/admin/models/${modelVersionPath(record)}/removal-plan`)
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: ModelRemovalPlan) => {
+        setRemovalPlan(payload);
+        setMessage(`record quarantine ${payload.status}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const quarantineModel = (record: ModelRecord) => {
     setBusy(true);
     setMessage("quarantining");
@@ -2162,7 +2226,8 @@ function Models() {
       body: JSON.stringify({ confirm: true })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
-      .then(() => {
+      .then((payload: ModelRemovalPlan) => {
+        setRemovalPlan(payload);
         setMessage(`quarantined ${record.id}@${record.version}`);
         loadModels();
       })
@@ -2275,13 +2340,29 @@ function Models() {
           {downloadPlan.blockers.length > 0 && <small>{downloadPlan.blockers.join("; ")}</small>}
         </div>
       )}
+      {removalPlan && (
+        <div className="one-time-key">
+          <strong>{removalPlan.model_ref} record quarantine {removalPlan.status}</strong>
+          <span>{removalPlan.can_quarantine ? "ready for confirmed quarantine" : "blocked"} / {removalPlan.model_status}</span>
+          <small>{removalPlan.quarantine}</small>
+          {removalPlan.active_jobs > 0 && <small>{removalPlan.active_jobs} active job reference{removalPlan.active_jobs === 1 ? "" : "s"}</small>}
+          {Boolean(removalPlan.dependent_model_profiles?.length) && <small>{removalPlan.dependent_model_profiles.map((profile) => `${profile.display_name ?? profile.id}: ${profile.matched_aliases.join(", ")}`).join(" / ")}</small>}
+          {Boolean(removalPlan.dependent_workflows?.length) && <small>{removalPlan.dependent_workflows.length} dependent workflow{removalPlan.dependent_workflows.length === 1 ? "" : "s"}</small>}
+          {Boolean(removalPlan.dependent_voice_profiles?.length) && <small>{removalPlan.dependent_voice_profiles.length} dependent voice profile{removalPlan.dependent_voice_profiles.length === 1 ? "" : "s"}</small>}
+          {Boolean(removalPlan.active_runtime_reservations?.length) && <small>{removalPlan.active_runtime_reservations.length} active runtime reservation{removalPlan.active_runtime_reservations.length === 1 ? "" : "s"}</small>}
+          {removalPlan.blockers.length > 0 && <small>{removalPlan.blockers.join("; ")}</small>}
+        </div>
+      )}
       {blobPlan && (
         <div className="one-time-key">
           <strong>{blobPlan.model_ref} blob quarantine {blobPlan.status}</strong>
           <span>{formatBytes(blobPlan.total_size_bytes)} recoverable cleanup candidate / {blobPlan.model_status}</span>
           <small>{blobPlan.blobs.map((blob) => `${blob.path}: ${blob.status}`).join(" / ")}</small>
-          {Boolean(blobPlan.active_jobs?.length) && <small>{blobPlan.active_jobs?.length} active job reference{blobPlan.active_jobs?.length === 1 ? "" : "s"}</small>}
+          {(blobPlan.active_jobs ?? 0) > 0 && <small>{blobPlan.active_jobs ?? 0} active job reference{blobPlan.active_jobs === 1 ? "" : "s"}</small>}
+          {Boolean(blobPlan.dependent_model_profiles?.length) && <small>{blobPlan.dependent_model_profiles?.map((profile) => `${profile.display_name ?? profile.id}: ${profile.matched_aliases.join(", ")}`).join(" / ")}</small>}
           {Boolean(blobPlan.dependent_workflows?.length) && <small>{blobPlan.dependent_workflows?.length} dependent workflow{blobPlan.dependent_workflows?.length === 1 ? "" : "s"}</small>}
+          {Boolean(blobPlan.dependent_voice_profiles?.length) && <small>{blobPlan.dependent_voice_profiles?.length} dependent voice profile{blobPlan.dependent_voice_profiles?.length === 1 ? "" : "s"}</small>}
+          {Boolean(blobPlan.active_runtime_reservations?.length) && <small>{blobPlan.active_runtime_reservations?.length} active runtime reservation{blobPlan.active_runtime_reservations?.length === 1 ? "" : "s"}</small>}
           {Boolean(blobPlan.moved?.length) && <small>{blobPlan.moved?.map((blob) => `${blob.sha256.slice(0, 12)} -> ${blob.quarantine_path}`).join(" / ")}</small>}
           {blobPlan.blockers.length > 0 && <small>{blobPlan.blockers.join("; ")}</small>}
         </div>
@@ -2464,6 +2545,7 @@ function Models() {
               <td>
                 <div className="table-actions">
                   <button title={`Run smoke test for ${record.display_name}`} onClick={() => smokeTestModel(record)} disabled={busy || record.status !== "installed"}><PlayCircle size={16} /></button>
+                  <button title={`Plan model record quarantine for ${record.display_name}`} onClick={() => planModelRemoval(record)} disabled={busy || record.status !== "installed"}><ListChecks size={16} /></button>
                   <button title={`Quarantine model record for ${record.display_name}`} onClick={() => quarantineModel(record)} disabled={busy || record.status !== "installed"}><Trash2 size={16} /></button>
                   <button title={`Plan authoritative blob quarantine for ${record.display_name}`} onClick={() => planBlobQuarantine(record)} disabled={busy || record.status === "installed"}><Database size={16} /></button>
                   <button title={`Quarantine authoritative blobs for ${record.display_name}`} onClick={() => quarantineBlobs(record)} disabled={busy || record.status === "installed"}><HardDrive size={16} /></button>

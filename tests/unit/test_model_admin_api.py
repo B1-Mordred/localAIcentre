@@ -280,6 +280,7 @@ class ModelAdminApiTests(unittest.TestCase):
             "admin_model_download_install",
             "admin_model_install",
             "admin_model_smoke_test",
+            "admin_model_removal_plan",
             "admin_model_remove",
             "admin_model_blob_quarantine_plan",
             "admin_model_blob_quarantine",
@@ -316,6 +317,27 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertTrue(any(profile["id"] == "everyday-llm-7-9b-q4" for profile in result["profiles"]))
         self.assertEqual(result["records"], [])
 
+    def test_model_removal_plan_reports_required_profile_dependencies(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        row = {
+            "id": "chat-small",
+            "version": "1.0.0",
+            "status": "installed",
+            "manifest": manifest_payload(digest, len(data)),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase(row, [row], active_jobs=0))
+
+            result = asyncio.run(main.admin_model_removal_plan("chat-small", "1.0.0"))
+
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(result["can_quarantine"])
+        self.assertEqual(result["active_jobs"], 0)
+        self.assertEqual(result["dependent_model_profiles"][0]["id"], "everyday-llm-7-9b-q4")
+        self.assertEqual(result["dependent_model_profiles"][0]["matched_aliases"], ["chat-default"])
+        self.assertIn("runtime views will be moved to recoverable quarantine", result["quarantine"])
+
     def test_blob_quarantine_plan_blocks_active_jobs(self) -> None:
         data = b"tiny model"
         digest = hashlib.sha256(data).hexdigest()
@@ -339,6 +361,7 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(result["active_jobs"], 2)
             self.assertIn("model is referenced by active jobs", result["blockers"])
             self.assertEqual(result["dependent_workflows"][0]["id"], "workflow-text")
+            self.assertEqual(result["dependent_model_profiles"][0]["id"], "everyday-llm-7-9b-q4")
 
     def test_blob_quarantine_plan_blocks_active_voice_profile_dependency(self) -> None:
         data = b"tiny model"
@@ -477,6 +500,7 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["message"], "model is referenced by active voice profiles")
         self.assertEqual(raised.exception.detail["dependent_voice_profiles"][0]["id"], "vp_active")
+        self.assertEqual(raised.exception.detail["dependent_model_profiles"][0]["id"], "everyday-llm-7-9b-q4")
 
     def test_model_remove_blocks_active_runtime_reservation_dependency(self) -> None:
         data = b"tiny model"
@@ -513,6 +537,7 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail["message"], "model is referenced by active runtime reservations")
         self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["id"], "reservation_model_ref")
         self.assertEqual(raised.exception.detail["active_runtime_reservations"][0]["resolved_model_version"], "chat-small@1.0.0")
+        self.assertEqual(raised.exception.detail["dependent_model_profiles"][0]["matched_aliases"], ["chat-default"])
         self.assertNotIn("reason", raised.exception.detail["active_runtime_reservations"][0])
         self.assertNotIn("idempotency_key", raised.exception.detail["active_runtime_reservations"][0])
 
@@ -545,6 +570,7 @@ class ModelAdminApiTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["message"], "model removal requires explicit confirmation")
+        self.assertEqual(raised.exception.detail["dependent_model_profiles"][0]["id"], "everyday-llm-7-9b-q4")
         self.assertEqual(raised.exception.detail["dependent_voice_profiles"][0]["id"], "vp_disabled")
         self.assertEqual(raised.exception.detail["active_voice_profiles"], [])
 
@@ -578,9 +604,11 @@ class ModelAdminApiTests(unittest.TestCase):
             quarantine_path = Path(result["moved"][0]["quarantine_path"])
             self.assertEqual(quarantine_path.read_bytes(), data)
             self.assertEqual(result["dependent_workflows"][0]["dependency"], "chat-default")
+            self.assertEqual(result["dependent_model_profiles"][0]["id"], "everyday-llm-7-9b-q4")
             self.assertEqual(audit_events[0]["event_type"], "model.blobs_quarantined")
             self.assertEqual(audit_events[0]["target_id"], "chat-small@1.0.0")
             self.assertEqual(audit_events[0]["metadata"]["moved"][0]["sha256"], digest)
+            self.assertEqual(audit_events[0]["metadata"]["dependent_model_profiles"][0]["matched_aliases"], ["chat-default"])
 
     def test_blob_quarantine_endpoint_blocks_active_runtime_reservation_dependency(self) -> None:
         data = b"tiny model"

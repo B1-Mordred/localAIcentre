@@ -6122,6 +6122,72 @@
         "summary": "Admin Model Blob Quarantine"
       }
     },
+    "/admin/models/{model_id}/versions/{version}/removal-plan": {
+      "get": {
+        "operationId": "admin_model_removal_plan_admin_models__model_id__versions__version__removal_plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "title": "Model Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Removal Plan Admin Models  Model Id  Versions  Version  Removal Plan Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Removal Plan"
+      }
+    },
     "/admin/models/{model_id}/versions/{version}/smoke-test": {
       "post": {
         "operationId": "admin_model_smoke_test_admin_models__model_id__versions__version__smoke_test_post",

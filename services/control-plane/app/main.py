@@ -5407,6 +5407,80 @@ async def dependent_voice_profiles_for_model(model_id: str, aliases: list[str]) 
     return profiles
 
 
+def dependent_model_profiles_for_model(model_id: str, aliases: list[str]) -> list[dict[str, Any]]:
+    alias_set = set(aliases)
+    profiles: list[dict[str, Any]] = []
+    catalog = catalog_snapshot()
+    for profile in catalog.list_profiles():
+        matched_aliases = sorted(alias_set.intersection(profile.aliases))
+        if not matched_aliases:
+            continue
+        record = catalog.profile_record(profile)
+        profiles.append(
+            {
+                "id": record["id"],
+                "display_name": record["display_name"],
+                "matched_aliases": matched_aliases,
+                "modality": record["modality"],
+                "operations": record["operations"],
+                "preferred_runtimes": record["preferred_runtimes"],
+                "target_class": record["target_class"],
+                "runtime_policy": record["runtime_policy"],
+                "target_resource_label": record["target_resource_label"],
+                "resource_label": record["resource_label"],
+                "resource_decision": record.get("resource_decision"),
+                "candidate_manifest": model_id in (record.get("candidate_manifest_ids") or []),
+            }
+        )
+    return profiles
+
+
+MODEL_RECORD_QUARANTINE_DESCRIPTION = (
+    "database record will be marked quarantined; runtime views will be moved to recoverable quarantine; "
+    "blobs remain recoverable under the authoritative blob store"
+)
+
+
+async def model_dependency_context_for_record(row: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    manifest = parse_model_record_manifest(row)
+    model_ref = f"{row['id']}@{row['version']}"
+    dependent_workflows = await dependent_workflows_for_model(row["id"], manifest.aliases)
+    dependent_model_profiles = dependent_model_profiles_for_model(row["id"], manifest.aliases)
+    dependent_voice_profiles = await dependent_voice_profiles_for_model(row["id"], manifest.aliases)
+    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
+    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
+    return manifest, {
+        "model_ref": model_ref,
+        "active_jobs": await database.count_active_jobs_for_model(model_ref, manifest.aliases),
+        "dependent_workflows": dependent_workflows,
+        "dependent_model_profiles": dependent_model_profiles,
+        "dependent_voice_profiles": dependent_voice_profiles,
+        "active_voice_profiles": active_voice_profiles,
+        "active_runtime_reservations": active_runtime_reservations,
+    }
+
+
+def model_record_quarantine_plan(row: dict[str, Any], dependencies: dict[str, Any]) -> dict[str, Any]:
+    blockers: list[str] = []
+    if row.get("status") != "installed":
+        blockers.append("model record is not installed")
+    if dependencies["active_jobs"]:
+        blockers.append("model is referenced by active jobs")
+    if dependencies["active_voice_profiles"]:
+        blockers.append("model is referenced by active voice profiles")
+    if dependencies["active_runtime_reservations"]:
+        blockers.append("model is referenced by active runtime reservations")
+    return {
+        "model_ref": dependencies["model_ref"],
+        "model_status": row.get("status"),
+        "status": "blocked" if blockers else "ready",
+        "can_quarantine": not blockers,
+        "blockers": blockers,
+        "quarantine": MODEL_RECORD_QUARANTINE_DESCRIPTION,
+        **dependencies,
+    }
+
+
 def public_runtime_reservation_dependency(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -8814,6 +8888,18 @@ async def admin_model_smoke_test(
     }
 
 
+@app.get("/admin/models/{model_id}/versions/{version}/removal-plan")
+async def admin_model_removal_plan(model_id: str, version: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:read")
+    require_model_admin(auth)
+    row = await database.get_model_record(model_id, version)
+    if row is None:
+        raise HTTPException(status_code=404, detail="installed model record not found")
+    _, dependencies = await model_dependency_context_for_record(row)
+    return model_record_quarantine_plan(row, dependencies)
+
+
 @app.delete("/admin/models/{model_id}/versions/{version}")
 async def admin_model_remove(
     model_id: str,
@@ -8828,47 +8914,30 @@ async def admin_model_remove(
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="installed model record not found")
-    manifest = parse_model_record_manifest(row)
-    model_ref = f"{model_id}@{version}"
-    active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
-    dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
-    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
-    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
-    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
-    if active_jobs:
+    manifest, dependencies = await model_dependency_context_for_record(row)
+    plan = model_record_quarantine_plan(row, dependencies)
+    if dependencies["active_jobs"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active jobs",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **plan,
             },
         )
-    if active_voice_profiles:
+    if dependencies["active_voice_profiles"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active voice profiles",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **plan,
             },
         )
-    if active_runtime_reservations:
+    if dependencies["active_runtime_reservations"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active runtime reservations",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **plan,
             },
         )
     if not request.confirm:
@@ -8876,18 +8945,13 @@ async def admin_model_remove(
             status_code=409,
             detail={
                 "message": "model removal requires explicit confirmation",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
-                "quarantine": "database record will be marked quarantined; runtime views will be moved to recoverable quarantine; blobs remain recoverable under the authoritative blob store",
+                **plan,
             },
         )
     try:
         view_quarantine = model_lifecycle.quarantine_runtime_views(manifest, data_root_path())
     except model_lifecycle.ModelLifecycleError as exc:
-        raise HTTPException(status_code=409, detail={"message": str(exc), "model_ref": model_ref}) from exc
+        raise HTTPException(status_code=409, detail={"message": str(exc), **plan}) from exc
     updated = await database.quarantine_model_record(model_id, version)
     if updated is None:
         raise HTTPException(status_code=404, detail="installed model record not found")
@@ -8897,24 +8961,25 @@ async def admin_model_remove(
         auth,
         "model.quarantined",
         target_type="model",
-        target_id=model_ref,
-        summary=f"Quarantined model {model_ref}",
+        target_id=dependencies["model_ref"],
+        summary=f"Quarantined model {dependencies['model_ref']}",
         metadata={
             "aliases": manifest.aliases,
-            "dependent_workflows": dependent_workflows,
-            "dependent_voice_profiles": dependent_voice_profiles,
-            "active_runtime_reservations": active_runtime_reservations,
+            "dependent_workflows": dependencies["dependent_workflows"],
+            "dependent_model_profiles": dependencies["dependent_model_profiles"],
+            "dependent_voice_profiles": dependencies["dependent_voice_profiles"],
+            "active_runtime_reservations": dependencies["active_runtime_reservations"],
             "runtime_view_quarantine": view_quarantine,
             "workflow_dependencies_refreshed": workflows["count"],
         },
     )
     return {
+        **plan,
+        "status": "quarantined",
+        "can_quarantine": True,
+        "blockers": [],
+        "model_status": updated.get("status"),
         "model": public_model_record(updated),
-        "active_jobs": active_jobs,
-        "dependent_workflows": dependent_workflows,
-        "dependent_voice_profiles": dependent_voice_profiles,
-        "active_voice_profiles": active_voice_profiles,
-        "active_runtime_reservations": active_runtime_reservations,
         "runtime_view_quarantine": view_quarantine,
         "workflow_refresh": workflows,
     }
@@ -8928,30 +8993,24 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="model record not found")
-    manifest = parse_model_record_manifest(row)
-    model_ref = f"{model_id}@{version}"
-    active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
-    dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
-    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
-    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
-    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
+    manifest, dependencies = await model_dependency_context_for_record(row)
     records = await database.list_model_records()
     plan = model_lifecycle.build_blob_quarantine_plan(manifest, data_root_path(), records, model_status=row["status"])
-    if active_jobs:
+    if dependencies["active_jobs"]:
         plan = {
             **plan,
             "status": "blocked",
             "can_quarantine": False,
             "blockers": [*plan.get("blockers", []), "model is referenced by active jobs"],
         }
-    if active_voice_profiles:
+    if dependencies["active_voice_profiles"]:
         plan = {
             **plan,
             "status": "blocked",
             "can_quarantine": False,
             "blockers": [*plan.get("blockers", []), "model is referenced by active voice profiles"],
         }
-    if active_runtime_reservations:
+    if dependencies["active_runtime_reservations"]:
         plan = {
             **plan,
             "status": "blocked",
@@ -8960,11 +9019,12 @@ async def admin_model_blob_quarantine_plan(model_id: str, version: str, authoriz
         }
     return {
         **jsonable_encoder(plan),
-        "active_jobs": active_jobs,
-        "dependent_workflows": dependent_workflows,
-        "dependent_voice_profiles": dependent_voice_profiles,
-        "active_voice_profiles": active_voice_profiles,
-        "active_runtime_reservations": active_runtime_reservations,
+        "active_jobs": dependencies["active_jobs"],
+        "dependent_workflows": dependencies["dependent_workflows"],
+        "dependent_model_profiles": dependencies["dependent_model_profiles"],
+        "dependent_voice_profiles": dependencies["dependent_voice_profiles"],
+        "active_voice_profiles": dependencies["active_voice_profiles"],
+        "active_runtime_reservations": dependencies["active_runtime_reservations"],
     }
 
 
@@ -8981,47 +9041,29 @@ async def admin_model_blob_quarantine(
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="model record not found")
-    manifest = parse_model_record_manifest(row)
-    model_ref = f"{model_id}@{version}"
-    active_jobs = await database.count_active_jobs_for_model(model_ref, manifest.aliases)
-    dependent_workflows = await dependent_workflows_for_model(model_id, manifest.aliases)
-    dependent_voice_profiles = await dependent_voice_profiles_for_model(model_id, manifest.aliases)
-    active_voice_profiles = active_voice_profile_dependencies(dependent_voice_profiles)
-    active_runtime_reservations = await active_runtime_reservations_for_model(model_ref, manifest.aliases)
-    if active_jobs:
+    manifest, dependencies = await model_dependency_context_for_record(row)
+    if dependencies["active_jobs"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active jobs",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **dependencies,
             },
         )
-    if active_voice_profiles:
+    if dependencies["active_voice_profiles"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active voice profiles",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **dependencies,
             },
         )
-    if active_runtime_reservations:
+    if dependencies["active_runtime_reservations"]:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "model is referenced by active runtime reservations",
-                "active_jobs": active_jobs,
-                "dependent_workflows": dependent_workflows,
-                "dependent_voice_profiles": dependent_voice_profiles,
-                "active_voice_profiles": active_voice_profiles,
-                "active_runtime_reservations": active_runtime_reservations,
+                **dependencies,
             },
         )
     records = await database.list_model_records()
@@ -9035,29 +9077,31 @@ async def admin_model_blob_quarantine(
         )
     except model_lifecycle.ModelLifecycleError as exc:
         plan = model_lifecycle.build_blob_quarantine_plan(manifest, data_root_path(), records, model_status=row["status"])
-        raise HTTPException(status_code=409, detail={"message": str(exc), "plan": plan}) from exc
+        raise HTTPException(status_code=409, detail={"message": str(exc), "plan": {**jsonable_encoder(plan), **dependencies}}) from exc
     await record_audit_event(
         auth,
         "model.blobs_quarantined",
         target_type="model",
-        target_id=model_ref,
-        summary=f"Quarantined authoritative blobs for {model_ref}",
+        target_id=dependencies["model_ref"],
+        summary=f"Quarantined authoritative blobs for {dependencies['model_ref']}",
         metadata={
             "model_status": row["status"],
             "moved": [{"sha256": item["sha256"], "quarantine_path": item["quarantine_path"], "size_bytes": item["size_bytes"]} for item in result["moved"]],
             "total_size_bytes": result["total_size_bytes"],
-            "dependent_workflows": dependent_workflows,
-            "dependent_voice_profiles": dependent_voice_profiles,
-            "active_runtime_reservations": active_runtime_reservations,
+            "dependent_workflows": dependencies["dependent_workflows"],
+            "dependent_model_profiles": dependencies["dependent_model_profiles"],
+            "dependent_voice_profiles": dependencies["dependent_voice_profiles"],
+            "active_runtime_reservations": dependencies["active_runtime_reservations"],
         },
     )
     return {
         **jsonable_encoder(result),
-        "active_jobs": active_jobs,
-        "dependent_workflows": dependent_workflows,
-        "dependent_voice_profiles": dependent_voice_profiles,
-        "active_voice_profiles": active_voice_profiles,
-        "active_runtime_reservations": active_runtime_reservations,
+        "active_jobs": dependencies["active_jobs"],
+        "dependent_workflows": dependencies["dependent_workflows"],
+        "dependent_model_profiles": dependencies["dependent_model_profiles"],
+        "dependent_voice_profiles": dependencies["dependent_voice_profiles"],
+        "active_voice_profiles": dependencies["active_voice_profiles"],
+        "active_runtime_reservations": dependencies["active_runtime_reservations"],
     }
 
 
