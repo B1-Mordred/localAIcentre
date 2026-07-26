@@ -2013,6 +2013,20 @@ def _security_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     artifact_path = _nonempty_text(artifact_auth.get("path"))
     if not artifact_path.startswith("/artifacts/"):
         missing.append("artifact_authorization_enforced.path")
+    if _integer_value(artifact_auth.get("authorized_status")) != 206:
+        missing.append("artifact_authorization_enforced.authorized_status")
+    if _positive_int(artifact_auth.get("authorized_byte_count")) < 1:
+        missing.append("artifact_authorization_enforced.authorized_byte_count")
+    if not _normalized_sha256(artifact_auth.get("authorized_sha256")):
+        missing.append("artifact_authorization_enforced.authorized_sha256")
+    if not _nonempty_text(artifact_auth.get("authorized_content_range")).startswith("bytes 0-"):
+        missing.append("artifact_authorization_enforced.authorized_content_range")
+    if _integer_value(artifact_auth.get("authorized_content_length")) != _positive_int(artifact_auth.get("authorized_byte_count")):
+        missing.append("artifact_authorization_enforced.authorized_content_length")
+    if not _nonempty_text(artifact_auth.get("authorized_content_type")):
+        missing.append("artifact_authorization_enforced.authorized_content_type")
+    if not _nonempty_text(artifact_auth.get("authorized_etag")):
+        missing.append("artifact_authorization_enforced.authorized_etag")
     if _integer_value(artifact_auth.get("unauthenticated_status")) != 401:
         missing.append("artifact_authorization_enforced.unauthenticated_status")
     if _integer_value(artifact_auth.get("under_scoped_status")) != 403:

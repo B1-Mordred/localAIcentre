@@ -349,6 +349,13 @@ def sample_security_checks() -> dict[str, dict[str, Any]]:
             "status": "ok",
             "recorded_at": "2026-07-24T12:49:30+00:00",
             "path": "/artifacts/audio-cpu/job_123/speech.wav",
+            "authorized_status": 206,
+            "authorized_byte_count": 1,
+            "authorized_sha256": "9" * 64,
+            "authorized_content_range": "bytes 0-0/4096",
+            "authorized_content_length": "1",
+            "authorized_content_type": "audio/wav",
+            "authorized_etag": '"sha256:' + "2" * 64 + '"',
             "unauthenticated_status": 401,
             "under_scoped_status": 403,
             "other_owner_status": 403,
@@ -3833,6 +3840,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("under_scoped_requests_rejected.auth_status", snapshot["missing_security_evidence"])
         self.assertIn("cors_credentials_not_wildcard.wildcard_credentials_false", snapshot["missing_security_evidence"])
         self.assertIn("import_ssrf_blocked.policy_case", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_status", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_sha256", snapshot["missing_security_evidence"])
         self.assertIn("artifact_authorization_enforced.unauthenticated_status", snapshot["missing_security_evidence"])
         self.assertIn("runtime_agent_mutation_guard.mtls_enabled", snapshot["missing_security_evidence"])
         self.assertIn("logs_redacted.bearer_tokens_redacted", snapshot["missing_security_evidence"])
@@ -3841,6 +3850,35 @@ class AcceptanceReportTests(unittest.TestCase):
         report = sample_report(live_evidence=live_evidence)
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("security acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
+    def test_security_snapshot_requires_authorized_artifact_range_proof(self) -> None:
+        payload = {
+            "format": "b1-ai-hub-security-acceptance/v1",
+            "generated_at": "2026-07-24T12:50:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "checks": sample_security_checks(),
+            "samples": [{"label": "artifact-authorization-denied"}],
+        }
+        payload["checks"]["artifact_authorization_enforced"] = {
+            **payload["checks"]["artifact_authorization_enforced"],
+            "authorized_status": 200,
+            "authorized_byte_count": 0,
+            "authorized_sha256": "",
+            "authorized_content_range": "",
+            "authorized_content_length": "0",
+            "authorized_content_type": "",
+            "authorized_etag": "",
+        }
+
+        snapshot = acceptance.security_evidence_snapshot(payload)
+
+        self.assertIn("artifact_authorization_enforced.authorized_status", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_byte_count", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_sha256", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_content_range", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_content_type", snapshot["missing_security_evidence"])
+        self.assertIn("artifact_authorization_enforced.authorized_etag", snapshot["missing_security_evidence"])
 
     def test_report_blocks_handoff_without_restart_reconciliation_evidence(self) -> None:
         live_evidence = sample_live_evidence()

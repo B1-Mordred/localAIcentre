@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import ssl
@@ -529,6 +530,21 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
 
     def verify_artifact_authorization_enforced(self) -> None:
         path = self.resolve_artifact_url_for_authorization_check()
+        authorized_status, authorized_headers, authorized_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.api_key,
+            headers={"Range": "bytes=0-0"},
+            allow_http_error=True,
+        )
+        authorized_header_map = {key.lower(): value for key, value in authorized_headers.items()}
+        self.assertEqual(authorized_status, 206, authorized_body[:300])
+        self.assertEqual(len(authorized_body), 1)
+        content_range = authorized_header_map.get("content-range", "")
+        self.assertTrue(content_range.startswith("bytes 0-0/"), content_range)
+        self.assertEqual(authorized_header_map.get("content-length"), "1")
+        self.assertTrue(authorized_header_map.get("content-type"), authorized_headers)
         unauth_status, _unauth_headers, unauth_body = self.request_raw(self.api_base, "GET", path, allow_http_error=True)
         self.assertEqual(unauth_status, 401, unauth_body[:300])
         under_scoped_status, _under_headers, under_body = self.request_raw(
@@ -550,6 +566,13 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.record_check(
             "artifact_authorization_enforced",
             path=path,
+            authorized_status=authorized_status,
+            authorized_byte_count=len(authorized_body),
+            authorized_sha256=hashlib.sha256(authorized_body).hexdigest(),
+            authorized_content_range=content_range,
+            authorized_content_length=authorized_header_map.get("content-length", ""),
+            authorized_content_type=authorized_header_map.get("content-type", ""),
+            authorized_etag=authorized_header_map.get("etag", ""),
             unauthenticated_status=unauth_status,
             under_scoped_status=under_scoped_status,
             other_owner_status=other_owner_status,
@@ -558,6 +581,8 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
         self.sample(
             "artifact-authorization-denied",
             path=path,
+            authorized_status=authorized_status,
+            authorized_byte_count=len(authorized_body),
             unauthenticated_status=unauth_status,
             under_scoped_status=under_scoped_status,
             other_owner_status=other_owner_status,
