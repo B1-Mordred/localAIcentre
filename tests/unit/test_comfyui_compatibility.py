@@ -997,6 +997,49 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(runner.idle[0]["details"]["source"], "comfyui_native_compatibility")
         self.assertEqual(runner.idle[0]["details"]["last_state"], "completed")
 
+    def test_tracker_marks_history_without_media_outputs_recovery_required(self) -> None:
+        fake = FakeDatabase()
+        fake.jobs["job_1"] = {
+            "id": "job_1",
+            "state": "running",
+            "runtime": "comfyui",
+            "model_alias": "comfyui-native",
+            "resolved_model_version": "comfyui-native-workflow@native",
+            "artifacts": [],
+            "native_prompt_id": "prompt_native_1",
+        }
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+        ingest_called = False
+
+        async def fetch_history(_: str) -> dict[str, Any]:
+            return {"prompt_native_1": {"status": {"completed": True}, "outputs": {"noop": {}}}}
+
+        async def ingest(_: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal ingest_called
+            ingest_called = True
+            return []
+
+        main.fetch_comfyui_history = fetch_history  # type: ignore[assignment]
+        main.ingest_comfyui_artifacts = ingest  # type: ignore[assignment]
+
+        asyncio.run(main.track_comfyui_prompt_completion("job_1", "prompt_native_1", "lease-owner"))
+
+        self.assertFalse(ingest_called)
+        self.assertEqual(fake.jobs["job_1"]["state"], "recovery_required")
+        self.assertEqual(fake.jobs["job_1"]["stage"], "comfyui_no_media_artifacts")
+        self.assertEqual(fake.jobs["job_1"]["failure_category"], "comfyui_no_media_artifacts")
+        self.assertEqual(fake.jobs["job_1"]["artifacts"], [])
+        self.assertIn("completed without image, video, GIF, or audio outputs", fake.jobs["job_1"]["failure_message"])
+        self.assertIsInstance(fake.jobs["job_1"]["run_time_ms"], int)
+        self.assertEqual(fake.releases, ["lease-owner"])
+        self.assertGreaterEqual(len(fake.leases), 1)
+        self.assertEqual(runner.calls, ["record_runtime_idle_for_job"])
+        self.assertEqual(runner.idle[0]["job"]["runtime"], "comfyui")
+        self.assertEqual(runner.idle[0]["details"]["source"], "comfyui_native_compatibility")
+        self.assertEqual(runner.idle[0]["details"]["last_state"], "recovery_required")
+
     def test_tracker_marks_terminal_native_job_idle_before_releasing_lease(self) -> None:
         fake = FakeDatabase()
         fake.jobs["job_1"] = {

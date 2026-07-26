@@ -3195,7 +3195,22 @@ async def track_comfyui_prompt_completion(job_id: str, prompt_id: str, lease_own
                 idle_grace = max(0, settings.comfyui_prompt_idle_grace_seconds)
                 if idle_grace:
                     await asyncio.sleep(idle_grace)
-                artifacts = await ingest_comfyui_artifacts(merge_job_artifacts(current.get("artifacts") or [], comfyui_artifacts_from_history(prompt_id, history)))
+                artifacts = merge_job_artifacts(current.get("artifacts") or [], comfyui_artifacts_from_history(prompt_id, history))
+                if not artifacts:
+                    no_media = await database.update_job(
+                        job_id,
+                        state=JobState.RECOVERY_REQUIRED.value,
+                        stage="comfyui_no_media_artifacts",
+                        progress=90,
+                        artifacts=[],
+                        run_time_ms=elapsed_milliseconds(run_started),
+                        failure_category="comfyui_no_media_artifacts",
+                        failure_message=f"ComfyUI native prompt {prompt_id} completed without image, video, GIF, or audio outputs",
+                    )
+                    with suppress(Exception):
+                        await mark_comfyui_native_runtime_idle(no_media, prompt_id, JobState.RECOVERY_REQUIRED.value)
+                    return
+                artifacts = await ingest_comfyui_artifacts(artifacts)
                 failed_ingests = [artifact for artifact in artifacts if artifact.get("ingest_status") == "failed"]
                 if failed_ingests:
                     failed = await database.update_job(
