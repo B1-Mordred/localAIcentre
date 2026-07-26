@@ -236,6 +236,7 @@ type CaddyCaStatus = {
   status: string;
   path: string;
   tls_mode: string;
+  required: boolean;
   download_url?: string | null;
   available: boolean;
   readable: boolean;
@@ -5615,13 +5616,13 @@ function System() {
       <div className="toolbar">
         <button title="Refresh Caddy CA status" onClick={loadCaddyCa} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <button title="Download Caddy root certificate" onClick={downloadCaddyCa} disabled={busy || !caddyCa?.available}><Download size={16} />Download Root</button>
-        <span className={`status-pill ${caddyCa?.available ? "ok" : caddyCa?.status === "blocked" ? "failed" : "warning"}`}>{caddyCa?.status ?? "unknown"}</span>
+        <span className={`status-pill ${caddyCa?.available || caddyCa?.status === "not_required" ? "ok" : caddyCa?.status === "blocked" ? "failed" : "warning"}`}>{caddyCa?.status ?? "unknown"}</span>
         <span className="toolbar-status">{caddyCa?.path ?? "Caddy CA status unavailable"}</span>
       </div>
       <div className="metric-grid">
         <Metric
           label="Root"
-          value={caddyCa?.available ? "ready" : "missing"}
+          value={caddyCa?.available ? "ready" : caddyCa?.required === false ? "not required" : "missing"}
           detail={caddyCa?.modified_at ? formatDateTime(caddyCa.modified_at) : caddyCa?.blockers[0] ?? "not loaded"}
         />
         <Metric

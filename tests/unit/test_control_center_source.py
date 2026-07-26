@@ -209,6 +209,8 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("LAN TLS CA", self.source)
         self.assertIn("Download Root", self.source)
         self.assertIn("fingerprint_sha256", self.source)
+        self.assertIn("required: boolean", self.source)
+        self.assertIn('status === "not_required"', self.source)
         self.assertIn("caddyCa?.blockers", self.source)
 
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:

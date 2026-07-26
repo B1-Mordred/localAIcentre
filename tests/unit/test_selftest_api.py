@@ -295,6 +295,50 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
         self.assertIn("b1-ai-hub-caddy-root.crt", response.headers["content-disposition"])
 
+    def test_caddy_internal_ca_self_test_passes_when_internal_root_is_exportable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            ca_file.write_bytes(b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(ca_file), runtime_deployment_mode="production")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["name"], "tls:caddy-ca")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertTrue(result["data"]["available"])
+
+    def test_caddy_internal_ca_self_test_warns_missing_root_in_development(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(Path(tmp) / "missing.crt"), runtime_deployment_mode="development")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("development mode permits bootstrapping only", result["detail"])
+        self.assertFalse(result["data"]["available"])
+
+    def test_caddy_internal_ca_self_test_fails_missing_root_in_production(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(Path(tmp) / "missing.crt"), runtime_deployment_mode="production")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("has not been generated", result["detail"])
+
+    def test_caddy_internal_ca_self_test_passes_when_external_certs_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(
+                caddy_tls_args="/etc/caddy/external-certs/fullchain.pem /etc/caddy/external-certs/privkey.pem",
+                caddy_internal_ca_file=str(Path(tmp) / "missing.crt"),
+                runtime_deployment_mode="production",
+            )
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+            status = result["data"]
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(status["status"], "not_required")
+        self.assertFalse(status["required"])
+        self.assertFalse(status["available"])
+
     def test_caddy_internal_ca_download_refuses_missing_root(self) -> None:
         self.patch_auth({"admin:read"})
         with tempfile.TemporaryDirectory() as tmp:

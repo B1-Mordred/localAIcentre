@@ -73,12 +73,14 @@ class SettingsTests(unittest.TestCase):
 
     def test_caddy_internal_ca_file_is_separate_from_self_test_ca(self) -> None:
         self.patch_env(
+            B1_CADDY_TLS_ARGS="/etc/caddy/external-certs/fullchain.pem /etc/caddy/external-certs/privkey.pem",
             B1_CADDY_INTERNAL_CA_FILE="/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
             B1_SELF_TEST_TLS_CA_FILE="/etc/ssl/certs/custom-test-bundle.pem",
         )
 
         settings = settings_module.load_settings()
 
+        self.assertEqual(settings.caddy_tls_args, "/etc/caddy/external-certs/fullchain.pem /etc/caddy/external-certs/privkey.pem")
         self.assertEqual(settings.caddy_internal_ca_file, "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt")
         self.assertEqual(settings.self_test_tls_ca_file, "/etc/ssl/certs/custom-test-bundle.pem")
 

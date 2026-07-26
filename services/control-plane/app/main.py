@@ -7177,6 +7177,14 @@ def caddy_internal_ca_path() -> Path:
     return Path(settings.caddy_internal_ca_file)
 
 
+def caddy_tls_mode() -> str:
+    return "internal" if settings.caddy_tls_args.strip().lower() == "internal" else "external-certificates"
+
+
+def caddy_internal_ca_required() -> bool:
+    return caddy_tls_mode() == "internal"
+
+
 def read_regular_file_no_symlink(path: Path, *, max_bytes: int) -> bytes:
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -7204,9 +7212,10 @@ def caddy_internal_ca_status_payload() -> dict[str, Any]:
     blockers: list[str] = []
     payload: dict[str, Any] = {
         "object": "caddy_internal_ca",
-        "status": "missing",
+        "status": "missing" if caddy_internal_ca_required() else "not_required",
         "path": str(path),
-        "tls_mode": "internal",
+        "tls_mode": caddy_tls_mode(),
+        "required": caddy_internal_ca_required(),
         "download_url": None,
         "available": False,
         "readable": False,
@@ -7225,6 +7234,13 @@ def caddy_internal_ca_status_payload() -> dict[str, Any]:
         ],
         "blockers": blockers,
     }
+    if not caddy_internal_ca_required():
+        payload["trust_guidance"] = [
+            "Externally supplied Caddy certificates are configured, so B1 AI Hub does not offer an internal CA root for client trust.",
+            "Distribute the certificate authority or public certificate chain through your existing LAN certificate-management process.",
+        ]
+        payload["blocker_count"] = 0
+        return payload
     try:
         stat_result = path.lstat()
     except FileNotFoundError:
@@ -7270,6 +7286,24 @@ def caddy_internal_ca_status_payload() -> dict[str, Any]:
         payload["download_url"] = None
     payload["blocker_count"] = len(blockers)
     return payload
+
+
+async def self_test_caddy_internal_ca() -> dict[str, Any]:
+    status = await asyncio.to_thread(caddy_internal_ca_status_payload)
+    if not status.get("required"):
+        return selftest_policy.check(
+            "tls:caddy-ca",
+            "ok",
+            "external Caddy certificates configured; internal CA export is not required",
+            status,
+        )
+    if status.get("available"):
+        return selftest_policy.check("tls:caddy-ca", "ok", "Caddy internal CA root is exportable for trusted LAN clients", status)
+    severity = "failed" if settings.runtime_deployment_mode == "production" else "warning"
+    detail = "; ".join(status.get("blockers") or ["Caddy internal CA root is not exportable"])
+    if severity == "warning":
+        detail = f"{detail}; development mode permits bootstrapping only"
+    return selftest_policy.check("tls:caddy-ca", severity, detail, status)
 
 
 def self_test_route_keys(url: str) -> list[str]:
@@ -7427,6 +7461,7 @@ async def self_test_artifact_delivery() -> dict[str, Any]:
 
 async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]:
     return await asyncio.gather(
+        self_test_caddy_internal_ca(),
         self_test_tls_routing(),
         self_test_tiny_inference(subject_id),
         self_test_runtime_unload(),

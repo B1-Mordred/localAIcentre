@@ -295,8 +295,10 @@ class ComposePolicyTests(unittest.TestCase):
 
     def test_gateway_tls_can_use_internal_ca_or_supplied_certificates(self) -> None:
         gateway = self.compose["services"]["gateway"]
+        control_plane = self.compose["services"]["control-plane"]
         caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
         self.assertEqual(gateway["environment"]["B1_CADDY_TLS_ARGS"], "${B1_CADDY_TLS_ARGS:-internal}")
+        self.assertEqual(control_plane["environment"]["B1_CADDY_TLS_ARGS"], "${B1_CADDY_TLS_ARGS:-internal}")
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/caddy-certs:/etc/caddy/external-certs:ro", gateway["volumes"])
         self.assertIn("tls {$B1_CADDY_TLS_ARGS:internal}", caddyfile)
         self.assertNotIn("\ttls internal", caddyfile)

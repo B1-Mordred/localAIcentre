@@ -1913,6 +1913,26 @@ def sample_tls_routing_check(route_keys: tuple[str, ...] | None = None) -> dict[
     }
 
 
+def sample_caddy_ca_check(status: str = "ok") -> dict[str, Any]:
+    return {
+        "name": "tls:caddy-ca",
+        "status": status,
+        "detail": "Caddy internal CA root is exportable for trusted LAN clients" if status == "ok" else "Caddy internal CA root is not exportable",
+        "data": {
+            "object": "caddy_internal_ca",
+            "status": "ok" if status == "ok" else "missing",
+            "tls_mode": "internal",
+            "required": True,
+            "available": status == "ok",
+            "path": "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
+            "sha256": "a" * 64 if status == "ok" else None,
+            "fingerprint_sha256": ":".join(["AA"] * 32) if status == "ok" else None,
+            "download_url": "/admin/tls/caddy-ca/root.crt" if status == "ok" else None,
+            "blockers": [] if status == "ok" else ["Caddy internal CA root certificate has not been generated yet"],
+        },
+    }
+
+
 def sample_compose_selection(**overrides: str) -> dict[str, Any]:
     env = {
         "B1_COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml",
@@ -1932,6 +1952,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
             "checks": [
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
                 sample_tls_routing_check(),
+                sample_caddy_ca_check(),
                 {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
                 {
                     "name": "hardware:resource-policy",
@@ -2541,6 +2562,59 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("TLS gateway routing check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_caddy_ca_readiness_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("Caddy internal CA readiness check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_caddy_ca_readiness_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check("failed"),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("Caddy internal CA readiness check is failed", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_hardware_resource_policy_check(self) -> None:
         report = sample_report(

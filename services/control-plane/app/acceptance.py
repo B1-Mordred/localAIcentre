@@ -3446,6 +3446,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append(f"TLS gateway routing check is {tls_routing.get('status', 'unknown')}")
     elif failures := _tls_routing_evidence_failures(tls_routing, _handoff_url_host_map(report)):
         blockers.extend(failures)
+    caddy_ca = _check_by_name(report.get("self_test") or {}, "tls:caddy-ca")
+    if not caddy_ca:
+        blockers.append("Caddy internal CA readiness check is absent")
+    elif caddy_ca.get("status") != "ok":
+        blockers.append(f"Caddy internal CA readiness check is {caddy_ca.get('status', 'unknown')}")
     gpu_check = _check_by_name(report.get("self_test") or {}, "gpu:nvml")
     if not gpu_check:
         blockers.append("GPU/NVML check is absent")
