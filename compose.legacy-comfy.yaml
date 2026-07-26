@@ -8,4 +8,4 @@ services:
     volumes:
       - ./deploy/caddy/Caddyfile.legacy-comfy:/etc/caddy/Caddyfile.legacy-comfy:ro
     ports:
-      - "${B1_LEGACY_COMFY_BIND:-192.168.2.100}:${B1_LEGACY_COMFY_PORT:-8188}:8188"
+      - "${B1_LEGACY_COMFY_PUBLISH:-8188:8188}"

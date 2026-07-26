@@ -56,7 +56,8 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
         cls.host_header = os.getenv("B1_LEGACY_COMFY_HOST_HEADER", "").strip()
         cls.client_id = os.getenv("B1_LEGACY_COMFY_CLIENT_ID", f"b1-legacy-comfyui-{uuid.uuid4().hex}")
         cls.timeout_seconds = float(os.getenv("B1_LEGACY_COMFY_TIMEOUT_SECONDS", "30"))
-        cls.bind_host = os.getenv("B1_LEGACY_COMFY_BIND", "192.168.2.100").strip()
+        cls.publish_mapping = os.getenv("B1_LEGACY_COMFY_PUBLISH", "8188:8188").strip()
+        cls.bind_host = os.getenv("B1_LEGACY_COMFY_BIND", "").strip()
         cls.listen_port = os.getenv("B1_LEGACY_COMFY_PORT", "8188").strip()
         cls.allow_cidrs = split_words(os.getenv("B1_LEGACY_COMFY_ALLOW_CIDRS", "192.168.2.0/24 100.64.0.0/10"))
 
@@ -91,6 +92,7 @@ class LegacyComfyUiListenerTests(unittest.TestCase):
             "scheme": parsed.scheme,
             "port": parsed.port or listen_port,
             "bind_host": cls.bind_host,
+            "publish_mapping": cls.publish_mapping,
             "listen_port": cls.listen_port,
             "allow_cidrs": cls.allow_cidrs,
             "compatibility_marker": "comfyui-legacy-8188",

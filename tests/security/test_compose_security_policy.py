@@ -114,17 +114,18 @@ class ComposeSecurityPolicyTests(unittest.TestCase):
         self.assertTrue(any("Caddyfile.legacy-comfy" in volume for volume in gateway["volumes"]))
         self.assertEqual(
             gateway["ports"],
-            ["${B1_LEGACY_COMFY_BIND:-192.168.2.100}:${B1_LEGACY_COMFY_PORT:-8188}:8188"],
+            ["${B1_LEGACY_COMFY_PUBLISH:-8188:8188}"],
         )
 
-    def test_legacy_comfy_listener_uses_restricted_bind_and_cidr_defaults(self) -> None:
+    def test_legacy_comfy_listener_uses_dhcp_safe_publish_and_cidr_defaults(self) -> None:
         gateway = load_compose(LEGACY_COMPOSE)["services"]["gateway"]
         port_mapping = gateway["ports"][0]
-        bind_default = compose_default(port_mapping, "B1_LEGACY_COMFY_BIND")
-        port_default = compose_default(port_mapping, "B1_LEGACY_COMFY_PORT")
+        publish_default = compose_default(port_mapping, "B1_LEGACY_COMFY_PUBLISH")
 
-        self.assertEqual(port_default, "8188")
-        self.assertNotIn(bind_default, {"", "0.0.0.0", "::"})
+        self.assertEqual(publish_default, "8188:8188")
+        self.assertEqual(publish_default.count(":"), 1)
+        self.assertNotIn("192.168.2.100", port_mapping)
+        self.assertNotIn("B1_LEGACY_COMFY_BIND", port_mapping)
 
         allow_cidrs = gateway["environment"]["B1_LEGACY_COMFY_ALLOW_CIDRS"]
         cidr_defaults = set(compose_default(allow_cidrs, "B1_LEGACY_COMFY_ALLOW_CIDRS").split())

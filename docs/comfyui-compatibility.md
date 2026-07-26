@@ -57,6 +57,7 @@ docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-com
 ```
 
 The override uses `deploy/caddy/Caddyfile.legacy-comfy`, terminates at the control-plane compatibility proxy, and applies `B1_LEGACY_COMFY_ALLOW_CIDRS`. It never proxies directly to the ComfyUI backend. This listener is the only ComfyUI compatibility path that may omit bearer authentication; the gateway strips any client `Authorization`, `Cookie`, or `X-B1-CSRF` headers before forwarding. Use it only for clients that cannot set headers, keep the allowlist narrow, and prefer the authenticated HTTPS virtual host whenever possible.
+The default `B1_LEGACY_COMFY_PUBLISH=8188:8188` does not bake a static LAN address into the repository; it follows the host's current DHCP-owned addresses. Keep that default for final handoff evidence and use `B1_LEGACY_COMFY_ALLOW_CIDRS` as the listener restriction. If a temporary emergency override binds to one host address, remove it before acceptance evidence is generated.
 
 Validate the listener during the legacy-client compatibility window with:
 
@@ -67,6 +68,6 @@ B1_LEGACY_COMFY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/legacy-comfy-listener
 make legacy-comfyui-compatibility
 ```
 
-The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Its evidence also records the explicit `legacy-comfy` profile, bind host, CIDR allowlist, `comfyui-legacy-8188` marker, scheduler-aware `control-plane:8000` proxy target, no-direct-ComfyUI-backend assertion, and per-route proof that bearer, cookie, and CSRF headers were absent. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
+The test sends no bearer token and verifies `/object_info`, `/system_stats`, and `/ws` through the listener. Its evidence also records the explicit `legacy-comfy` profile, publish mapping, CIDR allowlist, `comfyui-legacy-8188` marker, scheduler-aware `control-plane:8000` proxy target, no-direct-ComfyUI-backend assertion, and per-route proof that bearer, cookie, and CSRF headers were absent. Passing this optional test does not remove the requirement to validate the authenticated `https://comfy.ai.b1.germering/` native ComfyUI path.
 
 When `B1_LEGACY_COMFY_EVIDENCE` points under `$B1_BACKUP_ROOT/acceptance`, Control Center acceptance reports ingest the latest legacy listener evidence as an optional section. Missing legacy evidence is non-blocking because the listener is disabled by default, but incomplete, failed, stale, open-world allowlist, direct-backend, or shallow check-name-only evidence is reported as a handoff blocker when an operator has enabled and tested that path.

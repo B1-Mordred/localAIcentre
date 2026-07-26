@@ -2093,9 +2093,9 @@ def _legacy_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
             missing.append("listener_policy.csrf_headers_stripped")
         if policy.get("bearer_auth_required") is not False:
             missing.append("listener_policy.bearer_auth_required_false")
-        bind_host = _nonempty_text(policy.get("bind_host"))
-        if not bind_host or bind_host in {"0.0.0.0", "::", "*"}:
-            missing.append("listener_policy.bind_host_restricted")
+        publish_mapping = _nonempty_text(policy.get("publish_mapping"))
+        if publish_mapping and publish_mapping.count(":") >= 2:
+            missing.append("listener_policy.publish_mapping_uses_static_host_ip")
         allow_cidrs = _as_string_list(policy.get("allow_cidrs"))
         if not allow_cidrs:
             missing.append("listener_policy.allow_cidrs")

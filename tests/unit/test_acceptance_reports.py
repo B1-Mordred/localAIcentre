@@ -425,7 +425,8 @@ def sample_legacy_comfy_payload() -> dict[str, Any]:
             "base_url": "http://ai.b1.germering:8188",
             "scheme": "http",
             "port": 8188,
-            "bind_host": "192.168.2.100",
+            "bind_host": "",
+            "publish_mapping": "8188:8188",
             "listen_port": "8188",
             "allow_cidrs": ["192.168.2.0/24", "100.64.0.0/10"],
             "compatibility_marker": "comfyui-legacy-8188",
@@ -4425,6 +4426,20 @@ class AcceptanceReportTests(unittest.TestCase):
             "listener_policy.allow_cidrs_not_open_world",
             live_evidence["legacy_comfyui_listener"]["missing_legacy_evidence"],
         )
+
+    def test_report_blocks_handoff_for_static_host_legacy_comfyui_publish_mapping(self) -> None:
+        live_evidence = sample_live_evidence()
+        legacy_payload = sample_legacy_comfy_payload()
+        legacy_payload["listener_policy"]["publish_mapping"] = "192.168.2.100:8188:8188"
+        live_evidence["legacy_comfyui_listener"] = acceptance.legacy_comfyui_evidence_snapshot(legacy_payload)
+        report = sample_report(live_evidence=live_evidence)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn(
+            "listener_policy.publish_mapping_uses_static_host_ip",
+            live_evidence["legacy_comfyui_listener"]["missing_legacy_evidence"],
+        )
+
 
     def test_report_blocks_handoff_without_remote_node_evidence(self) -> None:
         live_evidence = sample_live_evidence()
