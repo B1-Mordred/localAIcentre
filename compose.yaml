@@ -267,6 +267,8 @@ services:
       B1_GENERIC_HTTP_BASE_URL: ${B1_GENERIC_HTTP_BASE_URL:-}
       B1_RUNTIME_DEPLOYMENT_MODE: ${B1_RUNTIME_DEPLOYMENT_MODE:-development}
       B1_RUNTIME_PRODUCTION_REQUIRED: ${B1_RUNTIME_PRODUCTION_REQUIRED:-localai,comfyui,audio-cpu}
+      B1_COMPOSE_FILE: ${COMPOSE_FILE:-compose.yaml}
+      B1_COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       B1_HOST_CHAT: ${B1_HOST_CHAT:-ai.b1.germering}
       B1_HOST_CONTROL: ${B1_HOST_CONTROL:-control.ai.b1.germering}
       B1_HOST_MEDIA: ${B1_HOST_MEDIA:-media.ai.b1.germering}

@@ -2958,6 +2958,17 @@ COMPOSE_PIN_FILES = (
     "compose.production-voicebox.yaml",
     "compose.monitoring.yaml",
 )
+COMPOSE_SELECTION_FORMAT = "b1-ai-hub-compose-selection/v1"
+PRODUCTION_BASE_COMPOSE_FILE = "compose.yaml"
+DEFAULT_PRODUCTION_REQUIRED_RUNTIMES = ("localai", "comfyui", "audio-cpu")
+PRODUCTION_COMPOSE_FILES_BY_RUNTIME = {
+    "localai": "compose.production-localai.yaml",
+    "comfyui": "compose.production-comfyui.yaml",
+    "voicebox": "compose.production-voicebox.yaml",
+}
+PRODUCTION_COMPOSE_PROFILES_BY_RUNTIME = {
+    "voicebox": "voicebox",
+}
 DOCKERFILE_PIN_FILES = (
     ("open-webui", "deploy/open-webui/Dockerfile"),
     ("localai", "deploy/localai/Dockerfile"),
@@ -3019,6 +3030,96 @@ def _image_pin_type(image_ref: str) -> str:
     if _image_default_ref(image_ref).startswith("b1-ai-hub/"):
         return "versioned-local-build"
     return "versioned-tag"
+
+
+def _split_compose_file_value(value: str) -> list[str]:
+    tokens = [item.strip() for item in re.split(r"[:;]", value) if item.strip()]
+    return tokens or [PRODUCTION_BASE_COMPOSE_FILE]
+
+
+def _split_compose_profiles(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,:\s]+", value) if item.strip()]
+
+
+def _split_runtime_list(value: str) -> list[str]:
+    tokens = [item.strip().lower() for item in re.split(r"[,:\s]+", value) if item.strip()]
+    return tokens or list(DEFAULT_PRODUCTION_REQUIRED_RUNTIMES)
+
+
+def _compose_file_basename(value: str) -> str:
+    return value.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def compose_selection_snapshot(environ: dict[str, str] | None = None) -> dict[str, Any]:
+    env = environ if environ is not None else dict(os.environ)
+    raw_compose_file = env.get("B1_COMPOSE_FILE") or env.get("COMPOSE_FILE") or PRODUCTION_BASE_COMPOSE_FILE
+    raw_compose_profiles = env.get("B1_COMPOSE_PROFILES") or env.get("COMPOSE_PROFILES") or ""
+    raw_required_runtimes = env.get("B1_RUNTIME_PRODUCTION_REQUIRED") or ""
+    selected_files = _split_compose_file_value(raw_compose_file)
+    selected_file_basenames = sorted({_compose_file_basename(item) for item in selected_files})
+    selected_profiles = sorted(set(_split_compose_profiles(raw_compose_profiles)))
+    required_runtimes = _split_runtime_list(raw_required_runtimes)
+    required_files = sorted(
+        {PRODUCTION_BASE_COMPOSE_FILE}
+        | {
+            PRODUCTION_COMPOSE_FILES_BY_RUNTIME[runtime]
+            for runtime in required_runtimes
+            if runtime in PRODUCTION_COMPOSE_FILES_BY_RUNTIME
+        }
+    )
+    required_profiles = sorted(
+        {
+            PRODUCTION_COMPOSE_PROFILES_BY_RUNTIME[runtime]
+            for runtime in required_runtimes
+            if runtime in PRODUCTION_COMPOSE_PROFILES_BY_RUNTIME
+        }
+    )
+    missing_files = [item for item in required_files if item not in selected_file_basenames]
+    missing_profiles = [item for item in required_profiles if item not in selected_profiles]
+    return {
+        "format": COMPOSE_SELECTION_FORMAT,
+        "status": "ok" if not missing_files and not missing_profiles else "blocked",
+        "raw_compose_file": raw_compose_file,
+        "raw_compose_profiles": raw_compose_profiles,
+        "selected_files": selected_files,
+        "selected_file_basenames": selected_file_basenames,
+        "selected_profiles": selected_profiles,
+        "production_required_runtimes": required_runtimes,
+        "required_files": required_files,
+        "required_profiles": required_profiles,
+        "missing_files": missing_files,
+        "missing_profiles": missing_profiles,
+    }
+
+
+def _normalize_compose_selection(selection: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(selection, dict):
+        return compose_selection_snapshot()
+    normalized = {
+        "format": str(selection.get("format") or COMPOSE_SELECTION_FORMAT),
+        "status": str(selection.get("status") or "unknown"),
+        "raw_compose_file": str(selection.get("raw_compose_file") or ""),
+        "raw_compose_profiles": str(selection.get("raw_compose_profiles") or ""),
+        "selected_files": _as_string_list(selection.get("selected_files")),
+        "selected_file_basenames": _as_string_list(selection.get("selected_file_basenames")),
+        "selected_profiles": _as_string_list(selection.get("selected_profiles")),
+        "production_required_runtimes": _as_string_list(selection.get("production_required_runtimes")),
+        "required_files": _as_string_list(selection.get("required_files")),
+        "required_profiles": _as_string_list(selection.get("required_profiles")),
+        "missing_files": _as_string_list(selection.get("missing_files")),
+        "missing_profiles": _as_string_list(selection.get("missing_profiles")),
+    }
+    if normalized["format"] != COMPOSE_SELECTION_FORMAT:
+        normalized["status"] = "blocked"
+    if not normalized["selected_file_basenames"] and normalized["selected_files"]:
+        normalized["selected_file_basenames"] = sorted({_compose_file_basename(item) for item in normalized["selected_files"]})
+    if not normalized["required_files"]:
+        normalized["required_files"] = [PRODUCTION_BASE_COMPOSE_FILE]
+    if normalized["missing_files"] or normalized["missing_profiles"]:
+        normalized["status"] = "blocked"
+    elif normalized["status"] not in {"ok", "blocked"}:
+        normalized["status"] = "blocked"
+    return normalized
 
 
 def _annotate_image_pin(item: dict[str, Any]) -> dict[str, Any]:
@@ -3244,6 +3345,18 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append(f"self-test status is {report.get('status', 'unknown')}")
     if report.get("runtime_deployment_mode") != "production":
         blockers.append("runtime deployment mode is not production")
+    compose_selection = report.get("compose_selection") if isinstance(report.get("compose_selection"), dict) else {}
+    if report.get("runtime_deployment_mode") == "production":
+        if compose_selection.get("format") != COMPOSE_SELECTION_FORMAT:
+            blockers.append("production Compose selection evidence is unavailable")
+        elif compose_selection.get("status") != "ok":
+            blockers.append("production Compose selection is incomplete")
+        missing_files = _as_string_list(compose_selection.get("missing_files"))
+        if missing_files:
+            blockers.append("production Compose selection is missing required files: " + ", ".join(missing_files))
+        missing_profiles = _as_string_list(compose_selection.get("missing_profiles"))
+        if missing_profiles:
+            blockers.append("production Compose selection is missing required profiles: " + ", ".join(missing_profiles))
     production = _check_by_name(report.get("self_test") or {}, "runtimes:production-readiness")
     if production and production.get("status") != "ok":
         blockers.append("required runtimes are not production-ready")
@@ -3703,6 +3816,7 @@ def build_report(
     runtime_reservations: list[dict[str, Any]],
     deployment: dict[str, Any] | None = None,
     deployment_pins: dict[str, Any] | None = None,
+    compose_selection: dict[str, Any] | None = None,
     recent_updates: list[dict[str, Any]] | None = None,
     source_control: dict[str, Any] | None = None,
     operator_evidence: dict[str, Any] | None = None,
@@ -3732,6 +3846,7 @@ def build_report(
         "runtime_reservations": runtime_reservations,
         "deployment": deployment or {},
         "deployment_pins": _normalize_deployment_pins(deployment_pins),
+        "compose_selection": _normalize_compose_selection(compose_selection),
         "recent_updates": recent_updates or [],
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
@@ -4086,6 +4201,25 @@ def markdown_report(report: dict[str, Any]) -> str:
             ]
         )
 
+    compose_selection = report.get("compose_selection") if isinstance(report.get("compose_selection"), dict) else {}
+    compose_selection_rows = [["Field", "Value"]]
+    for key in (
+        "status",
+        "raw_compose_file",
+        "raw_compose_profiles",
+        "production_required_runtimes",
+        "required_files",
+        "selected_file_basenames",
+        "missing_files",
+        "required_profiles",
+        "selected_profiles",
+        "missing_profiles",
+    ):
+        value = compose_selection.get(key)
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value) if value else "none"
+        compose_selection_rows.append([key, _format_value(value)])
+
     deployment = report.get("deployment") or {}
     service_rows = [["Service", "Container", "State", "Image", "Image ID"]]
     for service in deployment.get("services") or []:
@@ -4185,6 +4319,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Deployment Pins\n\n"
             + "### Pin Summary\n\n"
             + _table(pin_summary_rows)
+            + "\n\n### Compose Selection\n\n"
+            + _table(compose_selection_rows)
             + "\n\n### Compose Images\n\n"
             + (_table(compose_pin_rows) if len(compose_pin_rows) > 1 else "No Compose image pins recorded.")
             + "\n\n### Dockerfile Base Images\n\n"
@@ -4357,6 +4493,8 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     source_control_ready = source_control.get("available") is True and bool(re.fullmatch(r"[a-f0-9]{40}", source_commit))
     deployment_pins = report.get("deployment_pins") if isinstance(report.get("deployment_pins"), dict) else {}
     deployment_pins_ready = deployment_pins.get("status") == "ok"
+    compose_selection = report.get("compose_selection") if isinstance(report.get("compose_selection"), dict) else {}
+    compose_selection_ready = compose_selection.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
     preflight_evidence_ready = (
         preflight_evidence.get("available") is True
@@ -4464,6 +4602,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "operator_handoff_ready": bool(report.get("operator_handoff_ready")),
         "source_control_ready": source_control_ready,
         "deployment_pins_ready": deployment_pins_ready,
+        "compose_selection_ready": compose_selection_ready,
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0

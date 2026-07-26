@@ -1781,6 +1781,16 @@ def sample_tls_routing_check(route_keys: tuple[str, ...] | None = None) -> dict[
     }
 
 
+def sample_compose_selection(**overrides: str) -> dict[str, Any]:
+    env = {
+        "B1_COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml",
+        "B1_COMPOSE_PROFILES": "voicebox",
+        "B1_RUNTIME_PRODUCTION_REQUIRED": "localai,comfyui,audio-cpu,voicebox",
+        **overrides,
+    }
+    return acceptance.compose_selection_snapshot(env)
+
+
 def sample_report(**overrides: Any) -> dict[str, Any]:
     report_id = overrides.pop("report_id", "acceptance-20260724t120000z-deadbeef")
     self_test = overrides.pop(
@@ -1845,6 +1855,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
             },
         ),
         deployment_pins=overrides.pop("deployment_pins", None),
+        compose_selection=overrides.pop("compose_selection", sample_compose_selection()),
         recent_updates=overrides.pop(
             "recent_updates",
             [
@@ -1912,6 +1923,9 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("## Recent Update Records", markdown)
             self.assertIn("## Source Control", markdown)
             self.assertIn("## Deployment Pins", markdown)
+            self.assertIn("### Compose Selection", markdown)
+            self.assertIn("compose.production-comfyui.yaml", markdown)
+            self.assertIn("voicebox", markdown)
             self.assertIn("caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d", markdown)
             self.assertIn("localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973", markdown)
             self.assertIn("59afc3984868289f808d02fa5cd180edfb2de240", markdown)
@@ -2013,6 +2027,39 @@ class AcceptanceReportTests(unittest.TestCase):
         for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
             with self.subTest(runtime=runtime):
                 self.assertEqual(repository_runtimes[runtime], bundled_runtimes[runtime])
+
+    def test_compose_selection_snapshot_requires_overlays_for_required_runtimes(self) -> None:
+        snapshot = acceptance.compose_selection_snapshot(
+            {
+                "B1_COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml",
+                "B1_COMPOSE_PROFILES": "",
+                "B1_RUNTIME_PRODUCTION_REQUIRED": "localai,comfyui,audio-cpu,voicebox",
+            }
+        )
+
+        self.assertEqual(snapshot["status"], "blocked")
+        self.assertEqual(snapshot["missing_files"], ["compose.production-voicebox.yaml"])
+        self.assertEqual(snapshot["missing_profiles"], ["voicebox"])
+
+    def test_report_blocks_handoff_when_production_compose_overlays_are_missing(self) -> None:
+        report = sample_report(
+            compose_selection=acceptance.compose_selection_snapshot(
+                {
+                    "B1_COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml",
+                    "B1_COMPOSE_PROFILES": "",
+                    "B1_RUNTIME_PRODUCTION_REQUIRED": "localai,comfyui,audio-cpu,voicebox",
+                }
+            )
+        )
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["compose_selection_ready"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("production Compose selection is incomplete", blockers)
+        self.assertIn("compose.production-comfyui.yaml", blockers)
+        self.assertIn("compose.production-voicebox.yaml", blockers)
+        self.assertIn("voicebox", blockers)
 
     def test_report_blocks_handoff_for_unsafe_deployment_pin_manifest(self) -> None:
         report = sample_report(

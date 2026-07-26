@@ -407,6 +407,7 @@ type AcceptanceReportSummary = {
   runtime_deployment_mode?: string;
   operator_handoff_ready: boolean;
   deployment_pins_ready?: boolean;
+  compose_selection_ready?: boolean;
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
   cutover_dns_ready?: boolean;
@@ -5138,6 +5139,7 @@ function System() {
   const selectedDeploymentPinRows = acceptanceDeploymentPinRows(selectedReport);
   const selectedDeploymentPinFindings = acceptanceDeploymentPinFindings(selectedReport);
   const selectedDeploymentPins = detailRecord(selectedReport.deployment_pins);
+  const selectedComposeSelection = detailRecord(selectedReport.compose_selection);
   const openWebUiPlanReadyCount = OPEN_WEBUI_PLAN_INPUT_LABELS.filter(([key]) => openWebUiPlan?.inputs[key]?.available).length;
   const openWebUiCurrent = openWebUiPlan?.inputs.current_plan;
   const backupRollbackInputReadyCount = BACKUP_ROLLBACK_INPUT_LABELS.filter(([key]) => backupRollbackEvidence?.inputs[key]?.available).length;
@@ -5544,7 +5546,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.operator_evidence_ready ? "evidence missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.compose_selection_ready ? "Compose selection missing" : !report.operator_evidence_ready ? "evidence missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>
@@ -5578,6 +5580,7 @@ function System() {
             <div><strong>Handoff</strong><small>{selectedSummary.operator_handoff_ready ? "ready" : "blocked"}</small></div>
             <div><strong>Cutover DNS</strong><small>{selectedSummary.cutover_dns_ready ? "ready" : "review required"}</small></div>
             <div><strong>Deployment Pins</strong><small>{selectedSummary.deployment_pins_ready ? "clean" : String(selectedDeploymentPins.status ?? "blocked")}</small></div>
+            <div><strong>Compose Files</strong><small>{selectedSummary.compose_selection_ready ? "production overlays selected" : String(selectedComposeSelection.status ?? "blocked")}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedAcceptanceReportIsPreview ? "preview only" : selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
@@ -5604,6 +5607,8 @@ function System() {
               <span className={statusPillClass(selectedSummary.deployment_pins_ready ? "ok" : "warning")}>{selectedSummary.deployment_pins_ready ? "clean" : "blocked"}</span>
               <small>{String(selectedDeploymentPins.source ?? "unknown")} / {selectedDeploymentPinRows.length} pin rows</small>
               {selectedDeploymentPinFindings.length ? <small>{selectedDeploymentPinFindings.join("; ")}</small> : <small>no pin findings</small>}
+              <small>Compose {String(selectedComposeSelection.status ?? "unknown")}: {stringList(selectedComposeSelection.selected_file_basenames).join(", ") || "none"}</small>
+              {stringList(selectedComposeSelection.missing_files).length || stringList(selectedComposeSelection.missing_profiles).length ? <small>missing {stringList(selectedComposeSelection.missing_files).concat(stringList(selectedComposeSelection.missing_profiles).map((item) => `profile:${item}`)).join(", ")}</small> : <small>all required Compose overlays selected</small>}
             </div>
             <table>
               <thead><tr><th>Subject</th><th>Reference</th><th>Pin</th><th>Detail</th></tr></thead>
