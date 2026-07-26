@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -100,6 +101,8 @@ class PrepareEnvTests(unittest.TestCase):
             self.assertIn(f"B1_DOCKER_GID={os.stat(socket_path).st_gid}", content)
 
     def test_prepare_stamps_source_metadata_when_requested(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed in this test environment")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -188,6 +191,8 @@ class PrepareEnvTests(unittest.TestCase):
             self.assertIn("B1_SOURCE_DIRTY_PATH_COUNT=0", content)
 
     def test_prepare_prefers_git_checkout_over_stale_exported_source_environment(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed in this test environment")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"

@@ -621,6 +621,19 @@
       },
       "EmbeddingRequest": {
         "properties": {
+          "dimensions": {
+            "anyOf": [
+              {
+                "maximum": 4096.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions"
+          },
           "input": {
             "anyOf": [
               {
