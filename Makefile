@@ -32,6 +32,10 @@ B1_ACCEPTANCE_ENV ?= $(B1_BACKUP_ROOT)/acceptance/operator-live-acceptance.env
 B1_ACCEPTANCE_REPORT_OUTPUT ?= $(B1_BACKUP_ROOT)/acceptance/operator-handoff-report-response.json
 B1_VOICEBOX_AUDIT_REPORT ?= artifacts/pip-audit/voicebox-constraints.json
 ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
+B1_NETWORK_CONNECTION ?= lan-dhcp-dns
+B1_NETWORK_DHCP_PLAN ?= $(B1_BACKUP_ROOT)/network-dhcp-plan.json
+B1_DHCP_REQUIRED_ADDRESSES ?= 192.168.2.100=b1-ai-hub-gateway
+B1_STATIC_INFRASTRUCTURE_ADDRESSES ?= 192.168.2.2/24=technitium-dhcp-dns
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
@@ -40,7 +44,7 @@ B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env verify-system-hostname apply-system-hostname bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env verify-system-hostname apply-system-hostname network-dhcp-plan bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --update-existing --stamp-source --source-root "$(CURDIR)"
@@ -50,6 +54,9 @@ verify-system-hostname:
 
 apply-system-hostname:
 	python3 deploy/scripts/system_hostname.py --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --apply
+
+network-dhcp-plan:
+	B1_DHCP_REQUIRED_ADDRESSES="$(B1_DHCP_REQUIRED_ADDRESSES)" B1_STATIC_INFRASTRUCTURE_ADDRESSES="$(B1_STATIC_INFRASTRUCTURE_ADDRESSES)" python3 deploy/scripts/network_dhcp_plan.py --connection "$(B1_NETWORK_CONNECTION)" --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --dns-admin-url "$(B1_DNS_ADMIN_URL)" --output "$(B1_NETWORK_DHCP_PLAN)"
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"

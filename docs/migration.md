@@ -24,6 +24,18 @@ The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_
 
 Review the generated inventory and classify old-stack services explicitly. First verify `migration_readiness.target_identity.accepted=true`, `migration_readiness.target_identity.hostname_authority` is `b1-appliance-config`, `migration_readiness.target_identity.expected_target_host` matches `B1_APPLIANCE_HOSTNAME`, `migration_readiness.networking.hostname_authority` is `b1-appliance-config`, `migration_readiness.networking.hostname_source` is `system-hostname`, `migration_readiness.networking.network_property_source` is `host-dhcp-client`, `migration_readiness.networking.b1_static_ip_configures` is `false`, `migration_readiness.networking.has_dhcp_default_route` is `true`, and DNS records for the configured virtual hosts are present. Set `B1_DNS_ADMIN_URL` only to record the operator-facing DNS administration endpoint, for example `http://technitium.b1.germering:5380`; this is evidence metadata and does not authorize B1 AI Hub to mutate DNS. The intended network posture is a B1-defined appliance hostname applied as the target OS hostname plus host-managed DHCP or a DHCP reservation plus LAN DNS; the helper `make apply-system-hostname` may set only that OS hostname, while IP, gateway, route, and resolver properties remain DHCP-owned. The B1 repository and Compose project must not set a static appliance IP. An inventory from a developer workstation or wrong LAN segment is not cutover evidence for `ai.b1.germering`. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
 
+## DHCP and Static Infrastructure Address Plan
+
+On `ai.b1.germering`, `192.168.2.2/24` is a host infrastructure address because Technitium DNS/DHCP runs on that machine. Keep it static on the active LAN interface unless DNS/DHCP is first moved elsewhere. This address is not the B1 AI Hub appliance address and must not be converted into an ordinary DHCP lease by the B1 cutover.
+
+The B1 AI Hub virtual hosts should resolve to the DHCP-reserved appliance address, currently `192.168.2.100`. Configure that reservation in Technitium for the active interface MAC address, then generate a read-only migration plan:
+
+```bash
+make network-dhcp-plan
+```
+
+The default plan writes `/srv/b1-ai-hub/backups/network-dhcp-plan.json`. It records `dhcp_reserved_appliance_addresses=["192.168.2.100"]`, preserves `host_infrastructure_static_addresses=["192.168.2.2/24"]`, and keeps `b1_static_ip_configures=false`. The helper only emits review data and staged NetworkManager commands; it does not apply changes. During a console-access maintenance window, run the plan's snapshot commands, clone and stage the candidate profile, confirm that Technitium has the `192.168.2.100` reservation, activate the candidate, verify DNS/routes, and keep the rollback commands available. Do not remove `192.168.2.2/24` from the interface while Technitium is authoritative for LAN DHCP/DNS.
+
 Optional bounded scans can be added when old Compose files are stored somewhere unusual:
 
 ```bash
