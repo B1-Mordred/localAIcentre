@@ -113,6 +113,14 @@ make repository-quality-evidence
 
 The target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, explicit successful-gate assertions, and a per-coverage test-result summary. `make operator-live-acceptance` runs this target first, so final evidence cannot be collected from a dirty tree, from a direct script shortcut, or without the broad local checks passing. Operator preflight and live test evidence also carries source commit/ref/dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*`; any stamped evidence from a different or dirty source tree blocks final handoff.
 
+If the host's Docker bridge DNS policy allows LAN records but blocks recursive external lookups needed by the pinned Python quality container, keep the evidence command explicit and run:
+
+```bash
+make repository-quality-evidence B1_QUALITY_DOCKER_RUN_ARGS="--network host"
+```
+
+This changes only the quality-check container network mode for that command. It does not change the production Compose topology, host DNS, or appliance runtime containers.
+
 After the live evidence group passes, preview and create the final handoff report through the same authenticated Control Center API used by the browser:
 
 ```bash

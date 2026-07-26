@@ -191,6 +191,7 @@ class CiQualityGateTests(unittest.TestCase):
         target = self.makefile_text[target_start:target_end]
 
         self.assertIn("B1_QUALITY_PYTHON ?= python3.12", self.makefile_text)
+        self.assertIn("B1_QUALITY_DOCKER_RUN_ARGS ?=", self.makefile_text)
         self.assertIn("B1_PIP_DEFAULT_TIMEOUT ?= 180", self.makefile_text)
         self.assertIn("B1_PIP_RETRIES ?= 8", self.makefile_text)
         quality_image_line = next(
@@ -203,6 +204,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("B1_QUALITY_PYTHON must be Python 3.12", target)
         self.assertIn("$(B1_QUALITY_PYTHON)\" -m venv", target)
         self.assertIn("$(B1_QUALITY_PYTHON_IMAGE)", target)
+        self.assertIn("$(B1_QUALITY_DOCKER_RUN_ARGS)", target)
         self.assertIn("backend-python-quality-container", target)
         self.assertIn("python -m unittest discover -s tests/unit -v", target)
         self.assertIn("generate_openapi.py --output docs/openapi.json --check", target)
@@ -210,6 +212,10 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("pip install PyYAML==6.0.2", target)
         self.assertIn('PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)"', target)
         self.assertIn('PIP_RETRIES="$(B1_PIP_RETRIES)"', target)
+        installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn('B1_QUALITY_DOCKER_RUN_ARGS="--network host"', installation)
+        self.assertIn('B1_QUALITY_DOCKER_RUN_ARGS="--network host"', troubleshooting)
         self.assertIn("PIP_DISABLE_PIP_VERSION_CHECK=1", target)
         self.assertIn("$(MAKE) validate openapi-check", target)
         self.assertIn("$(MAKE) frontend", target)

@@ -40,6 +40,23 @@ make bootstrap
 docker compose config
 ```
 
+## Quality Container DNS
+
+If `make repository-quality-evidence` fails during `backend-python-quality-container` with pip errors such as `Temporary failure in name resolution` while the host itself can resolve and download packages, test Docker bridge DNS:
+
+```bash
+docker run --rm python:3.12.11-slim-bookworm getent hosts pypi.org
+docker run --rm --network host python:3.12.11-slim-bookworm getent hosts pypi.org
+```
+
+When bridge containers can resolve LAN records but not recursive external names, rerun the quality evidence with host networking for the quality container only:
+
+```bash
+make repository-quality-evidence B1_QUALITY_DOCKER_RUN_ARGS="--network host"
+```
+
+Do not change the production Compose networks to work around this. Production runtime containers should remain on the documented internal networks.
+
 ## TLS Trust
 
 If browsers reject `*.ai.b1.germering`, install the Caddy internal CA root on the LAN client.

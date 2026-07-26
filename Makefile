@@ -35,6 +35,7 @@ ROLLBACK_REPORT ?= $(B1_ROLLBACK_REHEARSAL_REPORT)
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+B1_QUALITY_DOCKER_RUN_ARGS ?=
 B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
@@ -89,7 +90,7 @@ quality-local:
 quality-container: compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config backend-python-quality-container compatibility security frontend
 
 backend-python-quality-container:
-	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -e PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)" -e PIP_RETRIES="$(B1_PIP_RETRIES)" -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check && python deploy/scripts/generate_openapi_client.py --check'
+	docker run --rm $(B1_QUALITY_DOCKER_RUN_ARGS) -e PYTHONPYCACHEPREFIX=/tmp/pycache -e PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)" -e PIP_RETRIES="$(B1_PIP_RETRIES)" -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check && python deploy/scripts/generate_openapi_client.py --check'
 
 repository-quality-evidence: quality-container secret-scan
 	python3 deploy/scripts/repository_quality_evidence.py --output "$(B1_REPOSITORY_QUALITY_EVIDENCE)" --quality-passed --secret-scan-passed --force
