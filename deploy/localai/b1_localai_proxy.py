@@ -35,6 +35,8 @@ VIDEO_GENERATION_OPERATIONS = {"generation", "video-generation", "text-to-video"
 VIDEO_IMAGE_OPERATIONS = {"image-to-video", "video-image", "image-video"}
 TTS_OPERATIONS = {"speech", "text-to-speech", "tts"}
 STT_OPERATIONS = {"transcription", "speech-to-text", "stt"}
+LOCALAI_PROXY_VERSION = "b1-localai-proxy/v0.2.0"
+LOCALAI_LIFECYCLE_ACTIONS = ["status", "build-info", "load", "warm", "smoke", "unload"]
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -50,6 +52,16 @@ def env_float(name: str, default: float) -> float:
         return default
     try:
         return float(value)
+    except ValueError:
+        return default
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
     except ValueError:
         return default
 
@@ -106,6 +118,85 @@ def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
     payload = {"status": status, "runtime": "localai", "action": action}
     payload.update(extra)
     return payload
+
+
+def build_info_response() -> dict[str, Any]:
+    upstream_version = os.getenv("B1_LOCALAI_UPSTREAM_VERSION", "v4.7.1-gpu-nvidia-cuda-12")
+    upstream_commit = os.getenv("B1_LOCALAI_UPSTREAM_COMMIT", "b224c96db6f4b87306a33a808650bfce63b12588")
+    upstream_image = os.getenv(
+        "B1_LOCALAI_UPSTREAM_IMAGE",
+        "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
+    )
+    pinned = bool(upstream_version and upstream_commit and "@sha256:" in upstream_image)
+    return json_response(
+        "ok" if pinned else "unconfigured",
+        "build-info",
+        proxy_version=LOCALAI_PROXY_VERSION,
+        upstream="localai/localai",
+        upstream_version=upstream_version,
+        upstream_commit=upstream_commit,
+        upstream_image=upstream_image,
+        pinned=pinned,
+        capabilities={"actions": LOCALAI_LIFECYCLE_ACTIONS},
+    )
+
+
+def guardrail_status() -> dict[str, Any]:
+    max_active_backends = env_int("LOCALAI_MAX_ACTIVE_BACKENDS", 1)
+    watchdog_idle = env_bool("LOCALAI_WATCHDOG_IDLE", True)
+    force_eviction_when_busy = env_bool("LOCALAI_FORCE_EVICTION_WHEN_BUSY", False)
+    blockers: list[str] = []
+    if max_active_backends != 1:
+        blockers.append("LOCALAI_MAX_ACTIVE_BACKENDS must be 1")
+    if not watchdog_idle:
+        blockers.append("LOCALAI_WATCHDOG_IDLE must be true")
+    if force_eviction_when_busy:
+        blockers.append("LOCALAI_FORCE_EVICTION_WHEN_BUSY must be false")
+    return {
+        "status": "ok" if not blockers else "degraded",
+        "max_active_backends": max_active_backends,
+        "watchdog_idle": watchdog_idle,
+        "watchdog_idle_timeout": os.getenv("LOCALAI_WATCHDOG_IDLE_TIMEOUT", "5m"),
+        "watchdog_interval": os.getenv("LOCALAI_WATCHDOG_INTERVAL", "1s"),
+        "force_eviction_when_busy": force_eviction_when_busy,
+        "blockers": blockers,
+    }
+
+
+def status_response() -> dict[str, Any]:
+    guardrails = guardrail_status()
+    upstream_status = "unknown"
+    upstream_http_status: int | None = None
+    model_count: int | None = None
+    try:
+        upstream_http_status, model_payload = hook_timeout_client().request_json("GET", "/v1/models")
+    except (OSError, ValueError) as exc:
+        upstream_status = "unreachable"
+        model_probe = {"status": upstream_status, "error": exc.__class__.__name__}
+    else:
+        if upstream_http_status < 400:
+            upstream_status = "ok"
+            model_count = len(model_ids_from_list(model_payload))
+        elif upstream_http_status < 500:
+            upstream_status = "unconfigured"
+        else:
+            upstream_status = "unhealthy"
+        model_probe = {"status": upstream_status, "upstream_status": upstream_http_status, "model_count": model_count}
+    if guardrails["status"] != "ok":
+        status = guardrails["status"]
+    elif upstream_status in {"ok", "unconfigured"}:
+        status = "ok"
+    else:
+        status = "unhealthy"
+    return json_response(
+        status,
+        "status",
+        upstream=os.getenv("B1_LOCALAI_UPSTREAM_URL", "http://127.0.0.1:18080"),
+        guardrails=guardrails,
+        model_probe=model_probe,
+        capabilities={"actions": LOCALAI_LIFECYCLE_ACTIONS},
+        build_info=build_info_response(),
+    )
 
 
 def strip_model_version(value: str) -> str:
@@ -388,6 +479,10 @@ def handle_unload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_runtime_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if action == "status":
+        return status_response()
+    if action == "build-info":
+        return build_info_response()
     if action == "load":
         return handle_load(payload)
     if action == "warm":
@@ -402,7 +497,7 @@ def handle_runtime_action(action: str, payload: dict[str, Any]) -> dict[str, Any
 
 
 class B1LocalAIProxy(BaseHTTPRequestHandler):
-    server_version = "b1-localai-proxy/0.1"
+    server_version = LOCALAI_PROXY_VERSION
     protocol_version = "HTTP/1.0"
 
     def log_message(self, format_string: str, *args: Any) -> None:
@@ -425,6 +520,18 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
                 return
             self.write_json(json_response("healthy", "health", upstream=os.getenv("B1_LOCALAI_UPSTREAM_URL", "http://127.0.0.1:18080")))
             return
+        path = self.path.split("?", 1)[0].rstrip("/")
+        prefix = "/b1/runtime/"
+        if path.startswith(prefix):
+            action = path[len(prefix) :]
+            if action in {"status", "build-info"}:
+                auth_failure = runtime_control_auth_failure(self.headers)
+                if auth_failure is not None:
+                    status, payload = auth_failure
+                    self.write_json(payload, status=status)
+                    return
+                self.write_json(handle_runtime_action(action, {}))
+                return
         self.proxy_request()
 
     def do_POST(self) -> None:

@@ -67,6 +67,8 @@ LOCALAI_WATCHDOG_INTERVAL=1s
 LOCALAI_FORCE_EVICTION_WHEN_BUSY=false
 ```
 
+The B1 wrapper exposes those guard rails through the authenticated internal `POST /b1/runtime/status` hook. The status payload reports the configured one-backend limit, idle watchdog settings, force-eviction policy, safe lifecycle capabilities, and a redacted upstream `/v1/models` probe containing only status and model count, not model filenames. `GET` or `POST /b1/runtime/build-info` reports the B1 wrapper version plus pinned upstream LocalAI image, version, and commit metadata.
+
 The web UI and CORS are disabled by default through `LOCALAI_DISABLE_WEBUI=true` and `LOCALAI_CORS=false`, because normal administration is through B1 Control Center and all LAN access should enter through Caddy and the unified API.
 
 ## Health And Ports
@@ -84,6 +86,8 @@ No LocalAI port is published to the LAN. All user and external-client traffic mu
 The B1 wrapper handles optional internal runtime hooks before GPU submission:
 
 - `POST /b1/runtime/load`
+- `POST /b1/runtime/status`
+- `GET /b1/runtime/build-info`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
@@ -92,6 +96,8 @@ Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-onl
 
 Normal LocalAI requests are proxied unchanged to the private upstream listener. Hook behavior is intentionally bounded and does not log request prompts or user media:
 
+- `status` reports the LocalAI one-backend and idle-watchdog guard rails plus a redacted upstream health/model-count probe.
+- `build-info` reports pinned wrapper/upstream identity and lifecycle capabilities.
 - `load` verifies `/v1/models` when available and returns `unconfirmed` because LocalAI loads models lazily on first inference.
 - `warm` can run the same tiny operation-specific smoke request when `B1_LOCALAI_HOOK_WARM_ENABLED=true`; otherwise it returns `unconfirmed`.
 - `smoke` runs a tiny chat, embedding, image, or TTS request only when `B1_LOCALAI_HOOK_SMOKE_ENABLED=true`. Video smoke remains disabled unless `B1_LOCALAI_VIDEO_SMOKE_ENABLED=true`.

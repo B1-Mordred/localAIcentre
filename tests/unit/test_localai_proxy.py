@@ -87,6 +87,79 @@ class LocalAIProxyTests(unittest.TestCase):
         self.assertEqual(missing[1]["reason"], "runtime_control_token_required")
         self.assertIsNone(accepted)
 
+    def test_build_info_reports_pinned_localai_wrapper_identity(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "B1_LOCALAI_UPSTREAM_VERSION": "v4.7.1-gpu-nvidia-cuda-12",
+                "B1_LOCALAI_UPSTREAM_COMMIT": "b224c96db6f4b87306a33a808650bfce63b12588",
+                "B1_LOCALAI_UPSTREAM_IMAGE": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:" + "a" * 64,
+            },
+            clear=False,
+        ):
+            info = proxy.build_info_response()
+
+        self.assertEqual(info["status"], "ok")
+        self.assertEqual(info["action"], "build-info")
+        self.assertEqual(info["proxy_version"], proxy.LOCALAI_PROXY_VERSION)
+        self.assertEqual(info["upstream"], "localai/localai")
+        self.assertTrue(info["pinned"])
+        self.assertIn("status", info["capabilities"]["actions"])
+        self.assertIn("unload", info["capabilities"]["actions"])
+
+    def test_status_reports_guardrails_and_redacted_model_probe(self) -> None:
+        class FakeClient:
+            def request_json(self, method: str, path: str, body: dict[str, object] | None = None):
+                self.request = (method, path, body)
+                return 200, {"data": [{"id": "chat-secret-model"}, {"id": "image-secret-model"}]}
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LOCALAI_MAX_ACTIVE_BACKENDS": "1",
+                    "LOCALAI_WATCHDOG_IDLE": "true",
+                    "LOCALAI_FORCE_EVICTION_WHEN_BUSY": "false",
+                },
+                clear=False,
+            ),
+            patch.object(proxy, "hook_timeout_client", return_value=FakeClient()),
+        ):
+            status = proxy.status_response()
+
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["action"], "status")
+        self.assertEqual(status["guardrails"]["status"], "ok")
+        self.assertEqual(status["guardrails"]["max_active_backends"], 1)
+        self.assertEqual(status["model_probe"]["status"], "ok")
+        self.assertEqual(status["model_probe"]["model_count"], 2)
+        self.assertNotIn("chat-secret-model", str(status))
+        self.assertNotIn("image-secret-model", str(status))
+
+    def test_status_degrades_when_localai_backend_guardrail_is_relaxed(self) -> None:
+        class FakeClient:
+            def request_json(self, method: str, path: str, body: dict[str, object] | None = None):
+                return 200, {"data": []}
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LOCALAI_MAX_ACTIVE_BACKENDS": "2",
+                    "LOCALAI_WATCHDOG_IDLE": "false",
+                    "LOCALAI_FORCE_EVICTION_WHEN_BUSY": "true",
+                },
+                clear=False,
+            ),
+            patch.object(proxy, "hook_timeout_client", return_value=FakeClient()),
+        ):
+            status = proxy.status_response()
+
+        self.assertEqual(status["status"], "degraded")
+        self.assertIn("LOCALAI_MAX_ACTIVE_BACKENDS must be 1", status["guardrails"]["blockers"])
+        self.assertIn("LOCALAI_WATCHDOG_IDLE must be true", status["guardrails"]["blockers"])
+        self.assertIn("LOCALAI_FORCE_EVICTION_WHEN_BUSY must be false", status["guardrails"]["blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -625,11 +625,14 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assertIn("USER ${B1_LOCALAI_UID}:${B1_LOCALAI_GID}", dockerfile)
         self.assertIn("B1_LOCALAI_UPSTREAM_COMMIT=b224c96db6f4b87306a33a808650bfce63b12588", dockerfile)
+        self.assertIn("B1_LOCALAI_UPSTREAM_IMAGE=", dockerfile)
         self.assertIn("python3 /usr/local/bin/b1_localai_proxy.py", entrypoint)
         self.assertIn('export LOCALAI_ADDRESS="${LOCALAI_ADDRESS:-${upstream_address}}"', entrypoint)
-        for route in ("load", "warm", "smoke", "unload"):
+        for route in ("status", "build-info", "load", "warm", "smoke", "unload"):
             self.assertIn(f'if action == "{route}"', proxy)
         self.assertIn('"/backend/shutdown"', proxy)
+        self.assertIn("LOCALAI_MAX_ACTIVE_BACKENDS must be 1", proxy)
+        self.assertIn("model_count", proxy)
 
     def test_production_localai_override_points_control_plane_to_official_port(self) -> None:
         control_plane = self.production_localai_compose["services"]["control-plane"]
