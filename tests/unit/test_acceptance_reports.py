@@ -857,6 +857,26 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     smoke_artifact_sha = "1" * 64
     smoke_artifact_proofs = [sample_artifact_proof("/artifacts/smoke/tts.wav", 4096, smoke_artifact_sha, "audio/wav")]
     smoke_artifacts = sample_artifact_collection("job_smoke_tts_1", smoke_artifact_proofs)
+    gpu_comfy_prompt_id = "prompt_gpu_comfy_1"
+    gpu_comfy_artifact_sha = "6" * 64
+    gpu_comfy_artifact_proofs = [sample_artifact_proof("/artifacts/comfyui/prompt_gpu_comfy_1/0.png", 4096, gpu_comfy_artifact_sha, "image/png")]
+    gpu_comfy_artifacts = sample_artifact_collection("job_gpu_comfy_1", gpu_comfy_artifact_proofs)
+    gpu_comfy_prompt = {
+        "source": "env-file",
+        "file_path": "/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json",
+        "file_name": "text-to-image-api-prompt.json",
+        "node_count": 7,
+        "class_type_count": 6,
+        "class_types": [
+            "CheckpointLoaderSimple",
+            "CLIPTextEncode",
+            "EmptyLatentImage",
+            "KSampler",
+            "SaveImage",
+            "VAEDecode",
+        ],
+        "route_level_smoke": False,
+    }
     workflow_tts_sha = "2" * 64
     workflow_image_sha = "3" * 64
     workflow_edit_sha = "4" * 64
@@ -1084,6 +1104,13 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "comfyui_model": "image-default",
                     "comfyui_resolved_model_version": "b1-image-default@1.0.0",
                     "comfyui_job_id": "job_gpu_comfy_1",
+                    "comfyui_native_prompt_id": gpu_comfy_prompt_id,
+                    "comfyui_prompt": gpu_comfy_prompt,
+                    "comfyui_artifacts": gpu_comfy_artifacts,
+                    "comfyui_artifact_count": 1,
+                    "comfyui_verified_artifact_count": 1,
+                    "comfyui_first_artifact_url": "/artifacts/comfyui/prompt_gpu_comfy_1/0.png",
+                    "comfyui_first_artifact_sha256": gpu_comfy_artifact_sha,
                 },
                 "voicebox_switch_completed": {
                     "status": "ok",
@@ -1123,6 +1150,10 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "voicebox_model": "tts-quality",
                     "voicebox_resolved_model_version": "b1-tts-quality@1.0.0",
                     "comfyui_job_id": "job_gpu_comfy_1",
+                    "comfyui_native_prompt_id": gpu_comfy_prompt_id,
+                    "comfyui_prompt": gpu_comfy_prompt,
+                    "comfyui_artifact_count": 1,
+                    "comfyui_verified_artifact_count": 1,
                     "voicebox_job_id": "job_gpu_voicebox_1",
                 },
             },
@@ -1132,6 +1163,16 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "comfyui": "b1-image-default@1.0.0",
                 "voicebox": "b1-tts-quality@1.0.0",
             },
+            "gpu_comfyui_prompt": {
+                "source": "env-file",
+                "file_name": "text-to-image-api-prompt.json",
+                "node_count": 7,
+                "class_type_count": 6,
+                "route_level_smoke": False,
+            },
+            "gpu_comfyui_native_prompt_id": gpu_comfy_prompt_id,
+            "gpu_comfyui_artifact_count": 1,
+            "gpu_comfyui_verified_artifact_count": 1,
             "gpu_vram_sample_count": 4,
             "gpu_recovery_runtime": "localai",
             "missing_gpu_evidence": [],
@@ -3264,8 +3305,12 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("resource_policy_and_runtime_readiness.runtime_deployment_mode", snapshot["missing_gpu_evidence"])
         self.assertIn("localai_exclusive_gpu_residency.chat_resolved_model_version", snapshot["missing_gpu_evidence"])
         self.assertIn("comfyui_switch_completed.comfyui_job_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_native_prompt_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_prompt", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_artifacts.artifact_count", snapshot["missing_gpu_evidence"])
         self.assertIn("voicebox_switch_completed.voicebox_job_id", snapshot["missing_gpu_evidence"])
         self.assertIn("localai_comfyui_voicebox_switch.runtime_order", snapshot["missing_gpu_evidence"])
+        self.assertIn("localai_comfyui_voicebox_switch.comfyui_native_prompt_id", snapshot["missing_gpu_evidence"])
         self.assertIn("vram_reserve_enforced.latest_sample.gpu_memory_total_mib", snapshot["missing_gpu_evidence"])
         self.assertIn("bounded_runtime_recovery_action.result_status", snapshot["missing_gpu_evidence"])
 
@@ -3296,6 +3341,53 @@ class AcceptanceReportTests(unittest.TestCase):
             "RTX 3060 GPU acceptance evidence is missing measured model runs for aliases: tts-quality",
             report["acceptance_blockers"],
         )
+
+    def test_gpu_snapshot_rejects_route_level_comfyui_prompt_for_handoff(self) -> None:
+        gpu = json.loads(json.dumps(sample_live_evidence()["gpu_acceptance"]))
+        gpu["checks"]["comfyui_switch_completed"]["comfyui_prompt"] = {
+            "source": "env-file",
+            "file_name": "native-comfyui-smoke-prompt.json",
+            "node_count": 2,
+            "class_type_count": 2,
+            "class_types": ["B1RuntimeTinyImage", "SaveImage"],
+            "route_level_smoke": True,
+        }
+        gpu["checks"]["localai_comfyui_voicebox_switch"]["comfyui_prompt"] = gpu["checks"]["comfyui_switch_completed"]["comfyui_prompt"]
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertIn(
+            "comfyui_switch_completed.comfyui_prompt.route_level_smoke_not_handoff",
+            snapshot["missing_gpu_evidence"],
+        )
+        self.assertIn(
+            "localai_comfyui_voicebox_switch.comfyui_prompt.route_level_smoke_not_handoff",
+            snapshot["missing_gpu_evidence"],
+        )
+        report = sample_report(live_evidence=sample_live_evidence(gpu_acceptance=snapshot))
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("RTX 3060 GPU acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
+    def test_gpu_snapshot_requires_native_prompt_and_verified_comfyui_artifacts(self) -> None:
+        gpu = json.loads(json.dumps(sample_live_evidence()["gpu_acceptance"]))
+        comfy = gpu["checks"]["comfyui_switch_completed"]
+        comfy.pop("comfyui_native_prompt_id")
+        comfy["comfyui_artifacts"]["artifact_count"] = 2
+        comfy["comfyui_artifacts"]["verified_artifact_count"] = 1
+        comfy["comfyui_artifacts"]["artifact_proofs"][0].pop("download_sha256")
+        gpu["checks"]["localai_comfyui_voicebox_switch"].pop("comfyui_native_prompt_id")
+        gpu["checks"]["localai_comfyui_voicebox_switch"]["comfyui_artifact_count"] = 0
+
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertIn("comfyui_switch_completed.comfyui_native_prompt_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_artifacts.verified_artifact_count", snapshot["missing_gpu_evidence"])
+        self.assertIn("comfyui_switch_completed.comfyui_artifacts.artifact_proofs_complete", snapshot["missing_gpu_evidence"])
+        self.assertIn(
+            "comfyui_switch_completed.comfyui_artifacts.artifact_proofs.0.download_sha256",
+            snapshot["missing_gpu_evidence"],
+        )
+        self.assertIn("localai_comfyui_voicebox_switch.comfyui_native_prompt_id", snapshot["missing_gpu_evidence"])
+        self.assertIn("localai_comfyui_voicebox_switch.comfyui_artifact_count", snapshot["missing_gpu_evidence"])
 
     def test_report_blocks_handoff_when_gpu_summary_is_absent(self) -> None:
         live_evidence = sample_live_evidence()

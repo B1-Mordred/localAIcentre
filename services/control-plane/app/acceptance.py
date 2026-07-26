@@ -1313,6 +1313,32 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("comfyui_switch_completed.comfyui_resolved_model_version")
     if not _nonempty_text(comfyui.get("comfyui_job_id")):
         missing.append("comfyui_switch_completed.comfyui_job_id")
+    comfyui_native_prompt_id = _nonempty_text(comfyui.get("comfyui_native_prompt_id") or comfyui.get("native_prompt_id"))
+    if not comfyui_native_prompt_id:
+        missing.append("comfyui_switch_completed.comfyui_native_prompt_id")
+    comfyui_prompt = comfyui.get("comfyui_prompt")
+    if not isinstance(comfyui_prompt, dict):
+        comfyui_prompt = comfyui.get("comfyui_prompt_metadata") if isinstance(comfyui.get("comfyui_prompt_metadata"), dict) else {}
+    if not comfyui_prompt:
+        missing.append("comfyui_switch_completed.comfyui_prompt")
+    if not _nonempty_text(comfyui_prompt.get("source")):
+        missing.append("comfyui_switch_completed.comfyui_prompt.source")
+    if _positive_int(comfyui_prompt.get("node_count")) < 1:
+        missing.append("comfyui_switch_completed.comfyui_prompt.node_count")
+    if _positive_int(comfyui_prompt.get("class_type_count")) < 1:
+        missing.append("comfyui_switch_completed.comfyui_prompt.class_type_count")
+    if comfyui_prompt.get("route_level_smoke") is not False:
+        missing.append("comfyui_switch_completed.comfyui_prompt.route_level_smoke_not_handoff")
+    comfyui_artifacts = comfyui.get("comfyui_artifacts") if isinstance(comfyui.get("comfyui_artifacts"), dict) else comfyui
+    comfyui_artifact_count = _positive_int(comfyui_artifacts.get("artifact_count") or comfyui.get("comfyui_artifact_count"))
+    comfyui_verified_artifact_count = _positive_int(
+        comfyui_artifacts.get("verified_artifact_count") or comfyui.get("comfyui_verified_artifact_count")
+    )
+    if comfyui_artifact_count < 1:
+        missing.append("comfyui_switch_completed.comfyui_artifacts.artifact_count")
+    if comfyui_verified_artifact_count < 1:
+        missing.append("comfyui_switch_completed.comfyui_artifacts.verified_artifact_count")
+    _require_artifact_collection_evidence(comfyui_artifacts, "comfyui_switch_completed.comfyui_artifacts", missing)
 
     voicebox = _check_record(checks, "voicebox_switch_completed")
     voicebox_resolved = _resolved_model_version(voicebox.get("voicebox_resolved_model_version"))
@@ -1343,6 +1369,16 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     for key in ("comfyui_job_id", "voicebox_job_id"):
         if not _nonempty_text(switch.get(key)):
             missing.append(f"localai_comfyui_voicebox_switch.{key}")
+    switch_comfyui_native_prompt_id = _nonempty_text(switch.get("comfyui_native_prompt_id"))
+    if not switch_comfyui_native_prompt_id:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_native_prompt_id")
+    elif comfyui_native_prompt_id and switch_comfyui_native_prompt_id != comfyui_native_prompt_id:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_native_prompt_id_matches_comfyui")
+    if _positive_int(switch.get("comfyui_artifact_count")) < 1:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_artifact_count")
+    switch_comfyui_prompt = switch.get("comfyui_prompt") if isinstance(switch.get("comfyui_prompt"), dict) else {}
+    if switch_comfyui_prompt and switch_comfyui_prompt.get("route_level_smoke") is not False:
+        missing.append("localai_comfyui_voicebox_switch.comfyui_prompt.route_level_smoke_not_handoff")
 
     vram = _check_record(checks, "vram_reserve_enforced")
     vram_sample_count = _positive_int(vram.get("sample_count"))
@@ -1377,6 +1413,16 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "comfyui": switch_comfyui or comfyui_resolved,
             "voicebox": switch_voicebox or voicebox_resolved,
         },
+        "gpu_comfyui_prompt": {
+            "source": _nonempty_text(comfyui_prompt.get("source")),
+            "file_name": _nonempty_text(comfyui_prompt.get("file_name")),
+            "node_count": _positive_int(comfyui_prompt.get("node_count")),
+            "class_type_count": _positive_int(comfyui_prompt.get("class_type_count")),
+            "route_level_smoke": comfyui_prompt.get("route_level_smoke") is True,
+        },
+        "gpu_comfyui_native_prompt_id": comfyui_native_prompt_id,
+        "gpu_comfyui_artifact_count": comfyui_artifact_count,
+        "gpu_comfyui_verified_artifact_count": comfyui_verified_artifact_count,
         "gpu_vram_sample_count": vram_sample_count,
         "gpu_recovery_runtime": recovery_runtime,
         "missing_gpu_evidence": missing,

@@ -18,12 +18,15 @@ from test_live_stack import (  # noqa: E402
     LiveApiClient,
     TERMINAL_STATES,
     assert_media_job_links,
+    artifact_collection_proof,
+    downloaded_artifact_proof,
     measured_model_alias,
     media_job_link,
 )
 
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
+TINY_COMFYUI_SMOKE_CLASS = "B1RuntimeTinyImage"
 GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "resource_policy_and_runtime_readiness",
     "localai_exclusive_gpu_residency",
@@ -42,20 +45,66 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def load_json_from_env(value_name: str, file_name: str) -> dict[str, Any] | None:
-    raw = os.getenv(value_name, "").strip()
-    if raw:
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise AssertionError(f"{value_name} must decode to a JSON object")
-        return payload
-    path = os.getenv(file_name, "").strip()
-    if not path:
-        return None
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise AssertionError(f"{file_name} must point to a JSON object")
+def contains_class_type(value: Any, class_type: str) -> bool:
+    if isinstance(value, dict):
+        if value.get("class_type") == class_type:
+            return True
+        return any(contains_class_type(item, class_type) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_class_type(item, class_type) for item in value)
+    return False
+
+
+def prompt_class_types(payload: dict[str, Any]) -> list[str]:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, dict):
+        return []
+    class_types = []
+    for node in prompt.values():
+        if isinstance(node, dict) and isinstance(node.get("class_type"), str):
+            class_types.append(node["class_type"])
+    return sorted(set(class_types))
+
+
+def prompt_metadata(payload: dict[str, Any], *, source: str, file_path: str = "") -> dict[str, Any]:
+    prompt = payload.get("prompt") if isinstance(payload.get("prompt"), dict) else {}
+    class_types = prompt_class_types(payload)
+    return {
+        "source": source,
+        "file_path": file_path,
+        "file_name": Path(file_path).name if file_path else "",
+        "node_count": len(prompt),
+        "class_type_count": len(class_types),
+        "class_types": class_types[:50],
+        "route_level_smoke": contains_class_type(payload, TINY_COMFYUI_SMOKE_CLASS),
+        "tiny_smoke_class": TINY_COMFYUI_SMOKE_CLASS,
+    }
+
+
+def normalize_comfy_prompt_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if "prompt" not in payload:
+        payload = {"prompt": payload}
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, dict) or not prompt:
+        raise AssertionError("ComfyUI prompt payload must contain a non-empty prompt object")
     return payload
+
+
+def load_comfy_prompt_payload_with_metadata() -> tuple[dict[str, Any], dict[str, Any]] | None:
+    raw = os.getenv("B1_GPU_ACCEPTANCE_COMFY_PROMPT_JSON", "").strip()
+    file_path = os.getenv("B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE", "").strip()
+    if raw and file_path:
+        raise unittest.SkipTest("set only one of B1_GPU_ACCEPTANCE_COMFY_PROMPT_JSON or B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE")
+    source = "env-json" if raw else "env-file"
+    if file_path:
+        raw = Path(file_path).read_text(encoding="utf-8")
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise AssertionError("B1 GPU acceptance ComfyUI prompt must decode to a JSON object")
+    payload = normalize_comfy_prompt_payload(payload)
+    return payload, prompt_metadata(payload, source=source, file_path=file_path)
 
 
 @unittest.skipUnless(os.getenv("B1_GPU_ACCEPTANCE_LIVE_TEST") == "1", "set B1_GPU_ACCEPTANCE_LIVE_TEST=1 to run live RTX GPU acceptance checks")
@@ -93,6 +142,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         cls.vram_tolerance_mib = int(os.getenv("B1_GPU_ACCEPTANCE_VRAM_TOLERANCE_MIB", "256"))
         cls.require_production = env_flag("B1_GPU_ACCEPTANCE_REQUIRE_PRODUCTION", True)
         cls.enforce_vram_reserve = env_flag("B1_GPU_ACCEPTANCE_ENFORCE_VRAM_RESERVE", True)
+        cls.allow_comfy_tiny_smoke = env_flag("B1_GPU_ACCEPTANCE_ALLOW_COMFY_TINY_SMOKE", False)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -256,6 +306,41 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         assert_media_job_links(self, final_job)
         return final_job
 
+    def verify_artifact_download(self, artifact: dict[str, Any], index: int) -> dict[str, Any]:
+        artifact_url = artifact.get("url")
+        self.assertIsInstance(artifact_url, str)
+        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
+        artifact_mime_type = artifact.get("mime_type")
+        self.assertIsInstance(artifact_mime_type, str, artifact)
+        self.assertTrue(artifact_mime_type, artifact)
+        artifact_bytes = artifact.get("bytes")
+        self.assertIsInstance(artifact_bytes, int, artifact)
+        self.assertGreater(artifact_bytes, 0, artifact)
+        artifact_sha256 = artifact.get("sha256")
+        self.assertIsInstance(artifact_sha256, str, artifact)
+        self.assertRegex(artifact_sha256, r"^[a-f0-9]{64}$", artifact)
+        status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
+        self.assertEqual(status, 200, content[:200])
+        self.assertGreater(len(content), 0)
+        proof = downloaded_artifact_proof(artifact, headers, content, index=index)
+        self.assertEqual(proof["download_bytes"], artifact_bytes, artifact)
+        self.assertEqual(proof["download_sha256"], artifact_sha256, artifact)
+        self.assertTrue(proof["download_content_type"], headers)
+        self.assertEqual(proof["download_content_length"], str(artifact_bytes), headers)
+        self.assertTrue(proof["download_etag"], headers)
+        self.assertEqual(str(proof["download_accept_ranges"]).lower(), "bytes", headers)
+        return proof
+
+    def verified_media_job_artifacts(self, job: dict[str, Any]) -> dict[str, Any]:
+        status, _, artifact_payload = self.client.json_request("GET", media_job_link(job, "artifacts", "/artifacts"), require_auth=True)
+        self.assertEqual(status, 200, artifact_payload)
+        self.assertIsInstance(artifact_payload, dict)
+        artifacts = artifact_payload.get("artifacts")
+        self.assertIsInstance(artifacts, list)
+        self.assertGreater(len(artifacts), 0, artifact_payload)
+        artifact_proofs = [self.verify_artifact_download(artifact, index) for index, artifact in enumerate(artifacts)]
+        return artifact_collection_proof(str(job.get("id") or ""), artifact_proofs)
+
     def test_resource_policy_and_runtime_readiness_are_acceptance_safe(self) -> None:
         status = self.admin_status()
         policy = status.get("resource_policy")
@@ -309,9 +394,23 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
         )
 
-        comfy_prompt = load_json_from_env("B1_GPU_ACCEPTANCE_COMFY_PROMPT_JSON", "B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE")
-        if comfy_prompt is None:
+        comfy_prompt_with_metadata = load_comfy_prompt_payload_with_metadata()
+        if comfy_prompt_with_metadata is None:
             self.skipTest("set B1_GPU_ACCEPTANCE_COMFY_PROMPT_JSON or B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE for ComfyUI acceptance")
+        comfy_prompt, comfy_prompt_metadata = comfy_prompt_with_metadata
+        if comfy_prompt_metadata.get("route_level_smoke") is True and not self.allow_comfy_tiny_smoke:
+            self.record_check(
+                "comfyui_switch_completed",
+                "incomplete",
+                comfyui_model=image_model,
+                comfyui_resolved_model_version=comfyui_measurement.get("resolved_model_version"),
+                comfyui_prompt=comfy_prompt_metadata,
+            )
+            raise AssertionError(
+                "B1 GPU acceptance ComfyUI prompt uses the bundled route-level B1RuntimeTinyImage smoke node. "
+                "Use a real installed text/image workflow prompt for handoff, or set "
+                "B1_GPU_ACCEPTANCE_ALLOW_COMFY_TINY_SMOKE=1 only for a labelled dry run."
+            )
         comfy_job = self.create_media_job(
             {
                 "modality": os.getenv("B1_GPU_ACCEPTANCE_COMFY_MODALITY", "image"),
@@ -324,13 +423,25 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(comfy_job.get("state"), "completed", comfy_job)
         self.assertEqual(comfy_job.get("runtime"), "comfyui", comfy_job)
+        comfy_native_prompt_id = str(comfy_job.get("native_prompt_id") or "")
+        self.assertTrue(comfy_native_prompt_id, comfy_job)
+        comfy_artifacts = self.verified_media_job_artifacts(comfy_job)
         self.assert_single_gpu_runtime("comfyui", "after-comfyui-job")
         self.assert_vram_within_policy("after-comfyui-job")
+        comfy_check_status = "incomplete" if comfy_prompt_metadata.get("route_level_smoke") is True else "ok"
         self.record_check(
             "comfyui_switch_completed",
+            status=comfy_check_status,
             comfyui_model=image_model,
             comfyui_resolved_model_version=comfyui_measurement.get("resolved_model_version"),
             comfyui_job_id=comfy_job.get("id"),
+            comfyui_native_prompt_id=comfy_native_prompt_id,
+            comfyui_prompt=comfy_prompt_metadata,
+            comfyui_artifacts=comfy_artifacts,
+            comfyui_artifact_count=comfy_artifacts.get("artifact_count"),
+            comfyui_verified_artifact_count=comfy_artifacts.get("verified_artifact_count"),
+            comfyui_first_artifact_url=comfy_artifacts.get("first_artifact_url"),
+            comfyui_first_artifact_sha256=comfy_artifacts.get("first_artifact_sha256"),
         )
 
         if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False):
@@ -374,6 +485,10 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                 "voicebox": voicebox_measurement,
             },
             comfyui_job_id=comfy_job.get("id"),
+            comfyui_native_prompt_id=comfy_native_prompt_id,
+            comfyui_prompt=comfy_prompt_metadata,
+            comfyui_artifact_count=comfy_artifacts.get("artifact_count"),
+            comfyui_verified_artifact_count=comfy_artifacts.get("verified_artifact_count"),
             voicebox_job_id=voicebox_job.get("id"),
         )
 
