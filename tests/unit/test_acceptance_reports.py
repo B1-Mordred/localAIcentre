@@ -100,6 +100,19 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
             "run_time_ms": 2000,
             "peak_vram_mib": 0 if runtime == "audio-cpu" else 6144,
             "peak_ram_mib": 768 if runtime == "audio-cpu" else 8192,
+            "hook": {
+                "status": "ok",
+                "runtime": runtime,
+                "model_alias": alias,
+                "resolved_model_version": resolved,
+                "engine": "piper" if runtime == "audio-cpu" else runtime,
+                "placeholder": False if runtime == "audio-cpu" else None,
+                "measurements": {
+                    "peak_vram_mib": 0 if runtime == "audio-cpu" else 6144,
+                    "peak_ram_mib": 768 if runtime == "audio-cpu" else 8192,
+                    "placeholder": False if runtime == "audio-cpu" else None,
+                },
+            },
         },
     }
 
@@ -3284,6 +3297,24 @@ class AcceptanceReportTests(unittest.TestCase):
         blockers = "; ".join(report["acceptance_blockers"])
         self.assertIn("latest run peak_vram_mib is missing for GPU runtime", blockers)
         self.assertIn("latest resource estimate vram_gib is missing for GPU runtime", blockers)
+
+    def test_database_model_smoke_coverage_rejects_placeholder_hook_proof(self) -> None:
+        coverage = sample_model_measurement_coverage()
+        tts_measurement = coverage["groups"][2]["measurements"][1]
+        tts_measurement["latest_ok_run"]["hook"]["engine"] = "scaffold"
+        tts_measurement["latest_ok_run"]["hook"]["placeholder"] = True
+        tts_measurement["latest_ok_run"]["hook"]["measurements"]["placeholder"] = True
+
+        report = sample_report(model_measurement_coverage=coverage)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        normalized = report["model_measurement_coverage"]
+        self.assertEqual(normalized["status"], "incomplete")
+        self.assertIn("tts-fast", normalized["missing_aliases"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("latest run runtime hook reported placeholder output", blockers)
+        self.assertIn("latest run runtime hook used scaffold engine", blockers)
+        self.assertIn("CPU-only model smoke did not prove placeholder=false", blockers)
 
     def test_report_preserves_database_model_smoke_handoff_plan(self) -> None:
         coverage = sample_model_measurement_coverage()

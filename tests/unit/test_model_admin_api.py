@@ -81,6 +81,19 @@ def measured_manifest_payload(alias: str, runtime: str, *, model_id: str | None 
                 "run_time_ms": 500,
                 "peak_vram_mib": 0 if runtime == "audio-cpu" else 4096,
                 "peak_ram_mib": 2048,
+                "hook": {
+                    "status": "ok",
+                    "runtime": runtime,
+                    "model_alias": alias,
+                    "resolved_model_version": f"{payload['id']}@{version}",
+                    "engine": "piper" if runtime == "audio-cpu" else runtime,
+                    "placeholder": False if runtime == "audio-cpu" else None,
+                    "measurements": {
+                        "peak_vram_mib": 0 if runtime == "audio-cpu" else 4096,
+                        "peak_ram_mib": 2048,
+                        "placeholder": False if runtime == "audio-cpu" else None,
+                    },
+                },
                 "unsafe_extra": "not public",
             }
         ],
@@ -1679,6 +1692,7 @@ class ModelAdminApiTests(unittest.TestCase):
         chat = next(item for item in gpu_group["measurements"] if item["alias"] == "chat-default")
         self.assertTrue(chat["ready"])
         self.assertEqual(chat["latest_ok_run"]["peak_vram_mib"], 4096)
+        self.assertEqual(chat["latest_ok_run"]["hook"]["status"], "ok")
         self.assertNotIn("unsafe_extra", chat["latest_ok_run"])
 
     def test_acceptance_model_measurement_coverage_reports_missing_smoke_and_runtime_mismatch(self) -> None:
@@ -1766,6 +1780,36 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertIn("latest run load_time_ms is missing", image["blockers"])
         self.assertIn("latest run peak_vram_mib is missing for GPU runtime", image["blockers"])
         self.assertIn("CPU-only measurement reported GPU VRAM usage", tts["blockers"])
+
+    def test_acceptance_model_measurement_coverage_rejects_placeholder_smoke_hooks(self) -> None:
+        tts_manifest = measured_manifest_payload("tts-fast", "audio-cpu")
+        latest_run = tts_manifest["measurements"]["runs"][0]
+        latest_run["hook"]["engine"] = "scaffold"
+        latest_run["hook"]["placeholder"] = True
+        latest_run["hook"]["measurements"]["placeholder"] = True
+        aliases = [
+            {
+                "id": "tts-fast",
+                "status": "installed",
+                "preferred_runtime": "audio-cpu",
+                "runtimes": ["audio-cpu"],
+                "resolved_model": {"id": tts_manifest["id"], "version": tts_manifest["version"]},
+            },
+        ]
+        records = [model_record_from_manifest(tts_manifest)]
+
+        coverage = main.acceptance_model_measurement_coverage(aliases, records)
+
+        tts = next(
+            entry
+            for group in coverage["groups"]
+            for entry in group["measurements"]
+            if entry["alias"] == "tts-fast"
+        )
+        self.assertEqual(coverage["status"], "incomplete")
+        self.assertIn("latest run runtime hook reported placeholder output", tts["blockers"])
+        self.assertIn("latest run runtime hook used scaffold engine", tts["blockers"])
+        self.assertIn("CPU-only model smoke did not prove placeholder=false", tts["blockers"])
 
     def test_admin_models_includes_acceptance_measurement_coverage(self) -> None:
         manifest = measured_manifest_payload("chat-default", "localai")

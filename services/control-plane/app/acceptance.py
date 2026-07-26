@@ -795,11 +795,66 @@ def _runtime_name(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _compact_model_smoke_hook(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "status",
+        "reason",
+        "action",
+        "strategy",
+        "runtime",
+        "message",
+        "model",
+        "model_alias",
+        "resolved_model_version",
+        "engine",
+        "placeholder",
+        "gpu_lease_required",
+    ):
+        item = value.get(key)
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            compact[key] = item
+    measurements = value.get("measurements")
+    if isinstance(measurements, dict):
+        safe_measurements: dict[str, Any] = {}
+        for key, item in measurements.items():
+            if isinstance(key, str) and len(key) <= 128 and (isinstance(item, (str, int, float, bool)) or item is None):
+                safe_measurements[key] = item
+        if safe_measurements:
+            compact["measurements"] = safe_measurements
+    return compact
+
+
 def _compact_model_measurement(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     latest_run = value.get("latest_ok_run") if isinstance(value.get("latest_ok_run"), dict) else {}
     latest_estimate = value.get("latest_resource_estimate") if isinstance(value.get("latest_resource_estimate"), dict) else {}
+    compact_latest_run = {
+        key: latest_run.get(key)
+        for key in (
+            "id",
+            "type",
+            "status",
+            "runtime",
+            "model_alias",
+            "resolved_model_version",
+            "started_at",
+            "completed_at",
+            "duration_ms",
+            "load_time_ms",
+            "run_time_ms",
+            "peak_vram_mib",
+            "peak_ram_mib",
+            "resource_estimate",
+        )
+        if key in latest_run
+    }
+    compact_hook = _compact_model_smoke_hook(latest_run.get("hook"))
+    if compact_hook:
+        compact_latest_run["hook"] = compact_hook
     return {
         "alias": str(value.get("alias") or ""),
         "status": str(value.get("status") or ""),
@@ -821,26 +876,7 @@ def _compact_model_measurement(value: Any) -> dict[str, Any]:
             for key in ("vram_gib", "ram_gib", "disk_gib", "context_tokens", "max_resolution", "max_frames")
             if key in latest_estimate
         },
-        "latest_ok_run": {
-            key: latest_run.get(key)
-            for key in (
-                "id",
-                "type",
-                "status",
-                "runtime",
-                "model_alias",
-                "resolved_model_version",
-                "started_at",
-                "completed_at",
-                "duration_ms",
-                "load_time_ms",
-                "run_time_ms",
-                "peak_vram_mib",
-                "peak_ram_mib",
-                "resource_estimate",
-            )
-            if key in latest_run
-        },
+        "latest_ok_run": compact_latest_run,
     }
 
 
@@ -913,6 +949,36 @@ def _model_measurement_blockers(alias: str, value: Any, *, expected_runtime: str
             blockers.append("latest run peak_vram_mib is missing for CPU runtime")
         elif peak_vram != 0:
             blockers.append("CPU-only measurement reported GPU VRAM usage")
+
+    hook = latest_run.get("hook") if isinstance(latest_run.get("hook"), dict) else {}
+    if not hook:
+        blockers.append("latest run runtime hook proof is missing")
+    else:
+        hook_status = str(hook.get("status") or "").strip().lower()
+        if hook_status != "ok":
+            blockers.append("latest run runtime hook status is not ok")
+        hook_runtime = _runtime_name(hook.get("runtime"))
+        if hook_runtime and runtime and hook_runtime != runtime:
+            blockers.append("latest run runtime hook does not match measurement runtime")
+        hook_alias = str(hook.get("model_alias") or "").strip()
+        if hook_alias and hook_alias != alias:
+            blockers.append("latest run runtime hook alias does not match required alias")
+        hook_resolved = str(hook.get("resolved_model_version") or "").strip()
+        if hook_resolved and hook_resolved != resolved:
+            blockers.append("latest run runtime hook resolved model does not match installed version")
+        measurements = hook.get("measurements") if isinstance(hook.get("measurements"), dict) else {}
+        hook_placeholder = hook.get("placeholder")
+        measurement_placeholder = measurements.get("placeholder")
+        if hook_placeholder is True or measurement_placeholder is True:
+            blockers.append("latest run runtime hook reported placeholder output")
+        engine = _runtime_name(hook.get("engine"))
+        if engine == "scaffold":
+            blockers.append("latest run runtime hook used scaffold engine")
+        if runtime in CPU_ONLY_MEASUREMENT_RUNTIMES:
+            if hook_placeholder is not False and measurement_placeholder is not False:
+                blockers.append("CPU-only model smoke did not prove placeholder=false")
+            if not engine:
+                blockers.append("CPU-only model smoke hook engine is missing")
 
     estimate = compact.get("latest_resource_estimate") if isinstance(compact.get("latest_resource_estimate"), dict) else {}
     if _positive_float(estimate.get("ram_gib")) <= 0:

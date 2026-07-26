@@ -4864,6 +4864,7 @@ def compact_model_smoke_run(run: dict[str, Any]) -> dict[str, Any]:
             "peak_vram_mib",
             "peak_ram_mib",
             "resource_estimate",
+            "hook",
         )
         if key in run
     }
@@ -5361,7 +5362,20 @@ def compact_smoke_hook_result(result: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {"status": "unconfirmed"}
     compact: dict[str, Any] = {}
-    for key in ("status", "reason", "action", "strategy", "runtime", "message", "model", "model_alias", "resolved_model_version"):
+    for key in (
+        "status",
+        "reason",
+        "action",
+        "strategy",
+        "runtime",
+        "message",
+        "model",
+        "model_alias",
+        "resolved_model_version",
+        "engine",
+        "placeholder",
+        "gpu_lease_required",
+    ):
         value = result.get(key)
         if isinstance(value, (str, int, float, bool)) or value is None:
             compact[key] = value
