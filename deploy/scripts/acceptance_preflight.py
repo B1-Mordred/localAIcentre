@@ -691,9 +691,9 @@ def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[
     if payload.get("available") is False:
         failures.append(f"{label} DHCP/networking readiness is unavailable")
     if payload.get("hostname_authority") != "system-hostname":
-        failures.append(f"{label} target hostname authority must be the system hostname")
+        failures.append(f"{label} target hostname authority must be the B1-defined system hostname")
     if payload.get("hostname_source") != "system-hostname":
-        failures.append(f"{label} hostname must come from the target system hostname")
+        failures.append(f"{label} B1-defined hostname must be present as the target system hostname")
     if payload.get("network_property_source") != "host-dhcp-client":
         failures.append(f"{label} IP/gateway/DNS properties must be acquired by the host DHCP client")
     if payload.get("b1_manages_host_networking") is not False:
@@ -766,7 +766,7 @@ def check_target_network_policy(ctx: PreflightContext) -> PreflightCheck:
         )
     return ok(
         "target_network_policy",
-        "target hostname is system-defined and host networking is DHCP-owned",
+        "B1-defined hostname is present as the system hostname and host networking is DHCP-owned",
         **data,
     )
 

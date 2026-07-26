@@ -10,7 +10,7 @@ The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_
 
 - all Docker containers, Compose projects, volumes, networks, Docker version/info, and NVIDIA runtime availability
 - host identity and `migration_readiness.target_identity`, including hostname, FQDN, expected system appliance hostname/FQDN, OS/kernel, architecture, Python version, UID/GID, and inventory user, so operators can prove the report came from the intended target before cutover
-- observed host networking, including interfaces, non-loopback addresses, default routes, DHCP-route evidence, and explicit policy that the hostname is system-defined while B1 AI Hub does not configure host static IP addresses
+- observed host networking, including interfaces, non-loopback addresses, default routes, DHCP-route evidence, and explicit policy that the B1-defined hostname is present as the system hostname while B1 AI Hub does not configure host static IP addresses
 - systemd service units relevant to AI, B1 AI Hub, or explicitly preserved local services, including redacted unit metadata and unit/drop-in paths for review
 - listening TCP sockets and processes
 - `nvidia-smi` GPU driver/VRAM/utilization data and NVIDIA Container Toolkit version when available

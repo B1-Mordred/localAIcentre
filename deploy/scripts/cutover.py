@@ -411,7 +411,7 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
 
     warnings = [str(item) for item in networking.get("warnings", []) if isinstance(item, str)]
     if networking.get("hostname_authority") != "system-hostname":
-        warnings.append("target hostname policy must be defined by the system hostname, not DHCP")
+        warnings.append("target hostname policy must use the B1-defined system hostname, not a DHCP-supplied hostname")
     if networking.get("b1_static_ip_configures") is not False:
         warnings.append("B1 networking policy must not configure a static host IP address")
     if networking.get("hostname_source") != "system-hostname":
@@ -748,7 +748,7 @@ def build_plan(
                     "Confirm gpu_runtime_readiness proves nvidia-smi, Docker's nvidia runtime, and NVIDIA Container Toolkit are healthy.",
                     "Confirm runtime_agent_socket_readiness shows B1_DOCKER_GID matches the Docker socket GID so runtime-agent can inspect and recover managed runtimes.",
                     "Confirm dns_readiness shows the intended B1 virtual hosts resolving to the expected LAN gateway address or record the required DNS changes.",
-                    "Confirm networking_readiness shows the target hostname is defined by the system hostname and host IP/gateway/resolver properties are acquired by DHCP or an operator-reviewed DHCP reservation.",
+                    "Confirm networking_readiness shows the B1-defined hostname is present as the system hostname and host IP/gateway/route/resolver properties are acquired by DHCP or an operator-reviewed DHCP reservation.",
                     "Confirm open_webui_preservation has been reviewed and the temporary B1 instance will validate the chosen preservation/import path.",
                     "Confirm the verified old-stack backup is stored outside the old stack and is restorable.",
                     "Enable B1 maintenance mode before staging, cutover, rollback, or DNS route changes.",

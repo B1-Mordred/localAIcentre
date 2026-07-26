@@ -2079,6 +2079,50 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
     cpu_audio_engine = str(placeholder_proof.get("cpu_audio_engine") or "").strip().lower()
     if cpu_audio_engine == "scaffold":
         missing.append("non_comfy_tts_completed.cpu_audio_engine_not_scaffold")
+    node_proof = tts.get("node_proof") if isinstance(tts.get("node_proof"), dict) else {}
+    if not node_proof:
+        missing.append("non_comfy_tts_completed.node_proof")
+    else:
+        if node_proof.get("source_path") != "/v1/audio/speech":
+            missing.append("non_comfy_tts_completed.node_proof.source_path")
+        node_byte_count = _positive_int(node_proof.get("byte_count"))
+        if not node_byte_count:
+            missing.append("non_comfy_tts_completed.node_proof.byte_count")
+        elif tts_byte_count and node_byte_count != tts_byte_count:
+            missing.append("non_comfy_tts_completed.node_proof.byte_count_matches_tts")
+        node_sha256 = _normalized_sha256(node_proof.get("sha256"))
+        if not node_sha256:
+            missing.append("non_comfy_tts_completed.node_proof.sha256")
+        elif tts_sha256 and node_sha256 != tts_sha256:
+            missing.append("non_comfy_tts_completed.node_proof.sha256_matches_tts")
+        node_file_sha256 = _normalized_sha256(node_proof.get("file_sha256"))
+        if not node_file_sha256:
+            missing.append("non_comfy_tts_completed.node_proof.file_sha256")
+        elif tts_sha256 and node_file_sha256 != tts_sha256:
+            missing.append("non_comfy_tts_completed.node_proof.file_sha256_matches_tts")
+        if _positive_int(node_proof.get("stat_size")) != node_byte_count:
+            missing.append("non_comfy_tts_completed.node_proof.stat_size_matches_byte_count")
+        if not _nonempty_text(node_proof.get("filename")):
+            missing.append("non_comfy_tts_completed.node_proof.filename")
+        if not _nonempty_text(node_proof.get("relative_path")):
+            missing.append("non_comfy_tts_completed.node_proof.relative_path")
+        if node_proof.get("path_within_download_dir") is not True:
+            missing.append("non_comfy_tts_completed.node_proof.path_within_download_dir")
+        if node_proof.get("symlink") is True:
+            missing.append("non_comfy_tts_completed.node_proof.not_symlink")
+        if node_proof.get("private_file_mode") is not True:
+            missing.append("non_comfy_tts_completed.node_proof.private_file_mode")
+        node_placeholder_proof = node_proof.get("placeholder_proof") if isinstance(node_proof.get("placeholder_proof"), dict) else {}
+        if not node_placeholder_proof:
+            missing.append("non_comfy_tts_completed.node_proof.placeholder_proof")
+        else:
+            if node_placeholder_proof.get("placeholder_failure") is not False or node_placeholder_proof.get("placeholder") is not False:
+                missing.append("non_comfy_tts_completed.node_proof.non_placeholder_proof")
+            node_cpu_audio_engine = str(node_placeholder_proof.get("cpu_audio_engine") or "").strip().lower()
+            if node_cpu_audio_engine == "scaffold":
+                missing.append("non_comfy_tts_completed.node_proof.cpu_audio_engine_not_scaffold")
+            if placeholder_proof and node_placeholder_proof != placeholder_proof:
+                missing.append("non_comfy_tts_completed.node_proof.placeholder_proof_matches_check")
 
     artifact = _check_record(checks, "artifact_downloaded")
     artifact_byte_count = _positive_int(artifact.get("byte_count"))

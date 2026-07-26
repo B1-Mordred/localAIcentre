@@ -1794,6 +1794,25 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                         "placeholder_failure": False,
                         "reasons": [],
                     },
+                    "node_proof": {
+                        "source_path": "/v1/audio/speech",
+                        "filename": "b1-remote-node-non-comfy.wav",
+                        "relative_path": "b1-remote-node-non-comfy.wav",
+                        "byte_count": 2048,
+                        "stat_size": 2048,
+                        "sha256": remote_artifact_sha,
+                        "file_sha256": remote_artifact_sha,
+                        "path_within_download_dir": True,
+                        "symlink": False,
+                        "private_file_mode": True,
+                        "file_mode": "0o600",
+                        "placeholder_proof": {
+                            "placeholder": False,
+                            "cpu_audio_engine": "piper",
+                            "placeholder_failure": False,
+                            "reasons": [],
+                        },
+                    },
                 },
                 "artifact_downloaded": {
                     "status": "ok",
@@ -5286,12 +5305,74 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("non_comfy_tts_completed.runtime_policy", snapshot["missing_compatibility_evidence"])
         self.assertIn("non_comfy_tts_completed.sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("non_comfy_tts_completed.placeholder_proof", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.file_sha256", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.filename", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.relative_path", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.path_within_download_dir", snapshot["missing_compatibility_evidence"])
         self.assertIn("artifact_downloaded.private_file_mode", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_requires_node_proof_to_match_tts_download(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "non_comfy_tts_completed": {
+                    **payload["checks"]["non_comfy_tts_completed"],
+                    "node_proof": {
+                        **payload["checks"]["non_comfy_tts_completed"]["node_proof"],
+                        "source_path": "/artifacts/runtime/job/0.wav",
+                        "byte_count": 1024,
+                        "stat_size": 512,
+                        "sha256": "2" * 64,
+                        "file_sha256": "3" * 64,
+                        "path_within_download_dir": False,
+                        "symlink": True,
+                        "private_file_mode": False,
+                    },
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn("non_comfy_tts_completed.node_proof.source_path", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.byte_count_matches_tts", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.sha256_matches_tts", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.file_sha256_matches_tts", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.stat_size_matches_byte_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.path_within_download_dir", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.not_symlink", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.private_file_mode", snapshot["missing_compatibility_evidence"])
+
+    def test_remote_node_snapshot_rejects_node_placeholder_proof(self) -> None:
+        payload = sample_live_evidence()["remote_nodes_non_comfy"]
+        payload = {
+            **payload,
+            "checks": {
+                **payload["checks"],
+                "non_comfy_tts_completed": {
+                    **payload["checks"]["non_comfy_tts_completed"],
+                    "node_proof": {
+                        **payload["checks"]["non_comfy_tts_completed"]["node_proof"],
+                        "placeholder_proof": {
+                            "placeholder": True,
+                            "cpu_audio_engine": "scaffold",
+                            "placeholder_failure": True,
+                            "reasons": ["explicit_placeholder_marker", "scaffold_cpu_audio_engine"],
+                        },
+                    },
+                },
+            },
+        }
+
+        snapshot = acceptance.remote_nodes_evidence_snapshot(payload)
+
+        self.assertIn("non_comfy_tts_completed.node_proof.non_placeholder_proof", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.cpu_audio_engine_not_scaffold", snapshot["missing_compatibility_evidence"])
+        self.assertIn("non_comfy_tts_completed.node_proof.placeholder_proof_matches_check", snapshot["missing_compatibility_evidence"])
 
     def test_remote_node_snapshot_requires_file_backed_artifact_integrity(self) -> None:
         payload = sample_live_evidence()["remote_nodes_non_comfy"]
@@ -6335,6 +6416,25 @@ class AcceptanceReportTests(unittest.TestCase):
                                     "cpu_audio_engine": "piper",
                                     "placeholder_failure": False,
                                     "reasons": [],
+                                },
+                                "node_proof": {
+                                    "source_path": "/v1/audio/speech",
+                                    "filename": "b1-remote-node-non-comfy.wav",
+                                    "relative_path": "b1-remote-node-non-comfy.wav",
+                                    "byte_count": 2048,
+                                    "stat_size": 2048,
+                                    "sha256": remote_artifact_sha,
+                                    "file_sha256": remote_artifact_sha,
+                                    "path_within_download_dir": True,
+                                    "symlink": False,
+                                    "private_file_mode": True,
+                                    "file_mode": "0o600",
+                                    "placeholder_proof": {
+                                        "placeholder": False,
+                                        "cpu_audio_engine": "piper",
+                                        "placeholder_failure": False,
+                                        "reasons": [],
+                                    },
                                 },
                             },
                             "artifact_downloaded": {
