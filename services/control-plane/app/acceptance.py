@@ -303,12 +303,32 @@ REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v
 REMOTE_NODES_REQUIRED_CHECKS = (
     "server_side_comfyui_stopped",
     "server_side_comfyui_stop_verified",
+    "node_surface_registered",
     "remote_models_listed",
     "model_alias_selected",
     "credentials_externalized",
     "non_comfy_tts_completed",
     "artifact_downloaded",
     "server_side_comfyui_still_stopped_after_operation",
+)
+REMOTE_NODES_REQUIRED_NODE_CLASSES = (
+    "B1ListModels",
+    "B1SelectModelAlias",
+    "B1ChatText",
+    "B1VisionAnalysis",
+    "B1Embeddings",
+    "B1SubmitMediaJob",
+    "B1TextToImage",
+    "B1ImageToImage",
+    "B1TextToVideo",
+    "B1ImageToVideo",
+    "B1TextToSpeech",
+    "B1SpeechToText",
+    "B1UploadMediaBase64",
+    "B1WaitMediaJob",
+    "B1CancelMediaJob",
+    "B1ListJobArtifacts",
+    "B1DownloadArtifact",
 )
 MODELHUB_EVIDENCE_FORMAT = "b1-ai-hub-modelhub-client-sync/v1"
 MODELHUB_REQUIRED_CHECKS = (
@@ -1691,6 +1711,37 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
     initial_running_container_count = require_stopped_inventory("server_side_comfyui_stop_verified")
     post_run_running_container_count = require_stopped_inventory("server_side_comfyui_still_stopped_after_operation")
 
+    surface = _check_record(checks, "node_surface_registered")
+    required_node_count = _positive_int(surface.get("required_node_count"))
+    registered_node_count = _positive_int(surface.get("registered_node_count"))
+    registered_node_classes = surface.get("registered_node_classes") if isinstance(surface.get("registered_node_classes"), list) else []
+    missing_node_classes = surface.get("missing_node_classes") if isinstance(surface.get("missing_node_classes"), list) else None
+    missing_display_names = surface.get("missing_display_names") if isinstance(surface.get("missing_display_names"), list) else None
+    invalid_node_classes = surface.get("invalid_node_classes") if isinstance(surface.get("invalid_node_classes"), list) else None
+    missing_example_node_types = (
+        surface.get("missing_example_node_types") if isinstance(surface.get("missing_example_node_types"), list) else None
+    )
+    example_node_types = surface.get("example_node_types") if isinstance(surface.get("example_node_types"), list) else []
+    if required_node_count != len(REMOTE_NODES_REQUIRED_NODE_CLASSES):
+        missing.append("node_surface_registered.required_node_count")
+    if registered_node_count < len(REMOTE_NODES_REQUIRED_NODE_CLASSES):
+        missing.append("node_surface_registered.registered_node_count")
+    if missing_node_classes != []:
+        missing.append("node_surface_registered.missing_node_classes_empty")
+    if missing_display_names != []:
+        missing.append("node_surface_registered.missing_display_names_empty")
+    if invalid_node_classes != []:
+        missing.append("node_surface_registered.invalid_node_classes_empty")
+    for node_class in REMOTE_NODES_REQUIRED_NODE_CLASSES:
+        if node_class not in registered_node_classes:
+            missing.append(f"node_surface_registered.registered_node_classes.{node_class}")
+        if node_class not in example_node_types:
+            missing.append(f"node_surface_registered.example_node_types.{node_class}")
+    if missing_example_node_types != []:
+        missing.append("node_surface_registered.missing_example_node_types_empty")
+    if _positive_int(surface.get("inspected_workflow_count")) < 1:
+        missing.append("node_surface_registered.inspected_workflow_count")
+
     listed = _check_record(checks, "remote_models_listed")
     model = _nonempty_text(listed.get("model"))
     if _positive_int(listed.get("alias_count")) < 1:
@@ -1767,6 +1818,9 @@ def _remote_nodes_compatibility_summary(payload: dict[str, Any]) -> dict[str, An
         missing.append("artifact_downloaded.private_file_mode")
 
     return {
+        "remote_required_node_count": required_node_count,
+        "remote_registered_node_count": registered_node_count,
+        "remote_example_workflow_count": _positive_int(surface.get("inspected_workflow_count")),
         "remote_selected_model": selected_model or model,
         "remote_tts_bytes": tts_byte_count,
         "remote_artifact_sha256": artifact_sha256,

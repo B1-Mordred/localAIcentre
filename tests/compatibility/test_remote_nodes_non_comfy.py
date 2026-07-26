@@ -24,12 +24,32 @@ REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v
 REMOTE_NODES_REQUIRED_CHECKS = (
     "server_side_comfyui_stopped",
     "server_side_comfyui_stop_verified",
+    "node_surface_registered",
     "remote_models_listed",
     "model_alias_selected",
     "credentials_externalized",
     "non_comfy_tts_completed",
     "artifact_downloaded",
     "server_side_comfyui_still_stopped_after_operation",
+)
+REMOTE_NODE_REQUIRED_CLASSES = (
+    "B1ListModels",
+    "B1SelectModelAlias",
+    "B1ChatText",
+    "B1VisionAnalysis",
+    "B1Embeddings",
+    "B1SubmitMediaJob",
+    "B1TextToImage",
+    "B1ImageToImage",
+    "B1TextToVideo",
+    "B1ImageToVideo",
+    "B1TextToSpeech",
+    "B1SpeechToText",
+    "B1UploadMediaBase64",
+    "B1WaitMediaJob",
+    "B1CancelMediaJob",
+    "B1ListJobArtifacts",
+    "B1DownloadArtifact",
 )
 EXAMPLES_ROOT = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples"
 SECRET_VALUE_PATTERN = re.compile(r"\b(?:b1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|b1adm_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+)\b")
@@ -110,6 +130,22 @@ def workflow_secret_findings(value: Any, path: str = "$") -> list[str]:
     elif isinstance(value, str) and SECRET_VALUE_PATTERN.search(value):
         findings.append(path)
     return findings
+
+
+def workflow_node_types(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    raw_nodes = value.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return []
+    found: list[str] = []
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            continue
+        node_type = item.get("type")
+        if isinstance(node_type, str) and node_type:
+            found.append(node_type)
+    return found
 
 
 def configured_credential_source() -> str:
@@ -233,6 +269,7 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
         output_dir = Path(os.getenv("B1_AI_HUB_DOWNLOAD_DIR", "b1-artifacts")).resolve()
         model = os.getenv("B1_REMOTE_NODES_TTS_MODEL", "tts-fast")
         runtime_policy = "non_comfy_only"
+        self.verify_node_surface_registered()
         self.verify_credentials_externalized()
         with server_side_comfyui_stopped_context():
             stop_verification = verify_server_side_comfyui_stopped_via_admin()
@@ -332,6 +369,50 @@ class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
             "private_file_mode": private_file_mode,
             "file_mode": oct(mode),
         }
+
+    def verify_node_surface_registered(self) -> None:
+        registered = sorted(str(name) for name in nodes.NODE_CLASS_MAPPINGS)
+        display_names = nodes.NODE_DISPLAY_NAME_MAPPINGS
+        missing_node_classes = sorted(set(REMOTE_NODE_REQUIRED_CLASSES) - set(registered))
+        missing_display_names = sorted(name for name in REMOTE_NODE_REQUIRED_CLASSES if name not in display_names)
+        invalid_node_classes: list[str] = []
+        for name in REMOTE_NODE_REQUIRED_CLASSES:
+            candidate = nodes.NODE_CLASS_MAPPINGS.get(name)
+            if candidate is None:
+                continue
+            if not callable(getattr(candidate, "INPUT_TYPES", None)) or getattr(candidate, "FUNCTION", None) != "run":
+                invalid_node_classes.append(name)
+
+        inspected_workflows: list[str] = []
+        workflow_types_by_file: dict[str, list[str]] = {}
+        example_node_types: set[str] = set()
+        for path in sorted(EXAMPLES_ROOT.glob("*.json")):
+            inspected_workflows.append(path.name)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            node_types = workflow_node_types(payload)
+            workflow_types_by_file[path.name] = node_types
+            example_node_types.update(node_types)
+        missing_example_node_types = sorted(set(REMOTE_NODE_REQUIRED_CLASSES) - example_node_types)
+
+        self.assertFalse(missing_node_classes, f"remote-node package missing required node classes: {missing_node_classes}")
+        self.assertFalse(missing_display_names, f"remote-node package missing display names: {missing_display_names}")
+        self.assertFalse(invalid_node_classes, f"remote-node package classes do not expose ComfyUI node shape: {invalid_node_classes}")
+        self.assertFalse(missing_example_node_types, f"remote-node examples do not cover node classes: {missing_example_node_types}")
+        self.record_check(
+            "node_surface_registered",
+            required_node_count=len(REMOTE_NODE_REQUIRED_CLASSES),
+            registered_node_count=len(registered),
+            required_node_classes=list(REMOTE_NODE_REQUIRED_CLASSES),
+            registered_node_classes=registered,
+            missing_node_classes=[],
+            missing_display_names=[],
+            invalid_node_classes=[],
+            inspected_workflow_count=len(inspected_workflows),
+            inspected_workflows=inspected_workflows,
+            example_workflow_node_types=workflow_types_by_file,
+            example_node_types=sorted(example_node_types),
+            missing_example_node_types=[],
+        )
 
     def verify_credentials_externalized(self) -> None:
         source = configured_credential_source()

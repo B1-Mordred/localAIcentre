@@ -78,6 +78,29 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def sample_remote_node_surface_check() -> dict[str, Any]:
+    required_classes = list(acceptance.REMOTE_NODES_REQUIRED_NODE_CLASSES)
+    return {
+        "status": "ok",
+        "recorded_at": "2026-07-24T12:33:55+00:00",
+        "required_node_count": len(required_classes),
+        "registered_node_count": len(required_classes),
+        "required_node_classes": required_classes,
+        "registered_node_classes": required_classes,
+        "missing_node_classes": [],
+        "missing_display_names": [],
+        "invalid_node_classes": [],
+        "inspected_workflow_count": 3,
+        "inspected_workflows": [
+            "all-modalities.reference.workflow.json",
+            "text-to-image.async.workflow.json",
+            "tts-fast.non-comfy.workflow.json",
+        ],
+        "example_node_types": required_classes,
+        "missing_example_node_types": [],
+    }
+
+
 def sample_model_measurement_coverage(**overrides: Any) -> dict[str, Any]:
     groups = [
         {
@@ -1523,6 +1546,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "required_checks": [
                 "server_side_comfyui_stopped",
                 "server_side_comfyui_stop_verified",
+                "node_surface_registered",
                 "remote_models_listed",
                 "model_alias_selected",
                 "credentials_externalized",
@@ -1550,6 +1574,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "verified_by": "admin_runtimes_runtime_agent_services",
                     "running_container_count": 0,
                 },
+                "node_surface_registered": sample_remote_node_surface_check(),
                 "remote_models_listed": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:34:15+00:00",
@@ -1562,7 +1587,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:34:30+00:00",
                     "credential_source": "environment_file",
-                    "inspected_workflow_count": 1,
+                    "inspected_workflow_count": 3,
                     "workflow_secret_findings": [],
                 },
                 "non_comfy_tts_completed": {
@@ -3920,6 +3945,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "checks": {
                     "server_side_comfyui_stopped": {"status": "ok"},
                     "server_side_comfyui_stop_verified": {"status": "ok"},
+                    "node_surface_registered": sample_remote_node_surface_check(),
                     "non_comfy_tts_completed": {"status": "ok"},
                     "artifact_downloaded": {"status": "ok"},
                     "server_side_comfyui_still_stopped_after_operation": {"status": "ok"},
@@ -3942,6 +3968,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "status": "ok",
                 "checks": {
                     "server_side_comfyui_stopped": {"status": "ok"},
+                    "node_surface_registered": sample_remote_node_surface_check(),
                     "remote_models_listed": {"status": "ok"},
                     "model_alias_selected": {"status": "ok"},
                     "credentials_externalized": {"status": "ok"},
@@ -3975,6 +4002,16 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("server_side_comfyui_still_stopped_after_operation.verified_by", snapshot["missing_compatibility_evidence"])
         self.assertIn(
             "server_side_comfyui_still_stopped_after_operation.running_container_count_zero",
+            snapshot["missing_compatibility_evidence"],
+        )
+        self.assertIn("node_surface_registered.required_node_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("node_surface_registered.registered_node_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn(
+            "node_surface_registered.registered_node_classes.B1TextToSpeech",
+            snapshot["missing_compatibility_evidence"],
+        )
+        self.assertIn(
+            "node_surface_registered.example_node_types.B1DownloadArtifact",
             snapshot["missing_compatibility_evidence"],
         )
         self.assertIn("remote_models_listed.model", snapshot["missing_compatibility_evidence"])
@@ -4938,6 +4975,7 @@ class AcceptanceReportTests(unittest.TestCase):
                                 "verified_by": "admin_runtimes_runtime_agent_services",
                                 "running_container_count": 0,
                             },
+                            "node_surface_registered": sample_remote_node_surface_check(),
                             "server_side_comfyui_still_stopped_after_operation": {
                                 "status": "ok",
                                 "verified_by": "admin_runtimes_runtime_agent_services",
@@ -4953,7 +4991,7 @@ class AcceptanceReportTests(unittest.TestCase):
                             "credentials_externalized": {
                                 "status": "ok",
                                 "credential_source": "environment_file",
-                                "inspected_workflow_count": 1,
+                                "inspected_workflow_count": 3,
                                 "workflow_secret_findings": [],
                             },
                             "non_comfy_tts_completed": {
@@ -5264,6 +5302,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(remote_nodes["status"], "ok")
         self.assertEqual(remote_nodes["missing_checks"], [])
         self.assertEqual(remote_nodes["missing_compatibility_evidence"], [])
+        self.assertEqual(remote_nodes["remote_required_node_count"], len(acceptance.REMOTE_NODES_REQUIRED_NODE_CLASSES))
+        self.assertEqual(remote_nodes["remote_registered_node_count"], len(acceptance.REMOTE_NODES_REQUIRED_NODE_CLASSES))
+        self.assertEqual(remote_nodes["remote_example_workflow_count"], 3)
         self.assertEqual(remote_nodes["remote_selected_model"], "tts-fast")
         self.assertEqual(remote_nodes["remote_tts_bytes"], 2048)
         self.assertEqual(remote_nodes["sample_count"], 2)

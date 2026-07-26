@@ -1,0 +1,161 @@
+{
+  "description": "External ComfyUI reference sketch covering every B1 remote-node class without storing credentials in workflow JSON.",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "B1ListModels",
+      "inputs": {}
+    },
+    {
+      "id": 2,
+      "type": "B1SelectModelAlias",
+      "inputs": {
+        "alias": "chat-default"
+      }
+    },
+    {
+      "id": 3,
+      "type": "B1ChatText",
+      "inputs": {
+        "model": "{{2.model}}",
+        "prompt": "Summarize the current B1 model catalog in one sentence.",
+        "system": "You are running from an external ComfyUI client through the B1 unified API.",
+        "temperature": 0.2
+      }
+    },
+    {
+      "id": 4,
+      "type": "B1Embeddings",
+      "inputs": {
+        "model": "embedding-default",
+        "text": "B1 AI Hub remote nodes can request embeddings without server-side ComfyUI."
+      }
+    },
+    {
+      "id": 5,
+      "type": "B1UploadMediaBase64",
+      "inputs": {
+        "field_name": "image",
+        "mime_type": "image/png",
+        "filename": "remote-node-input.png",
+        "base64_data": "iVBORw0KGgo="
+      }
+    },
+    {
+      "id": 6,
+      "type": "B1VisionAnalysis",
+      "inputs": {
+        "model": "vision-default",
+        "prompt": "Describe the provided image.",
+        "image_reference": "data:image/png;base64,iVBORw0KGgo="
+      }
+    },
+    {
+      "id": 7,
+      "type": "B1SubmitMediaJob",
+      "inputs": {
+        "modality": "image",
+        "operation": "generation",
+        "model": "image-default",
+        "input_json": "{\"prompt\":\"a compact LAN AI appliance status display\",\"width\":512,\"height\":512}",
+        "priority": "single_image",
+        "runtime_policy": "any"
+      }
+    },
+    {
+      "id": 8,
+      "type": "B1WaitMediaJob",
+      "inputs": {
+        "job_id": "{{7.job_json}}",
+        "timeout_seconds": 1800,
+        "poll_interval_seconds": 2.0
+      }
+    },
+    {
+      "id": 9,
+      "type": "B1ListJobArtifacts",
+      "inputs": {
+        "job_id": "{{7.job_json}}"
+      }
+    },
+    {
+      "id": 10,
+      "type": "B1DownloadArtifact",
+      "inputs": {
+        "artifact_url": "{{9.artifacts_json}}",
+        "filename": "b1-generated-image.png",
+        "artifact_index": 0
+      }
+    },
+    {
+      "id": 11,
+      "type": "B1TextToImage",
+      "inputs": {
+        "model": "image-default",
+        "prompt": "a clean operations dashboard for a local AI appliance",
+        "parameters_json": "{\"width\":512,\"height\":512,\"steps\":20}"
+      }
+    },
+    {
+      "id": 12,
+      "type": "B1ImageToImage",
+      "inputs": {
+        "model": "image-edit",
+        "prompt": "Turn the input into a polished control-center screenshot.",
+        "image_reference": "{{5.reference_json}}",
+        "parameters_json": "{\"strength\":0.45}"
+      }
+    },
+    {
+      "id": 13,
+      "type": "B1TextToVideo",
+      "inputs": {
+        "model": "video-text",
+        "prompt": "A short product-style turntable of a LAN AI appliance.",
+        "parameters_json": "{\"frames\":16,\"width\":512,\"height\":288}"
+      }
+    },
+    {
+      "id": 14,
+      "type": "B1ImageToVideo",
+      "inputs": {
+        "model": "video-image",
+        "prompt": "Animate the uploaded appliance status image with subtle camera motion.",
+        "image_reference": "{{5.reference_json}}",
+        "parameters_json": "{\"frames\":16,\"width\":512,\"height\":288}"
+      }
+    },
+    {
+      "id": 15,
+      "type": "B1TextToSpeech",
+      "inputs": {
+        "model": "tts-fast",
+        "text": "B1 remote nodes are using the unified API.",
+        "voice": "default",
+        "response_format": "wav",
+        "runtime_policy": "non_comfy_only",
+        "filename": "b1-remote-node-reference.wav"
+      }
+    },
+    {
+      "id": 16,
+      "type": "B1SpeechToText",
+      "inputs": {
+        "model": "stt-default",
+        "audio_base64": "UklGRgAAAAAA",
+        "language": "en",
+        "runtime_policy": "non_comfy_only",
+        "audio_mime_type": "audio/wav",
+        "filename": "remote-node-reference.wav"
+      }
+    },
+    {
+      "id": 17,
+      "type": "B1CancelMediaJob",
+      "inputs": {
+        "job_id": "{{7.job_json}}"
+      }
+    }
+  ],
+  "expected_server_side_comfyui_required": false
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,39 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "integrations" / "comfyui-b1-remote-nodes"))
 
 from comfyui_b1_remote_nodes import nodes  # noqa: E402
+
+
+EXAMPLES_ROOT = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples"
+REQUIRED_REMOTE_NODE_CLASSES = (
+    "B1ListModels",
+    "B1SelectModelAlias",
+    "B1ChatText",
+    "B1VisionAnalysis",
+    "B1Embeddings",
+    "B1SubmitMediaJob",
+    "B1TextToImage",
+    "B1ImageToImage",
+    "B1TextToVideo",
+    "B1ImageToVideo",
+    "B1TextToSpeech",
+    "B1SpeechToText",
+    "B1UploadMediaBase64",
+    "B1WaitMediaJob",
+    "B1CancelMediaJob",
+    "B1ListJobArtifacts",
+    "B1DownloadArtifact",
+)
+SECRET_VALUE_PATTERN = re.compile(r"\b(?:b1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|b1adm_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+)\b")
+FORBIDDEN_WORKFLOW_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "credential",
+    "password",
+    "secret",
+    "token",
+}
 
 
 class FakeResponse:
@@ -87,6 +121,33 @@ def chmod_private(path: Path) -> None:
 def chmod_public(path: Path) -> None:
     if os.name != "nt":
         path.chmod(0o644)
+
+
+def workflow_secret_findings(value: Any, path: str = "$") -> list[str]:
+    findings: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            text_key = str(key)
+            normalized = text_key.lower().replace("-", "_")
+            if any(fragment in normalized for fragment in FORBIDDEN_WORKFLOW_SECRET_KEYS):
+                findings.append(f"{path}.{text_key}")
+            findings.extend(workflow_secret_findings(child, f"{path}.{text_key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            findings.extend(workflow_secret_findings(child, f"{path}[{index}]"))
+    elif isinstance(value, str) and SECRET_VALUE_PATTERN.search(value):
+        findings.append(path)
+    return findings
+
+
+def workflow_node_types(value: Any) -> set[str]:
+    if not isinstance(value, dict) or not isinstance(value.get("nodes"), list):
+        return set()
+    return {
+        item["type"]
+        for item in value["nodes"]
+        if isinstance(item, dict) and isinstance(item.get("type"), str) and item.get("type")
+    }
 
 
 class ComfyUiRemoteNodesTests(unittest.TestCase):
@@ -869,26 +930,21 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         with self.assertRaises(nodes.B1RemoteNodeError):
             nodes.B1VisionAnalysis().run("vision-default", "describe", json.dumps(staged_reference()))
 
+    def test_example_workflows_cover_required_node_surface_without_credentials(self) -> None:
+        workflow_files = sorted(EXAMPLES_ROOT.glob("*.json"))
+        self.assertGreaterEqual(len(workflow_files), 1)
+        node_types: set[str] = set()
+        secret_findings: list[str] = []
+        for path in workflow_files:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            node_types.update(workflow_node_types(payload))
+            secret_findings.extend(f"{path.name}:{finding}" for finding in workflow_secret_findings(payload))
+
+        self.assertFalse(secret_findings)
+        self.assertEqual(sorted(set(REQUIRED_REMOTE_NODE_CLASSES) - node_types), [])
+
     def test_required_node_classes_are_registered(self) -> None:
-        for name in [
-            "B1ListModels",
-            "B1SelectModelAlias",
-            "B1ChatText",
-            "B1VisionAnalysis",
-            "B1Embeddings",
-            "B1TextToImage",
-            "B1ImageToImage",
-            "B1TextToVideo",
-            "B1ImageToVideo",
-            "B1TextToSpeech",
-            "B1SpeechToText",
-            "B1UploadMediaBase64",
-            "B1SubmitMediaJob",
-            "B1WaitMediaJob",
-            "B1CancelMediaJob",
-            "B1ListJobArtifacts",
-            "B1DownloadArtifact",
-        ]:
+        for name in REQUIRED_REMOTE_NODE_CLASSES:
             self.assertIn(name, nodes.NODE_CLASS_MAPPINGS)
             self.assertIn(name, nodes.NODE_DISPLAY_NAME_MAPPINGS)
 
