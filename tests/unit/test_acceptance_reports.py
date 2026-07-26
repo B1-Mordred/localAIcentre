@@ -6457,8 +6457,15 @@ class AcceptanceReportTests(unittest.TestCase):
                             {"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"}
                         ],
                         "host_infrastructure_static_addresses": [
-                            {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"}
+                            {
+                                "address": "192.168.2.2",
+                                "cidr": "192.168.2.2/24",
+                                "purpose": "technitium-dhcp-dns",
+                                "assignment": "static-on-interface",
+                                "must_remain_on_interface": True,
+                            }
                         ],
+                        "static_infrastructure_policy_ready": True,
                         "blockers": [],
                     },
                     "dns_record_count": 7,

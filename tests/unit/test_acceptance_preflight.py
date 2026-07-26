@@ -633,14 +633,27 @@ class AcceptancePreflightTests(unittest.TestCase):
                   "safety": {
                     "read_only": true,
                     "host_networking_changed": false,
-                    "b1_static_ip_configures": false
+                    "b1_static_ip_configures": false,
+                    "static_host_infrastructure_required_on_interface": true,
+                    "static_host_infrastructure_preserved_on_candidate": true
                   },
                   "dhcp_reserved_appliance_addresses": [
                     {"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"}
                   ],
                   "host_infrastructure_static_addresses": [
-                    {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"}
+                    {
+                      "address": "192.168.2.2",
+                      "cidr": "192.168.2.2/24",
+                      "purpose": "technitium-dhcp-dns",
+                      "assignment": "static-on-interface",
+                      "must_remain_on_interface": true
+                    }
                   ],
+                  "static_infrastructure_policy": {
+                    "assignment": "static-on-interface",
+                    "required_on_active_interface": true,
+                    "candidate_preserves_all_static_addresses": true
+                  },
                   "blockers": [],
                   "warnings": []
                 }
@@ -656,6 +669,7 @@ class AcceptancePreflightTests(unittest.TestCase):
             check["data"]["network_dhcp_plan"]["host_infrastructure_static_addresses"][0]["address"],
             "192.168.2.2",
         )
+        self.assertTrue(check["data"]["network_dhcp_plan"]["static_infrastructure_policy_ready"])
 
     def test_preflight_rejects_static_legacy_comfy_listener_binding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

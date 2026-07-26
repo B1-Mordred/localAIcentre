@@ -90,6 +90,26 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: Path | None =
     static_addresses = plan.get("host_infrastructure_static_addresses")
     if not isinstance(static_addresses, list):
         static_addresses = []
+    static_policy = plan.get("static_infrastructure_policy") if isinstance(plan.get("static_infrastructure_policy"), dict) else {}
+    static_addresses_require_policy = bool(static_addresses)
+    static_addresses_have_static_assignment = all(
+        isinstance(item, dict)
+        and item.get("must_remain_on_interface") is True
+        and item.get("assignment") == "static-on-interface"
+        and bool(item.get("cidr"))
+        for item in static_addresses
+    )
+    static_policy_ready = (
+        not static_addresses_require_policy
+        or (
+            static_policy.get("assignment") == "static-on-interface"
+            and static_policy.get("required_on_active_interface") is True
+            and static_policy.get("candidate_preserves_all_static_addresses") is True
+            and safety.get("static_host_infrastructure_required_on_interface") is True
+            and safety.get("static_host_infrastructure_preserved_on_candidate") is True
+            and static_addresses_have_static_assignment
+        )
+    )
     blockers = [str(item) for item in plan.get("blockers", []) if isinstance(item, str)]
     ready = (
         plan.get("status") == "ready"
@@ -99,6 +119,7 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: Path | None =
         and safety.get("read_only") is True
         and safety.get("host_networking_changed") is False
         and safety.get("b1_static_ip_configures") is False
+        and static_policy_ready
         and bool(dhcp_addresses)
         and not blockers
     )
@@ -113,6 +134,8 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: Path | None =
         "host_networking_changed": safety.get("host_networking_changed"),
         "dhcp_reserved_appliance_addresses": dhcp_addresses,
         "host_infrastructure_static_addresses": static_addresses,
+        "static_infrastructure_policy": static_policy,
+        "static_infrastructure_policy_ready": static_policy_ready,
         "blockers": blockers,
         "warnings": [str(item) for item in plan.get("warnings", []) if isinstance(item, str)],
         "ready": ready,
@@ -507,6 +530,14 @@ def analyze_networking_readiness(
     plan_summary = network_dhcp_plan_summary(network_dhcp_plan, network_dhcp_plan_path)
     direct_dhcp_proof = networking.get("has_dhcp_default_route") is True
     reservation_plan_proof = bool(plan_summary.get("ready"))
+    if (
+        plan_summary.get("available") is True
+        and plan_summary.get("host_infrastructure_static_addresses")
+        and plan_summary.get("static_infrastructure_policy_ready") is not True
+    ):
+        warnings.append(
+            "network DHCP plan does not prove static host-infrastructure addresses remain statically configured on the active interface"
+        )
     if networking.get("hostname_authority") != "b1-appliance-config":
         warnings.append("target hostname policy must be defined by B1 appliance configuration, not DHCP")
     if networking.get("b1_static_ip_configures") is not False:

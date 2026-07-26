@@ -270,19 +270,24 @@ def _int_value(value: Any) -> int | None:
 def _dhcp_network_proof_ready(networking: dict[str, Any]) -> bool:
     if networking.get("has_dhcp_default_route") is True:
         return True
-    if networking.get("has_dhcp_network_proof") is True and str(networking.get("network_proof") or "") in {
-        "direct-dhcp-default-route",
-        "operator-reviewed-dhcp-reservation-plan",
-    }:
-        return True
     plan = networking.get("dhcp_reservation_plan") if isinstance(networking.get("dhcp_reservation_plan"), dict) else {}
-    return (
+    plan_ready = (
         plan.get("ready") is True
         and plan.get("reservation_confirmed") is True
         and plan.get("ready_to_apply") is True
         and bool(plan.get("dhcp_reserved_appliance_addresses"))
+        and (
+            plan.get("static_infrastructure_policy_ready") is True
+            or (not plan.get("host_infrastructure_static_addresses") and plan.get("static_infrastructure_policy_ready") is not False)
+        )
         and not _string_list(plan.get("blockers"))
     )
+    network_proof = str(networking.get("network_proof") or "")
+    if networking.get("has_dhcp_network_proof") is True and network_proof == "direct-dhcp-default-route":
+        return True
+    if networking.get("has_dhcp_network_proof") is True and network_proof == "operator-reviewed-dhcp-reservation-plan":
+        return plan_ready
+    return plan_ready
 
 
 def _effective_networking_warnings(networking: dict[str, Any]) -> list[str]:

@@ -624,6 +624,26 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: str = "") -> 
     static_addresses = plan.get("host_infrastructure_static_addresses")
     if not isinstance(static_addresses, list):
         static_addresses = []
+    static_policy = plan.get("static_infrastructure_policy") if isinstance(plan.get("static_infrastructure_policy"), dict) else {}
+    static_addresses_require_policy = bool(static_addresses)
+    static_addresses_have_static_assignment = all(
+        isinstance(item, dict)
+        and item.get("must_remain_on_interface") is True
+        and item.get("assignment") == "static-on-interface"
+        and bool(item.get("cidr"))
+        for item in static_addresses
+    )
+    static_policy_ready = (
+        not static_addresses_require_policy
+        or (
+            static_policy.get("assignment") == "static-on-interface"
+            and static_policy.get("required_on_active_interface") is True
+            and static_policy.get("candidate_preserves_all_static_addresses") is True
+            and safety.get("static_host_infrastructure_required_on_interface") is True
+            and safety.get("static_host_infrastructure_preserved_on_candidate") is True
+            and static_addresses_have_static_assignment
+        )
+    )
     blockers = string_list(plan.get("blockers"))
     ready = (
         plan.get("format") == NETWORK_DHCP_PLAN_FORMAT
@@ -634,6 +654,7 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: str = "") -> 
         and safety.get("read_only") is True
         and safety.get("host_networking_changed") is False
         and safety.get("b1_static_ip_configures") is False
+        and static_policy_ready
         and bool(dhcp_addresses)
         and not blockers
     )
@@ -646,6 +667,8 @@ def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: str = "") -> 
         "reservation_confirmed": plan.get("reservation_confirmed") is True,
         "dhcp_reserved_appliance_addresses": dhcp_addresses,
         "host_infrastructure_static_addresses": static_addresses,
+        "static_infrastructure_policy": static_policy,
+        "static_infrastructure_policy_ready": static_policy_ready,
         "blockers": blockers,
         "warnings": string_list(plan.get("warnings")),
     }
@@ -661,6 +684,24 @@ def load_optional_network_dhcp_plan(ctx: PreflightContext) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, AcceptancePreflightError) as exc:
         return {"available": False, "source": str(path), "reason": str(exc)}
     return network_dhcp_plan_summary(payload, source=str(path))
+
+
+def dhcp_reservation_plan_ready(plan: dict[str, Any] | None) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    static_addresses = plan.get("host_infrastructure_static_addresses")
+    static_policy_ready = (
+        plan.get("static_infrastructure_policy_ready") is True
+        or (not static_addresses and plan.get("static_infrastructure_policy_ready") is not False)
+    )
+    return (
+        plan.get("ready") is True
+        and plan.get("ready_to_apply") is True
+        and plan.get("reservation_confirmed") is True
+        and bool(plan.get("dhcp_reserved_appliance_addresses"))
+        and static_policy_ready
+        and not string_list(plan.get("blockers"))
+    )
 
 
 def normalized_hostname(value: Any) -> str:
@@ -752,9 +793,11 @@ def validate_networking_payload(
         return [f"{label} DHCP/networking readiness is missing"]
     external_plan_ready = bool((network_dhcp_plan or {}).get("ready"))
     direct_dhcp_proof = payload.get("has_dhcp_default_route") is True
-    embedded_plan_proof = (
-        payload.get("has_dhcp_network_proof") is True
-        and str(payload.get("network_proof") or "") in {"direct-dhcp-default-route", "operator-reviewed-dhcp-reservation-plan"}
+    embedded_plan = payload.get("dhcp_reservation_plan") if isinstance(payload.get("dhcp_reservation_plan"), dict) else {}
+    network_proof = str(payload.get("network_proof") or "")
+    embedded_plan_proof = payload.get("has_dhcp_network_proof") is True and (
+        network_proof == "direct-dhcp-default-route"
+        or (network_proof == "operator-reviewed-dhcp-reservation-plan" and dhcp_reservation_plan_ready(embedded_plan))
     )
     has_network_proof = direct_dhcp_proof or embedded_plan_proof or external_plan_ready
     warnings = string_list(payload.get("warnings"))

@@ -107,7 +107,12 @@ def parse_required_address(value: str) -> dict[str, Any]:
 
 
 def parse_static_infrastructure_address(value: str) -> dict[str, Any]:
-    return parse_address_record(value, default_purpose="host-network-infrastructure")
+    record = parse_address_record(value, default_purpose="host-network-infrastructure")
+    return {
+        **record,
+        "assignment": "static-on-interface",
+        "must_remain_on_interface": True,
+    }
 
 
 def parse_address_records(
@@ -233,7 +238,16 @@ def resolve_static_candidate_cidrs(
         cidr = item.get("cidr") or (current or {}).get("cidr") or ""
         if not cidr:
             missing_cidrs.append(item["address"])
-        resolved.append({**item, "cidr": cidr})
+        resolved.append(
+            {
+                **item,
+                "cidr": cidr,
+                "assignment": str(item.get("assignment") or "static-on-interface"),
+                "must_remain_on_interface": item.get("must_remain_on_interface") is not False,
+                "candidate_profile_preserves_static_address": bool(cidr),
+                "interface": profile.get("interface", ""),
+            }
+        )
     return resolved, missing_cidrs
 
 
@@ -297,6 +311,7 @@ def build_plan(
     missing_current_addresses = sorted(required_set - current_addresses)
     missing_static_current_addresses = sorted(static_set - current_addresses)
     static_candidate_addresses, missing_static_cidrs = resolve_static_candidate_cidrs(profile, static_infrastructure_addresses)
+    static_candidate_ready = bool(static_candidate_addresses) and not missing_static_current_addresses and not missing_static_cidrs
     candidate = candidate_connection_name(connection)
     warnings: list[str] = []
     blockers: list[str] = []
@@ -354,6 +369,8 @@ def build_plan(
             "requires_operator_review": not ready_to_apply,
             "b1_static_ip_configures": False,
             "static_host_infrastructure_preserved": bool(static_candidate_addresses),
+            "static_host_infrastructure_required_on_interface": bool(static_candidate_addresses),
+            "static_host_infrastructure_preserved_on_candidate": static_candidate_ready,
         },
         "status": status,
         "ready_to_apply": ready_to_apply,
@@ -367,6 +384,16 @@ def build_plan(
         "dhcp_reserved_appliance_addresses": required_addresses,
         "required_dhcp_reservations": required_addresses,
         "host_infrastructure_static_addresses": static_candidate_addresses,
+        "static_infrastructure_policy": {
+            "assignment": "static-on-interface",
+            "required_on_active_interface": bool(static_candidate_addresses),
+            "candidate_preserves_all_static_addresses": static_candidate_ready,
+            "reason": (
+                "Static infrastructure service addresses, such as the Technitium DHCP/DNS address, must remain "
+                "configured on the active LAN interface while ordinary appliance IP/gateway/route/resolver "
+                "properties are acquired from DHCP."
+            ),
+        },
         "reservation_confirmed": reservation_confirmed,
         "candidate_connection": candidate,
         "warnings": warnings,
