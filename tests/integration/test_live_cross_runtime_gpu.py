@@ -29,12 +29,21 @@ from test_live_stack import (  # noqa: E402
 
 GPU_RUNTIMES = {"localai", "comfyui", "voicebox"}
 TINY_COMFYUI_SMOKE_CLASS = "B1RuntimeTinyImage"
-GPU_ACCEPTANCE_REQUIRED_CHECKS = (
+GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS = (
     "resource_policy_and_runtime_readiness",
     "localai_exclusive_gpu_residency",
     "comfyui_switch_completed",
     "voicebox_switch_completed",
     "localai_comfyui_voicebox_switch",
+    "vram_reserve_enforced",
+    "bounded_runtime_recovery_action",
+)
+GPU_ACCEPTANCE_OPTIONAL_VOICEBOX_REQUIRED_CHECKS = (
+    "resource_policy_and_runtime_readiness",
+    "localai_exclusive_gpu_residency",
+    "comfyui_switch_completed",
+    "voicebox_gpu_switch_not_required",
+    "localai_comfyui_switch",
     "vram_reserve_enforced",
     "bounded_runtime_recovery_action",
 )
@@ -152,7 +161,12 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
         if not evidence_path:
             return
         path = Path(evidence_path)
-        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in GPU_ACCEPTANCE_REQUIRED_CHECKS) else "incomplete"
+        required_checks = (
+            GPU_ACCEPTANCE_OPTIONAL_VOICEBOX_REQUIRED_CHECKS
+            if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False)
+            else GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS
+        )
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in required_checks) else "incomplete"
         write_private_json(
             path,
             {
@@ -160,7 +174,7 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
                 "generated_at": datetime.now(tz=UTC).isoformat(),
                 "base_url": cls.client.base_url,
                 "status": status,
-                "required_checks": list(GPU_ACCEPTANCE_REQUIRED_CHECKS),
+                "required_checks": list(required_checks),
                 "checks": cls.checks,
                 "samples": cls.evidence,
                 "vram_samples": cls.vram_samples,
@@ -458,9 +472,40 @@ class LiveCrossRuntimeGpuAcceptanceTests(unittest.TestCase):
             comfyui_first_artifact_sha256=comfy_artifacts.get("first_artifact_sha256"),
             after_runtime_state=comfyui_runtime_state,
         )
+        self.record_check(
+            "localai_comfyui_switch",
+            runtime_order=["localai", "comfyui"],
+            runtime_state_sequence=[localai_runtime_state, comfyui_runtime_state],
+            chat_model=chat_model,
+            chat_resolved_model_version=chat_measurement.get("resolved_model_version"),
+            comfyui_model=image_model,
+            comfyui_resolved_model_version=comfyui_measurement.get("resolved_model_version"),
+            model_measurements={
+                "chat": chat_measurement,
+                "comfyui": comfyui_measurement,
+            },
+            comfyui_job_id=comfy_job.get("id"),
+            comfyui_native_prompt_id=comfy_native_prompt_id,
+            comfyui_prompt=comfy_prompt_metadata,
+            comfyui_artifact_count=comfy_artifacts.get("artifact_count"),
+            comfyui_verified_artifact_count=comfy_artifacts.get("verified_artifact_count"),
+        )
 
         if env_flag("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX", False):
-            self.skipTest("B1_GPU_ACCEPTANCE_SKIP_VOICEBOX requested")
+            self.record_check(
+                "voicebox_gpu_switch_not_required",
+                reason=os.getenv(
+                    "B1_GPU_ACCEPTANCE_VOICEBOX_LIMITATION",
+                    "Voicebox GPU switch is not required for this selected production profile.",
+                ),
+                voicebox_model=voicebox_model,
+                production_required_runtimes=sorted(
+                    runtime.strip()
+                    for runtime in os.getenv("B1_RUNTIME_PRODUCTION_REQUIRED", "").replace(",", " ").split()
+                    if runtime.strip()
+                ),
+            )
+            return
         voicebox_measurement = self.require_measured_model(voicebox_model, expected_runtime="voicebox")
         voicebox_job = self.create_media_job(
             {

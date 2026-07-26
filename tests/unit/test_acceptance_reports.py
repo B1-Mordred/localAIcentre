@@ -4525,6 +4525,61 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["gpu_evidence_ready"])
         self.assertIn("RTX 3060 GPU acceptance evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
 
+    def test_gpu_snapshot_accepts_optional_voicebox_gpu_limitation(self) -> None:
+        gpu = json.loads(json.dumps(sample_live_evidence()["gpu_acceptance"]))
+        checks = gpu["checks"]
+        checks.pop("voicebox_switch_completed")
+        checks.pop("localai_comfyui_voicebox_switch")
+        checks["voicebox_gpu_switch_not_required"] = {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:30:30+00:00",
+            "reason": "No validated Voicebox GPU model/profile is installed for the selected 6 GB profile.",
+            "production_required_runtimes": ["localai", "comfyui", "audio-cpu"],
+        }
+        checks["localai_comfyui_switch"] = {
+            "status": "ok",
+            "recorded_at": "2026-07-24T12:30:00+00:00",
+            "runtime_order": ["localai", "comfyui"],
+            "runtime_state_sequence": [
+                checks["localai_exclusive_gpu_residency"]["after_runtime_state"],
+                checks["comfyui_switch_completed"]["after_runtime_state"],
+            ],
+            "chat_model": "chat-default",
+            "chat_resolved_model_version": "b1-chat-default@1.0.0",
+            "comfyui_model": "image-default",
+            "comfyui_resolved_model_version": "b1-image-default@1.0.0",
+            "comfyui_job_id": "job_gpu_comfy_1",
+            "comfyui_native_prompt_id": "prompt_gpu_comfy_1",
+            "comfyui_prompt": checks["comfyui_switch_completed"]["comfyui_prompt"],
+            "comfyui_artifact_count": 1,
+            "comfyui_verified_artifact_count": 1,
+        }
+        gpu["required_checks"] = [
+            "resource_policy_and_runtime_readiness",
+            "localai_exclusive_gpu_residency",
+            "comfyui_switch_completed",
+            "voicebox_gpu_switch_not_required",
+            "localai_comfyui_switch",
+            "vram_reserve_enforced",
+            "bounded_runtime_recovery_action",
+        ]
+        gpu["required_model_aliases"] = ["chat-default", "image-default"]
+        gpu["model_measurements"].pop("tts-quality")
+        gpu["vram_samples"] = gpu["vram_samples"][:3]
+        checks["vram_reserve_enforced"]["samples"] = gpu["vram_samples"]
+        checks["vram_reserve_enforced"]["sample_count"] = 3
+        checks["vram_reserve_enforced"]["latest_sample"] = gpu["vram_samples"][-1]
+
+        snapshot = acceptance.gpu_acceptance_evidence_snapshot(gpu)
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(snapshot["missing_checks"], [])
+        self.assertEqual(snapshot["missing_gpu_evidence"], [])
+        self.assertFalse(snapshot["voicebox_gpu_required"])
+        self.assertEqual(snapshot["gpu_runtime_order"], ["localai", "comfyui"])
+        self.assertIn("voicebox_gpu_switch_not_required", snapshot["required_checks"])
+        self.assertNotIn("voicebox_switch_completed", snapshot["required_checks"])
+
     def test_gpu_snapshot_requires_per_switch_runtime_state_proof(self) -> None:
         gpu = sample_live_evidence()["gpu_acceptance"]
         gpu["checks"]["localai_exclusive_gpu_residency"].pop("after_runtime_state")

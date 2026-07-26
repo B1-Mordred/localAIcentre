@@ -291,7 +291,7 @@ PREFLIGHT_REQUIRED_CHECKS = (
     "voicebox_limitations",
 )
 GPU_ACCEPTANCE_EVIDENCE_FORMAT = "b1-ai-hub-cross-runtime-gpu-acceptance/v1"
-GPU_ACCEPTANCE_REQUIRED_CHECKS = (
+GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS = (
     "resource_policy_and_runtime_readiness",
     "localai_exclusive_gpu_residency",
     "comfyui_switch_completed",
@@ -300,6 +300,16 @@ GPU_ACCEPTANCE_REQUIRED_CHECKS = (
     "vram_reserve_enforced",
     "bounded_runtime_recovery_action",
 )
+GPU_ACCEPTANCE_OPTIONAL_VOICEBOX_REQUIRED_CHECKS = (
+    "resource_policy_and_runtime_readiness",
+    "localai_exclusive_gpu_residency",
+    "comfyui_switch_completed",
+    "voicebox_gpu_switch_not_required",
+    "localai_comfyui_switch",
+    "vram_reserve_enforced",
+    "bounded_runtime_recovery_action",
+)
+GPU_ACCEPTANCE_REQUIRED_CHECKS = GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS
 SMOKE_EVIDENCE_FORMAT = "b1-ai-hub-live-smoke/v1"
 SMOKE_REQUIRED_CHECKS = (
     "healthz_ok",
@@ -1710,64 +1720,95 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    voicebox = _check_record(checks, "voicebox_switch_completed")
-    voicebox_resolved = _resolved_model_version(voicebox.get("voicebox_resolved_model_version"))
-    if not voicebox_resolved:
-        missing.append("voicebox_switch_completed.voicebox_resolved_model_version")
-    if not _nonempty_text(voicebox.get("voicebox_job_id")):
-        missing.append("voicebox_switch_completed.voicebox_job_id")
-    missing.extend(
-        _runtime_state_proof_failures(
-            voicebox.get("after_runtime_state"),
-            "voicebox",
-            "voicebox_switch_completed.after_runtime_state",
-        )
-    )
-
-    switch = _check_record(checks, "localai_comfyui_voicebox_switch")
-    runtime_order = _as_string_list(switch.get("runtime_order"))
-    if runtime_order != ["localai", "comfyui", "voicebox"]:
-        missing.append("localai_comfyui_voicebox_switch.runtime_order")
-    runtime_state_sequence = switch.get("runtime_state_sequence") if isinstance(switch.get("runtime_state_sequence"), list) else []
-    if len(runtime_state_sequence) != 3:
-        missing.append("localai_comfyui_voicebox_switch.runtime_state_sequence")
-    else:
-        for index, expected_runtime in enumerate(("localai", "comfyui", "voicebox")):
-            missing.extend(
-                _runtime_state_proof_failures(
-                    runtime_state_sequence[index],
-                    expected_runtime,
-                    f"localai_comfyui_voicebox_switch.runtime_state_sequence.{index}",
-                )
+    optional_voicebox = _check_record(checks, "voicebox_gpu_switch_not_required")
+    voicebox_gpu_required = optional_voicebox.get("status") != "ok"
+    voicebox_resolved = ""
+    switch_voicebox = ""
+    switch_comfyui_prompt: dict[str, Any] = {}
+    if voicebox_gpu_required:
+        voicebox = _check_record(checks, "voicebox_switch_completed")
+        voicebox_resolved = _resolved_model_version(voicebox.get("voicebox_resolved_model_version"))
+        if not voicebox_resolved:
+            missing.append("voicebox_switch_completed.voicebox_resolved_model_version")
+        if not _nonempty_text(voicebox.get("voicebox_job_id")):
+            missing.append("voicebox_switch_completed.voicebox_job_id")
+        missing.extend(
+            _runtime_state_proof_failures(
+                voicebox.get("after_runtime_state"),
+                "voicebox",
+                "voicebox_switch_completed.after_runtime_state",
             )
+        )
+
+        switch = _check_record(checks, "localai_comfyui_voicebox_switch")
+        runtime_order = _as_string_list(switch.get("runtime_order"))
+        if runtime_order != ["localai", "comfyui", "voicebox"]:
+            missing.append("localai_comfyui_voicebox_switch.runtime_order")
+        runtime_state_sequence = switch.get("runtime_state_sequence") if isinstance(switch.get("runtime_state_sequence"), list) else []
+        if len(runtime_state_sequence) != 3:
+            missing.append("localai_comfyui_voicebox_switch.runtime_state_sequence")
+        else:
+            for index, expected_runtime in enumerate(("localai", "comfyui", "voicebox")):
+                missing.extend(
+                    _runtime_state_proof_failures(
+                        runtime_state_sequence[index],
+                        expected_runtime,
+                        f"localai_comfyui_voicebox_switch.runtime_state_sequence.{index}",
+                    )
+                )
+        switch_prefix = "localai_comfyui_voicebox_switch"
+        expected_runtime_order = ("localai", "comfyui", "voicebox")
+    else:
+        if not _nonempty_text(optional_voicebox.get("reason") or optional_voicebox.get("limitation")):
+            missing.append("voicebox_gpu_switch_not_required.reason")
+        switch = _check_record(checks, "localai_comfyui_switch")
+        runtime_order = _as_string_list(switch.get("runtime_order"))
+        if runtime_order != ["localai", "comfyui"]:
+            missing.append("localai_comfyui_switch.runtime_order")
+        runtime_state_sequence = switch.get("runtime_state_sequence") if isinstance(switch.get("runtime_state_sequence"), list) else []
+        if len(runtime_state_sequence) != 2:
+            missing.append("localai_comfyui_switch.runtime_state_sequence")
+        else:
+            for index, expected_runtime in enumerate(("localai", "comfyui")):
+                missing.extend(
+                    _runtime_state_proof_failures(
+                        runtime_state_sequence[index],
+                        expected_runtime,
+                        f"localai_comfyui_switch.runtime_state_sequence.{index}",
+                    )
+                )
+        switch_prefix = "localai_comfyui_switch"
+        expected_runtime_order = ("localai", "comfyui")
+
     switch_chat = _resolved_model_version(switch.get("chat_resolved_model_version"))
     switch_comfyui = _resolved_model_version(switch.get("comfyui_resolved_model_version"))
-    switch_voicebox = _resolved_model_version(switch.get("voicebox_resolved_model_version"))
     if not switch_chat:
-        missing.append("localai_comfyui_voicebox_switch.chat_resolved_model_version")
+        missing.append(f"{switch_prefix}.chat_resolved_model_version")
     elif chat_resolved and switch_chat != chat_resolved:
-        missing.append("localai_comfyui_voicebox_switch.chat_resolved_matches_localai")
+        missing.append(f"{switch_prefix}.chat_resolved_matches_localai")
     if not switch_comfyui:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_resolved_model_version")
+        missing.append(f"{switch_prefix}.comfyui_resolved_model_version")
     elif comfyui_resolved and switch_comfyui != comfyui_resolved:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_resolved_matches_switch")
-    if not switch_voicebox:
-        missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_model_version")
-    elif voicebox_resolved and switch_voicebox != voicebox_resolved:
-        missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_matches_switch")
-    for key in ("comfyui_job_id", "voicebox_job_id"):
+        missing.append(f"{switch_prefix}.comfyui_resolved_matches_switch")
+    if voicebox_gpu_required:
+        switch_voicebox = _resolved_model_version(switch.get("voicebox_resolved_model_version"))
+        if not switch_voicebox:
+            missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_model_version")
+        elif voicebox_resolved and switch_voicebox != voicebox_resolved:
+            missing.append("localai_comfyui_voicebox_switch.voicebox_resolved_matches_switch")
+    for key in ("comfyui_job_id", *(() if not voicebox_gpu_required else ("voicebox_job_id",))):
         if not _nonempty_text(switch.get(key)):
-            missing.append(f"localai_comfyui_voicebox_switch.{key}")
+            missing.append(f"{switch_prefix}.{key}")
     switch_comfyui_native_prompt_id = _nonempty_text(switch.get("comfyui_native_prompt_id"))
     if not switch_comfyui_native_prompt_id:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_native_prompt_id")
+        missing.append(f"{switch_prefix}.comfyui_native_prompt_id")
     elif comfyui_native_prompt_id and switch_comfyui_native_prompt_id != comfyui_native_prompt_id:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_native_prompt_id_matches_comfyui")
+        missing.append(f"{switch_prefix}.comfyui_native_prompt_id_matches_comfyui")
     if _positive_int(switch.get("comfyui_artifact_count")) < 1:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_artifact_count")
+        missing.append(f"{switch_prefix}.comfyui_artifact_count")
     switch_comfyui_prompt = switch.get("comfyui_prompt") if isinstance(switch.get("comfyui_prompt"), dict) else {}
     if switch_comfyui_prompt and switch_comfyui_prompt.get("route_level_smoke") is not False:
-        missing.append("localai_comfyui_voicebox_switch.comfyui_prompt.route_level_smoke_not_handoff")
+        missing.append(f"{switch_prefix}.comfyui_prompt.route_level_smoke_not_handoff")
 
     vram = _check_record(checks, "vram_reserve_enforced")
     vram_sample_count = _positive_int(vram.get("sample_count"))
@@ -1775,10 +1816,12 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("vram_reserve_enforced.sample_count")
     vram_samples = vram.get("samples") if isinstance(vram.get("samples"), list) else payload.get("vram_samples")
     vram_samples = vram_samples if isinstance(vram_samples, list) else []
-    if len(vram_samples) < 4:
+    required_vram_labels = ("initial-readiness", *[f"after-{runtime}-job" for runtime in expected_runtime_order[1:]])
+    required_vram_labels = ("initial-readiness", "after-localai-chat", *required_vram_labels[1:])
+    if len(vram_samples) < len(required_vram_labels):
         missing.append("vram_reserve_enforced.samples")
     vram_sample_labels = [str(item.get("label") or "") for item in vram_samples if isinstance(item, dict)]
-    for label in ("initial-readiness", "after-localai-chat", "after-comfyui-job", "after-voicebox-job"):
+    for label in required_vram_labels:
         if label not in vram_sample_labels:
             missing.append(f"vram_reserve_enforced.samples.{label}")
     latest_sample = vram.get("latest_sample") if isinstance(vram.get("latest_sample"), dict) else {}
@@ -1805,6 +1848,8 @@ def _gpu_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "gpu_runtime_order": runtime_order,
+        "voicebox_gpu_required": voicebox_gpu_required,
+        "voicebox_gpu_limitation": "" if voicebox_gpu_required else _nonempty_text(optional_voicebox.get("reason") or optional_voicebox.get("limitation")),
         "gpu_switch_resolved_models": {
             "localai": switch_chat or chat_resolved,
             "comfyui": switch_comfyui or comfyui_resolved,
@@ -3316,6 +3361,14 @@ def _live_evidence_snapshot(
     return snapshot
 
 
+def _gpu_acceptance_required_checks(payload: dict[str, Any]) -> tuple[str, ...]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    optional_voicebox = _check_record(checks, "voicebox_gpu_switch_not_required")
+    if optional_voicebox.get("status") == "ok":
+        return GPU_ACCEPTANCE_OPTIONAL_VOICEBOX_REQUIRED_CHECKS
+    return GPU_ACCEPTANCE_FULL_REQUIRED_CHECKS
+
+
 def _preflight_checks_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw_checks = payload.get("checks")
     checks: dict[str, dict[str, Any]] = {}
@@ -3489,12 +3542,13 @@ def latest_cutover_preservation_snapshot(backup_root: Path) -> dict[str, Any]:
 def gpu_acceptance_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     extra_fields = _model_measurement_summary(payload)
     extra_fields.update(_gpu_acceptance_summary(payload))
+    required_checks = _gpu_acceptance_required_checks(payload)
     return _live_evidence_snapshot(
         payload,
         source_path,
         expected_format=GPU_ACCEPTANCE_EVIDENCE_FORMAT,
         unsupported_reason="unsupported GPU acceptance evidence format",
-        required_checks=GPU_ACCEPTANCE_REQUIRED_CHECKS,
+        required_checks=required_checks,
         extra_fields=extra_fields,
     )
 
