@@ -654,6 +654,22 @@ class CutoverPlanTests(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["format"], "test")
 
+    def test_write_plan_refuses_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            output = root / "cutover-plan.json"
+            try:
+                output.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(cutover.CutoverPlanError, "symlink"):
+                cutover.write_plan({"format": "test"}, output)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
+
 
 if __name__ == "__main__":
     unittest.main()

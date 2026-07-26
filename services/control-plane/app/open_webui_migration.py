@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import backup_migration_rollback
+from .private_files import PrivateFileError, write_private_json
 
 
 PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
@@ -467,10 +468,10 @@ def build_plan(
 
 
 def write_plan(plan: dict[str, Any], output: Path) -> Path:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    output.chmod(0o600)
-    return output
+    try:
+        return write_private_json(output, plan, mode=0o600, label="Open WebUI migration plan")
+    except PrivateFileError as exc:
+        raise OpenWebUiMigrationError(str(exc)) from exc
 
 
 def _latest(paths: list[Path]) -> Path | None:

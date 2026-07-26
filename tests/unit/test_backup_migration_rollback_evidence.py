@@ -514,6 +514,23 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             self.assertEqual(result["inputs"]["open_webui_plan"]["path"], str(open_webui_plan.resolve()))
             self.assertEqual(result["inputs"]["cutover_plan"]["path"], str(cutover_plan.resolve()))
             self.assertEqual(result["inputs"]["rollback_report"]["path"], str(rollback_report.resolve()))
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_write_evidence_refuses_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            output = root / "backup-migration-rollback.json"
+            try:
+                output.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(evidence.EvidenceError, "symlink"):
+                evidence.write_evidence(output, {"format": evidence.EVIDENCE_FORMAT})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
 
     def test_status_reports_missing_inputs_without_host_path_submission(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

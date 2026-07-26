@@ -262,6 +262,7 @@ class OldStackBackupTests(unittest.TestCase):
             manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
 
             self.assertEqual(report["status"], "verified")
+            self.assertEqual((backup_dir / "manifest.json").stat().st_mode & 0o777, 0o600)
             self.assertTrue(manifest["contains_sensitive_data"])
             self.assertFalse(manifest["safety"]["old_stack_deletion_allowed"])
             archive_names = {item["archive_path"] for item in manifest["files"]}
@@ -307,6 +308,23 @@ class OldStackBackupTests(unittest.TestCase):
                 self.assertIsNotNone(service_show)
                 assert service_show is not None
                 self.assertNotIn("unit-token", service_show.read().decode("utf-8"))
+
+    def test_scope_template_refuses_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory_path = self.write_scope(root / "inventory.json", self.inventory_report(root))
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            output = root / "old-stack-scope.json"
+            try:
+                output.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(old_stack_backup.OldStackBackupError, "symlink"):
+                old_stack_backup.write_scope_template(inventory_path, output)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
 
     def test_backup_rejects_symlinked_old_stack_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

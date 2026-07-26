@@ -8,10 +8,16 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+from app.private_files import PrivateFileError, write_private_json  # noqa: E402
 
 try:  # pragma: no cover - exercised in dependency-complete environments
     from cryptography.exceptions import InvalidTag
@@ -381,7 +387,10 @@ def restore(backup_dir: Path, target: Path, force: bool = False, backup_encrypti
         "postgres_dump_included": manifest.get("postgres_dump_included", False),
         "archive_encryption": manifest.get("archive_encryption"),
     }
-    (target / "restore-report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        write_private_json(target / "restore-report.json", report, mode=0o600, label="restore report")
+    except PrivateFileError as exc:
+        raise RestoreError(str(exc)) from exc
     return report
 
 

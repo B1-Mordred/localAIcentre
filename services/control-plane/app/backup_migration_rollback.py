@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from . import backup_restore
 from . import rollback_rehearsal
+from .private_files import PrivateFileError, write_private_json
 
 
 EVIDENCE_FORMAT = "b1-ai-hub-backup-migration-rollback-acceptance/v1"
@@ -573,10 +574,10 @@ def build_evidence(
 
 
 def write_evidence(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    path.chmod(0o600)
-    return path
+    try:
+        return write_private_json(path, payload, mode=0o600, label="backup/migration/rollback evidence")
+    except PrivateFileError as exc:
+        raise EvidenceError(str(exc)) from exc
 
 
 def _latest(paths: list[Path]) -> Path | None:

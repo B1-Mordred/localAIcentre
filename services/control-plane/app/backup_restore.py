@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from .private_files import PrivateFileError, write_private_json
+
 try:  # pragma: no cover - covered in the dependency-complete container test environment
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -559,8 +561,10 @@ def create_backup(
         manifest["archive_encryption"] = encryption
         if encryption_mode == "encrypted-only":
             archive_path.unlink()
-    (backup_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    (backup_dir / "manifest.json").chmod(0o600)
+    try:
+        write_private_json(backup_dir / "manifest.json", manifest, mode=0o600, label="backup manifest")
+    except PrivateFileError as exc:
+        raise BackupError(str(exc)) from exc
     if archive_path.exists():
         archive_path.chmod(0o600)
     return manifest_summary(backup_dir, manifest)
@@ -1033,5 +1037,8 @@ def restore_backup_to_alternate(backup_root: Path, backup_name: str, restore_roo
     native_dump = manifest.get("postgres_native_dump")
     if native_dump and native_dump.get("path"):
         report["postgres_native_dump_verification"] = verify_native_postgres_dump(target / native_dump["path"])
-    (target / "restore-report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        write_private_json(target / "restore-report.json", report, mode=0o600, label="restore report")
+    except PrivateFileError as exc:
+        raise RestoreError(str(exc)) from exc
     return report

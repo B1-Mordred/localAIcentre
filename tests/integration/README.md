@@ -113,7 +113,7 @@ make backup-migration-rollback-evidence \
   ROLLBACK_REPORT=/srv/b1-ai-hub/backups/rollback-rehearsal.json
 ```
 
-The generator writes `b1-ai-hub-backup-migration-rollback-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/` and Control Center blocks handoff if any required check is missing or incomplete. Handoff-ready evidence must also include detailed backup, restore, old-stack archive, Open WebUI preservation, cutover readiness, preserved-resource, and rollback checksum/action proof; a JSON file that only marks the required checks `ok` is treated as incomplete.
+The generator writes `b1-ai-hub-backup-migration-rollback-acceptance/v1` evidence under `$B1_BACKUP_ROOT/acceptance/` and Control Center blocks handoff if any required check is missing or incomplete. Handoff-ready evidence must also include detailed backup, restore, old-stack archive, Open WebUI preservation, cutover readiness, preserved-resource, and rollback checksum/action proof; a JSON file that only marks the required checks `ok` is treated as incomplete. Backup manifests, restore reports, Open WebUI migration plans, cutover plans, rollback rehearsal reports, old-stack scope templates, and final backup/migration/rollback evidence are written atomically with private `0600` permissions and symlink refusal.
 
 Use the same TLS helper variables as smoke tests when testing through the Caddy internal CA or temporary hostnames:
 

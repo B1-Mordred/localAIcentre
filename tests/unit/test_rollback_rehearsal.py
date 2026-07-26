@@ -153,6 +153,22 @@ class RollbackRehearsalTests(unittest.TestCase):
             self.assertEqual(status["report"]["cutover_plan_name"], "cutover-plan-20260724-120000.json")
             self.assertEqual(len(status["report"]["resources_sha256"]), 64)
 
+    def test_write_report_refuses_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            output = root / "rollback-rehearsal.json"
+            try:
+                output.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(rollback_rehearsal.RollbackRehearsalError, "symlink"):
+                rollback_rehearsal.write_report(output, {"format": rollback_rehearsal.ROLLBACK_REHEARSAL_FORMAT})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
+
     def test_resolve_cutover_plan_rejects_names_outside_backup_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -5,11 +5,17 @@ import argparse
 import json
 import os
 import shlex
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import old_stack_backup
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+from app.private_files import PrivateFileError, write_private_json  # noqa: E402
 
 
 PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
@@ -704,10 +710,10 @@ def build_plan(
 
 
 def write_plan(plan: dict[str, Any], output: Path) -> Path:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    output.chmod(0o600)
-    return output
+    try:
+        return write_private_json(output, plan, mode=0o600, label="cutover plan")
+    except PrivateFileError as exc:
+        raise CutoverPlanError(str(exc)) from exc
 
 
 def main() -> None:

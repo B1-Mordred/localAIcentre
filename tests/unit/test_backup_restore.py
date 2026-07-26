@@ -81,6 +81,7 @@ class BackupRestoreTests(unittest.TestCase):
             manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
             paths = {item["path"] for item in manifest["files"]}
             self.assertEqual(manifest["format"], "b1-ai-hub-backup/v1")
+            self.assertEqual((backup_dir / "manifest.json").stat().st_mode & 0o777, 0o600)
             self.assertTrue(manifest["contains_sensitive_data"])
             self.assertIn("data/open-webui/db.sqlite", paths)
             self.assertIn("secrets/admin_bootstrap_key", paths)
@@ -160,6 +161,7 @@ class BackupRestoreTests(unittest.TestCase):
             self.assertEqual((restore_root / "data" / "open-webui" / "db.sqlite").read_text(encoding="utf-8"), "webui")
             self.assertEqual((restore_root / "models" / "tts" / "custom.bin").read_bytes(), b"custom")
             self.assertTrue((restore_root / "restore-report.json").is_file())
+            self.assertEqual((restore_root / "restore-report.json").stat().st_mode & 0o777, 0o600)
 
     def test_restore_refuses_non_empty_target_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,6 +174,26 @@ class BackupRestoreTests(unittest.TestCase):
             backup_dir = backup_mod.backup(root, label="unit")
             with self.assertRaises(restore_mod.RestoreError):
                 restore_mod.restore(backup_dir, restore_root)
+
+    def test_restore_report_refuses_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            restore_root = Path(tmp) / "restore"
+            root.mkdir()
+            restore_root.mkdir()
+            self.make_root(root)
+            backup_dir = backup_mod.backup(root, label="unit")
+            outside = Path(tmp) / "outside.json"
+            outside.write_text("{}\n", encoding="utf-8")
+            try:
+                (restore_root / "restore-report.json").symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(restore_mod.RestoreError, "symlink"):
+                restore_mod.restore(backup_dir, restore_root, force=True)
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), "{}\n")
 
     def test_restore_rejects_tampered_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

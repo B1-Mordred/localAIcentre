@@ -8,11 +8,17 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tarfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+from app.private_files import PrivateFileError, write_private_json  # noqa: E402
 
 
 BACKUP_FORMAT = "b1-ai-hub-old-stack-backup/v1"
@@ -718,8 +724,10 @@ def backup_old_stack(
         },
     }
     manifest_path = backup_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    manifest_path.chmod(0o600)
+    try:
+        write_private_json(manifest_path, manifest, mode=0o600, label="old-stack backup manifest")
+    except PrivateFileError as exc:
+        raise OldStackBackupError(str(exc)) from exc
     archive_path.chmod(0o600)
     return backup_dir
 
@@ -775,10 +783,10 @@ def verify_backup(backup_dir: Path) -> dict[str, Any]:
 def write_scope_template(inventory_path: Path, output: Path) -> Path:
     inventory = load_inventory(inventory_path)
     template = build_scope_template(inventory)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(template, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    output.chmod(0o600)
-    return output
+    try:
+        return write_private_json(output, template, mode=0o600, label="old-stack backup scope template")
+    except PrivateFileError as exc:
+        raise OldStackBackupError(str(exc)) from exc
 
 
 def main() -> None:

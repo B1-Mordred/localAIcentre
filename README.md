@@ -238,6 +238,8 @@ make operator-live-acceptance
 
 Live harness evidence is written atomically with `0640` permissions and refuses symlink targets or symlinked parent directories, so handoff JSON cannot be redirected outside the reviewed backup root.
 
+Backup, restore, migration, cutover, rollback rehearsal, old-stack scope, and final backup/migration/rollback evidence artifacts are also written atomically with private `0600` permissions and symlink refusal. Use normal files under the reviewed `$B1_BACKUP_ROOT` and `$B1_RESTORE_TEST_ROOT`; the writers will not follow pre-placed symlinks.
+
 Generate backup, migration, and rollback handoff evidence after B1 backup verification, alternate-directory restore rehearsal, old-stack migration review, and rollback rehearsal:
 
 ```text

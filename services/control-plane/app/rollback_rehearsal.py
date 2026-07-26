@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .private_files import PrivateFileError, write_private_json
+
 
 CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 ROLLBACK_REHEARSAL_FORMAT = "b1-ai-hub-rollback-rehearsal/v1"
@@ -225,10 +227,10 @@ def build_report(
 
 
 def write_report(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    path.chmod(0o600)
-    return path
+    try:
+        return write_private_json(path, payload, mode=0o600, label="rollback rehearsal report")
+    except PrivateFileError as exc:
+        raise RollbackRehearsalError(str(exc)) from exc
 
 
 def build_and_write_report(
