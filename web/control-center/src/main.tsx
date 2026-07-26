@@ -2870,6 +2870,7 @@ function Runtimes() {
   const [health, setHealth] = useState<RuntimeAdapterStatus[]>([]);
   const [readiness, setReadiness] = useState<SelfTestCheck | null>(null);
   const [composeReadiness, setComposeReadiness] = useState<SelfTestCheck | null>(null);
+  const [lifecycleChecks, setLifecycleChecks] = useState<SelfTestCheck[]>([]);
   const [composeSelection, setComposeSelection] = useState<Record<string, unknown> | null>(null);
   const [deploymentMode, setDeploymentMode] = useState("unknown");
   const [productionRequired, setProductionRequired] = useState<string[]>([]);
@@ -2907,6 +2908,7 @@ function Runtimes() {
         setHealth(payload.health ?? []);
         setReadiness(payload.readiness ?? null);
         setComposeReadiness(payload.compose_readiness ?? null);
+        setLifecycleChecks(Array.isArray(payload.lifecycle_checks) ? payload.lifecycle_checks : []);
         setComposeSelection(objectOrNull(payload.compose_selection));
         setDeploymentMode(payload.runtime_deployment_mode ?? "unknown");
         setProductionRequired(Array.isArray(payload.production_required_runtimes) ? payload.production_required_runtimes : []);
@@ -3242,6 +3244,30 @@ function Runtimes() {
                   </tr>
                 ))}
                 {!readinessRows.some((row) => row.required) && <tr><td colSpan={6}>No production-required runtime rows recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {lifecycleChecks.length > 0 && (
+          <div className="acceptance-detail-section">
+            <h4>Lifecycle Hook Evidence</h4>
+            <table>
+              <thead><tr><th>Check</th><th>Status</th><th>Runtime</th><th>Required</th><th>Detail</th></tr></thead>
+              <tbody>
+                {lifecycleChecks.map((check) => {
+                  const data = objectOrNull(check.data);
+                  const runtime = typeof data?.runtime === "string" ? data.runtime : check.name.replace(/^runtime:/, "").split("-")[0];
+                  const required = typeof data?.required === "boolean" ? data.required : productionRequired.includes(runtime);
+                  return (
+                    <tr key={check.name}>
+                      <td><code>{check.name}</code></td>
+                      <td><span className={statusPillClass(check.status)}>{check.status}</span></td>
+                      <td>{runtime}</td>
+                      <td>{required ? "yes" : "no"}</td>
+                      <td>{check.detail}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

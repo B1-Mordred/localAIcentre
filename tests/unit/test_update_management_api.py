@@ -214,7 +214,13 @@ class UpdateManagementApiTests(unittest.TestCase):
         fake.rows[created["id"]]["stage"] = "backup_images_and_self_test_completed"
 
         async def self_test(subject_id: str) -> dict[str, Any]:
-            return {"status": "degraded", "subject_id": subject_id, "checks": [{"name": "gpu:nvml", "status": "warning", "detail": "dev host"}]}
+            payload = healthy_self_test(subject_id)
+            payload["status"] = "degraded"
+            for check in payload["checks"]:
+                if check["name"] == "gpu:nvml":
+                    check["status"] = "warning"
+                    check["detail"] = "dev host"
+            return payload
 
         rollback_calls: list[dict[str, Any]] = []
 

@@ -60,6 +60,18 @@ class SelfTestApiTests(unittest.TestCase):
             self.assertEqual(path, "/v1/services")
             return {"services": []}, None
 
+        async def self_test_localai_build_info() -> dict[str, Any]:
+            return {"name": "runtime:localai-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_localai_status() -> dict[str, Any]:
+            return {"name": "runtime:localai-status", "status": "ok", "detail": "ok"}
+
+        async def self_test_comfyui_build_info() -> dict[str, Any]:
+            return {"name": "runtime:comfyui-build-info", "status": "warning", "detail": "not checked"}
+
+        async def self_test_comfyui_status() -> dict[str, Any]:
+            return {"name": "runtime:comfyui-status", "status": "warning", "detail": "not checked"}
+
         def compose_selection_snapshot() -> dict[str, Any]:
             return {
                 "format": "b1-ai-hub-compose-selection/v1",
@@ -80,6 +92,10 @@ class SelfTestApiTests(unittest.TestCase):
         self.patch_attr("database", FakeDatabase())
         self.patch_attr("runtime_agent_get", runtime_agent_get)
         self.patch_attr("runtime_registry_snapshot", lambda: SimpleNamespace(adapters={"localai": FakeAdapter()}, public_adapters=lambda: []))
+        self.patch_attr("self_test_localai_build_info", self_test_localai_build_info)
+        self.patch_attr("self_test_localai_status", self_test_localai_status)
+        self.patch_attr("self_test_comfyui_build_info", self_test_comfyui_build_info)
+        self.patch_attr("self_test_comfyui_status", self_test_comfyui_status)
         original_compose_selection = main.acceptance.compose_selection_snapshot
         main.acceptance.compose_selection_snapshot = compose_selection_snapshot
         self.addCleanup(lambda: setattr(main.acceptance, "compose_selection_snapshot", original_compose_selection))
@@ -89,6 +105,10 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["compose_readiness"]["status"], "failed")
         self.assertEqual(result["compose_selection"]["missing_files"], ["compose.production-comfyui.yaml"])
         self.assertEqual(result["readiness"]["status"], "failed")
+        self.assertEqual(
+            [check["name"] for check in result["lifecycle_checks"]],
+            ["runtime:localai-build-info", "runtime:localai-status", "runtime:comfyui-build-info", "runtime:comfyui-status"],
+        )
 
     def test_runtime_unload_probe_uses_agent_dry_run(self) -> None:
         self.patch_settings(self_test_unload_runtime="localai")
@@ -105,6 +125,173 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls[0]["path"], "/v1/runtime-actions/localai/unload")
         self.assertTrue(calls[0]["payload"]["dry_run"])
+
+    def test_localai_build_info_self_test_passes_for_pinned_wrapper(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "build-info",
+            "proxy_version": "b1-localai-proxy/v0.2.0",
+            "upstream": "localai/localai",
+            "upstream_version": "v4.7.1-gpu-nvidia-cuda-12",
+            "upstream_commit": "b224c96db6f4b87306a33a808650bfce63b12588",
+            "upstream_image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:" + "a" * 64,
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(localai_url="http://localai:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["upstream"], "localai/localai")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://localai:8000/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_localai_status_self_test_passes_for_guardrails_and_redacted_model_probe(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "build-info",
+            "proxy_version": "b1-localai-proxy/v0.2.0",
+            "upstream": "localai/localai",
+            "upstream_version": "v4.7.1-gpu-nvidia-cuda-12",
+            "upstream_commit": "b224c96db6f4b87306a33a808650bfce63b12588",
+            "upstream_image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:" + "a" * 64,
+            "pinned": True,
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "status",
+            "guardrails": {
+                "status": "ok",
+                "max_active_backends": 1,
+                "watchdog_idle": True,
+                "watchdog_idle_timeout": "5m",
+                "watchdog_interval": "1s",
+                "force_eviction_when_busy": False,
+                "blockers": [],
+            },
+            "model_probe": {"status": "ok", "upstream_status": 200, "model_count": 2},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(localai_url="http://localai:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["guardrails"]["max_active_backends"], 1)
+        self.assertEqual(result["data"]["status"]["model_probe"]["model_count"], 2)
+        self.assertNotIn("chat-secret-model", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://localai:8000/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_localai_status_self_test_fails_when_guardrail_is_relaxed(self) -> None:
+        payload = {
+            "status": "degraded",
+            "runtime": "localai",
+            "action": "status",
+            "guardrails": {
+                "status": "degraded",
+                "max_active_backends": 2,
+                "watchdog_idle": False,
+                "force_eviction_when_busy": True,
+                "blockers": ["LOCALAI_MAX_ACTIVE_BACKENDS must be 1"],
+            },
+            "model_probe": {"status": "ok", "upstream_status": 200, "model_count": 0},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+            "build_info": {},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["guardrails"]["status"], "degraded")
 
     def test_comfyui_build_info_self_test_passes_for_pinned_runtime(self) -> None:
         payload = {

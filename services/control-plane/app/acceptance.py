@@ -4130,6 +4130,17 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     elif caddy_ca.get("status") != "ok":
         blockers.append(f"Caddy internal CA readiness check is {caddy_ca.get('status', 'unknown')}")
     required_runtimes = {item.lower() for item in _as_string_list(compose_selection.get("production_required_runtimes"))}
+    if "localai" in required_runtimes:
+        localai_build = _check_by_name(report.get("self_test") or {}, "runtime:localai-build-info")
+        if not localai_build:
+            blockers.append("LocalAI build-info readiness check is absent")
+        elif localai_build.get("status") != "ok":
+            blockers.append(f"LocalAI build-info readiness check is {localai_build.get('status', 'unknown')}")
+        localai_status = _check_by_name(report.get("self_test") or {}, "runtime:localai-status")
+        if not localai_status:
+            blockers.append("LocalAI status readiness check is absent")
+        elif localai_status.get("status") != "ok":
+            blockers.append(f"LocalAI status readiness check is {localai_status.get('status', 'unknown')}")
     if "comfyui" in required_runtimes:
         comfyui_build = _check_by_name(report.get("self_test") or {}, "runtime:comfyui-build-info")
         if not comfyui_build:

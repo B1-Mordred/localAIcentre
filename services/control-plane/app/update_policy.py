@@ -44,6 +44,8 @@ UPDATE_HEALTH_REQUIRED_CHECKS = (
     "hardware:resource-policy",
     "tls:caddy-ca",
     "tls:routing",
+    "runtime:localai-build-info",
+    "runtime:localai-status",
     "runtime:comfyui-build-info",
     "runtime:comfyui-status",
     "inference:tiny",

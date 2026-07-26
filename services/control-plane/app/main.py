@@ -2788,6 +2788,7 @@ def sync_runtime_modality(operation: str) -> str:
         "responses": "llm",
         "embeddings": "embedding",
         "audio-speech": "tts",
+        "voicebox-native-speech": "tts",
     }.get(operation, "inference")
 
 
@@ -6886,6 +6887,12 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
         compose_selection,
         settings.runtime_deployment_mode,
     )
+    lifecycle_checks = await asyncio.gather(
+        self_test_localai_build_info(),
+        self_test_localai_status(),
+        self_test_comfyui_build_info(),
+        self_test_comfyui_status(),
+    )
     readiness = selftest_policy.runtime_production_readiness_check(
         health,
         settings.runtime_deployment_mode,
@@ -6899,6 +6906,7 @@ async def admin_runtimes(authorization: str | None = Header(default=None)) -> di
         "readiness": readiness,
         "compose_selection": compose_selection,
         "compose_readiness": compose_readiness,
+        "lifecycle_checks": lifecycle_checks,
         "runtime_agent_services": service_inventory or {"services": [], "error": service_error or "runtime-agent service inventory unavailable"},
         "adapters": registry.public_adapters(),
         "runtime_states": runtime_states,
@@ -7564,8 +7572,30 @@ def comfyui_build_info_required() -> bool:
     return settings.runtime_deployment_mode == "production" and "comfyui" in set(settings.runtime_production_required)
 
 
+def localai_build_info_required() -> bool:
+    return settings.runtime_deployment_mode == "production" and "localai" in set(settings.runtime_production_required)
+
+
+def localai_build_info_failure_status() -> str:
+    return "failed" if localai_build_info_required() else "warning"
+
+
 def comfyui_build_info_failure_status() -> str:
     return "failed" if comfyui_build_info_required() else "warning"
+
+
+def localai_build_info_pinned(payload: dict[str, Any]) -> bool:
+    upstream_commit = str(payload.get("upstream_commit") or "").strip().lower()
+    upstream_image = str(payload.get("upstream_image") or "").strip().lower()
+    return (
+        payload.get("status") == "ok"
+        and payload.get("runtime") == "localai"
+        and payload.get("action") == "build-info"
+        and payload.get("upstream") == "localai/localai"
+        and payload.get("pinned") is True
+        and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
+        and re.fullmatch(r".+@sha256:[0-9a-f]{64}", upstream_image) is not None
+    )
 
 
 def comfyui_build_info_pinned(payload: dict[str, Any]) -> bool:
@@ -7579,6 +7609,44 @@ def comfyui_build_info_pinned(payload: dict[str, Any]) -> bool:
         and re.fullmatch(r"[0-9a-f]{40}", upstream_commit) is not None
         and re.fullmatch(r"[0-9a-f]{64}", source_archive_sha256) is not None
     )
+
+
+def localai_status_payload_ok(payload: dict[str, Any]) -> bool:
+    if payload.get("status") != "ok" or payload.get("runtime") != "localai" or payload.get("action") != "status":
+        return False
+    guardrails = payload.get("guardrails")
+    model_probe = payload.get("model_probe")
+    build_info = payload.get("build_info")
+    capabilities = payload.get("capabilities")
+    if not isinstance(guardrails, dict) or not isinstance(model_probe, dict):
+        return False
+    if guardrails.get("status") != "ok":
+        return False
+    if guardrails.get("max_active_backends") != 1:
+        return False
+    if guardrails.get("watchdog_idle") is not True or guardrails.get("force_eviction_when_busy") is not False:
+        return False
+    blockers = guardrails.get("blockers")
+    if not isinstance(blockers, list) or blockers:
+        return False
+    if model_probe.get("status") not in {"ok", "unconfigured"}:
+        return False
+    if "model_count" not in model_probe:
+        return False
+    model_count = model_probe.get("model_count")
+    if model_count is not None and (not isinstance(model_count, int) or model_count < 0):
+        return False
+    if any(key in model_probe for key in ("data", "models")):
+        return False
+    if not isinstance(build_info, dict) or not localai_build_info_pinned(build_info):
+        return False
+    if not isinstance(capabilities, dict):
+        return False
+    actions = capabilities.get("actions")
+    if not isinstance(actions, list):
+        return False
+    action_names = {item for item in actions if isinstance(item, str)}
+    return {"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(action_names)
 
 
 def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
@@ -7615,6 +7683,110 @@ def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
         return False
     action_names = {item for item in actions if isinstance(item, str)}
     return {"status", "load", "warm", "smoke", "unload", "build-info"}.issubset(action_names)
+
+
+async def self_test_localai_build_info() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "localai" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:localai-build-info",
+            "ok",
+            "LocalAI is not required by the production runtime policy",
+            {"required": False, "runtime": "localai"},
+        )
+    url = f"{settings.localai_url.rstrip('/')}/b1/runtime/build-info"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:localai-build-info",
+            localai_build_info_failure_status(),
+            f"LocalAI build-info hook is unreachable: {exc.__class__.__name__}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:localai-build-info",
+            localai_build_info_failure_status(),
+            f"LocalAI build-info hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:localai-build-info",
+            localai_build_info_failure_status(),
+            f"LocalAI build-info hook returned HTTP {response.status_code}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and localai_build_info_pinned(payload):
+        return selftest_policy.check(
+            "runtime:localai-build-info",
+            "ok",
+            "LocalAI runtime reports pinned B1 wrapper metadata",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "build_info": payload},
+        )
+    return selftest_policy.check(
+        "runtime:localai-build-info",
+        localai_build_info_failure_status(),
+        "LocalAI build-info hook did not report pinned upstream commit and image digest metadata",
+        {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "build_info": payload},
+    )
+
+
+async def self_test_localai_status() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "localai" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:localai-status",
+            "ok",
+            "LocalAI is not required by the production runtime policy",
+            {"required": False, "runtime": "localai"},
+        )
+    url = f"{settings.localai_url.rstrip('/')}/b1/runtime/status"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:localai-status",
+            localai_build_info_failure_status(),
+            f"LocalAI status hook is unreachable: {exc.__class__.__name__}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:localai-status",
+            localai_build_info_failure_status(),
+            f"LocalAI status hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:localai-status",
+            localai_build_info_failure_status(),
+            f"LocalAI status hook returned HTTP {response.status_code}",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and localai_status_payload_ok(payload):
+        return selftest_policy.check(
+            "runtime:localai-status",
+            "ok",
+            "LocalAI runtime reports one-backend guardrails, redacted model-count probing, and lifecycle capability status",
+            {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "status": payload},
+        )
+    return selftest_policy.check(
+        "runtime:localai-status",
+        localai_build_info_failure_status(),
+        "LocalAI status hook did not report required one-backend guardrails, redacted model-count probing, lifecycle capabilities, and pinned build metadata",
+        {"required": localai_build_info_required(), "runtime": "localai", "url": url, "http_status": response.status_code, "status": payload},
+    )
 
 
 async def self_test_comfyui_build_info() -> dict[str, Any]:
@@ -7780,6 +7952,8 @@ async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]
         self_test_tls_routing(),
         self_test_tiny_inference(subject_id),
         self_test_runtime_unload(),
+        self_test_localai_build_info(),
+        self_test_localai_status(),
         self_test_comfyui_build_info(),
         self_test_comfyui_status(),
         self_test_artifact_delivery(),
