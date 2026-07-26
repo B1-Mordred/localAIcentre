@@ -31,7 +31,12 @@ class PrepareEnvTests(unittest.TestCase):
             template = root / ".env.production.example"
             output = root / ".env"
             socket_path = root / "docker.sock"
-            template.write_text("COMPOSE_FILE=compose.yaml\nB1_DOCKER_GID=0\n", encoding="utf-8")
+            template.write_text(
+                "COMPOSE_FILE=compose.yaml\n"
+                "B1_EXPECTED_TARGET_HOST=old.example\n"
+                "B1_DOCKER_GID=0\n",
+                encoding="utf-8",
+            )
             sock = self.unix_socket(socket_path)
             self.addCleanup(sock.close)
 
@@ -39,13 +44,22 @@ class PrepareEnvTests(unittest.TestCase):
                 template=template,
                 output=output,
                 docker_socket=socket_path,
+                expected_target_host="AI.B1.GERMERING.",
             )
 
             gid = os.stat(socket_path).st_gid
+            content = output.read_text(encoding="utf-8")
             self.assertTrue(result["created"])
             self.assertEqual(result["docker_socket_gid"], gid)
+            self.assertEqual(result["expected_target_host"], "ai.b1.germering")
+            self.assertEqual(result["network_property_source"], "host-dhcp-client")
+            self.assertFalse(result["b1_static_ip_configures"])
             self.assertIn("B1_DOCKER_GID", result["updated_keys"])
-            self.assertIn(f"B1_DOCKER_GID={gid}", output.read_text(encoding="utf-8"))
+            self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", content)
+            self.assertIn(f"B1_DOCKER_GID={gid}", content)
+            self.assertNotIn("B1_STATIC_IP", content)
+            self.assertNotIn("B1_GATEWAY", content)
+            self.assertNotIn("B1_DNS_SERVERS", content)
             self.assertEqual(output.stat().st_mode & 0o777, 0o640)
 
     def test_prepare_updates_existing_env_preserving_unmanaged_values(self) -> None:
@@ -68,6 +82,7 @@ class PrepareEnvTests(unittest.TestCase):
                 template=template,
                 output=output,
                 docker_socket=socket_path,
+                expected_target_host="ai.b1.germering",
                 update_existing=True,
             )
 
@@ -155,6 +170,21 @@ class PrepareEnvTests(unittest.TestCase):
 
             with self.assertRaisesRegex(prepare_env.PrepareEnvError, "not a Unix socket"):
                 prepare_env.docker_socket_gid(regular_file)
+
+    def test_expected_target_host_must_be_hostname_not_network_property(self) -> None:
+        invalid_values = {
+            "192.168.2.100": "not an IP address",
+            "https://ai.b1.germering": "without scheme",
+            "ai.b1.germering:443": "without scheme, path, or port",
+            "bad_host": "invalid hostname labels",
+        }
+        for value, message in invalid_values.items():
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(prepare_env.PrepareEnvError, message):
+                    prepare_env.normalize_expected_target_host(value)
+
+        self.assertEqual(prepare_env.normalize_expected_target_host("AI.B1.GERMERING."), "ai.b1.germering")
+        self.assertEqual(prepare_env.normalize_expected_target_host("ai"), "ai")
 
     def test_prepared_production_template_is_shell_sourceable_for_preflights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -41,7 +41,7 @@ B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runt
 .PHONY: prepare-production-env bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
-	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --update-existing
+	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --expected-target-host "$(B1_EXPECTED_TARGET_HOST)" --update-existing
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"

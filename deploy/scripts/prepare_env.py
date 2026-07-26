@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -14,6 +16,7 @@ class PrepareEnvError(RuntimeError):
 
 
 NORMALIZED_LIST_KEYS = {"B1_RUNTIME_PRODUCTION_REQUIRED"}
+HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 def docker_socket_gid(path: Path) -> int:
@@ -32,6 +35,24 @@ def normalize_env_value(key: str, value: str) -> str:
         if items:
             return ",".join(items)
     return value
+
+
+def normalize_expected_target_host(value: str) -> str:
+    raw = value.strip().lower().rstrip(".")
+    if not raw:
+        raise PrepareEnvError("expected target host must not be empty")
+    if "://" in raw or "/" in raw or ":" in raw:
+        raise PrepareEnvError("expected target host must be a hostname or FQDN without scheme, path, or port")
+    try:
+        ipaddress.ip_address(raw)
+    except ValueError:
+        pass
+    else:
+        raise PrepareEnvError("expected target host must be a system hostname/FQDN, not an IP address")
+    labels = raw.split(".")
+    if not all(HOST_LABEL_RE.fullmatch(label) for label in labels):
+        raise PrepareEnvError("expected target host contains invalid hostname labels")
+    return raw
 
 
 def render_env(source: str, values: dict[str, str]) -> tuple[str, list[str]]:
@@ -103,6 +124,7 @@ def prepare_production_env(
     template: Path,
     output: Path,
     docker_socket: Path,
+    expected_target_host: str | None = None,
     update_existing: bool = False,
 ) -> dict[str, Any]:
     template = template.resolve(strict=True)
@@ -113,7 +135,12 @@ def prepare_production_env(
     existing = output.exists()
     source_path = output if existing and update_existing else template
     source = source_path.read_text(encoding="utf-8")
-    rendered, updated = render_env(source, {"B1_DOCKER_GID": str(gid)})
+    values = {"B1_DOCKER_GID": str(gid)}
+    normalized_target_host = None
+    if expected_target_host is not None:
+        normalized_target_host = normalize_expected_target_host(expected_target_host)
+        values["B1_EXPECTED_TARGET_HOST"] = normalized_target_host
+    rendered, updated = render_env(source, values)
     write_private_text(output, rendered)
     return {
         "output": str(output),
@@ -122,6 +149,9 @@ def prepare_production_env(
         "updated_keys": sorted(set(updated)),
         "docker_socket": str(docker_socket),
         "docker_socket_gid": gid,
+        "expected_target_host": normalized_target_host,
+        "network_property_source": "host-dhcp-client",
+        "b1_static_ip_configures": False,
     }
 
 
@@ -130,18 +160,29 @@ def main() -> None:
     parser.add_argument("--template", default=".env.production.example", help="Production env template to read.")
     parser.add_argument("--output", default=".env", help="Env file to create or update.")
     parser.add_argument("--docker-socket", default="/var/run/docker.sock", help="Host Docker socket used to derive B1_DOCKER_GID.")
+    parser.add_argument(
+        "--expected-target-host",
+        default=os.getenv("B1_EXPECTED_TARGET_HOST"),
+        help="System hostname/FQDN expected in migration and cutover evidence. IP/gateway/DNS properties remain DHCP-owned.",
+    )
     parser.add_argument("--update-existing", action="store_true", help="Update managed keys in an existing output file.")
     args = parser.parse_args()
     result = prepare_production_env(
         template=Path(args.template),
         output=Path(args.output),
         docker_socket=Path(args.docker_socket),
+        expected_target_host=args.expected_target_host,
         update_existing=args.update_existing,
     )
     action = "created" if result["created"] else "updated"
     keys = ", ".join(result["updated_keys"])
     print(f"{action} {result['output']}")
     print(f"set {keys} from {result['docker_socket']} gid {result['docker_socket_gid']}")
+    if result["expected_target_host"]:
+        print(
+            f"target hostname evidence expects {result['expected_target_host']}; "
+            "host IP/gateway/resolver properties remain acquired by DHCP"
+        )
 
 
 if __name__ == "__main__":
