@@ -183,7 +183,7 @@ class CiQualityGateTests(unittest.TestCase):
             operator_target.index("$(MAKE) live-smoke-acceptance"),
         )
         self.assertIn("reviewed backup/migration/rollback artifacts", self.makefile_text)
-        self.assertIn("restart-reconciliation drill state documented in tests/.", self.makefile_text)
+        self.assertIn("restart-reconciliation target self-seeds a bounded drill by default.", self.makefile_text)
 
     def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:
         target_start = self.makefile_text.index("quality:")

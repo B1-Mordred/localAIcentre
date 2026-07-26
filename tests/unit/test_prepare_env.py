@@ -377,7 +377,7 @@ class PrepareEnvTests(unittest.TestCase):
                     "-c",
                     'set -euo pipefail; set -a; . "$1"; set +a; '
                     'test "$B1_DOCKER_GID" = "$2"; '
-                    'test "$B1_RUNTIME_PRODUCTION_REQUIRED" = "localai,comfyui,audio-cpu,voicebox"',
+                    'test "$B1_RUNTIME_PRODUCTION_REQUIRED" = "localai,comfyui,audio-cpu"',
                     "bash",
                     str(output),
                     str(os.stat(socket_path).st_gid),
