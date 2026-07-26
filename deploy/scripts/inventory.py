@@ -583,11 +583,17 @@ def dns_admin_url_evidence() -> dict[str, Any]:
         warnings.append("DNS admin URL must not include credentials")
     if parsed.query or parsed.fragment:
         warnings.append("DNS admin URL must not include query strings or fragments")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        port = None
+        warnings.append(f"DNS admin URL has an invalid port: {exc}")
     return {
         "configured": not warnings,
         "url": raw[:500],
         "scheme": parsed.scheme,
         "host": parsed.hostname or "",
+        "port": port,
         "warnings": warnings,
     }
 

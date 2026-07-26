@@ -2842,34 +2842,56 @@ def native_comfyui_resolution() -> RuntimeResolution:
 
 
 COMFYUI_MODEL_FREE_SMOKE_CLASS_TYPES = frozenset({"B1RuntimeSmoke", "B1RuntimeTinyImage", "SaveImage", "PreviewImage"})
+COMFYUI_MODEL_FREE_STOCK_IO_CLASS_TYPES = frozenset({"LoadImage", "SaveImage", "PreviewImage"})
+COMFYUI_MODEL_FREE_OUTPUT_CLASS_TYPES = frozenset({"SaveImage", "PreviewImage"})
 
 
-def comfyui_native_prompt_is_model_free_smoke(payload: Any) -> bool:
+def comfyui_native_prompt_class_types(payload: Any) -> set[str] | None:
     if not isinstance(payload, dict):
-        return False
+        return None
     prompt = payload.get("prompt")
     if not isinstance(prompt, dict) or not prompt:
-        return False
+        return None
     class_types: set[str] = set()
     for node in prompt.values():
         if not isinstance(node, dict):
-            return False
+            return None
         class_type = node.get("class_type")
         if not isinstance(class_type, str) or not class_type.strip():
-            return False
+            return None
         class_types.add(class_type.strip())
-    return "B1RuntimeTinyImage" in class_types and class_types.issubset(COMFYUI_MODEL_FREE_SMOKE_CLASS_TYPES)
+    return class_types
 
 
-def native_comfyui_prompt_resolution(*, model_free_smoke: bool = False) -> RuntimeResolution:
-    if not model_free_smoke:
+def comfyui_native_prompt_model_free_kind(payload: Any) -> str | None:
+    class_types = comfyui_native_prompt_class_types(payload)
+    if not class_types:
+        return None
+    if "B1RuntimeTinyImage" in class_types and class_types.issubset(COMFYUI_MODEL_FREE_SMOKE_CLASS_TYPES):
+        return "model-free-smoke"
+    if (
+        "LoadImage" in class_types
+        and class_types.intersection(COMFYUI_MODEL_FREE_OUTPUT_CLASS_TYPES)
+        and class_types.issubset(COMFYUI_MODEL_FREE_STOCK_IO_CLASS_TYPES)
+    ):
+        return "model-free-stock-io"
+    return None
+
+
+def comfyui_native_prompt_is_model_free_smoke(payload: Any) -> bool:
+    return comfyui_native_prompt_model_free_kind(payload) == "model-free-smoke"
+
+
+def native_comfyui_prompt_resolution(*, model_free_smoke: bool = False, model_free_kind: str | None = None) -> RuntimeResolution:
+    kind = "model-free-smoke" if model_free_smoke else model_free_kind
+    if kind not in {"model-free-smoke", "model-free-stock-io"}:
         return native_comfyui_resolution()
     resolution = native_comfyui_resolution()
     return RuntimeResolution(
         **{
             **asdict(resolution),
-            "model_version": "model-free-smoke",
-            "resolved_model_version": "comfyui-native-workflow@model-free-smoke",
+            "model_version": kind,
+            "resolved_model_version": f"comfyui-native-workflow@{kind}",
             "requires_gpu": False,
             "resource_label": "recommended",
         }
@@ -3840,9 +3862,14 @@ def comfyui_native_job_payload(
     prompt_summary: dict[str, Any],
     *,
     model_free_smoke: bool = False,
+    model_free_kind: str | None = None,
 ) -> MediaJobCreate:
+    kind = "model-free-smoke" if model_free_smoke else model_free_kind
     input_payload = {"client_id": client_id, "native_prompt_hash": native_prompt_hash, "prompt_summary": prompt_summary}
-    if model_free_smoke:
+    if kind in {"model-free-smoke", "model-free-stock-io"}:
+        input_payload["model_free_native"] = True
+        input_payload["model_free_kind"] = kind
+    if kind == "model-free-smoke":
         input_payload["model_free_smoke"] = True
     return MediaJobCreate(
         modality="workflow",
@@ -11453,13 +11480,18 @@ async def comfy_prompt(request: Request, idempotency_key: str | None = Header(de
         raise HTTPException(status_code=400, detail="ComfyUI prompt body must be valid JSON") from exc
     client_id = body.get("client_id") if isinstance(body, dict) and isinstance(body.get("client_id"), str) else None
     prompt_summary = comfyui_native_prompt_audit_summary(body)
-    model_free_smoke = comfyui_native_prompt_is_model_free_smoke(body)
+    model_free_kind = comfyui_native_prompt_model_free_kind(body)
+    model_free_native = model_free_kind is not None
+    model_free_smoke = model_free_kind == "model-free-smoke"
+    if model_free_native:
+        prompt_summary["model_free_native"] = True
+        prompt_summary["model_free_kind"] = model_free_kind
     if model_free_smoke:
         prompt_summary["model_free_smoke"] = True
     native_prompt_hash = hashlib.sha256(body_bytes).hexdigest()
     owner = auth.subject_id if auth is not None else (f"comfy-client:{client_id[:80]}" if client_id else "comfy-client")
-    resolution = native_comfyui_prompt_resolution(model_free_smoke=model_free_smoke)
-    job_payload = comfyui_native_job_payload(client_id, native_prompt_hash, prompt_summary, model_free_smoke=model_free_smoke)
+    resolution = native_comfyui_prompt_resolution(model_free_kind=model_free_kind)
+    job_payload = comfyui_native_job_payload(client_id, native_prompt_hash, prompt_summary, model_free_kind=model_free_kind)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(owner, normalized_idempotency_key)
@@ -11481,7 +11513,7 @@ async def comfy_prompt(request: Request, idempotency_key: str | None = Header(de
     try:
         lease_owner, _ = await acquire_comfyui_prompt_lease(job_id)
         load_started = monotonic()
-        if not model_free_smoke:
+        if not model_free_native:
             await prepare_comfyui_native_runtime(job)
             runtime_prepared = True
         await database.update_job(job_id, load_time_ms=elapsed_milliseconds(load_started))

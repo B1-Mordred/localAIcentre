@@ -109,6 +109,22 @@ class InventoryTests(unittest.TestCase):
             {"ai.b1.germering": ["192.168.2.100"]},
         )
         self.assertEqual(cutover_records["ai.b1.germering"], ["192.168.2.100"])
+        original_dns_admin_url = os.environ.get("B1_DNS_ADMIN_URL")
+        try:
+            os.environ["B1_DNS_ADMIN_URL"] = "http://technitium.b1.germering:5380"
+            dns_admin = inventory.dns_admin_url_evidence()
+            self.assertTrue(dns_admin["configured"])
+            self.assertEqual(dns_admin["host"], "technitium.b1.germering")
+            self.assertEqual(dns_admin["port"], 5380)
+            os.environ["B1_DNS_ADMIN_URL"] = "http://technitium.b1.germering:bad"
+            invalid_dns_admin = inventory.dns_admin_url_evidence()
+            self.assertFalse(invalid_dns_admin["configured"])
+            self.assertIn("invalid port", " ".join(invalid_dns_admin["warnings"]))
+        finally:
+            if original_dns_admin_url is None:
+                os.environ.pop("B1_DNS_ADMIN_URL", None)
+            else:
+                os.environ["B1_DNS_ADMIN_URL"] = original_dns_admin_url
         interfaces = inventory.summarize_ip_interfaces(
             [
                 {
@@ -403,7 +419,7 @@ class InventoryTests(unittest.TestCase):
             self.patch_attr("read_resolv_conf", lambda: {"path": "/etc/resolv.conf", "exists": True, "lines": ["nameserver 192.168.2.1"]})
             self.patch_attr("default_model_path_candidates", lambda b1_root: [b1_root / "models"])
             original_dns_admin_url = os.environ.get("B1_DNS_ADMIN_URL")
-            os.environ["B1_DNS_ADMIN_URL"] = "http://technitium.b1.germering"
+            os.environ["B1_DNS_ADMIN_URL"] = "http://technitium.b1.germering:5380"
             self.addCleanup(
                 lambda: os.environ.pop("B1_DNS_ADMIN_URL", None)
                 if original_dns_admin_url is None
@@ -480,6 +496,7 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("fd9b:4afc:bb00:1::100", report["host"]["dns"]["records_all_sources"]["ai.b1.germering"])
         self.assertEqual(report["host"]["dns"]["records_by_source"]["getent_hosts"]["ai.b1.germering"], ["fd9b:4afc:bb00:1::100"])
         self.assertEqual(report["host"]["dns"]["dns_admin"]["host"], "technitium.b1.germering")
+        self.assertEqual(report["host"]["dns"]["dns_admin"]["port"], 5380)
         self.assertEqual(report["host"]["network"]["interfaces"][0]["ifname"], "eno1")
         self.assertEqual(report["host"]["network"]["default_routes"][0]["protocol"], "dhcp")
         self.assertEqual(report["migration_readiness"]["target_identity"]["hostname_authority"], "b1-appliance-config")
