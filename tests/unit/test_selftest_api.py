@@ -240,10 +240,18 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(calls[1]["owner_id"], "admin_1")
 
     def test_artifact_delivery_probe_uses_range_and_cleans_temp_file(self) -> None:
+        expected_sha256 = main.hashlib.sha256(main.ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD).hexdigest()
+        expected_etag = f'"sha256:{expected_sha256}"'
+
         class FakeResponse:
             status_code = 206
             content = b"b1"
-            headers = {"content-range": "bytes 0-1/31", "content-length": "2"}
+            headers = {
+                "content-range": "bytes 0-1/31",
+                "content-length": "2",
+                "etag": expected_etag,
+                "x-checksum-sha256": expected_sha256,
+            }
 
         class FakeAsyncClient:
             def __init__(self, timeout: float, **_: Any) -> None:
@@ -271,9 +279,55 @@ class SelfTestApiTests(unittest.TestCase):
             leftovers = list((artifact_root / "temporary").glob("self-test-*.txt"))
 
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["probe_sha256"], expected_sha256)
+        self.assertEqual(result["data"]["expected_etag"], expected_etag)
+        self.assertEqual(result["data"]["response_etag"], expected_etag)
+        self.assertEqual(result["data"]["response_checksum_sha256"], expected_sha256)
+        self.assertTrue(result["data"]["etag_matches_sha256"])
+        self.assertTrue(result["data"]["checksum_matches_sha256"])
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Range"], "bytes=0-1")  # type: ignore[attr-defined]
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer service-token")  # type: ignore[attr-defined]
         self.assertEqual(leftovers, [])
+
+    def test_artifact_delivery_probe_rejects_checksum_mismatch(self) -> None:
+        expected_sha256 = main.hashlib.sha256(main.ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD).hexdigest()
+        expected_etag = f'"sha256:{expected_sha256}"'
+
+        class FakeResponse:
+            status_code = 206
+            content = b"b1"
+            headers = {
+                "content-range": "bytes 0-1/31",
+                "content-length": "2",
+                "etag": expected_etag,
+                "x-checksum-sha256": "0" * 64,
+            }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, **_: Any) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, artifact_base_url="http://artifact-server:8000", artifact_server_token="service-token")
+            result = asyncio.run(main.self_test_artifact_delivery())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["etag_matches_sha256"])
+        self.assertFalse(result["data"]["checksum_matches_sha256"])
+        self.assertEqual(result["data"]["response_checksum_sha256"], "0" * 64)
 
     def test_artifact_delivery_probe_fails_closed_without_internal_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

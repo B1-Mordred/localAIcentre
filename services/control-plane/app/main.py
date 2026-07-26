@@ -7180,6 +7180,7 @@ def self_test_tls_verify_value() -> bool | str:
 
 
 SELF_TEST_PUBLIC_HOST_KEYS = ("chat", "control", "media", "comfy", "voice", "models", "api")
+ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD = b"b1 artifact delivery self-test\n"
 CADDY_CA_DOWNLOAD_FILENAME = "b1-ai-hub-caddy-root.crt"
 CADDY_CA_MAX_BYTES = 1024 * 1024
 
@@ -7531,7 +7532,9 @@ async def self_test_artifact_delivery() -> dict[str, Any]:
     artifact_root = Path(settings.artifact_root)
     relative_path = f"temporary/self-test-{uuid.uuid4().hex}.txt"
     target = artifact_root / relative_path
-    payload = b"b1 artifact delivery self-test\n"
+    payload = ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    expected_etag = f'"sha256:{payload_sha256}"'
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
@@ -7551,15 +7554,29 @@ async def self_test_artifact_delivery() -> dict[str, Any]:
     finally:
         with suppress(FileNotFoundError, OSError):
             target.unlink()
-    ok = response.status_code == 206 and response.content == payload[:2]
+    response_etag = response.headers.get("etag")
+    response_checksum = response.headers.get("x-checksum-sha256")
+    content_range = response.headers.get("content-range")
+    content_length = response.headers.get("content-length")
+    etag_matches = response_etag == expected_etag
+    checksum_matches = response_checksum == payload_sha256
+    ok = response.status_code == 206 and response.content == payload[:2] and etag_matches and checksum_matches
     return selftest_policy.check(
         "artifact:delivery",
         "ok" if ok else "failed",
-        "artifact-server range delivery completed" if ok else "artifact-server range delivery returned an unexpected response",
+        "artifact-server range delivery and checksum contract completed"
+        if ok
+        else "artifact-server range delivery returned an unexpected response or checksum metadata",
         {
             "http_status": response.status_code,
-            "content_range": response.headers.get("content-range"),
-            "content_length": response.headers.get("content-length"),
+            "content_range": content_range,
+            "content_length": content_length,
+            "probe_sha256": payload_sha256,
+            "expected_etag": expected_etag,
+            "response_etag": response_etag,
+            "response_checksum_sha256": response_checksum,
+            "etag_matches_sha256": etag_matches,
+            "checksum_matches_sha256": checksum_matches,
         },
     )
 
