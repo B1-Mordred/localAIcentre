@@ -15,7 +15,10 @@ class MigrationPackagingTests(unittest.TestCase):
     def test_control_plane_image_runs_migration_wrapper(self) -> None:
         dockerfile = (CONTROL_PLANE_ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn('CMD ["python", "-m", "app.run"]', dockerfile)
-        self.assertIn("postgresql-client", dockerfile)
+        self.assertIn("FROM postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3 AS postgres-client", dockerfile)
+        self.assertIn("COPY --from=postgres-client /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump", dockerfile)
+        self.assertIn("pg_dump (PostgreSQL) 17.6", dockerfile)
+        self.assertNotIn("postgresql-client \\", dockerfile)
         self.assertIn("alembic==1.16.4", (CONTROL_PLANE_ROOT / "requirements.txt").read_text(encoding="utf-8"))
         self.assertTrue((APP_ROOT / "alembic" / "script.py.mako").is_file())
 
