@@ -1666,6 +1666,11 @@ class ModelAdminApiTests(unittest.TestCase):
 
         self.assertEqual(coverage["status"], "ok")
         self.assertEqual(coverage["missing_aliases"], [])
+        self.assertEqual(coverage["ready_count"], 7)
+        self.assertEqual(coverage["blocked_count"], 0)
+        self.assertEqual(coverage["next_actions"], [])
+        self.assertEqual(coverage["blocker_summary"], [])
+        self.assertTrue(coverage["handoff_plan"]["ready"])
         gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
         self.assertEqual(gpu_group["status"], "ok")
         chat = next(item for item in gpu_group["measurements"] if item["alias"] == "chat-default")
@@ -1706,6 +1711,15 @@ class ModelAdminApiTests(unittest.TestCase):
         gpu_group = next(group for group in coverage["groups"] if group["id"] == "gpu_acceptance")
         image = next(item for item in gpu_group["measurements"] if item["alias"] == "image-default")
         self.assertIn("no persisted ok model smoke measurement exists", image["blockers"])
+        self.assertEqual(coverage["blocked_count"], 7)
+        actions_by_alias = {item["alias"]: item for item in coverage["next_actions"]}
+        self.assertIn("chat-default", actions_by_alias)
+        self.assertIn("Select or install a localai-compatible model", actions_by_alias["chat-default"]["action"])
+        self.assertIn("image-default", actions_by_alias)
+        self.assertIn("Run the Control Center model smoke action", actions_by_alias["image-default"]["action"])
+        summary = {item["blocker"]: item["aliases"] for item in coverage["blocker_summary"]}
+        self.assertIn("no persisted ok model smoke measurement exists", summary)
+        self.assertIn("image-default", summary["no persisted ok model smoke measurement exists"])
 
     def test_admin_models_includes_acceptance_measurement_coverage(self) -> None:
         manifest = measured_manifest_payload("chat-default", "localai")

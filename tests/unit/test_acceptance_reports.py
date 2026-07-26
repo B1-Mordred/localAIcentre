@@ -2705,6 +2705,41 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("database model-smoke coverage is missing aliases: image-default", blockers)
         self.assertIn("database model-smoke coverage RTX 3060 GPU acceptance/image-default", blockers)
         self.assertIn("no persisted ok model smoke measurement exists", blockers)
+        self.assertEqual(report["model_measurement_coverage"]["blocked_count"], 1)
+        self.assertEqual(report["model_measurement_coverage"]["next_actions"], [])
+
+    def test_report_preserves_database_model_smoke_handoff_plan(self) -> None:
+        coverage = sample_model_measurement_coverage()
+        coverage["status"] = "incomplete"
+        coverage["missing_aliases"] = ["image-default"]
+        coverage["ready_aliases"] = ["chat-default", "tts-quality", "tts-fast", "stt-default", "image-edit", "video-text"]
+        coverage["ready_count"] = 6
+        coverage["blocked_count"] = 1
+        coverage["blocker_summary"] = [
+            {"blocker": "no persisted ok model smoke measurement exists", "aliases": ["image-default"], "count": 1}
+        ]
+        coverage["next_actions"] = [
+            {
+                "suite": "gpu_acceptance",
+                "suite_label": "RTX 3060 GPU acceptance",
+                "alias": "image-default",
+                "expected_runtime": "comfyui",
+                "status": "installed",
+                "resolved_model_version": "b1-image-default@1.0.0",
+                "blockers": ["no persisted ok model smoke measurement exists"],
+                "action": "Run the Control Center model smoke action for b1-image-default@1.0.0 and persist an ok measurement before live acceptance.",
+            }
+        ]
+
+        report = sample_report(model_measurement_coverage=coverage)
+        rendered = acceptance.markdown_report(report)
+
+        plan = report["model_measurement_coverage"]["handoff_plan"]
+        self.assertFalse(plan["ready"])
+        self.assertEqual(plan["blocked_aliases"], ["image-default"])
+        self.assertEqual(plan["next_actions"][0]["alias"], "image-default")
+        self.assertIn("Model-Smoke Coverage", rendered)
+        self.assertIn("Run the Control Center model smoke action", rendered)
 
     def test_report_blocks_handoff_without_deployment_image_evidence(self) -> None:
         report = sample_report(deployment={"services": []}, recent_updates=[])

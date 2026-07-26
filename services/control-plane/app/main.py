@@ -4916,6 +4916,66 @@ def model_measurement_coverage_for_alias(
     }
 
 
+def model_measurement_next_action(entry: dict[str, Any]) -> str:
+    alias = str(entry.get("alias") or "the alias")
+    expected_runtime = str(entry.get("expected_runtime") or "").strip()
+    resolved = str(entry.get("resolved_model_version") or "").strip()
+    blockers = [str(item) for item in entry.get("blockers") or []]
+    blocker_text = " | ".join(blockers)
+    if "is not present" in blocker_text:
+        return f"Restore the seeded catalog/profile entry for {alias}, then choose a compatible model manifest."
+    if "alias is not backed by an installed model manifest" in blocker_text:
+        return f"Install a compatible model manifest for {alias} from the catalog, upload, or Model Hub, then rerun model smoke."
+    if "lacks resolved immutable model evidence" in blocker_text or "resolved model is absent" in blocker_text:
+        return f"Repair or reinstall {alias} so it resolves to an installed immutable model record."
+    if "measurement runtime" in blocker_text:
+        runtime_label = expected_runtime or "the expected runtime"
+        return f"Select or install a {runtime_label}-compatible model for {alias}, then persist a new ok model-smoke run."
+    if "no persisted ok model smoke measurement exists" in blocker_text:
+        target = resolved or alias
+        return f"Run the Control Center model smoke action for {target} and persist an ok measurement before live acceptance."
+    return f"Resolve the listed blockers for {alias}, then rerun model smoke."
+
+
+def model_measurement_handoff_plan(groups: list[dict[str, Any]], required_aliases: set[str], missing_aliases: set[str]) -> dict[str, Any]:
+    blocker_aliases: dict[str, set[str]] = {}
+    next_actions: list[dict[str, Any]] = []
+    for group in groups:
+        group_id = str(group.get("id") or "")
+        group_label = str(group.get("label") or group_id)
+        for entry in group.get("measurements") or []:
+            if not isinstance(entry, dict) or entry.get("ready") is True:
+                continue
+            alias = str(entry.get("alias") or "")
+            blockers = [str(item) for item in entry.get("blockers") or [] if str(item).strip()]
+            for blocker in blockers:
+                blocker_aliases.setdefault(blocker, set()).add(alias)
+            next_actions.append(
+                {
+                    "suite": group_id,
+                    "suite_label": group_label,
+                    "alias": alias,
+                    "expected_runtime": entry.get("expected_runtime"),
+                    "status": entry.get("status"),
+                    "resolved_model_version": entry.get("resolved_model_version") or "",
+                    "blockers": blockers,
+                    "action": model_measurement_next_action(entry),
+                }
+            )
+    return {
+        "ready": not missing_aliases,
+        "ready_aliases": sorted(required_aliases - missing_aliases),
+        "blocked_aliases": sorted(missing_aliases),
+        "ready_count": len(required_aliases - missing_aliases),
+        "blocked_count": len(missing_aliases),
+        "next_actions": next_actions,
+        "blocker_summary": [
+            {"blocker": blocker, "aliases": sorted(aliases), "count": len(aliases)}
+            for blocker, aliases in sorted(blocker_aliases.items(), key=lambda item: (len(item[1]), item[0]), reverse=True)
+        ],
+    }
+
+
 def acceptance_model_measurement_coverage(aliases: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
     aliases_by_id = {str(item.get("id")): item for item in aliases if isinstance(item, dict) and item.get("id")}
     records_by_ref = {
@@ -4945,10 +5005,17 @@ def acceptance_model_measurement_coverage(aliases: list[dict[str, Any]], records
                 "measurements": entries,
             }
         )
+    handoff_plan = model_measurement_handoff_plan(groups, all_required_aliases, all_missing_aliases)
     return {
         "status": "ok" if not all_missing_aliases else "incomplete",
         "required_aliases": sorted(all_required_aliases),
         "missing_aliases": sorted(all_missing_aliases),
+        "handoff_plan": handoff_plan,
+        "next_actions": handoff_plan["next_actions"],
+        "blocker_summary": handoff_plan["blocker_summary"],
+        "ready_aliases": handoff_plan["ready_aliases"],
+        "ready_count": handoff_plan["ready_count"],
+        "blocked_count": handoff_plan["blocked_count"],
         "groups": groups,
     }
 
@@ -4961,6 +5028,20 @@ async def acceptance_model_measurement_coverage_snapshot() -> dict[str, Any]:
             "status": "unavailable",
             "required_aliases": [],
             "missing_aliases": [],
+            "handoff_plan": {
+                "ready": False,
+                "ready_aliases": [],
+                "blocked_aliases": [],
+                "ready_count": 0,
+                "blocked_count": 0,
+                "next_actions": [],
+                "blocker_summary": [],
+            },
+            "next_actions": [],
+            "blocker_summary": [],
+            "ready_aliases": [],
+            "ready_count": 0,
+            "blocked_count": 0,
             "groups": [],
             "reason": str(exc),
         }

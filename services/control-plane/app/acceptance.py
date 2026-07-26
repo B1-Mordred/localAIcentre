@@ -3860,9 +3860,50 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
             "status": "unavailable",
             "required_aliases": [],
             "missing_aliases": [],
+            "ready_aliases": [],
+            "ready_count": 0,
+            "blocked_count": 0,
+            "handoff_plan": {
+                "ready": False,
+                "ready_aliases": [],
+                "blocked_aliases": [],
+                "ready_count": 0,
+                "blocked_count": 0,
+                "next_actions": [],
+                "blocker_summary": [],
+            },
+            "next_actions": [],
+            "blocker_summary": [],
             "groups": [],
             "reason": "not supplied",
         }
+    next_actions: list[dict[str, Any]] = []
+    for action in coverage.get("next_actions") or []:
+        if not isinstance(action, dict):
+            continue
+        next_actions.append(
+            {
+                "suite": str(action.get("suite") or ""),
+                "suite_label": str(action.get("suite_label") or action.get("suite") or ""),
+                "alias": str(action.get("alias") or ""),
+                "expected_runtime": str(action.get("expected_runtime") or ""),
+                "status": str(action.get("status") or ""),
+                "resolved_model_version": str(action.get("resolved_model_version") or ""),
+                "blockers": _as_string_list(action.get("blockers")),
+                "action": str(action.get("action") or ""),
+            }
+        )
+    blocker_summary: list[dict[str, Any]] = []
+    for item in coverage.get("blocker_summary") or []:
+        if not isinstance(item, dict):
+            continue
+        blocker_summary.append(
+            {
+                "blocker": str(item.get("blocker") or ""),
+                "aliases": _as_string_list(item.get("aliases")),
+                "count": _positive_int(item.get("count")) or len(_as_string_list(item.get("aliases"))),
+            }
+        )
     groups: list[dict[str, Any]] = []
     for group in coverage.get("groups") or []:
         if not isinstance(group, dict):
@@ -3890,6 +3931,20 @@ def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> di
         "status": str(coverage.get("status") or "unknown"),
         "required_aliases": _as_string_list(coverage.get("required_aliases")),
         "missing_aliases": _as_string_list(coverage.get("missing_aliases")),
+        "ready_aliases": _as_string_list(coverage.get("ready_aliases")),
+        "ready_count": _positive_int(coverage.get("ready_count")) or 0,
+        "blocked_count": _positive_int(coverage.get("blocked_count")) or len(_as_string_list(coverage.get("missing_aliases"))),
+        "handoff_plan": {
+            "ready": coverage.get("status") == "ok",
+            "ready_aliases": _as_string_list(coverage.get("ready_aliases")),
+            "blocked_aliases": _as_string_list(coverage.get("missing_aliases")),
+            "ready_count": _positive_int(coverage.get("ready_count")) or 0,
+            "blocked_count": _positive_int(coverage.get("blocked_count")) or len(_as_string_list(coverage.get("missing_aliases"))),
+            "next_actions": next_actions,
+            "blocker_summary": blocker_summary,
+        },
+        "next_actions": next_actions,
+        "blocker_summary": blocker_summary,
         "groups": groups,
         **({"reason": str(coverage.get("reason"))} if coverage.get("reason") else {}),
     }
@@ -4162,7 +4217,7 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
 
 def _model_measurement_coverage_markdown(coverage: dict[str, Any]) -> str:
     summary_rows = [["Field", "Value"]]
-    for key in ("status", "required_aliases", "missing_aliases", "reason"):
+    for key in ("status", "required_aliases", "ready_aliases", "missing_aliases", "ready_count", "blocked_count", "reason"):
         value = coverage.get(key)
         if isinstance(value, list):
             value = ", ".join(str(item) for item in value) if value else "none"
@@ -4188,11 +4243,27 @@ def _model_measurement_coverage_markdown(coverage: dict[str, Any]) -> str:
                     ", ".join(blockers) if blockers else "none",
                 ]
             )
+    action_rows = [["Suite", "Alias", "Expected Runtime", "Blockers", "Next Action"]]
+    for action in coverage.get("next_actions") or []:
+        if not isinstance(action, dict):
+            continue
+        blockers = _as_string_list(action.get("blockers"))
+        action_rows.append(
+            [
+                _format_value(action.get("suite_label") or action.get("suite")),
+                _format_value(action.get("alias")),
+                _format_value(action.get("expected_runtime")),
+                ", ".join(blockers) if blockers else "none",
+                _format_value(action.get("action")),
+            ]
+        )
     return (
         "## Database Model-Smoke Coverage\n\n"
         + _table(summary_rows)
         + "\n\n"
         + (_table(measurement_rows) if len(measurement_rows) > 1 else "No database model-smoke measurements recorded.")
+        + "\n\n"
+        + (_table(action_rows) if len(action_rows) > 1 else "No model handoff actions remain.")
     )
 
 

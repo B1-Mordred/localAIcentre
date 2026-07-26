@@ -906,10 +906,43 @@ type ModelAcceptanceMeasurementGroup = {
   measurements: ModelAcceptanceMeasurementEntry[];
 };
 
+type ModelAcceptanceNextAction = {
+  suite: string;
+  suite_label?: string;
+  alias: string;
+  expected_runtime?: string | null;
+  status?: string;
+  resolved_model_version?: string;
+  blockers?: string[];
+  action: string;
+};
+
+type ModelAcceptanceBlockerSummary = {
+  blocker: string;
+  aliases: string[];
+  count: number;
+};
+
+type ModelAcceptanceHandoffPlan = {
+  ready: boolean;
+  ready_aliases: string[];
+  blocked_aliases: string[];
+  ready_count: number;
+  blocked_count: number;
+  next_actions: ModelAcceptanceNextAction[];
+  blocker_summary: ModelAcceptanceBlockerSummary[];
+};
+
 type ModelAcceptanceMeasurementCoverage = {
   status: string;
   required_aliases: string[];
   missing_aliases: string[];
+  ready_aliases?: string[];
+  ready_count?: number;
+  blocked_count?: number;
+  handoff_plan?: ModelAcceptanceHandoffPlan;
+  next_actions?: ModelAcceptanceNextAction[];
+  blocker_summary?: ModelAcceptanceBlockerSummary[];
   groups: ModelAcceptanceMeasurementGroup[];
 };
 
@@ -1958,7 +1991,9 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
   const modelSmokeCoverage = status?.acceptance_model_measurements;
   const modelSmokeMissing = modelSmokeCoverage?.missing_aliases ?? [];
   const modelSmokeDetail = modelSmokeCoverage
-    ? (modelSmokeMissing.length ? `missing ${modelSmokeMissing.join(", ")}` : `${modelSmokeCoverage.required_aliases.length} required aliases measured`)
+    ? (modelSmokeMissing.length
+      ? `${modelSmokeCoverage.ready_count ?? 0}/${modelSmokeCoverage.required_aliases.length} ready, missing ${modelSmokeMissing.join(", ")}`
+      : `${modelSmokeCoverage.required_aliases.length} required aliases measured`)
     : "not loaded";
   const runtimeStateByName = Object.fromEntries((status?.runtime_states ?? []).map((runtime) => [runtime.runtime, runtime]));
   const gpuDetail = gpu?.available
@@ -2395,6 +2430,12 @@ function Models() {
       .finally(() => setBusy(false));
   };
 
+  const acceptanceHandoffPlan = acceptanceCoverage?.handoff_plan;
+  const acceptanceNextActions = acceptanceCoverage?.next_actions ?? acceptanceHandoffPlan?.next_actions ?? [];
+  const acceptanceBlockerSummary = acceptanceCoverage?.blocker_summary ?? acceptanceHandoffPlan?.blocker_summary ?? [];
+  const readyAliasCount = acceptanceCoverage?.ready_count ?? acceptanceHandoffPlan?.ready_count ?? 0;
+  const blockedAliasCount = acceptanceCoverage?.blocked_count ?? acceptanceHandoffPlan?.blocked_count ?? acceptanceCoverage?.missing_aliases.length ?? 0;
+
   return (
     <section className="panel wide">
       <SectionTitle icon={<Boxes size={18} />} title="Models" />
@@ -2504,8 +2545,32 @@ function Models() {
           </div>
           <div className="one-time-key">
             <strong>Model-smoke coverage: {acceptanceCoverage.status}</strong>
-            <small>{acceptanceCoverage.required_aliases.length} required aliases / {acceptanceCoverage.missing_aliases.length ? `missing ${acceptanceCoverage.missing_aliases.join(", ")}` : "all measured"}</small>
+            <small>{acceptanceCoverage.required_aliases.length} required aliases / {readyAliasCount} ready / {blockedAliasCount} blocked</small>
+            <small>{acceptanceCoverage.missing_aliases.length ? `missing ${acceptanceCoverage.missing_aliases.join(", ")}` : "all measured"}</small>
+            {acceptanceBlockerSummary.length > 0 && <small>{acceptanceBlockerSummary.map((item) => `${item.blocker}: ${item.aliases.join(", ")}`).join(" / ")}</small>}
           </div>
+          {acceptanceNextActions.length > 0 && (
+            <>
+              <div className="subsection-title">
+                <ListChecks size={16} />
+                <h3>Model Handoff Plan</h3>
+              </div>
+              <table>
+                <thead><tr><th>Suite</th><th>Alias</th><th>Expected Runtime</th><th>Blockers</th><th>Next Action</th></tr></thead>
+                <tbody>
+                  {acceptanceNextActions.map((item) => (
+                    <tr key={`${item.suite}:${item.alias}:${item.action}`}>
+                      <td>{item.suite_label || item.suite}</td>
+                      <td><code>{item.alias}</code><small>{item.resolved_model_version || item.status || "unresolved"}</small></td>
+                      <td>{item.expected_runtime ?? "any"}</td>
+                      <td>{item.blockers?.length ? item.blockers.join("; ") : "none"}</td>
+                      <td>{item.action}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
           <table>
             <thead><tr><th>Suite</th><th>Status</th><th>Alias</th><th>Measurement</th><th>Blockers</th></tr></thead>
             <tbody>
