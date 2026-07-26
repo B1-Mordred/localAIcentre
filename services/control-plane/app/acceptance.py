@@ -4880,8 +4880,7 @@ def write_report(root: Path, report: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_report(root: Path, report_id: str) -> dict[str, Any]:
-    target = report_directory(root, report_id)
-    path = target / "report.json"
+    path = report_file_path(root, report_id, "report.json")
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:

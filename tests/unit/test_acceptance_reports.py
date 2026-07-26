@@ -2458,6 +2458,22 @@ class AcceptanceReportTests(unittest.TestCase):
                 acceptance.report_file_path(root, report["id"], "report.md")
             self.assertIn("symlink", str(raised.exception))
 
+    def test_load_report_rejects_symlinked_json_without_following_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = sample_report()
+            acceptance.write_report(root, report)
+            report_dir = root / report["id"]
+            outside = root / "outside.json"
+            outside.write_text(json.dumps({"format": acceptance.REPORT_FORMAT, "id": "outside"}), encoding="utf-8")
+            (report_dir / "report.json").unlink()
+            self.symlink_or_skip(outside, report_dir / "report.json")
+
+            with self.assertRaisesRegex(acceptance.AcceptanceReportError, "symlink"):
+                acceptance.load_report(root, report["id"])
+
+            self.assertEqual(json.loads(outside.read_text(encoding="utf-8"))["id"], "outside")
+
     def test_report_root_symlink_is_rejected_for_reads_and_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -5503,6 +5519,23 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(backup["backup_rollback_cutover_plan_sha256"], "c" * 64)
         self.assertEqual(backup["backup_rollback_actions_sha256"], "d" * 64)
         self.assertEqual(backup["sample_count"], 4)
+
+    def test_latest_live_evidence_snapshot_ignores_symlinked_evidence_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence_root = root / "acceptance"
+            evidence_root.mkdir()
+            outside = root / "outside-smoke.json"
+            smoke_payload = sample_live_evidence()["live_stack_smoke"]
+            smoke_payload["samples"] = [{"label": label} for label in smoke_payload["sample_labels"]]
+            outside.write_text(json.dumps(smoke_payload), encoding="utf-8")
+            self.symlink_or_skip(outside, evidence_root / "live-smoke.json")
+
+            snapshot = acceptance.latest_live_evidence_snapshot(root)
+
+        smoke = snapshot["live_stack_smoke"]
+        self.assertFalse(smoke["available"])
+        self.assertEqual(smoke["reason"], "no supported live acceptance evidence found")
 
     def test_report_id_rejects_traversal(self) -> None:
         with self.assertRaises(acceptance.AcceptanceReportError):
