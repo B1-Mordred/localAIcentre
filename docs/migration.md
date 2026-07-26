@@ -9,6 +9,7 @@ make inventory
 The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_DATA_ROOT/backups/`, and is read-only. Newly created inventory output directories are owner-only on POSIX systems, the report file is written mode `0600`, and an existing output symlink is refused where the platform supports no-follow opens; still treat the file as sensitive host migration evidence because it contains paths, Docker metadata, ports, DNS, mount, and storage summaries. It captures:
 
 - all Docker containers, Compose projects, volumes, networks, Docker version/info, and NVIDIA runtime availability
+- host identity, including hostname, FQDN, OS/kernel, architecture, Python version, UID/GID, and inventory user, so operators can prove the report came from the intended target before cutover
 - systemd service units relevant to AI, B1 AI Hub, or explicitly preserved local services, including redacted unit metadata and unit/drop-in paths for review
 - listening TCP sockets and processes
 - `nvidia-smi` GPU driver/VRAM/utilization data and NVIDIA Container Toolkit version when available
@@ -20,7 +21,7 @@ The generated report is written under `$B1_BACKUP_ROOT`, which defaults to `$B1_
 - port-review evidence for production gateway ports, common old AI service ports, Ollama, Open WebUI, and optional legacy ComfyUI listeners
 - container, Compose, and systemd-service classifications: `candidate-old-ai-stack-review-required`, `preserve-unrelated`, `b1-ai-hub-current-preserve`, or `unknown-preserve-by-default`
 
-Review the generated inventory and classify old-stack services explicitly. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
+Review the generated inventory and classify old-stack services explicitly. First verify `host.identity.hostname`/`host.identity.fqdn` matches the intended target host and that DNS records for the configured virtual hosts are present; an inventory from a developer workstation or wrong LAN segment is not cutover evidence for `ai.b1.germering`. Treat `candidate-old-ai-stack-review-required` as a prompt for human review, not as permission to stop or modify anything. Treat `unknown-preserve-by-default` as out of scope until an operator marks it otherwise. Do not assume Hermes, Yggdrasil, Discord integrations, Technitium, n8n, databases, DNS services, or unrelated containers are in scope.
 
 Optional bounded scans can be added when old Compose files are stored somewhere unusual:
 

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
+import socket
 import stat
 import subprocess
 from collections.abc import Callable
@@ -1260,6 +1263,25 @@ def read_resolv_conf() -> dict[str, Any]:
     return {"path": str(path), "exists": True, "lines": [line for line in lines if line and not line.startswith("#")]}
 
 
+def inspect_host_identity() -> dict[str, Any]:
+    try:
+        username = getpass.getuser()
+    except Exception:
+        username = None
+    return {
+        "hostname": socket.gethostname(),
+        "fqdn": socket.getfqdn(),
+        "platform_node": platform.node(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "python_version": platform.python_version(),
+        "uid": os.getuid() if hasattr(os, "getuid") else None,
+        "gid": os.getgid() if hasattr(os, "getgid") else None,
+        "username": username,
+    }
+
+
 def build_inventory(
     *,
     b1_root: Path = Path("/srv/b1-ai-hub"),
@@ -1333,6 +1355,7 @@ def build_inventory(
             "socket": docker_socket,
         },
         "host": {
+            "identity": inspect_host_identity(),
             "systemd_services": systemd_rows,
             "systemd_service_inspects": systemd_service_inspects,
             "listening_tcp": listening_tcp,

@@ -18,7 +18,7 @@ stat -c '%g' /var/run/docker.sock
 ```
 
 For production, prefer `make prepare-production-env` instead of manually copying `.env.production.example`; it creates or updates `.env` and sets `B1_DOCKER_GID` from the host Docker socket GID. If you prepare `.env` manually, set `B1_DOCKER_GID` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
-The migration inventory records NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence.
+The migration inventory records host identity, NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence. Verify the inventory `host.identity.hostname`/`host.identity.fqdn` belongs to the intended target before using it for cutover.
 
 ## First Boot
 

@@ -309,6 +309,21 @@ class InventoryTests(unittest.TestCase):
 
             self.patch_attr("read_resolv_conf", lambda: {"path": "/etc/resolv.conf", "exists": True, "lines": ["nameserver 192.168.2.1"]})
             self.patch_attr("default_model_path_candidates", lambda b1_root: [b1_root / "models"])
+            self.patch_attr(
+                "inspect_host_identity",
+                lambda: {
+                    "hostname": "ai",
+                    "fqdn": "ai.b1.germering",
+                    "platform_node": "ai",
+                    "system": "Linux",
+                    "release": "6.14.0",
+                    "machine": "x86_64",
+                    "python_version": "3.12.11",
+                    "uid": 1000,
+                    "gid": 1000,
+                    "username": "mordred",
+                },
+            )
 
             report = inventory.build_inventory(
                 b1_root=b1_root,
@@ -321,6 +336,9 @@ class InventoryTests(unittest.TestCase):
 
         self.assertEqual(report["format"], "b1-ai-hub-host-inventory/v1")
         self.assertTrue(report["safety"]["read_only"])
+        self.assertEqual(report["host"]["identity"]["hostname"], "ai")
+        self.assertEqual(report["host"]["identity"]["fqdn"], "ai.b1.germering")
+        self.assertEqual(report["host"]["identity"]["machine"], "x86_64")
         classifications = {item["container"]: item["classification"] for item in report["classification"]["containers"]}
         self.assertEqual(classifications["old-open-webui"], "candidate-old-ai-stack-review-required")
         self.assertEqual(classifications["hermes-bot"], "preserve-unrelated")
