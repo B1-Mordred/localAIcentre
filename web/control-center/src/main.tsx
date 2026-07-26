@@ -408,6 +408,7 @@ type AcceptanceReportSummary = {
   operator_handoff_ready: boolean;
   deployment_pins_ready?: boolean;
   compose_selection_ready?: boolean;
+  model_measurement_coverage_ready?: boolean;
   operator_evidence_ready?: boolean;
   cutover_preservation_ready?: boolean;
   cutover_dns_ready?: boolean;
@@ -580,6 +581,18 @@ type LiveEvidenceDetail = {
   missingChecks: string[];
   details: string[];
   samples: string[];
+};
+
+type ReportModelMeasurementDetail = {
+  key: string;
+  group: string;
+  alias: string;
+  ready: boolean;
+  status: string;
+  runtime: string;
+  resolvedModel: string;
+  okRuns: string;
+  blockers: string[];
 };
 
 type PreservedResourceDetail = {
@@ -3299,6 +3312,36 @@ function acceptanceLiveEvidenceRows(report: Record<string, unknown>): LiveEviden
   });
 }
 
+function acceptanceModelMeasurementRows(report: Record<string, unknown>): ReportModelMeasurementDetail[] {
+  const coverage = objectOrNull(report.model_measurement_coverage) ?? {};
+  const groups = Array.isArray(coverage.groups) ? coverage.groups : [];
+  const rows: ReportModelMeasurementDetail[] = [];
+  groups.forEach((groupValue, groupIndex) => {
+    const group = objectOrNull(groupValue);
+    if (!group) return;
+    const groupLabel = typeof group.label === "string" && group.label ? group.label : String(group.id ?? `group-${groupIndex + 1}`);
+    const measurements = Array.isArray(group.measurements) ? group.measurements : [];
+    measurements.forEach((entryValue, index) => {
+      const entry = objectOrNull(entryValue);
+      if (!entry) return;
+      const alias = String(entry.alias ?? "");
+      const runtime = String(entry.runtime ?? entry.expected_runtime ?? entry.preferred_runtime ?? "unknown");
+      rows.push({
+        key: `${groupLabel}:${alias || index}`,
+        group: groupLabel,
+        alias: alias || "unknown",
+        ready: entry.ready === true,
+        status: entry.ready === true ? "ready" : String(entry.status ?? "blocked"),
+        runtime,
+        resolvedModel: String(entry.resolved_model_version ?? "not resolved"),
+        okRuns: String(entry.ok_run_count ?? 0),
+        blockers: stringList(entry.blockers)
+      });
+    });
+  });
+  return rows;
+}
+
 function acceptancePreservedResourceRows(report: Record<string, unknown>): PreservedResourceDetail[] {
   const preservation = objectOrNull(report.cutover_preservation) ?? {};
   const resources = objectOrNull(preservation.resources) ?? {};
@@ -5235,6 +5278,8 @@ function System() {
   const selectedCutover = detailRecord(selectedReport.cutover_preservation);
   const selectedOperatorEvidence = acceptanceOperatorEvidenceRows(selectedReport);
   const selectedLiveEvidence = acceptanceLiveEvidenceRows(selectedReport);
+  const selectedModelMeasurementCoverage = detailRecord(selectedReport.model_measurement_coverage);
+  const selectedModelMeasurementRows = acceptanceModelMeasurementRows(selectedReport);
   const selectedPreservedResources = acceptancePreservedResourceRows(selectedReport);
   const selectedDeploymentPinRows = acceptanceDeploymentPinRows(selectedReport);
   const selectedDeploymentPinFindings = acceptanceDeploymentPinFindings(selectedReport);
@@ -5646,7 +5691,7 @@ function System() {
               <td><code>{report.id}</code><small>{report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}</small></td>
               <td>
                 <span className={statusPillClass(report.status)}>{report.status}</span>
-                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.compose_selection_ready ? "Compose selection missing" : !report.operator_evidence_ready ? "evidence missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
+                <small>{report.operator_handoff_ready ? "handoff ready" : !report.deployment_pins_ready ? "deployment pins missing" : !report.compose_selection_ready ? "Compose selection missing" : !report.model_measurement_coverage_ready ? "model smoke coverage missing" : !report.operator_evidence_ready ? "evidence missing" : !report.operator_preflight_evidence_ready ? "preflight proof missing" : !report.smoke_evidence_ready ? "smoke proof missing" : !report.gpu_evidence_ready ? "GPU proof missing" : !report.localai_evidence_ready ? "LocalAI proof missing" : !report.installed_workflows_evidence_ready ? "workflow proof missing" : !report.native_comfyui_evidence_ready ? "ComfyUI proof missing" : !report.remote_nodes_evidence_ready ? "remote-node proof missing" : !report.modelhub_evidence_ready ? "Model Hub proof missing" : !report.voicebox_evidence_ready ? "Voicebox proof missing" : !report.security_evidence_ready ? "security proof missing" : !report.restart_reconciliation_evidence_ready ? "restart proof missing" : !report.backup_migration_rollback_evidence_ready ? "backup/rollback proof missing" : !report.cutover_dns_ready ? "DNS readiness missing" : !report.cutover_preservation_ready ? "rollback preservation missing" : "system blockers"}</small>
               </td>
               <td>{report.runtime_deployment_mode ?? "unknown"}</td>
               <td>
@@ -5681,6 +5726,7 @@ function System() {
             <div><strong>Cutover DNS</strong><small>{selectedSummary.cutover_dns_ready ? "ready" : "review required"}</small></div>
             <div><strong>Deployment Pins</strong><small>{selectedSummary.deployment_pins_ready ? "clean" : String(selectedDeploymentPins.status ?? "blocked")}</small></div>
             <div><strong>Compose Files</strong><small>{selectedSummary.compose_selection_ready ? "production overlays selected" : String(selectedComposeSelection.status ?? "blocked")}</small></div>
+            <div><strong>Model smoke</strong><small>{selectedSummary.model_measurement_coverage_ready ? "all required aliases measured" : String(selectedModelMeasurementCoverage.status ?? "missing")}</small></div>
             <div><strong>Source commit</strong><small>{String(selectedSourceControl.source_commit ?? selectedSourceControl.source_ref ?? "unavailable")}</small></div>
             <div><strong>Cutover resources</strong><small>{String(selectedCutover.resource_count ?? 0)}</small></div>
             <div><strong>Report files</strong><small>{selectedAcceptanceReportIsPreview ? "preview only" : selectedFiles.markdown ?? selectedFiles.json ?? "not written"}</small></div>
@@ -5738,6 +5784,31 @@ function System() {
                   </tr>
                 ))}
                 {!selectedOperatorEvidence.length && <tr><td colSpan={3}>No operator evidence recorded</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="acceptance-detail-section">
+            <h4>Database Model-Smoke Coverage</h4>
+            <div className="acceptance-pin-summary">
+              <span className={statusPillClass(selectedSummary.model_measurement_coverage_ready ? "ok" : String(selectedModelMeasurementCoverage.status ?? "warning"))}>{String(selectedModelMeasurementCoverage.status ?? "missing")}</span>
+              <small>{stringList(selectedModelMeasurementCoverage.required_aliases).length} required aliases</small>
+              <small>{stringList(selectedModelMeasurementCoverage.missing_aliases).length ? `missing ${stringList(selectedModelMeasurementCoverage.missing_aliases).join(", ")}` : "no missing aliases recorded"}</small>
+            </div>
+            <table>
+              <thead><tr><th>Suite</th><th>Alias</th><th>Status</th><th>Runtime</th><th>Resolved Model</th><th>OK Runs</th><th>Blockers</th></tr></thead>
+              <tbody>
+                {selectedModelMeasurementRows.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.group}</td>
+                    <td><code>{item.alias}</code></td>
+                    <td><span className={statusPillClass(item.ready ? "ok" : item.status)}>{item.status}</span></td>
+                    <td>{item.runtime}</td>
+                    <td><code>{item.resolvedModel}</code></td>
+                    <td>{item.okRuns}</td>
+                    <td>{item.blockers.length ? item.blockers.join("; ") : "none"}</td>
+                  </tr>
+                ))}
+                {!selectedModelMeasurementRows.length && <tr><td colSpan={7}>No database model-smoke coverage recorded</td></tr>}
               </tbody>
             </table>
           </div>

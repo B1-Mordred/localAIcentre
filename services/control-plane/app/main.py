@@ -7324,6 +7324,9 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         asyncio.to_thread(acceptance.latest_cutover_preservation_snapshot, backup_root),
         asyncio.to_thread(acceptance.latest_live_evidence_snapshot, backup_root),
     )
+    catalog_payload = catalog_snapshot().to_catalog()
+    aliases = catalog_payload["aliases"]
+    model_records = [public_model_record(row) for row in await database.list_model_records()]
     report = acceptance.build_report(
         report_id=acceptance.new_report_id(now),
         created_by=auth.subject_id,
@@ -7349,6 +7352,7 @@ async def build_acceptance_report_snapshot(auth: AuthContext, payload: Acceptanc
         source_control=acceptance.source_control_snapshot(Path.cwd()),
         operator_evidence=payload.operator_evidence,
         operator_evidence_notes=payload.operator_evidence_notes,
+        model_measurement_coverage=acceptance_model_measurement_coverage(aliases, model_records),
         cutover_preservation=cutover_preservation,
         live_evidence=live_evidence,
         handoff=acceptance.build_handoff_context(

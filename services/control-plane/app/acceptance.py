@@ -3430,6 +3430,8 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
     for item in report.get("operator_evidence") or []:
         if isinstance(item, dict) and not item.get("passed"):
             blockers.append(f"operator evidence missing: {item.get('label') or item.get('key')}")
+    coverage = report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
+    blockers.extend(_model_measurement_coverage_blockers(coverage))
     blockers.extend(_live_evidence_freshness_failures(report).values())
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
@@ -3756,6 +3758,72 @@ def _normalize_handoff_context(handoff: dict[str, Any] | None) -> dict[str, Any]
     return normalized
 
 
+def _normalize_model_measurement_coverage(coverage: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(coverage, dict):
+        return {
+            "status": "unavailable",
+            "required_aliases": [],
+            "missing_aliases": [],
+            "groups": [],
+            "reason": "not supplied",
+        }
+    groups: list[dict[str, Any]] = []
+    for group in coverage.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        measurements: list[dict[str, Any]] = []
+        for entry in group.get("measurements") or []:
+            if not isinstance(entry, dict):
+                continue
+            normalized_entry = dict(entry)
+            normalized_entry["alias"] = str(normalized_entry.get("alias") or "")
+            normalized_entry["ready"] = bool(normalized_entry.get("ready"))
+            normalized_entry["blockers"] = _as_string_list(normalized_entry.get("blockers"))
+            measurements.append(normalized_entry)
+        groups.append(
+            {
+                "id": str(group.get("id") or ""),
+                "label": str(group.get("label") or group.get("id") or ""),
+                "status": str(group.get("status") or "unknown"),
+                "required_aliases": _as_string_list(group.get("required_aliases")),
+                "missing_aliases": _as_string_list(group.get("missing_aliases")),
+                "measurements": measurements,
+            }
+        )
+    return {
+        "status": str(coverage.get("status") or "unknown"),
+        "required_aliases": _as_string_list(coverage.get("required_aliases")),
+        "missing_aliases": _as_string_list(coverage.get("missing_aliases")),
+        "groups": groups,
+        **({"reason": str(coverage.get("reason"))} if coverage.get("reason") else {}),
+    }
+
+
+def _model_measurement_coverage_blockers(coverage: dict[str, Any]) -> list[str]:
+    if coverage.get("status") == "ok":
+        return []
+    blockers: list[str] = []
+    if coverage.get("status") == "unavailable":
+        blockers.append("database model-smoke coverage is unavailable")
+    else:
+        blockers.append(f"database model-smoke coverage status is {coverage.get('status', 'unknown')}")
+    missing_aliases = _as_string_list(coverage.get("missing_aliases"))
+    if missing_aliases:
+        blockers.append("database model-smoke coverage is missing aliases: " + ", ".join(missing_aliases))
+    for group in coverage.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_label = str(group.get("label") or group.get("id") or "group")
+        for entry in group.get("measurements") or []:
+            if not isinstance(entry, dict) or entry.get("ready") is True:
+                continue
+            alias = str(entry.get("alias") or "unknown")
+            reasons = _as_string_list(entry.get("blockers"))
+            detail = ", ".join(reasons) if reasons else str(entry.get("status") or "not ready")
+            blockers.append(f"database model-smoke coverage {group_label}/{alias}: {detail}")
+    return blockers
+
+
 def _handoff_known_limitations(report: dict[str, Any], existing: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     limitations: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -3821,6 +3889,7 @@ def build_report(
     source_control: dict[str, Any] | None = None,
     operator_evidence: dict[str, Any] | None = None,
     operator_evidence_notes: dict[str, Any] | None = None,
+    model_measurement_coverage: dict[str, Any] | None = None,
     cutover_preservation: dict[str, Any] | None = None,
     live_evidence: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
@@ -3850,6 +3919,7 @@ def build_report(
         "recent_updates": recent_updates or [],
         "source_control": source_control or {},
         "operator_evidence": normalize_operator_evidence(operator_evidence, operator_evidence_notes),
+        "model_measurement_coverage": _normalize_model_measurement_coverage(model_measurement_coverage),
         "cutover_preservation": cutover_preservation or {"available": False, "reason": "not supplied"},
         "handoff": _normalize_handoff_context(handoff),
         "live_evidence": live_evidence
@@ -3980,6 +4050,42 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
         + "\n\n"
         + (_table(check_rows) if len(check_rows) > 1 else _format_value(evidence.get("reason") or no_checks_message))
         + ("\n\n" + _table(measurement_rows) if len(measurement_rows) > 1 else "")
+    )
+
+
+def _model_measurement_coverage_markdown(coverage: dict[str, Any]) -> str:
+    summary_rows = [["Field", "Value"]]
+    for key in ("status", "required_aliases", "missing_aliases", "reason"):
+        value = coverage.get(key)
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value) if value else "none"
+        summary_rows.append([key, _format_value(value)])
+    measurement_rows = [["Suite", "Alias", "Status", "Runtime", "Resolved Model", "OK Runs", "Blockers"]]
+    for group in coverage.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        label = str(group.get("label") or group.get("id") or "suite")
+        for entry in group.get("measurements") or []:
+            if not isinstance(entry, dict):
+                continue
+            runtime = entry.get("runtime") or entry.get("expected_runtime") or entry.get("preferred_runtime")
+            blockers = _as_string_list(entry.get("blockers"))
+            measurement_rows.append(
+                [
+                    label,
+                    _format_value(entry.get("alias")),
+                    "ready" if entry.get("ready") is True else _format_value(entry.get("status") or "blocked"),
+                    _format_value(runtime),
+                    _format_value(entry.get("resolved_model_version")),
+                    _format_value(entry.get("ok_run_count")),
+                    ", ".join(blockers) if blockers else "none",
+                ]
+            )
+    return (
+        "## Database Model-Smoke Coverage\n\n"
+        + _table(summary_rows)
+        + "\n\n"
+        + (_table(measurement_rows) if len(measurement_rows) > 1 else "No database model-smoke measurements recorded.")
     )
 
 
@@ -4117,6 +4223,9 @@ def markdown_report(report: dict[str, Any]) -> str:
             preservation_summary_rows.append([f"open_webui.{key}", _format_value(open_webui_readiness.get(key))])
 
     live_evidence = report.get("live_evidence") if isinstance(report.get("live_evidence"), dict) else {}
+    model_measurement_coverage = (
+        report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
+    )
     preflight_evidence = live_evidence.get("operator_preflight") if isinstance(live_evidence.get("operator_preflight"), dict) else {}
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
@@ -4331,6 +4440,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             "## Recent Update Records\n\n" + (_table(update_rows) if len(update_rows) > 1 else "No recent controlled update records captured."),
             "## Self-Test Checks\n\n" + _table(check_rows),
             "## Operator Evidence\n\n" + _table(evidence_rows),
+            _model_measurement_coverage_markdown(model_measurement_coverage),
             "## Live Acceptance Evidence\n\n"
             + _live_evidence_markdown(
                 "Operator live-acceptance preflight",
@@ -4495,6 +4605,10 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     deployment_pins_ready = deployment_pins.get("status") == "ok"
     compose_selection = report.get("compose_selection") if isinstance(report.get("compose_selection"), dict) else {}
     compose_selection_ready = compose_selection.get("status") == "ok"
+    model_measurement_coverage = (
+        report.get("model_measurement_coverage") if isinstance(report.get("model_measurement_coverage"), dict) else {}
+    )
+    model_measurement_coverage_ready = model_measurement_coverage.get("status") == "ok"
     freshness_failures = _live_evidence_freshness_failures(report)
     preflight_evidence_ready = (
         preflight_evidence.get("available") is True
@@ -4603,6 +4717,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "source_control_ready": source_control_ready,
         "deployment_pins_ready": deployment_pins_ready,
         "compose_selection_ready": compose_selection_ready,
+        "model_measurement_coverage_ready": model_measurement_coverage_ready,
         "operator_evidence_ready": bool(operator_evidence) and all(bool(item.get("passed")) for item in operator_evidence),
         "cutover_preservation_ready": preservation.get("available") is True
         and int(preservation.get("resource_count") or 0) > 0

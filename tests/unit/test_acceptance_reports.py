@@ -78,6 +78,106 @@ def sample_model_measurement(alias: str, runtime: str, *, model_id: str | None =
     }
 
 
+def sample_model_measurement_coverage(**overrides: Any) -> dict[str, Any]:
+    groups = [
+        {
+            "id": "localai_runtime",
+            "label": "LocalAI runtime acceptance",
+            "status": "ok",
+            "required_aliases": ["chat-default"],
+            "missing_aliases": [],
+            "measurements": [
+                {
+                    **sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                    "expected_runtime": "localai",
+                    "ready": True,
+                    "blockers": [],
+                }
+            ],
+        },
+        {
+            "id": "gpu_acceptance",
+            "label": "RTX 3060 GPU acceptance",
+            "status": "ok",
+            "required_aliases": ["chat-default", "image-default", "tts-quality"],
+            "missing_aliases": [],
+            "measurements": [
+                {
+                    **sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                    "expected_runtime": "localai",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                    "expected_runtime": "comfyui",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("tts-quality", "voicebox", model_id="b1-tts-quality"),
+                    "expected_runtime": "voicebox",
+                    "ready": True,
+                    "blockers": [],
+                },
+            ],
+        },
+        {
+            "id": "installed_workflows",
+            "label": "Installed workflow acceptance",
+            "status": "ok",
+            "required_aliases": ["chat-default", "tts-fast", "stt-default", "image-default", "image-edit", "video-text"],
+            "missing_aliases": [],
+            "measurements": [
+                {
+                    **sample_model_measurement("chat-default", "localai", model_id="b1-chat-default"),
+                    "expected_runtime": "localai",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("tts-fast", "audio-cpu", model_id="b1-tts-fast"),
+                    "expected_runtime": "audio-cpu",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("stt-default", "audio-cpu", model_id="b1-stt-default"),
+                    "expected_runtime": "audio-cpu",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("image-default", "comfyui", model_id="b1-image-default"),
+                    "expected_runtime": "comfyui",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("image-edit", "comfyui", model_id="b1-image-edit"),
+                    "expected_runtime": "comfyui",
+                    "ready": True,
+                    "blockers": [],
+                },
+                {
+                    **sample_model_measurement("video-text", "comfyui", model_id="b1-video-text"),
+                    "expected_runtime": "comfyui",
+                    "ready": True,
+                    "blockers": [],
+                },
+            ],
+        },
+    ]
+    payload = {
+        "status": "ok",
+        "required_aliases": ["chat-default", "image-default", "tts-quality", "tts-fast", "stt-default", "image-edit", "video-text"],
+        "missing_aliases": [],
+        "groups": groups,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def sample_modelhub_cache_file_evidence(blob: str = "a" * 64, size: int = 12) -> dict[str, Any]:
     return {
         "cache_root": "/tmp/b1-modelhub-compat/cache",
@@ -1869,6 +1969,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
         ),
         operator_evidence=overrides.pop("operator_evidence", complete_operator_evidence()),
         operator_evidence_notes=overrides.pop("operator_evidence_notes", {}),
+        model_measurement_coverage=overrides.pop("model_measurement_coverage", sample_model_measurement_coverage()),
         cutover_preservation=overrides.pop("cutover_preservation", sample_cutover_preservation()),
         live_evidence=overrides.pop("live_evidence", sample_live_evidence()),
         source_control=overrides.pop(
@@ -1926,6 +2027,9 @@ class AcceptanceReportTests(unittest.TestCase):
             self.assertIn("### Compose Selection", markdown)
             self.assertIn("compose.production-comfyui.yaml", markdown)
             self.assertIn("voicebox", markdown)
+            self.assertIn("## Database Model-Smoke Coverage", markdown)
+            self.assertIn("RTX 3060 GPU acceptance", markdown)
+            self.assertIn("chat-default", markdown)
             self.assertIn("caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d", markdown)
             self.assertIn("localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973", markdown)
             self.assertIn("59afc3984868289f808d02fa5cd180edfb2de240", markdown)
@@ -2484,6 +2588,34 @@ class AcceptanceReportTests(unittest.TestCase):
             "operator evidence missing: Rollback procedure was tested and old resources remain preserved",
             report["acceptance_blockers"],
         )
+
+    def test_report_blocks_handoff_without_database_model_smoke_coverage(self) -> None:
+        report = sample_report(model_measurement_coverage=None)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["model_measurement_coverage_ready"])
+        self.assertIn("database model-smoke coverage is unavailable", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_incomplete_database_model_smoke_coverage(self) -> None:
+        coverage = sample_model_measurement_coverage()
+        coverage["status"] = "incomplete"
+        coverage["missing_aliases"] = ["image-default"]
+        coverage["groups"][1]["status"] = "incomplete"
+        coverage["groups"][1]["missing_aliases"] = ["image-default"]
+        coverage["groups"][1]["measurements"][1]["ready"] = False
+        coverage["groups"][1]["measurements"][1]["blockers"] = ["no persisted ok model smoke measurement exists"]
+
+        report = sample_report(model_measurement_coverage=coverage)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertFalse(summary["model_measurement_coverage_ready"])
+        blockers = "; ".join(report["acceptance_blockers"])
+        self.assertIn("database model-smoke coverage status is incomplete", blockers)
+        self.assertIn("database model-smoke coverage is missing aliases: image-default", blockers)
+        self.assertIn("database model-smoke coverage RTX 3060 GPU acceptance/image-default", blockers)
+        self.assertIn("no persisted ok model smoke measurement exists", blockers)
 
     def test_report_blocks_handoff_without_deployment_image_evidence(self) -> None:
         report = sample_report(deployment={"services": []}, recent_updates=[])
@@ -4957,6 +5089,9 @@ class AcceptanceReportApiTests(unittest.TestCase):
             async def list_runtime_reservations(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
                 return []
 
+            async def list_model_records(self) -> list[dict[str, Any]]:
+                return []
+
             async def list_update_plans(self, limit: int = 5) -> list[dict[str, Any]]:
                 return [
                     {
@@ -4998,12 +5133,17 @@ class AcceptanceReportApiTests(unittest.TestCase):
             self.assertEqual(path, "/v1/services")
             return {"services": [{"name": "control-plane", "containers": [{"short_id": "abc123", "image_id": "sha256:" + "b" * 64}]}]}, None
 
+        class FakeCatalog:
+            def to_catalog(self) -> dict[str, Any]:
+                return {"aliases": [], "profiles": [], "models": []}
+
         self.patch_auth()
         self.patch_attr("database", FakeDatabase())
         self.patch_attr("build_self_test_report", self_test)
         self.patch_attr("build_admin_metrics_payload", metrics)
         self.patch_attr("admission_report", admission_report)
         self.patch_attr("runtime_agent_get", runtime_agent_get)
+        self.patch_attr("catalog_snapshot", lambda: FakeCatalog())
         self.patch_attr(
             "settings",
             main.Settings(
@@ -5031,8 +5171,11 @@ class AcceptanceReportApiTests(unittest.TestCase):
         self.assertEqual(urls["control"], "https://control.test.lan/")
         self.assertEqual(urls["api"], "https://api.test.lan/")
         self.assertIn("/data/b1-ai-hub/secrets/admin_bootstrap_key", snapshot["handoff"]["admin_onboarding"][2]["action"])
+        self.assertEqual(snapshot["model_measurement_coverage"]["status"], "incomplete")
         self.assertFalse(snapshot["operator_handoff_ready"])
-        self.assertIn("operator evidence missing", "; ".join(snapshot["acceptance_blockers"]))
+        blockers = "; ".join(snapshot["acceptance_blockers"])
+        self.assertIn("operator evidence missing", blockers)
+        self.assertIn("database model-smoke coverage status is incomplete", blockers)
 
 
 if __name__ == "__main__":
