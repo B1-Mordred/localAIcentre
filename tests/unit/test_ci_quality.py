@@ -150,7 +150,33 @@ class CiQualityGateTests(unittest.TestCase):
             "modelhub-compatibility voicebox-compatibility",
             self.makefile_text,
         )
-        self.assertIn("operator-live-acceptance: repository-quality-evidence acceptance-preflight", self.makefile_text)
+        target_start = self.makefile_text.index("\noperator-live-acceptance:")
+        target_end = self.makefile_text.index("\nsecurity:", target_start)
+        operator_target = self.makefile_text[target_start:target_end]
+        expected_operator_steps = (
+            "repository-quality-evidence",
+            "acceptance-preflight",
+            "backup-migration-rollback-evidence",
+            "live-smoke-acceptance",
+            "installed-workflows-acceptance",
+            "localai-acceptance",
+            "gpu-acceptance",
+            "external-compatibility-acceptance",
+            "security-acceptance",
+            "restart-reconciliation-acceptance",
+        )
+        for step in expected_operator_steps:
+            with self.subTest(operator_step=step):
+                self.assertIn(f"\n\t$(MAKE) {step}", operator_target)
+        self.assertLess(
+            operator_target.index("$(MAKE) acceptance-preflight"),
+            operator_target.index("$(MAKE) backup-migration-rollback-evidence"),
+        )
+        self.assertLess(
+            operator_target.index("$(MAKE) backup-migration-rollback-evidence"),
+            operator_target.index("$(MAKE) live-smoke-acceptance"),
+        )
+        self.assertIn("reviewed backup/migration/rollback artifacts", self.makefile_text)
         self.assertIn("restart-reconciliation drill state documented in tests/.", self.makefile_text)
 
     def test_makefile_quality_target_collects_backend_schema_and_frontend_gates(self) -> None:

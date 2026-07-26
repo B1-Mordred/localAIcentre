@@ -163,8 +163,19 @@ voicebox-compatibility:
 external-compatibility-acceptance: native-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility
 
 # Requires the target host acceptance window, installed real models, workflow job files,
-# scoped API keys, and the restart-reconciliation drill state documented in tests/.
-operator-live-acceptance: repository-quality-evidence acceptance-preflight live-smoke-acceptance installed-workflows-acceptance localai-acceptance gpu-acceptance external-compatibility-acceptance security-acceptance restart-reconciliation-acceptance
+# scoped API keys, reviewed backup/migration/rollback artifacts, and the
+# restart-reconciliation drill state documented in tests/.
+operator-live-acceptance:
+	$(MAKE) repository-quality-evidence
+	$(MAKE) acceptance-preflight
+	$(MAKE) backup-migration-rollback-evidence
+	$(MAKE) live-smoke-acceptance
+	$(MAKE) installed-workflows-acceptance
+	$(MAKE) localai-acceptance
+	$(MAKE) gpu-acceptance
+	$(MAKE) external-compatibility-acceptance
+	$(MAKE) security-acceptance
+	$(MAKE) restart-reconciliation-acceptance
 
 security:
 	python3 -m unittest discover -s tests/security -v
