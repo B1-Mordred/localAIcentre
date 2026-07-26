@@ -415,10 +415,17 @@ class LiveSecurityAcceptanceTests(unittest.TestCase):
 
     def verify_comfyui_management_route_blocked(self) -> None:
         path = os.getenv("B1_SECURITY_COMFY_DENIED_PATH", "/api/manager/install")
-        status, _headers, payload = self.request_json(self.comfy_base, "POST", path, body={"url": "https://example.invalid/node"}, allow_http_error=True)
+        status, _headers, payload = self.request_json(
+            self.comfy_base,
+            "POST",
+            path,
+            body={"url": "https://example.invalid/node"},
+            token=self.api_key,
+            allow_http_error=True,
+        )
         self.assertEqual(status, 403, payload)
         self.assertIn("comfyui_route_denied", json.dumps(payload, sort_keys=True))
-        self.record_check("comfyui_management_routes_blocked", path=path, http_status=status)
+        self.record_check("comfyui_management_routes_blocked", path=path, http_status=status, authenticated_probe=True)
         self.sample("comfyui-manager-denied", path=path, http_status=status)
 
     def assert_import_url_rejected(self, check_name: str, manifest_url: str, *, policy_case: str) -> None:

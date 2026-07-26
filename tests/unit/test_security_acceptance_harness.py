@@ -43,6 +43,14 @@ class SecurityAcceptanceHarnessTests(unittest.TestCase):
         self.assertIn("runtime_agent_arbitrary_runtime_rejected", harness.SECURITY_REQUIRED_CHECKS)
         self.assertIn("runtime_agent_arbitrary_logs_rejected", harness.SECURITY_REQUIRED_CHECKS)
 
+    def test_comfyui_management_probe_uses_authenticated_route_policy_check(self) -> None:
+        source = (ROOT / "tests" / "security" / "test_live_security_acceptance.py").read_text(encoding="utf-8")
+
+        self.assertIn("def verify_comfyui_management_route_blocked", source)
+        method_source = source.split("def verify_comfyui_management_route_blocked", 1)[1].split("def assert_import_url_rejected", 1)[0]
+        self.assertIn("token=self.api_key", method_source)
+        self.assertIn("authenticated_probe=True", method_source)
+
 
 if __name__ == "__main__":
     unittest.main()
