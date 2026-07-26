@@ -21,7 +21,28 @@ SOURCE_TYPES = {"catalog", "huggingface", "direct-url", "upload"}
 DEPRECATION_STATUSES = {"active", "deprecated", "replaced", "removed"}
 MEASUREMENT_SCHEMA = "b1-ai-hub-model-measurements/v1"
 RUNTIME_SMOKE_SCHEMA = "b1-ai-hub-runtime-smoke/v1"
+MODEL_PROFILE_SCHEMA = "b1-ai-hub-model-profiles/v1"
 MEASUREMENT_RUN_STATUSES = {"ok", "warning", "failed", "skipped", "unconfirmed"}
+MODEL_PROFILE_RESOURCE_LABELS = {"recommended", "expected", "offload-required", "experimental", "incompatible"}
+MODEL_PROFILE_RUNTIME_POLICIES = {
+    "cpu-resident",
+    "gpu-exclusive",
+    "hosted-local",
+    "hosted-local-or-downloadable",
+    "comfyui-workflow",
+    "voicebox-managed",
+}
+MODEL_PROFILE_DEFAULT_LIMIT_KEYS = {
+    "context_tokens",
+    "maximum_context_tokens",
+    "parallel_requests",
+    "maximum_batch_size",
+    "maximum_resolution",
+    "maximum_frames",
+    "maximum_duration_seconds",
+    "maximum_steps",
+    "cpu_resident_allowed",
+}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:$")
@@ -245,6 +266,44 @@ class ModelManifest:
         )
 
 
+@dataclass(frozen=True)
+class ModelProfile:
+    id: str
+    display_name: str
+    aliases: list[str]
+    modality: str
+    operations: list[str]
+    preferred_runtimes: list[str]
+    target_class: str
+    selection_guidance: str
+    resource_estimate: ModelResourceEstimate
+    target_resource_label: str
+    runtime_policy: str
+    default_limits: dict[str, Any] = field(default_factory=dict)
+    candidate_manifest_ids: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _without_none(
+            {
+                "id": self.id,
+                "display_name": self.display_name,
+                "aliases": list(self.aliases),
+                "modality": self.modality,
+                "operations": list(self.operations),
+                "preferred_runtimes": list(self.preferred_runtimes),
+                "target_class": self.target_class,
+                "selection_guidance": self.selection_guidance,
+                "resource_estimate": self.resource_estimate.to_dict(),
+                "target_resource_label": self.target_resource_label,
+                "runtime_policy": self.runtime_policy,
+                "default_limits": dict(self.default_limits) if self.default_limits else None,
+                "candidate_manifest_ids": list(self.candidate_manifest_ids) if self.candidate_manifest_ids else None,
+                "notes": list(self.notes) if self.notes else None,
+            }
+        )
+
+
 def runtime_smoke_config_public_summary(config: Any) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {"configured": False}
@@ -375,7 +434,7 @@ class CatalogAlias:
 
 
 class ModelCatalog:
-    def __init__(self, aliases: list[AliasDefinition], manifests: list[ModelManifest], policy: ResourcePolicy) -> None:
+    def __init__(self, aliases: list[AliasDefinition], manifests: list[ModelManifest], policy: ResourcePolicy, profiles: list[ModelProfile] | None = None) -> None:
         self.policy = policy
         self.aliases_by_id = {alias.alias: alias for alias in aliases}
         if len(self.aliases_by_id) != len(aliases):
@@ -403,6 +462,11 @@ class ModelCatalog:
                 decision=self._decision_for(manifest),
                 cpu_residency=self._cpu_residency_for(alias, manifest),
             )
+        self.profiles = sorted(profiles or [], key=lambda item: item.id)
+        self.profiles_by_alias: dict[str, list[ModelProfile]] = {}
+        for profile in self.profiles:
+            for alias in profile.aliases:
+                self.profiles_by_alias.setdefault(alias, []).append(profile)
 
     def _decision_for(self, manifest: ModelManifest | None) -> AdmissionDecision:
         if manifest is None:
@@ -429,6 +493,9 @@ class ModelCatalog:
 
     def list_manifests(self) -> list[ModelManifest]:
         return sorted((manifest for manifests in self.manifests_by_id.values() for manifest in manifests), key=lambda item: (item.id, item.version))
+
+    def list_profiles(self) -> list[ModelProfile]:
+        return list(self.profiles)
 
     def get_alias(self, alias_id: str) -> CatalogAlias | None:
         return self.aliases.get(alias_id)
@@ -461,6 +528,15 @@ class ModelCatalog:
             ),
         }
 
+    def profile_record(self, profile: ModelProfile) -> dict[str, Any]:
+        estimate = profile.resource_estimate.to_scheduler_estimate(requires_gpu=profile.runtime_policy != "cpu-resident")
+        decision = classify_resource_fit(self.policy, estimate)
+        return {
+            **profile.to_dict(),
+            "resource_label": decision.label,
+            "resource_decision": asdict(decision),
+        }
+
     def model_or_alias_record(self, model_or_alias_id: str) -> dict[str, Any] | None:
         alias = self.get_alias(model_or_alias_id)
         if alias is not None:
@@ -484,6 +560,7 @@ class ModelCatalog:
             "object": "catalog",
             "aliases": [alias.to_openai_model() for alias in self.list_aliases()],
             "models": [self.manifest_record(manifest) for manifest in self.list_manifests()],
+            "profiles": [self.profile_record(profile) for profile in self.list_profiles()],
         }
 
 
@@ -1065,6 +1142,171 @@ def _parse_aliases(data: dict[str, Any], context: str) -> list[AliasDefinition]:
     return parsed
 
 
+def _parse_profile_default_limits(data: Any, context: str) -> dict[str, Any]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    _forbid_extra_keys(data, MODEL_PROFILE_DEFAULT_LIMIT_KEYS, context)
+    parsed: dict[str, Any] = {}
+    integer_keys = {
+        "context_tokens",
+        "maximum_context_tokens",
+        "parallel_requests",
+        "maximum_batch_size",
+        "maximum_frames",
+        "maximum_duration_seconds",
+        "maximum_steps",
+    }
+    for key in integer_keys:
+        if key not in data:
+            continue
+        value = data[key]
+        if not isinstance(value, int) or value < 0:
+            raise CatalogError(f"{context}.{key} must be a non-negative integer")
+        parsed[key] = value
+    if "maximum_resolution" in data:
+        parsed["maximum_resolution"] = _string(data, "maximum_resolution", context)
+    if "cpu_resident_allowed" in data:
+        value = data["cpu_resident_allowed"]
+        if not isinstance(value, bool):
+            raise CatalogError(f"{context}.cpu_resident_allowed must be boolean")
+        parsed["cpu_resident_allowed"] = value
+    return parsed
+
+
+def _parse_model_profile(
+    data: dict[str, Any],
+    context: str,
+    *,
+    aliases_by_id: dict[str, AliasDefinition],
+    manifest_ids: set[str],
+    manifests_by_id: dict[str, list[ModelManifest]],
+) -> ModelProfile:
+    required = {
+        "id",
+        "display_name",
+        "aliases",
+        "modality",
+        "operations",
+        "preferred_runtimes",
+        "target_class",
+        "selection_guidance",
+        "resource_estimate",
+        "target_resource_label",
+        "runtime_policy",
+    }
+    allowed = required | {"default_limits", "candidate_manifest_ids", "notes"}
+    _require_keys(data, required, context)
+    _forbid_extra_keys(data, allowed, context)
+    profile_id = _validate_id(_string(data, "id", context), f"{context}.id")
+    aliases = [_validate_id(alias, f"{context}.aliases[]") for alias in _string_list(data, "aliases", context, min_items=1)]
+    missing_aliases = [alias for alias in aliases if alias not in aliases_by_id]
+    if missing_aliases:
+        raise CatalogError(f"{context}.aliases references unknown aliases: {', '.join(sorted(missing_aliases))}")
+    modality = _string(data, "modality", context)
+    if modality not in MODALITIES:
+        raise CatalogError(f"{context}.modality is unsupported: {modality}")
+    mismatched_aliases = [alias for alias in aliases if aliases_by_id[alias].modality != modality]
+    if mismatched_aliases:
+        raise CatalogError(f"{context}.aliases modality mismatch: {', '.join(sorted(mismatched_aliases))}")
+    preferred_runtimes = _string_list(data, "preferred_runtimes", context, RUNTIME_NAMES, min_items=1)
+    alias_runtime_mismatches = [
+        alias
+        for alias in aliases
+        if aliases_by_id[alias].preferred_runtime not in set(preferred_runtimes)
+    ]
+    if alias_runtime_mismatches:
+        raise CatalogError(f"{context}.preferred_runtimes does not include alias defaults for: {', '.join(sorted(alias_runtime_mismatches))}")
+    target_resource_label = _string(data, "target_resource_label", context)
+    if target_resource_label not in MODEL_PROFILE_RESOURCE_LABELS:
+        raise CatalogError(f"{context}.target_resource_label is unsupported: {target_resource_label}")
+    runtime_policy = _string(data, "runtime_policy", context)
+    if runtime_policy not in MODEL_PROFILE_RUNTIME_POLICIES:
+        raise CatalogError(f"{context}.runtime_policy is unsupported: {runtime_policy}")
+    if runtime_policy == "cpu-resident" and any(runtime != "audio-cpu" for runtime in preferred_runtimes):
+        raise CatalogError(f"{context}.runtime_policy cpu-resident requires audio-cpu preferred runtimes")
+    candidate_manifest_ids = [
+        _validate_id(model_id, f"{context}.candidate_manifest_ids[]")
+        for model_id in _string_list(data, "candidate_manifest_ids", context) if model_id
+    ] if "candidate_manifest_ids" in data else []
+    unknown_manifest_ids = [model_id for model_id in candidate_manifest_ids if model_id not in manifest_ids]
+    if unknown_manifest_ids:
+        raise CatalogError(f"{context}.candidate_manifest_ids references unknown manifests: {', '.join(sorted(unknown_manifest_ids))}")
+    alias_set = set(aliases)
+    runtime_set = set(preferred_runtimes)
+    for model_id in candidate_manifest_ids:
+        for manifest in manifests_by_id.get(model_id, []):
+            if manifest.modality != modality:
+                raise CatalogError(f"{context}.candidate_manifest_ids {model_id} modality does not match profile modality")
+            if manifest.preferred_runtime not in runtime_set:
+                raise CatalogError(f"{context}.candidate_manifest_ids {model_id} preferred runtime does not match profile runtimes")
+            if not (set(manifest.aliases) & alias_set):
+                raise CatalogError(f"{context}.candidate_manifest_ids {model_id} does not target a profile alias")
+    return ModelProfile(
+        id=profile_id,
+        display_name=_string(data, "display_name", context),
+        aliases=aliases,
+        modality=modality,
+        operations=_operation_list(data, "operations", modality, context),
+        preferred_runtimes=preferred_runtimes,
+        target_class=_string(data, "target_class", context),
+        selection_guidance=_string(data, "selection_guidance", context),
+        resource_estimate=_parse_resource(data["resource_estimate"], f"{context}.resource_estimate"),
+        target_resource_label=target_resource_label,
+        runtime_policy=runtime_policy,
+        default_limits=_parse_profile_default_limits(data.get("default_limits"), f"{context}.default_limits"),
+        candidate_manifest_ids=candidate_manifest_ids,
+        notes=_string_list(data, "notes", context) if "notes" in data else [],
+    )
+
+
+def _parse_model_profiles(
+    data: dict[str, Any],
+    context: str,
+    *,
+    aliases_by_id: dict[str, AliasDefinition],
+    manifests: list[ModelManifest],
+) -> list[ModelProfile]:
+    _require_keys(data, {"schema", "profiles"}, context)
+    _forbid_extra_keys(data, {"schema", "profiles"}, context)
+    schema = _string(data, "schema", context)
+    if schema != MODEL_PROFILE_SCHEMA:
+        raise CatalogError(f"{context}.schema is unsupported: {schema}")
+    raw_profiles = data["profiles"]
+    if not isinstance(raw_profiles, list):
+        raise CatalogError(f"{context}.profiles must be a list")
+    manifests_by_id: dict[str, list[ModelManifest]] = {}
+    for manifest in manifests:
+        manifests_by_id.setdefault(manifest.id, []).append(manifest)
+    manifest_ids = set(manifests_by_id)
+    profiles: list[ModelProfile] = []
+    for index, item in enumerate(raw_profiles):
+        item_context = f"{context}.profiles[{index}]"
+        if not isinstance(item, dict):
+            raise CatalogError(f"{item_context} must be an object")
+        profiles.append(
+            _parse_model_profile(
+                item,
+                item_context,
+                aliases_by_id=aliases_by_id,
+                manifest_ids=manifest_ids,
+                manifests_by_id=manifests_by_id,
+            )
+        )
+    profile_ids = [profile.id for profile in profiles]
+    if len(profile_ids) != len(set(profile_ids)):
+        raise CatalogError("model profile IDs must be unique")
+    alias_claims: dict[str, str] = {}
+    for profile in profiles:
+        for alias in profile.aliases:
+            existing = alias_claims.get(alias)
+            if existing is not None:
+                raise CatalogError(f"alias {alias} is listed by multiple model profiles: {existing}, {profile.id}")
+            alias_claims[alias] = profile.id
+    return profiles
+
+
 def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
     _require_keys(data, {"alias"}, context)
     _forbid_extra_keys(
@@ -1174,6 +1416,12 @@ def load_catalog(
             and not (manifest.installation_status == "installed" and set(manifest.aliases) & installed_aliases)
         ]
         manifests.extend(installed_manifests)
+        profiles_path = seed_dir / "model-profiles.json"
+        profiles = (
+            _parse_model_profiles(_read_json(profiles_path), str(profiles_path), aliases_by_id={alias.alias: alias for alias in aliases}, manifests=manifests)
+            if profiles_path.exists()
+            else []
+        )
     except (OSError, json.JSONDecodeError) as exc:
         raise CatalogError(f"invalid model catalog under {catalog_dir}: {exc}") from exc
-    return ModelCatalog(aliases, manifests, policy)
+    return ModelCatalog(aliases, manifests, policy, profiles)

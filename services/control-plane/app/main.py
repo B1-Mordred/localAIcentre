@@ -8452,10 +8452,12 @@ async def admin_models(authorization: str | None = Header(default=None)) -> dict
     require_scope(auth, "models:read")
     require_model_admin(auth)
     catalog = catalog_snapshot()
+    catalog_payload = catalog.to_catalog()
     return {
         "object": "list",
-        "aliases": catalog.to_openai_list()["data"],
-        "catalog": catalog.to_catalog()["models"],
+        "aliases": catalog_payload["aliases"],
+        "profiles": catalog_payload["profiles"],
+        "catalog": catalog_payload["models"],
         "alias_policies": [public_model_alias_policy(row) for row in await database.list_model_alias_policies()],
         "records": [public_model_record(row) for row in await database.list_model_records()],
     }

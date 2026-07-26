@@ -76,6 +76,12 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog_models["b1-vosk-small-en-us-0.15"]["installation_status"], "available")
         self.assertFalse(catalog_models["b1-vosk-small-en-us-0.15"]["downloadable"])
         self.assertIn("stt-default", catalog_models["b1-vosk-small-en-us-0.15"]["aliases"])
+        profiles = {profile["id"]: profile for profile in self.catalog.to_catalog()["profiles"]}
+        self.assertEqual(profiles["everyday-llm-7-9b-q4"]["aliases"], ["chat-default", "chat-fast"])
+        self.assertEqual(profiles["everyday-llm-7-9b-q4"]["resource_label"], "recommended")
+        self.assertEqual(profiles["quality-llm-12-14b-q4"]["resource_label"], "offload-required")
+        self.assertEqual(profiles["short-video-12gb-workflow"]["resource_label"], "expected")
+        self.assertEqual(profiles["fast-cpu-tts"]["candidate_manifest_ids"], ["b1-piper-en-us-amy-low"])
 
     def test_cpu_residency_policy_controls_alias_projection(self) -> None:
         catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy(cpu_residency_enabled=False))
@@ -111,6 +117,67 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn("url", manifest["license"], manifest_path.name)
                 self.assertIn("attribution", manifest["license"], manifest_path.name)
                 self.assertIn("acceptance_required", manifest["license"], manifest_path.name)
+
+    def test_model_profile_schema_declares_seed_contract(self) -> None:
+        schema = json.loads((ROOT / "model-catalog" / "schemas" / "model-profiles.schema.json").read_text(encoding="utf-8"))
+        seed = json.loads((ROOT / "model-catalog" / "seed" / "model-profiles.json").read_text(encoding="utf-8"))
+        profile_properties = set(schema["$defs"]["modelProfile"]["properties"])
+        expected_controls = {
+            "aliases",
+            "preferred_runtimes",
+            "target_class",
+            "selection_guidance",
+            "resource_estimate",
+            "target_resource_label",
+            "runtime_policy",
+            "default_limits",
+            "candidate_manifest_ids",
+        }
+
+        self.assertEqual(seed["schema"], "b1-ai-hub-model-profiles/v1")
+        self.assertTrue(expected_controls <= profile_properties)
+        for profile in seed["profiles"]:
+            self.assertEqual(set(profile) - profile_properties, set(), profile["id"])
+            self.assertNotRegex(json.dumps(profile), r"\b(latest|nightly)\b", profile["id"])
+
+    def test_model_profiles_validate_alias_runtime_operation_and_candidates(self) -> None:
+        def write_catalog(root: Path, profile: dict[str, object]) -> None:
+            seed = root / "seed"
+            seed.mkdir()
+            (seed / "aliases.json").write_text(
+                json.dumps({"aliases": [{"alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled"}]}),
+                encoding="utf-8",
+            )
+            (seed / "model-profiles.json").write_text(json.dumps({"schema": "b1-ai-hub-model-profiles/v1", "profiles": [profile]}), encoding="utf-8")
+
+        base_profile = {
+            "id": "chat-profile",
+            "display_name": "Chat Profile",
+            "aliases": ["chat-default"],
+            "modality": "llm",
+            "operations": ["chat"],
+            "preferred_runtimes": ["localai"],
+            "target_class": "7B Q4 chat model",
+            "selection_guidance": "Install only pinned manifests with smoke measurements.",
+            "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 4},
+            "target_resource_label": "recommended",
+            "runtime_policy": "gpu-exclusive",
+            "default_limits": {"context_tokens": 8192},
+        }
+        cases = [
+            ({"aliases": ["missing-default"]}, "unknown aliases"),
+            ({"modality": "tts", "operations": ["text-to-speech"]}, "modality mismatch"),
+            ({"operations": ["image-generation"]}, "unsupported llm operation"),
+            ({"preferred_runtimes": ["comfyui"]}, "does not include alias defaults"),
+            ({"runtime_policy": "cpu-resident"}, "requires audio-cpu"),
+            ({"candidate_manifest_ids": ["missing-model"]}, "unknown manifests"),
+        ]
+        for overlay, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_catalog(root, {**base_profile, **overlay})
+                with self.assertRaisesRegex(CatalogError, message):
+                    load_catalog(root, self.policy)
 
     def test_manifest_measurements_reject_floating_latest_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

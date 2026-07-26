@@ -837,6 +837,34 @@ type ModelSmokeTestResult = {
   persisted: boolean;
 };
 
+type ModelResourceEstimate = {
+  vram_gib: number;
+  ram_gib: number;
+  disk_gib: number;
+  context_tokens?: number | null;
+  max_resolution?: string | null;
+  max_frames?: number | null;
+};
+
+type ModelProfile = {
+  id: string;
+  display_name: string;
+  aliases: string[];
+  modality: string;
+  operations: string[];
+  preferred_runtimes: string[];
+  target_class: string;
+  selection_guidance: string;
+  resource_estimate: ModelResourceEstimate;
+  target_resource_label: string;
+  resource_label: string;
+  resource_decision?: { label?: string; reason?: string };
+  runtime_policy: string;
+  default_limits?: Record<string, number | string | boolean>;
+  candidate_manifest_ids?: string[];
+  notes?: string[];
+};
+
 type CatalogModel = {
   id: string;
   version: string;
@@ -1568,6 +1596,28 @@ function formatGibFromMib(value: number | null | undefined): string {
   return `${(value / 1024).toFixed(1)} GiB`;
 }
 
+function formatGibValue(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
+  return `${value.toFixed(value >= 10 || value === 0 ? 0 : 1)} GiB`;
+}
+
+function formatModelEstimate(estimate?: ModelResourceEstimate): string {
+  if (!estimate) return "no estimate";
+  const extras = [
+    estimate.context_tokens ? `${estimate.context_tokens} ctx` : "",
+    estimate.max_resolution ? `${estimate.max_resolution}` : "",
+    estimate.max_frames ? `${estimate.max_frames} frames` : ""
+  ].filter(Boolean);
+  return `VRAM ${formatGibValue(estimate.vram_gib)} / RAM ${formatGibValue(estimate.ram_gib)} / disk ${formatGibValue(estimate.disk_gib)}${extras.length ? ` / ${extras.join(" / ")}` : ""}`;
+}
+
+function formatProfileLimits(limits?: ModelProfile["default_limits"]): string {
+  if (!limits || !Object.keys(limits).length) return "no default limits";
+  return Object.entries(limits)
+    .map(([key, value]) => `${key.split("_").join(" ")} ${String(value)}`)
+    .join(" / ");
+}
+
 function formatHostBytes(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "unavailable";
   const gib = value / (1024 ** 3);
@@ -1777,6 +1827,7 @@ function Dashboard({ status, metrics }: { status: AdminStatus | null; metrics: A
 function Models() {
   const [aliases, setAliases] = useState<ModelAlias[]>([]);
   const [aliasForms, setAliasForms] = useState<Record<string, ModelAliasPolicyForm>>({});
+  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [catalog, setCatalog] = useState<CatalogModel[]>([]);
   const [records, setRecords] = useState<ModelRecord[]>([]);
   const [downloads, setDownloads] = useState<ModelDownloadRecord[]>([]);
@@ -1791,6 +1842,15 @@ function Models() {
   const [busy, setBusy] = useState(false);
 
   const modelVersionPath = (record: ModelRecord) => `${encodeURIComponent(record.id)}/versions/${encodeURIComponent(record.version)}`;
+  const profilesByAlias = useMemo(() => {
+    const byAlias: Record<string, ModelProfile> = {};
+    for (const profile of profiles) {
+      for (const alias of profile.aliases ?? []) {
+        byAlias[alias] = profile;
+      }
+    }
+    return byAlias;
+  }, [profiles]);
   const aliasFormFromAlias = (alias: ModelAlias): ModelAliasPolicyForm => ({
     enabled: alias.enabled ?? alias.status !== "disabled",
     preferred_runtime: alias.preferred_runtime_override ?? "",
@@ -1814,6 +1874,7 @@ function Models() {
         const loadedAliases = modelPayload.aliases ?? [];
         setAliases(loadedAliases);
         setAliasForms(Object.fromEntries(loadedAliases.map((alias: ModelAlias) => [alias.id, aliasFormFromAlias(alias)])));
+        setProfiles(modelPayload.profiles ?? []);
         setCatalog(modelPayload.catalog ?? []);
         setRecords(modelPayload.records ?? []);
         setDownloads(downloadPayload.data ?? []);
@@ -2208,9 +2269,14 @@ function Models() {
         <tbody>
           {aliases.map((alias) => {
             const form = aliasForms[alias.id] ?? aliasFormFromAlias(alias);
+            const profile = profilesByAlias[alias.id];
             return (
               <tr key={alias.id}>
-                <td><code>{alias.id}</code><small>{alias.resolved_model ? `${alias.resolved_model.id}@${alias.resolved_model.version}` : "no manifest"}</small></td>
+                <td>
+                  <code>{alias.id}</code>
+                  <small>{alias.resolved_model ? `${alias.resolved_model.id}@${alias.resolved_model.version}` : "no manifest"}</small>
+                  {profile && <small>{profile.target_class}</small>}
+                </td>
                 <td>
                   <label className="inline-check">
                     <input type="checkbox" checked={form.enabled} onChange={(event) => updateAliasForm(alias.id, "enabled", event.target.checked)} />
@@ -2255,6 +2321,7 @@ function Models() {
                   </div>
                   <small title={alias.cpu_resident_reason ?? ""}>
                     {alias.resource_label}
+                    {profile ? ` / profile ${profile.resource_label}` : ""}
                     {alias.cpu_resident_candidate ? ` / ${alias.cpu_resident_allowed ? "CPU resident" : "CPU on-demand"}` : ""}
                     {" / "}
                     {alias.alias_policy_source ?? "seed"}
@@ -2274,6 +2341,38 @@ function Models() {
             );
           })}
           {!aliases.length && <tr><td colSpan={5}>No model aliases loaded</td></tr>}
+        </tbody>
+      </table>
+      <div className="subsection-title">
+        <ListChecks size={16} />
+        <h3>Required Profiles</h3>
+      </div>
+      <table>
+        <thead><tr><th>Profile</th><th>Aliases</th><th>Runtime</th><th>Resource</th><th>Guidance</th></tr></thead>
+        <tbody>
+          {profiles.map((profile) => (
+            <tr key={profile.id}>
+              <td>
+                <code>{profile.display_name}</code>
+                <small>{profile.id}</small>
+                <small>{profile.target_class}</small>
+              </td>
+              <td>{profile.aliases.join(", ")}<small>{profile.modality} / {profile.operations.join(", ")}</small></td>
+              <td>{profile.preferred_runtimes.join(", ")}<small>{profile.runtime_policy}</small></td>
+              <td>
+                {profile.resource_label}
+                <small>target {profile.target_resource_label}</small>
+                <small>{formatModelEstimate(profile.resource_estimate)}</small>
+              </td>
+              <td>
+                {profile.selection_guidance}
+                <small>{formatProfileLimits(profile.default_limits)}</small>
+                {Boolean(profile.candidate_manifest_ids?.length) && <small>candidate manifests: {profile.candidate_manifest_ids?.join(", ")}</small>}
+                {Boolean(profile.notes?.length) && <small>{profile.notes?.join(" / ")}</small>}
+              </td>
+            </tr>
+          ))}
+          {!profiles.length && <tr><td colSpan={5}>No model profiles loaded</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">

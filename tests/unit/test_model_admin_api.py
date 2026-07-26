@@ -311,7 +311,9 @@ class ModelAdminApiTests(unittest.TestCase):
 
         self.assertEqual(result["object"], "list")
         self.assertIn("aliases", result)
+        self.assertIn("profiles", result)
         self.assertIn("catalog", result)
+        self.assertTrue(any(profile["id"] == "everyday-llm-7-9b-q4" for profile in result["profiles"]))
         self.assertEqual(result["records"], [])
 
     def test_blob_quarantine_plan_blocks_active_jobs(self) -> None:

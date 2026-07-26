@@ -355,6 +355,17 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("runtimeSmokeLine(record)", self.source)
         self.assertIn("runtimeSmokeLine(model)", self.source)
 
+    def test_models_tab_shows_required_model_profiles(self) -> None:
+        self.assertIn("type ModelProfile", self.source)
+        self.assertIn("const [profiles, setProfiles]", self.source)
+        self.assertIn("setProfiles(modelPayload.profiles ?? [])", self.source)
+        self.assertIn("const profilesByAlias = useMemo", self.source)
+        self.assertIn("<h3>Required Profiles</h3>", self.source)
+        self.assertIn("profile.target_class", self.source)
+        self.assertIn("profile.target_resource_label", self.source)
+        self.assertIn("formatModelEstimate(profile.resource_estimate)", self.source)
+        self.assertIn("formatProfileLimits(profile.default_limits)", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

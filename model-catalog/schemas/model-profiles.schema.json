@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://models.ai.b1.germering/schemas/model-profiles.schema.json",
+  "title": "B1 AI Hub Model Profiles",
+  "type": "object",
+  "required": ["schema", "profiles"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["b1-ai-hub-model-profiles/v1"] },
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modelProfile" },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$"
+    },
+    "resourceEstimate": {
+      "type": "object",
+      "required": ["vram_gib", "ram_gib", "disk_gib"],
+      "properties": {
+        "vram_gib": { "type": "number", "minimum": 0 },
+        "ram_gib": { "type": "number", "minimum": 0 },
+        "disk_gib": { "type": "number", "minimum": 0 },
+        "context_tokens": { "type": "integer", "minimum": 0 },
+        "max_resolution": { "type": "string" },
+        "max_frames": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "defaultLimits": {
+      "type": "object",
+      "properties": {
+        "context_tokens": { "type": "integer", "minimum": 0 },
+        "maximum_context_tokens": { "type": "integer", "minimum": 0 },
+        "parallel_requests": { "type": "integer", "minimum": 0 },
+        "maximum_batch_size": { "type": "integer", "minimum": 0 },
+        "maximum_resolution": { "type": "string" },
+        "maximum_frames": { "type": "integer", "minimum": 0 },
+        "maximum_duration_seconds": { "type": "integer", "minimum": 0 },
+        "maximum_steps": { "type": "integer", "minimum": 0 },
+        "cpu_resident_allowed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "modelProfile": {
+      "type": "object",
+      "required": [
+        "id",
+        "display_name",
+        "aliases",
+        "modality",
+        "operations",
+        "preferred_runtimes",
+        "target_class",
+        "selection_guidance",
+        "resource_estimate",
+        "target_resource_label",
+        "runtime_policy"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "display_name": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "modality": {
+          "type": "string",
+          "enum": ["llm", "vlm", "embedding", "tts", "stt", "image", "video", "workflow"]
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "audio-speech",
+              "audio-transcription",
+              "audio-transcriptions",
+              "background-removal",
+              "chat",
+              "chat-completion",
+              "chat-completions",
+              "clone",
+              "completion",
+              "completions",
+              "comfyui-prompt",
+              "edit",
+              "embedding",
+              "embeddings",
+              "frame-interpolation",
+              "generation",
+              "image-edit",
+              "image-generation",
+              "image-to-video",
+              "image-video",
+              "image-upscale",
+              "image-to-image",
+              "inpaint",
+              "inpainting",
+              "inpainting-outpainting",
+              "interpolation",
+              "native-workflow",
+              "outpaint",
+              "outpainting",
+              "remove-background",
+              "responses",
+              "speech",
+              "speech-to-text",
+              "stt",
+              "text-generation",
+              "text-to-image",
+              "text-to-speech",
+              "text-to-video",
+              "transcription",
+              "transcriptions",
+              "tts",
+              "upscale",
+              "upscaling",
+              "video-generation",
+              "video-image",
+              "vision",
+              "vision-analysis",
+              "voice-clone",
+              "voice-cloning",
+              "workflow"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "preferred_runtimes": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "target_class": { "type": "string", "minLength": 1 },
+        "selection_guidance": { "type": "string", "minLength": 1 },
+        "resource_estimate": { "$ref": "#/$defs/resourceEstimate" },
+        "target_resource_label": {
+          "type": "string",
+          "enum": ["recommended", "expected", "offload-required", "experimental", "incompatible"]
+        },
+        "runtime_policy": {
+          "type": "string",
+          "enum": ["cpu-resident", "gpu-exclusive", "hosted-local", "hosted-local-or-downloadable", "comfyui-workflow", "voicebox-managed"]
+        },
+        "default_limits": { "$ref": "#/$defs/defaultLimits" },
+        "candidate_manifest_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
