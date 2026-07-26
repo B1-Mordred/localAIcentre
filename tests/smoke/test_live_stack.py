@@ -87,6 +87,50 @@ def response_header(headers: dict[str, str], name: str) -> str:
     return ""
 
 
+def downloaded_artifact_proof(artifact: dict[str, Any], headers: dict[str, str], content: bytes, *, index: int) -> dict[str, Any]:
+    digest = hashlib.sha256(content).hexdigest()
+    return {
+        "artifact_index": index,
+        "artifact_url": str(artifact.get("url") or ""),
+        "artifact_id": str(artifact.get("id") or ""),
+        "artifact_kind": str(artifact.get("kind") or ""),
+        "artifact_mime_type": str(artifact.get("mime_type") or ""),
+        "artifact_bytes": artifact.get("bytes"),
+        "artifact_sha256": str(artifact.get("sha256") or ""),
+        "download_bytes": len(content),
+        "download_sha256": digest,
+        "download_content_type": response_header(headers, "content-type"),
+        "download_content_length": response_header(headers, "content-length"),
+        "download_etag": response_header(headers, "etag"),
+        "download_accept_ranges": response_header(headers, "accept-ranges"),
+    }
+
+
+def artifact_collection_proof(job_id: str, artifact_proofs: list[dict[str, Any]]) -> dict[str, Any]:
+    first_proof = artifact_proofs[0]
+    return {
+        "job_id": job_id,
+        "artifact_count": len(artifact_proofs),
+        "verified_artifact_count": len(artifact_proofs),
+        "total_downloaded_bytes": sum(int(proof["download_bytes"]) for proof in artifact_proofs),
+        "artifact_proofs": artifact_proofs,
+        "artifact_url": first_proof["artifact_url"],
+        "artifact_id": first_proof["artifact_id"],
+        "artifact_kind": first_proof["artifact_kind"],
+        "artifact_mime_type": first_proof["artifact_mime_type"],
+        "artifact_bytes": first_proof["artifact_bytes"],
+        "artifact_sha256": first_proof["artifact_sha256"],
+        "first_artifact_url": first_proof["artifact_url"],
+        "first_artifact_bytes": first_proof["download_bytes"],
+        "first_artifact_sha256": first_proof["download_sha256"],
+        "first_artifact_mime_type": first_proof["artifact_mime_type"],
+        "download_content_type": first_proof["download_content_type"],
+        "download_content_length": first_proof["download_content_length"],
+        "download_etag": first_proof["download_etag"],
+        "download_accept_ranges": first_proof["download_accept_ranges"],
+    }
+
+
 def sse_payloads(raw: bytes) -> list[dict[str, Any] | str]:
     text = raw.decode("utf-8", errors="replace")
     payloads: list[dict[str, Any] | str] = []
@@ -474,26 +518,30 @@ class LiveStackSmokeTests(unittest.TestCase):
         artifacts = artifact_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
         self.assertGreater(len(artifacts), 0, artifact_payload)
-        artifact = artifacts[0]
-        self.assertIsInstance(artifact, dict)
-        artifact_url = artifact.get("url")
-        self.assertIsInstance(artifact_url, str)
-        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
-        artifact_mime_type = artifact.get("mime_type")
-        artifact_bytes = artifact.get("bytes")
-        artifact_sha256 = artifact.get("sha256")
-        self.assertIsInstance(artifact_mime_type, str, artifact)
-        self.assertTrue(artifact_mime_type, artifact)
-        self.assertIsInstance(artifact_bytes, int, artifact)
-        self.assertGreater(artifact_bytes, 0, artifact)
-        self.assertIsInstance(artifact_sha256, str, artifact)
-        self.assertRegex(artifact_sha256, SHA256_RE, artifact)
-        artifact_placeholder = artifact.get("b1_placeholder")
-        cpu_audio_engine = artifact.get("b1_cpu_audio_engine")
-        placeholder_failure = artifact_placeholder is True or (
-            runtime == "audio-cpu" and (artifact_placeholder is not False or cpu_audio_engine == "scaffold")
-        )
-        if placeholder_failure:
+        placeholder_proofs = []
+        for index, artifact in enumerate(artifacts):
+            self.assertIsInstance(artifact, dict)
+            artifact_placeholder = artifact.get("b1_placeholder")
+            cpu_audio_engine = artifact.get("b1_cpu_audio_engine")
+            reasons = []
+            if artifact_placeholder is True:
+                reasons.append("explicit_placeholder_marker")
+            if runtime == "audio-cpu" and artifact_placeholder is not False:
+                reasons.append("audio_cpu_non_placeholder_marker_missing")
+            if runtime == "audio-cpu" and cpu_audio_engine == "scaffold":
+                reasons.append("scaffold_cpu_audio_engine")
+            placeholder_proofs.append(
+                {
+                    "artifact_index": index,
+                    "placeholder": artifact_placeholder,
+                    "cpu_audio_engine": cpu_audio_engine,
+                    "placeholder_failure": bool(reasons),
+                    "reasons": reasons,
+                }
+            )
+        placeholder_failures = [proof for proof in placeholder_proofs if proof["placeholder_failure"]]
+        first_placeholder = placeholder_proofs[0]
+        if placeholder_failures:
             self.record_check(
                 "tts_media_job_not_placeholder",
                 "incomplete",
@@ -501,9 +549,12 @@ class LiveStackSmokeTests(unittest.TestCase):
                 model=model,
                 runtime=runtime,
                 resolved_model_version=resolved_model_version,
-                placeholder=artifact_placeholder,
+                artifact_count=len(artifacts),
+                artifact_placeholders=placeholder_proofs,
+                placeholder_failure_count=len(placeholder_failures),
+                placeholder=first_placeholder.get("placeholder"),
                 placeholder_allowed=self.allow_placeholder,
-                cpu_audio_engine=cpu_audio_engine,
+                cpu_audio_engine=first_placeholder.get("cpu_audio_engine"),
             )
             if not self.allow_placeholder:
                 raise AssertionError(
@@ -517,45 +568,32 @@ class LiveStackSmokeTests(unittest.TestCase):
                 model=model,
                 runtime=runtime,
                 resolved_model_version=resolved_model_version,
-                placeholder=artifact_placeholder,
-                cpu_audio_engine=cpu_audio_engine,
+                artifact_count=len(artifacts),
+                artifact_placeholders=placeholder_proofs,
+                placeholder_failure_count=0,
+                placeholder=False,
+                cpu_audio_engine=first_placeholder.get("cpu_audio_engine"),
             )
 
-        status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
-        self.assertEqual(status, 200, content[:200])
-        self.assertGreater(len(content), 0)
-        content_length = response_header(headers, "content-length")
-        self.assertEqual(content_length, str(len(content)), headers)
-        self.assertEqual(artifact_bytes, len(content), artifact)
-        downloaded_sha256 = hashlib.sha256(content).hexdigest()
-        self.assertEqual(artifact_sha256, downloaded_sha256, artifact)
-        content_type = response_header(headers, "content-type")
-        etag = response_header(headers, "etag")
-        accept_ranges = response_header(headers, "accept-ranges")
-        self.assertTrue(content_type, headers)
-        self.assertTrue(etag, headers)
-        self.assertEqual(accept_ranges.lower(), "bytes", headers)
+        artifact_proofs = [self.verify_artifact_download(artifact, index) for index, artifact in enumerate(artifacts)]
+        artifact_collection = artifact_collection_proof(job_id, artifact_proofs)
+        first_proof = artifact_proofs[0]
         self.samples.append(
             {
                 "label": "artifact-download",
                 "job_id": job_id,
-                "bytes": len(content),
-                "mime_type": artifact_mime_type,
-                "sha256": artifact_sha256,
+                "artifact_count": len(artifact_proofs),
+                "verified_artifact_count": len(artifact_proofs),
+                "total_downloaded_bytes": artifact_collection["total_downloaded_bytes"],
+                "first_artifact_bytes": first_proof["download_bytes"],
+                "first_artifact_mime_type": first_proof["artifact_mime_type"],
+                "first_artifact_sha256": first_proof["download_sha256"],
             }
         )
-        self.record_check("artifact_downloaded", job_id=job_id, bytes=len(content), sha256=artifact_sha256)
+        self.record_check("artifact_downloaded", **artifact_collection)
         self.record_check(
             "artifact_metadata_verified",
-            job_id=job_id,
-            artifact_url=artifact_url,
-            bytes=len(content),
-            mime_type=artifact_mime_type,
-            sha256=artifact_sha256,
-            content_type_header=content_type,
-            content_length_header=content_length,
-            etag_header=etag,
-            accept_ranges_header=accept_ranges,
+            **artifact_collection,
         )
 
     def test_admin_self_test_when_key_has_scope(self) -> None:
@@ -589,6 +627,35 @@ class LiveStackSmokeTests(unittest.TestCase):
                 return payload
             time.sleep(1)
         raise AssertionError(f"job {job_id} did not reach a terminal state before timeout; last={last}")
+
+    def verify_artifact_download(self, artifact: dict[str, Any], index: int) -> dict[str, Any]:
+        artifact_url = artifact.get("url")
+        self.assertIsInstance(artifact_url, str)
+        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
+        artifact_mime_type = artifact.get("mime_type")
+        artifact_bytes = artifact.get("bytes")
+        artifact_sha256 = artifact.get("sha256")
+        self.assertIsInstance(artifact_mime_type, str, artifact)
+        self.assertTrue(artifact_mime_type, artifact)
+        self.assertIsInstance(artifact_bytes, int, artifact)
+        self.assertGreater(artifact_bytes, 0, artifact)
+        self.assertIsInstance(artifact_sha256, str, artifact)
+        self.assertRegex(artifact_sha256, SHA256_RE, artifact)
+        status, headers, content = self.client.request("GET", artifact_url, headers={"Accept": "*/*"}, require_auth=True)
+        self.assertEqual(status, 200, content[:200])
+        self.assertGreater(len(content), 0)
+        content_length = response_header(headers, "content-length")
+        self.assertEqual(content_length, str(len(content)), headers)
+        self.assertEqual(artifact_bytes, len(content), artifact)
+        downloaded_sha256 = hashlib.sha256(content).hexdigest()
+        self.assertEqual(artifact_sha256, downloaded_sha256, artifact)
+        content_type = response_header(headers, "content-type")
+        etag = response_header(headers, "etag")
+        accept_ranges = response_header(headers, "accept-ranges")
+        self.assertTrue(content_type, headers)
+        self.assertTrue(etag, headers)
+        self.assertEqual(accept_ranges.lower(), "bytes", headers)
+        return downloaded_artifact_proof(artifact, headers, content, index=index)
 
 
 if __name__ == "__main__":

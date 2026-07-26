@@ -1085,6 +1085,27 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("tts_media_job_not_placeholder.cpu_audio_engine")
     if cpu_audio_engine == "scaffold":
         missing.append("tts_media_job_not_placeholder.cpu_audio_engine_not_scaffold")
+    placeholder_artifact_count = _positive_int(placeholder.get("artifact_count"))
+    placeholder_proofs = placeholder.get("artifact_placeholders") if isinstance(placeholder.get("artifact_placeholders"), list) else []
+    if placeholder_artifact_count < 1:
+        missing.append("tts_media_job_not_placeholder.artifact_count")
+    if not placeholder_proofs:
+        missing.append("tts_media_job_not_placeholder.artifact_placeholders")
+    elif placeholder_artifact_count and len(placeholder_proofs) != placeholder_artifact_count:
+        missing.append("tts_media_job_not_placeholder.artifact_placeholders_complete")
+    if _positive_int(placeholder.get("placeholder_failure_count")) != 0:
+        missing.append("tts_media_job_not_placeholder.placeholder_failure_count")
+    for index, proof in enumerate(item for item in placeholder_proofs if isinstance(item, dict)):
+        artifact_placeholder = proof.get("placeholder")
+        artifact_engine = _nonempty_text(proof.get("cpu_audio_engine")).lower()
+        if proof.get("placeholder_failure") is not False:
+            missing.append(f"tts_media_job_not_placeholder.artifact_placeholders.{index}.non_placeholder_proof")
+        if placeholder_runtime == "audio-cpu" and artifact_placeholder is not False:
+            missing.append(f"tts_media_job_not_placeholder.artifact_placeholders.{index}.audio_cpu_placeholder_false")
+        if placeholder_runtime == "audio-cpu" and not artifact_engine:
+            missing.append(f"tts_media_job_not_placeholder.artifact_placeholders.{index}.cpu_audio_engine")
+        if artifact_engine == "scaffold":
+            missing.append(f"tts_media_job_not_placeholder.artifact_placeholders.{index}.cpu_audio_engine_not_scaffold")
 
     events = _check_record(checks, "job_events_streamed")
     if _nonempty_text(events.get("job_id")) != job_id:
@@ -1103,16 +1124,37 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
     artifact_job_id = _nonempty_text(artifact.get("job_id"))
     if artifact_job_id != job_id:
         missing.append("artifact_downloaded.job_id_matches_completed")
-    artifact_bytes, artifact_sha256 = _require_artifact_download_evidence(artifact, "artifact_downloaded", missing)
+    artifact_count = _positive_int(artifact.get("artifact_count"))
+    if artifact_count < 1:
+        missing.append("artifact_downloaded.artifact_count")
+    _require_artifact_collection_evidence(artifact, "artifact_downloaded", missing)
+    artifact_proofs = _artifact_proof_records(artifact)
+    first_artifact_proof = artifact_proofs[0] if artifact_proofs else {}
+    artifact_bytes = _positive_artifact_bytes(first_artifact_proof or artifact)
+    artifact_sha256 = _artifact_sha256(first_artifact_proof or artifact)
     metadata = _check_record(checks, "artifact_metadata_verified")
     metadata_job_id = _nonempty_text(metadata.get("job_id"))
     if metadata_job_id != job_id:
         missing.append("artifact_metadata_verified.job_id_matches_completed")
-    metadata_bytes, metadata_sha256 = _require_artifact_metadata_evidence(metadata, "artifact_metadata_verified", missing)
-    if artifact_bytes and metadata_bytes and artifact_bytes != metadata_bytes:
-        missing.append("artifact_metadata_verified.bytes_match_download")
-    if artifact_sha256 and metadata_sha256 and artifact_sha256 != metadata_sha256:
-        missing.append("artifact_metadata_verified.sha256_matches_download")
+    metadata_count = _positive_int(metadata.get("artifact_count"))
+    if metadata_count < 1:
+        missing.append("artifact_metadata_verified.artifact_count")
+    _require_artifact_collection_evidence(metadata, "artifact_metadata_verified", missing, expected_count=artifact_count)
+    metadata_proofs = _artifact_proof_records(metadata)
+    if artifact_count and metadata_count and artifact_count != metadata_count:
+        missing.append("artifact_metadata_verified.artifact_count_matches_download")
+    if artifact_count and _positive_int(metadata.get("verified_artifact_count")) != artifact_count:
+        missing.append("artifact_metadata_verified.verified_artifact_count")
+    for index, proof in enumerate(metadata_proofs):
+        download_proof = artifact_proofs[index] if index < len(artifact_proofs) else {}
+        download_bytes = _positive_int(download_proof.get("download_bytes"))
+        download_sha256 = _normalized_sha256(download_proof.get("download_sha256"))
+        metadata_bytes = _positive_int(proof.get("download_bytes"))
+        metadata_sha256 = _normalized_sha256(proof.get("download_sha256"))
+        if download_bytes and metadata_bytes and download_bytes != metadata_bytes:
+            missing.append(f"artifact_metadata_verified.artifact_proofs.{index}.bytes_match_download")
+        if download_sha256 and metadata_sha256 and download_sha256 != metadata_sha256:
+            missing.append(f"artifact_metadata_verified.artifact_proofs.{index}.sha256_matches_download")
 
     return {
         "smoke_tts_job_id": job_id,
@@ -1121,6 +1163,9 @@ def _smoke_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "smoke_tts_resolved_model_version": resolved_model_version,
         "smoke_open_webui_base_url": open_webui_base_url,
         "smoke_open_webui_status_code": open_webui_status_code,
+        "smoke_artifact_count": artifact_count,
+        "smoke_verified_artifact_count": _positive_int(artifact.get("verified_artifact_count")),
+        "smoke_total_downloaded_bytes": _positive_int(artifact.get("total_downloaded_bytes")),
         "smoke_artifact_bytes": artifact_bytes,
         "smoke_artifact_sha256": artifact_sha256,
         "missing_smoke_evidence": missing,
@@ -1457,10 +1502,14 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
         missing.append("durable_artifacts_observable.job_id_matches_durable_job")
     if _positive_int(durable_artifacts.get("artifact_count")) < 1:
         missing.append("durable_artifacts_observable.artifact_count")
-    if _positive_int(durable_artifacts.get("byte_count")) < 1:
-        missing.append("durable_artifacts_observable.byte_count")
-    if not _nonempty_text(durable_artifacts.get("content_type")):
-        missing.append("durable_artifacts_observable.content_type")
+    _require_artifact_collection_evidence(durable_artifacts, "durable_artifacts_observable", missing)
+    durable_artifact_proofs = _artifact_proof_records(durable_artifacts)
+    if native_summary_stored_artifact_count and _positive_int(durable_artifacts.get("artifact_count")) != native_summary_stored_artifact_count:
+        missing.append("durable_artifacts_observable.artifact_count_matches_native_summary")
+    if not durable_artifact_proofs:
+        durable_first_bytes = 0
+    else:
+        durable_first_bytes = _positive_int(durable_artifact_proofs[0].get("download_bytes"))
 
     for check_name in ("queue_delete_accessible", "interrupt_accessible"):
         record = require_prompt_match(check_name)
@@ -1468,17 +1517,37 @@ def _native_comfyui_compatibility_summary(payload: dict[str, Any]) -> dict[str, 
             missing.append(f"{check_name}.http_status")
 
     view = require_prompt_match("view_artifact_accessible")
-    if _positive_int(view.get("byte_count")) < 1:
-        missing.append("view_artifact_accessible.byte_count")
-    if not _nonempty_text(view.get("filename")):
-        missing.append("view_artifact_accessible.filename")
-    if str(view.get("output_key") or "") not in {"images", "videos", "gifs", "audio"}:
-        missing.append("view_artifact_accessible.output_key")
+    view_count = _positive_int(view.get("view_count") or view.get("artifact_count"))
+    verified_view_count = _positive_int(view.get("verified_view_count") or view.get("verified_artifact_count"))
+    view_artifacts = view.get("artifacts") if isinstance(view.get("artifacts"), list) else []
+    if view_count < 1:
+        missing.append("view_artifact_accessible.view_count")
+    if view_count and verified_view_count != view_count:
+        missing.append("view_artifact_accessible.verified_view_count")
+    if not view_artifacts:
+        missing.append("view_artifact_accessible.artifacts")
+    elif view_count and len(view_artifacts) != view_count:
+        missing.append("view_artifact_accessible.artifacts_complete")
+    for index, artifact in enumerate(item for item in view_artifacts if isinstance(item, dict)):
+        if _positive_int(artifact.get("byte_count")) < 1:
+            missing.append(f"view_artifact_accessible.artifacts.{index}.byte_count")
+        if not _normalized_sha256(artifact.get("download_sha256")):
+            missing.append(f"view_artifact_accessible.artifacts.{index}.download_sha256")
+        if not _nonempty_text(artifact.get("content_type")):
+            missing.append(f"view_artifact_accessible.artifacts.{index}.content_type")
+        if not _nonempty_text(artifact.get("filename")):
+            missing.append(f"view_artifact_accessible.artifacts.{index}.filename")
+        if str(artifact.get("output_key") or "") not in {"images", "videos", "gifs", "audio"}:
+            missing.append(f"view_artifact_accessible.artifacts.{index}.output_key")
 
     return {
         "native_prompt_id": prompt_id,
         "durable_job_id": job_id,
         "durable_artifact_count": _positive_int(durable_artifacts.get("artifact_count")),
+        "durable_verified_artifact_count": _positive_int(durable_artifacts.get("verified_artifact_count")),
+        "durable_artifact_first_bytes": durable_first_bytes,
+        "view_artifact_count": view_count,
+        "view_verified_artifact_count": verified_view_count,
         "native_summary_node_count": native_summary_node_count,
         "native_summary_class_type_count": native_summary_class_type_count,
         "native_summary_stored_artifact_count": native_summary_stored_artifact_count,

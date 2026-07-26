@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
@@ -79,6 +80,62 @@ def env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def response_header(headers: dict[str, str], name: str) -> str:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return ""
+
+
+def downloaded_b1_artifact_proof(artifact: dict[str, Any], headers: dict[str, str], content: bytes, *, index: int) -> dict[str, Any]:
+    digest = hashlib.sha256(content).hexdigest()
+    return {
+        "artifact_index": index,
+        "artifact_url": str(artifact.get("url") or ""),
+        "artifact_id": str(artifact.get("id") or ""),
+        "artifact_kind": str(artifact.get("kind") or ""),
+        "artifact_source": str(artifact.get("source") or ""),
+        "artifact_mime_type": str(artifact.get("mime_type") or ""),
+        "artifact_bytes": artifact.get("bytes"),
+        "artifact_sha256": str(artifact.get("sha256") or ""),
+        "download_bytes": len(content),
+        "download_sha256": digest,
+        "download_content_type": response_header(headers, "content-type"),
+        "download_content_length": response_header(headers, "content-length"),
+        "download_etag": response_header(headers, "etag"),
+        "download_accept_ranges": response_header(headers, "accept-ranges"),
+    }
+
+
+def b1_artifact_collection_proof(job_id: str, artifact_proofs: list[dict[str, Any]]) -> dict[str, Any]:
+    first_proof = artifact_proofs[0]
+    return {
+        "job_id": job_id,
+        "artifact_count": len(artifact_proofs),
+        "verified_artifact_count": len(artifact_proofs),
+        "total_downloaded_bytes": sum(int(proof["download_bytes"]) for proof in artifact_proofs),
+        "artifact_proofs": artifact_proofs,
+        "artifact_url": first_proof["artifact_url"],
+        "artifact_id": first_proof["artifact_id"],
+        "artifact_kind": first_proof["artifact_kind"],
+        "artifact_mime_type": first_proof["artifact_mime_type"],
+        "artifact_bytes": first_proof["artifact_bytes"],
+        "artifact_sha256": first_proof["artifact_sha256"],
+        "source": first_proof["artifact_source"],
+        "byte_count": first_proof["download_bytes"],
+        "content_type": first_proof["download_content_type"],
+        "first_artifact_url": first_proof["artifact_url"],
+        "first_artifact_bytes": first_proof["download_bytes"],
+        "first_artifact_sha256": first_proof["download_sha256"],
+        "first_artifact_mime_type": first_proof["artifact_mime_type"],
+        "download_content_type": first_proof["download_content_type"],
+        "download_content_length": first_proof["download_content_length"],
+        "download_etag": first_proof["download_etag"],
+        "download_accept_ranges": first_proof["download_accept_ranges"],
+    }
 
 
 def load_prompt_payload() -> dict[str, Any]:
@@ -527,11 +584,12 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             time.sleep(2)
         raise AssertionError(f"/history/{prompt_id} did not return completed native history; last payload: {last_payload}")
 
-    def first_history_artifact(self, prompt_id: str, history: dict[str, Any]) -> dict[str, Any]:
+    def history_artifacts(self, prompt_id: str, history: dict[str, Any]) -> list[dict[str, Any]]:
         record = history.get(prompt_id) if isinstance(history.get(prompt_id), dict) else history
         outputs = record.get("outputs") if isinstance(record, dict) else None
         if not isinstance(outputs, dict):
             raise AssertionError(f"/history/{prompt_id} did not contain native outputs")
+        artifacts = []
         for node_id, output in outputs.items():
             if not isinstance(output, dict):
                 continue
@@ -542,46 +600,71 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
                 for item in items:
                     if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
                         continue
-                    return {
-                        "node_id": str(node_id),
-                        "output_key": output_key,
-                        "filename": item["filename"],
-                        "subfolder": item.get("subfolder") if isinstance(item.get("subfolder"), str) else "",
-                        "type": item.get("type") if isinstance(item.get("type"), str) else "output",
-                    }
-        raise AssertionError(f"/history/{prompt_id} did not contain image, video, GIF, or audio outputs")
+                    artifacts.append(
+                        {
+                            "node_id": str(node_id),
+                            "output_key": output_key,
+                            "filename": item["filename"],
+                            "subfolder": item.get("subfolder") if isinstance(item.get("subfolder"), str) else "",
+                            "type": item.get("type") if isinstance(item.get("type"), str) else "output",
+                        }
+                    )
+        if not artifacts:
+            raise AssertionError(f"/history/{prompt_id} did not contain image, video, GIF, or audio outputs")
+        return artifacts
 
     def verify_view_artifact(self, prompt_id: str, history: dict[str, Any]) -> None:
-        artifact = self.first_history_artifact(prompt_id, history)
-        query = urllib.parse.urlencode(
-            {
-                "filename": artifact["filename"],
-                "subfolder": artifact["subfolder"],
-                "type": artifact["type"],
-            }
-        )
-        body, headers, status = self.request_bytes("GET", f"/view?{query}", timeout=120)
-        self.assertEqual(status, 200)
-        self.assertGreater(len(body), 0, "native /view returned an empty artifact body")
-        content_type = headers.get("content-type", "")
+        artifact_proofs = []
+        for index, artifact in enumerate(self.history_artifacts(prompt_id, history)):
+            query = urllib.parse.urlencode(
+                {
+                    "filename": artifact["filename"],
+                    "subfolder": artifact["subfolder"],
+                    "type": artifact["type"],
+                }
+            )
+            body, headers, status = self.request_bytes("GET", f"/view?{query}", timeout=120)
+            self.assertEqual(status, 200)
+            self.assertGreater(len(body), 0, "native /view returned an empty artifact body")
+            artifact_proofs.append(
+                {
+                    "artifact_index": index,
+                    "node_id": artifact["node_id"],
+                    "output_key": artifact["output_key"],
+                    "filename": artifact["filename"],
+                    "subfolder": artifact["subfolder"],
+                    "type": artifact["type"],
+                    "byte_count": len(body),
+                    "content_type": headers.get("content-type", ""),
+                    "download_sha256": hashlib.sha256(body).hexdigest(),
+                }
+            )
+        first_proof = artifact_proofs[0]
         self.record_check(
             "view_artifact_accessible",
             prompt_id=prompt_id,
-            node_id=artifact["node_id"],
-            output_key=artifact["output_key"],
-            filename=artifact["filename"],
-            subfolder=artifact["subfolder"],
-            type=artifact["type"],
-            byte_count=len(body),
-            content_type=content_type,
+            view_count=len(artifact_proofs),
+            verified_view_count=len(artifact_proofs),
+            total_byte_count=sum(int(proof["byte_count"]) for proof in artifact_proofs),
+            artifacts=artifact_proofs,
+            node_id=first_proof["node_id"],
+            output_key=first_proof["output_key"],
+            filename=first_proof["filename"],
+            subfolder=first_proof["subfolder"],
+            type=first_proof["type"],
+            byte_count=first_proof["byte_count"],
+            content_type=first_proof["content_type"],
+            download_sha256=first_proof["download_sha256"],
         )
         self.samples.append(
             {
                 "label": "view-artifact",
                 "prompt_id": prompt_id,
-                "output_key": artifact["output_key"],
-                "byte_count": len(body),
-                "content_type": content_type,
+                "view_count": len(artifact_proofs),
+                "total_byte_count": sum(int(proof["byte_count"]) for proof in artifact_proofs),
+                "first_output_key": first_proof["output_key"],
+                "first_byte_count": first_proof["byte_count"],
+                "first_content_type": first_proof["content_type"],
             }
         )
 
@@ -649,32 +732,54 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         artifacts = artifacts_payload.get("artifacts")
         self.assertIsInstance(artifacts, list)
         self.assertTrue(artifacts, f"durable job {job_id} did not expose B1 artifact records")
-        artifact = next((item for item in artifacts if isinstance(item, dict) and isinstance(item.get("url"), str)), None)
-        self.assertIsNotNone(artifact, f"durable job {job_id} artifact list did not include a URL: {artifacts}")
-        artifact_url = str(artifact["url"])
-        body, headers, status = self.request_api_bytes("GET", artifact_url, timeout=120)
-        self.assertEqual(status, 200)
-        self.assertGreater(len(body), 0, f"B1 artifact URL for job {job_id} returned an empty body")
+        artifact_proofs = []
+        for index, artifact in enumerate(artifacts):
+            self.assertIsInstance(artifact, dict)
+            artifact_proofs.append(self.verify_b1_artifact_download(job_id, artifact, index))
+        artifact_collection = b1_artifact_collection_proof(job_id, artifact_proofs)
         self.record_check(
             "durable_artifacts_observable",
             prompt_id=prompt_id,
-            job_id=job_id,
-            artifact_url_prefix=artifact_url.split("/", 3)[:3],
-            artifact_count=len(artifacts),
-            source=artifact.get("source"),
-            byte_count=len(body),
-            content_type=headers.get("content-type", ""),
+            **artifact_collection,
+            artifact_url_prefix=str(artifact_collection["artifact_url"]).split("/", 3)[:3],
         )
         self.samples.append(
             {
                 "label": "durable-job-artifact",
                 "prompt_id": prompt_id,
                 "job_id": job_id,
-                "artifact_count": len(artifacts),
-                "byte_count": len(body),
-                "content_type": headers.get("content-type", ""),
+                "artifact_count": len(artifact_proofs),
+                "verified_artifact_count": len(artifact_proofs),
+                "total_downloaded_bytes": artifact_collection["total_downloaded_bytes"],
+                "first_artifact_bytes": artifact_collection["first_artifact_bytes"],
+                "first_content_type": artifact_collection["content_type"],
             }
         )
+
+    def verify_b1_artifact_download(self, job_id: str, artifact: dict[str, Any], index: int) -> dict[str, Any]:
+        artifact_url = artifact.get("url")
+        self.assertIsInstance(artifact_url, str, f"durable job {job_id} artifact did not include a URL: {artifact}")
+        self.assertTrue(artifact_url.startswith("/artifacts/"), artifact)
+        artifact_bytes = artifact.get("bytes")
+        artifact_sha256 = artifact.get("sha256")
+        artifact_mime_type = artifact.get("mime_type")
+        self.assertIsInstance(artifact_bytes, int, artifact)
+        self.assertGreater(artifact_bytes, 0, artifact)
+        self.assertIsInstance(artifact_sha256, str, artifact)
+        self.assertRegex(artifact_sha256, r"^[a-f0-9]{64}$", artifact)
+        self.assertIsInstance(artifact_mime_type, str, artifact)
+        self.assertTrue(artifact_mime_type, artifact)
+        body, headers, status = self.request_api_bytes("GET", artifact_url, timeout=120)
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0, f"B1 artifact URL for job {job_id} returned an empty body")
+        digest = hashlib.sha256(body).hexdigest()
+        self.assertEqual(artifact_bytes, len(body), artifact)
+        self.assertEqual(artifact_sha256, digest, artifact)
+        self.assertEqual(response_header(headers, "content-length"), str(len(body)), headers)
+        self.assertTrue(response_header(headers, "content-type"), headers)
+        self.assertTrue(response_header(headers, "etag"), headers)
+        self.assertEqual(response_header(headers, "accept-ranges").lower(), "bytes", headers)
+        return downloaded_b1_artifact_proof(artifact, headers, body, index=index)
 
     def verify_queue_delete(self, prompt_id: str) -> None:
         body, headers, status = self.request_status("POST", "/queue", {"delete": [prompt_id]}, timeout=60)

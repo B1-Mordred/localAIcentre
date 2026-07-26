@@ -104,6 +104,7 @@ def sample_artifact_collection(job_id: str, proofs: list[dict[str, Any]]) -> dic
         "artifact_count": len(proofs),
         "verified_artifact_count": len(proofs),
         "total_downloaded_bytes": sum(int(proof["download_bytes"]) for proof in proofs),
+        "artifact_proofs": proofs,
         "artifacts": proofs,
         "artifact_url": first["artifact_url"],
         "artifact_id": first["artifact_id"],
@@ -115,6 +116,28 @@ def sample_artifact_collection(job_id: str, proofs: list[dict[str, Any]]) -> dic
         "download_content_length": first["download_content_length"],
         "download_etag": first["download_etag"],
         "download_accept_ranges": first["download_accept_ranges"],
+    }
+
+
+def sample_view_artifact_proof(
+    filename: str,
+    byte_count: int,
+    sha256: str,
+    content_type: str,
+    *,
+    index: int = 0,
+    output_key: str = "images",
+) -> dict[str, Any]:
+    return {
+        "artifact_index": index,
+        "node_id": "12",
+        "output_key": output_key,
+        "filename": filename,
+        "subfolder": "",
+        "type": "output",
+        "byte_count": byte_count,
+        "content_type": content_type,
+        "download_sha256": sha256,
     }
 
 
@@ -559,7 +582,13 @@ def sample_cutover_preservation(**overrides: Any) -> dict[str, Any]:
 def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
     native_prompt_id = "prompt_native_1"
     native_job_id = "job_native_1"
+    native_artifact_sha = "8" * 64
+    native_artifact_proofs = [sample_artifact_proof("/artifacts/native/output.png", 4096, native_artifact_sha, "image/png")]
+    native_artifacts = sample_artifact_collection(native_job_id, native_artifact_proofs)
+    native_view_artifacts = [sample_view_artifact_proof("native-output.png", 4096, native_artifact_sha, "image/png")]
     smoke_artifact_sha = "1" * 64
+    smoke_artifact_proofs = [sample_artifact_proof("/artifacts/smoke/tts.wav", 4096, smoke_artifact_sha, "audio/wav")]
+    smoke_artifacts = sample_artifact_collection("job_smoke_tts_1", smoke_artifact_proofs)
     workflow_tts_sha = "2" * 64
     workflow_image_sha = "3" * 64
     workflow_edit_sha = "4" * 64
@@ -655,6 +684,17 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "model": "tts-fast",
                     "runtime": "audio-cpu",
                     "resolved_model_version": "b1-tts-fast@1.0.0",
+                    "artifact_count": 1,
+                    "artifact_placeholders": [
+                        {
+                            "artifact_index": 0,
+                            "placeholder": False,
+                            "cpu_audio_engine": "piper",
+                            "placeholder_failure": False,
+                            "reasons": [],
+                        }
+                    ],
+                    "placeholder_failure_count": 0,
                     "placeholder": False,
                     "cpu_audio_engine": "piper",
                 },
@@ -675,22 +715,12 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "artifact_downloaded": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:24:00+00:00",
-                    "job_id": "job_smoke_tts_1",
-                    "bytes": 4096,
-                    "sha256": smoke_artifact_sha,
+                    **smoke_artifacts,
                 },
                 "artifact_metadata_verified": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:24:05+00:00",
-                    "job_id": "job_smoke_tts_1",
-                    "artifact_url": "/artifacts/smoke/tts.wav",
-                    "bytes": 4096,
-                    "mime_type": "audio/wav",
-                    "sha256": smoke_artifact_sha,
-                    "content_type_header": "audio/wav",
-                    "content_length_header": "4096",
-                    "etag_header": '"sha256:' + smoke_artifact_sha + '"',
-                    "accept_ranges_header": "bytes",
+                    **smoke_artifacts,
                 },
             },
             "smoke_tts_job_id": "job_smoke_tts_1",
@@ -699,6 +729,9 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "smoke_tts_resolved_model_version": "b1-tts-fast@1.0.0",
             "smoke_open_webui_base_url": "https://ai.b1.germering",
             "smoke_open_webui_status_code": 200,
+            "smoke_artifact_count": 1,
+            "smoke_verified_artifact_count": 1,
+            "smoke_total_downloaded_bytes": 4096,
             "smoke_artifact_bytes": 4096,
             "smoke_artifact_sha256": smoke_artifact_sha,
             "missing_smoke_evidence": [],
@@ -1066,6 +1099,10 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "native_prompt_id": native_prompt_id,
             "durable_job_id": native_job_id,
             "durable_artifact_count": 1,
+            "durable_verified_artifact_count": 1,
+            "durable_artifact_first_bytes": 4096,
+            "view_artifact_count": 1,
+            "view_verified_artifact_count": 1,
             "native_summary_node_count": 2,
             "native_summary_class_type_count": 2,
             "native_summary_stored_artifact_count": 1,
@@ -1131,8 +1168,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:33:00+00:00",
                     "prompt_id": native_prompt_id,
-                    "job_id": native_job_id,
-                    "artifact_count": 1,
+                    **native_artifacts,
                     "byte_count": 4096,
                     "content_type": "image/png",
                 },
@@ -1154,9 +1190,15 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:33:00+00:00",
                     "prompt_id": native_prompt_id,
+                    "view_count": 1,
+                    "verified_view_count": 1,
+                    "total_byte_count": 4096,
+                    "artifacts": native_view_artifacts,
                     "output_key": "images",
                     "filename": "native-output.png",
                     "byte_count": 4096,
+                    "content_type": "image/png",
+                    "download_sha256": native_artifact_sha,
                 },
             },
             "sample_count": 13,
@@ -2364,14 +2406,65 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("tts_media_job_completed.job_id", snapshot["missing_smoke_evidence"])
         self.assertIn("tts_media_job_resolved_model_recorded.resolved_model_version", snapshot["missing_smoke_evidence"])
         self.assertIn("job_events_terminal_state_observed.completed_state", snapshot["missing_smoke_evidence"])
-        self.assertIn("artifact_downloaded.sha256", snapshot["missing_smoke_evidence"])
-        self.assertIn("artifact_metadata_verified.etag_header", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_downloaded.artifact_count", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_downloaded.artifact_proofs", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.artifact_count", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.artifact_proofs", snapshot["missing_smoke_evidence"])
 
         report = sample_report(live_evidence=sample_live_evidence(live_stack_smoke=snapshot))
         summary = acceptance.public_report_summary(report)
         self.assertFalse(report["operator_handoff_ready"])
         self.assertFalse(summary["smoke_evidence_ready"])
         self.assertIn("live stack smoke evidence is missing detailed proof:", "\n".join(report["acceptance_blockers"]))
+
+    def test_smoke_snapshot_requires_all_returned_artifacts_to_be_verified(self) -> None:
+        smoke = json.loads(json.dumps(sample_live_evidence()["live_stack_smoke"]))
+        smoke["checks"]["tts_media_job_not_placeholder"]["artifact_count"] = 2
+        smoke["checks"]["artifact_downloaded"]["artifact_count"] = 2
+        smoke["checks"]["artifact_downloaded"]["verified_artifact_count"] = 1
+        smoke["checks"]["artifact_metadata_verified"]["artifact_count"] = 2
+        smoke["checks"]["artifact_metadata_verified"]["verified_artifact_count"] = 1
+        snapshot = acceptance.smoke_evidence_snapshot(smoke)
+
+        self.assertIn("tts_media_job_not_placeholder.artifact_placeholders_complete", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_downloaded.verified_artifact_count", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_downloaded.artifact_proofs_complete", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.verified_artifact_count", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.artifact_proofs_complete", snapshot["missing_smoke_evidence"])
+
+    def test_smoke_snapshot_requires_download_digest_for_each_artifact(self) -> None:
+        smoke = json.loads(json.dumps(sample_live_evidence()["live_stack_smoke"]))
+        smoke["checks"]["artifact_downloaded"]["artifact_proofs"][0].pop("download_sha256")
+        smoke["checks"]["artifact_metadata_verified"]["artifact_proofs"][0].pop("download_bytes")
+        snapshot = acceptance.smoke_evidence_snapshot(smoke)
+
+        self.assertIn("artifact_downloaded.artifact_proofs.0.download_sha256", snapshot["missing_smoke_evidence"])
+        self.assertIn("artifact_metadata_verified.artifact_proofs.0.download_bytes", snapshot["missing_smoke_evidence"])
+
+    def test_smoke_snapshot_rejects_placeholder_markers_on_any_tts_artifact(self) -> None:
+        smoke = json.loads(json.dumps(sample_live_evidence()["live_stack_smoke"]))
+        smoke["checks"]["tts_media_job_not_placeholder"]["artifact_count"] = 2
+        smoke["checks"]["tts_media_job_not_placeholder"]["artifact_placeholders"].append(
+            {
+                "artifact_index": 1,
+                "placeholder": True,
+                "cpu_audio_engine": "scaffold",
+                "placeholder_failure": True,
+                "reasons": ["explicit_placeholder_marker", "scaffold_cpu_audio_engine"],
+            }
+        )
+        smoke["checks"]["tts_media_job_not_placeholder"]["placeholder_failure_count"] = 1
+        snapshot = acceptance.smoke_evidence_snapshot(smoke)
+
+        self.assertIn("tts_media_job_not_placeholder.placeholder_failure_count", snapshot["missing_smoke_evidence"])
+        self.assertIn(
+            "tts_media_job_not_placeholder.artifact_placeholders.1.non_placeholder_proof",
+            snapshot["missing_smoke_evidence"],
+        )
+        self.assertIn(
+            "tts_media_job_not_placeholder.artifact_placeholders.1.cpu_audio_engine_not_scaffold",
+            snapshot["missing_smoke_evidence"],
+        )
 
     def test_report_blocks_handoff_for_incomplete_live_gpu_evidence(self) -> None:
         report = sample_report(
@@ -2867,14 +2960,46 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertIn("native_summary_observable.job_id", snapshot["missing_compatibility_evidence"])
         self.assertIn("native_summary_observable.node_count", snapshot["missing_compatibility_evidence"])
         self.assertIn("native_summary_observable.body_hash_present", snapshot["missing_compatibility_evidence"])
-        self.assertIn("durable_artifacts_observable.byte_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("durable_artifacts_observable.artifact_proofs", snapshot["missing_compatibility_evidence"])
         self.assertIn("queue_delete_accessible.http_status", snapshot["missing_compatibility_evidence"])
         self.assertIn("interrupt_accessible.http_status", snapshot["missing_compatibility_evidence"])
-        self.assertIn("view_artifact_accessible.filename", snapshot["missing_compatibility_evidence"])
+        self.assertIn("view_artifact_accessible.artifacts", snapshot["missing_compatibility_evidence"])
+
+    def test_native_comfyui_snapshot_requires_all_returned_artifacts_to_be_verified(self) -> None:
+        native = json.loads(json.dumps(sample_live_evidence()["native_comfyui_compatibility"]))
+        native["checks"]["native_summary_observable"]["stored_artifact_count"] = 2
+        native["checks"]["durable_artifacts_observable"]["artifact_count"] = 2
+        native["checks"]["durable_artifacts_observable"]["verified_artifact_count"] = 1
+        native["checks"]["view_artifact_accessible"]["view_count"] = 2
+        native["checks"]["view_artifact_accessible"]["verified_view_count"] = 1
+        snapshot = acceptance.native_comfyui_evidence_snapshot(native)
+
+        self.assertIn("durable_artifacts_observable.verified_artifact_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("durable_artifacts_observable.artifact_proofs_complete", snapshot["missing_compatibility_evidence"])
+        self.assertIn("view_artifact_accessible.verified_view_count", snapshot["missing_compatibility_evidence"])
+        self.assertIn("view_artifact_accessible.artifacts_complete", snapshot["missing_compatibility_evidence"])
+
+    def test_native_comfyui_snapshot_requires_download_digest_for_each_artifact(self) -> None:
+        native = json.loads(json.dumps(sample_live_evidence()["native_comfyui_compatibility"]))
+        native["checks"]["durable_artifacts_observable"]["artifact_proofs"][0].pop("download_sha256")
+        native["checks"]["view_artifact_accessible"]["artifacts"][0].pop("download_sha256")
+        snapshot = acceptance.native_comfyui_evidence_snapshot(native)
+
+        self.assertIn(
+            "durable_artifacts_observable.artifact_proofs.0.download_sha256",
+            snapshot["missing_compatibility_evidence"],
+        )
+        self.assertIn("view_artifact_accessible.artifacts.0.download_sha256", snapshot["missing_compatibility_evidence"])
 
     def test_native_comfyui_snapshot_accepts_empty_queue_and_interrupt_bodies(self) -> None:
         prompt_id = "prompt_native_empty_body"
         job_id = "job_native_empty_body"
+        artifact_sha = "9" * 64
+        durable_artifacts = sample_artifact_collection(
+            job_id,
+            [sample_artifact_proof("/artifacts/native/empty-body.png", 4096, artifact_sha, "image/png")],
+        )
+        view_artifacts = [sample_view_artifact_proof("native-output.png", 4096, artifact_sha, "image/png")]
         checks = ok_checks(acceptance.NATIVE_COMFYUI_REQUIRED_CHECKS)
         checks.update(
             {
@@ -2914,8 +3039,7 @@ class AcceptanceReportTests(unittest.TestCase):
                 "durable_artifacts_observable": {
                     "status": "ok",
                     "prompt_id": prompt_id,
-                    "job_id": job_id,
-                    "artifact_count": 1,
+                    **durable_artifacts,
                     "byte_count": 4096,
                     "content_type": "image/png",
                 },
@@ -2924,9 +3048,15 @@ class AcceptanceReportTests(unittest.TestCase):
                 "view_artifact_accessible": {
                     "status": "ok",
                     "prompt_id": prompt_id,
+                    "view_count": 1,
+                    "verified_view_count": 1,
+                    "total_byte_count": 4096,
+                    "artifacts": view_artifacts,
                     "output_key": "images",
                     "filename": "native-output.png",
                     "byte_count": 4096,
+                    "content_type": "image/png",
+                    "download_sha256": artifact_sha,
                 },
             }
         )
@@ -3808,8 +3938,8 @@ class AcceptanceReportTests(unittest.TestCase):
             root = Path(tmp)
             evidence_root = root / "acceptance"
             evidence_root.mkdir()
-            native_prompt_id = "prompt_native_disk_1"
-            native_job_id = "job_native_disk_1"
+            native_prompt_id = "prompt_native_1"
+            native_job_id = "job_native_1"
             remote_artifact_sha = "e" * 64
             voicebox_profile_id = "vp_disk1"
             voicebox_speech_sha = "f" * 64
@@ -3895,102 +4025,9 @@ class AcceptanceReportTests(unittest.TestCase):
                 encoding="utf-8",
             )
             native_comfyui = evidence_root / "native-comfyui.json"
-            native_comfyui.write_text(
-                json.dumps(
-                    {
-                        "format": "b1-ai-hub-native-comfyui-compatibility/v1",
-                        "generated_at": "2026-07-24T12:33:00+00:00",
-                        "base_url": "https://comfy.ai.b1.germering",
-                        "status": "ok",
-                        "checks": {
-                            "object_info_accessible": {"status": "ok"},
-                            "object_info_node_accessible": {"status": "ok"},
-                            "system_stats_accessible": {"status": "ok"},
-                            "models_accessible": {"status": "ok"},
-                            "queue_accessible": {"status": "ok"},
-                            "upload_image_accessible": {"status": "ok"},
-                            "upload_mask_accessible": {"status": "ok"},
-                            "prompt_submission": {"status": "ok", "prompt_id": native_prompt_id, "queue_number": 1},
-                            "prompt_idempotency_replay": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "replay_header": "true",
-                                "idempotency_key_length": 48,
-                            },
-                            "websocket_events": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "event_types": ["execution_start", "executing"],
-                                "binary_messages": 0,
-                                "completed": True,
-                            },
-                            "history_listing_accessible": {"status": "ok"},
-                            "history_available": {"status": "ok", "prompt_id": native_prompt_id, "history_keys": [native_prompt_id]},
-                            "durable_job_observable": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "job_id": native_job_id,
-                                "state": "completed",
-                                "artifact_count": 1,
-                            },
-                            "native_summary_observable": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "job_id": native_job_id,
-                                "node_count": 2,
-                                "class_type_count": 2,
-                                "stored_artifact_count": 1,
-                                "failed_ingest_count": 0,
-                                "body_hash_present": True,
-                                "client_id_present": True,
-                            },
-                            "durable_artifacts_observable": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "job_id": native_job_id,
-                                "artifact_count": 1,
-                                "byte_count": 4096,
-                                "content_type": "image/png",
-                            },
-                            "queue_delete_accessible": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "http_status": 200,
-                                "byte_count": 2,
-                            },
-                            "interrupt_accessible": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "http_status": 200,
-                                "byte_count": 2,
-                            },
-                            "view_artifact_accessible": {
-                                "status": "ok",
-                                "prompt_id": native_prompt_id,
-                                "output_key": "images",
-                                "filename": "native-output.png",
-                                "byte_count": 4096,
-                            },
-                        },
-                        "samples": [
-                            {"label": "object-info"},
-                            {"label": "object-info-node"},
-                            {"label": "upload-image"},
-                            {"label": "upload-mask"},
-                            {"label": "prompt-submission"},
-                            {"label": "prompt-idempotency-replay"},
-                            {"label": "websocket-completed"},
-                            {"label": "history-listing"},
-                            {"label": "durable-job-artifact"},
-                            {"label": "native-summary"},
-                            {"label": "queue-delete"},
-                            {"label": "targeted-interrupt"},
-                            {"label": "view-artifact"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            native_payload = sample_live_evidence()["native_comfyui_compatibility"]
+            native_payload["samples"] = [{"label": label} for label in native_payload["sample_labels"]]
+            native_comfyui.write_text(json.dumps(native_payload), encoding="utf-8")
             legacy_comfyui = evidence_root / "legacy-comfy-listener.json"
             legacy_comfyui.write_text(
                 json.dumps(
@@ -4205,6 +4242,9 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(smoke_snapshot["status"], "ok")
         self.assertEqual(smoke_snapshot["missing_checks"], [])
         self.assertEqual(smoke_snapshot["missing_smoke_evidence"], [])
+        self.assertEqual(smoke_snapshot["smoke_artifact_count"], 1)
+        self.assertEqual(smoke_snapshot["smoke_verified_artifact_count"], 1)
+        self.assertEqual(smoke_snapshot["smoke_total_downloaded_bytes"], 4096)
         self.assertEqual(smoke_snapshot["smoke_artifact_bytes"], 4096)
         self.assertEqual(smoke_snapshot["smoke_open_webui_base_url"], "https://ai.b1.germering")
         self.assertEqual(smoke_snapshot["smoke_open_webui_status_code"], 200)
@@ -4248,6 +4288,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(native["native_prompt_id"], native_prompt_id)
         self.assertEqual(native["durable_job_id"], native_job_id)
         self.assertEqual(native["durable_artifact_count"], 1)
+        self.assertEqual(native["durable_verified_artifact_count"], 1)
+        self.assertEqual(native["durable_artifact_first_bytes"], 4096)
+        self.assertEqual(native["view_artifact_count"], 1)
+        self.assertEqual(native["view_verified_artifact_count"], 1)
         self.assertEqual(native["native_summary_node_count"], 2)
         self.assertEqual(native["native_summary_stored_artifact_count"], 1)
         self.assertEqual(native["sample_count"], 13)

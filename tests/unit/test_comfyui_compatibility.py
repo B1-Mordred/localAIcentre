@@ -98,6 +98,14 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         harness.timeout_seconds = 1
         json_calls: list[tuple[str, str]] = []
         byte_calls: list[tuple[str, str]] = []
+        artifact_body = b"artifact-bytes"
+        artifact_record = {
+            "url": "/artifacts/comfyui/prompt_native_1/output.png",
+            "source": "artifact_store",
+            "mime_type": "image/png",
+            "bytes": len(artifact_body),
+            "sha256": hashlib.sha256(artifact_body).hexdigest(),
+        }
 
         def fake_request_api_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
             json_calls.append((method, path))
@@ -118,16 +126,25 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
                             "prompt": {"node_count": 1, "class_type_count": 1, "body_hash_present": True, "client_id_present": True},
                             "artifacts": {"stored_artifact_count": 1, "failed_ingest_count": 0},
                         },
-                        "artifacts": [{"url": "/artifacts/comfyui/prompt_native_1/output.png"}],
+                        "artifacts": [artifact_record],
                     }
                 ]
             if path == "/v1/media/jobs/job_native_1/artifacts":
-                return {"job_id": "job_native_1", "artifacts": [{"url": "/artifacts/comfyui/prompt_native_1/output.png", "source": "artifact_store"}]}
+                return {"job_id": "job_native_1", "artifacts": [artifact_record]}
             raise AssertionError(f"unexpected API JSON path {path}")
 
         def fake_request_api_bytes(method: str, path_or_url: str, timeout: float | None = None) -> tuple[bytes, dict[str, str], int]:
             byte_calls.append((method, path_or_url))
-            return b"artifact-bytes", {"content-type": "image/png"}, 200
+            return (
+                artifact_body,
+                {
+                    "content-type": "image/png",
+                    "content-length": str(len(artifact_body)),
+                    "etag": '"artifact-etag"',
+                    "accept-ranges": "bytes",
+                },
+                200,
+            )
 
         harness.request_api_json = fake_request_api_json  # type: ignore[method-assign]
         harness.request_api_bytes = fake_request_api_bytes  # type: ignore[method-assign]
@@ -142,6 +159,12 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         self.assertTrue(harness.checks["native_summary_observable"]["body_hash_present"])
         self.assertEqual(harness.checks["durable_job_observable"]["job_id"], "job_native_1")
         self.assertEqual(harness.checks["durable_artifacts_observable"]["byte_count"], 14)
+        self.assertEqual(harness.checks["durable_artifacts_observable"]["artifact_count"], 1)
+        self.assertEqual(harness.checks["durable_artifacts_observable"]["verified_artifact_count"], 1)
+        self.assertEqual(
+            harness.checks["durable_artifacts_observable"]["artifact_proofs"][0]["download_sha256"],
+            hashlib.sha256(artifact_body).hexdigest(),
+        )
         self.assertEqual(harness.samples[-1]["label"], "durable-job-artifact")
 
 
