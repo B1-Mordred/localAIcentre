@@ -24,6 +24,7 @@ SAFE_PERMISSIONS_POLICY_DIRECTIVES = {
 }
 MIB_PER_GIB = 1024
 BYTES_PER_GIB = 1024**3
+HOST_TOTAL_RAM_KERNEL_RESERVE_TOLERANCE = 0.97
 
 
 def check(name: str, status: str, detail: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -118,6 +119,7 @@ def hardware_resource_policy_check(
     required_gpu_total_mib = int(policy_gpu_total * MIB_PER_GIB)
     required_gpu_reserve_mib = int(policy_gpu_reserve * MIB_PER_GIB)
     required_host_total_bytes = int(policy_host_total * BYTES_PER_GIB)
+    minimum_accepted_host_total_bytes = int(required_host_total_bytes * HOST_TOTAL_RAM_KERNEL_RESERVE_TOLERANCE)
     required_host_reserve_bytes = int(policy_host_reserve * BYTES_PER_GIB)
 
     data: dict[str, Any] = {
@@ -127,6 +129,7 @@ def hardware_resource_policy_check(
             "gpu_reserve_vram_gib": policy_gpu_reserve,
             "host_total_ram_gib": policy_host_total,
             "host_reserve_ram_gib": policy_host_reserve,
+            "host_total_ram_kernel_reserve_tolerance": HOST_TOTAL_RAM_KERNEL_RESERVE_TOLERANCE,
         },
         "observed": {},
         "warnings": [],
@@ -154,6 +157,7 @@ def hardware_resource_policy_check(
         "largest_gpu_memory_free_mib": int(observed_gpu_free_mib) if observed_gpu_free_mib is not None else None,
         "host_memory_total_bytes": int(observed_host_total_bytes) if observed_host_total_bytes is not None else None,
         "host_memory_available_bytes": int(observed_host_available_bytes) if observed_host_available_bytes is not None else None,
+        "minimum_accepted_host_memory_total_bytes": minimum_accepted_host_total_bytes,
     }
 
     warnings: list[str] = data["warnings"]
@@ -172,10 +176,10 @@ def hardware_resource_policy_check(
 
     if observed_host_total_bytes is None:
         warnings.append("host total RAM is unavailable")
-    elif observed_host_total_bytes < required_host_total_bytes:
+    elif observed_host_total_bytes < minimum_accepted_host_total_bytes:
         observed_mib = int(observed_host_total_bytes / (1024**2))
-        required_mib = int(required_host_total_bytes / (1024**2))
-        warnings.append(f"host RAM is {observed_mib} MiB; policy requires {required_mib} MiB")
+        required_mib = int(minimum_accepted_host_total_bytes / (1024**2))
+        warnings.append(f"host RAM is {observed_mib} MiB; policy minimum after kernel-reserve tolerance is {required_mib} MiB")
     if observed_host_available_bytes is None:
         warnings.append("host available RAM is unavailable")
     elif observed_host_available_bytes < required_host_reserve_bytes:

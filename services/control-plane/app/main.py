@@ -10,6 +10,7 @@ import logging
 import mimetypes
 import os
 import re
+import ssl
 import stat
 import uuid
 from contextlib import suppress
@@ -251,6 +252,7 @@ class ChatCompletionRequest(BaseModel):
 class EmbeddingRequest(BaseModel):
     model: str = "embedding-default"
     input: str | list[str]
+    dimensions: int | None = Field(default=None, ge=1, le=4096)
 
 
 class MediaJobCreate(BaseModel):
@@ -7296,6 +7298,85 @@ def self_test_tls_verify_value() -> bool | str:
     return True
 
 
+def self_test_tls_context(verify_value: bool | str) -> ssl.SSLContext:
+    if verify_value is False:
+        return ssl._create_unverified_context()
+    if isinstance(verify_value, str):
+        return ssl.create_default_context(cafile=verify_value)
+    return ssl.create_default_context()
+
+
+def self_test_http_target(parsed: Any) -> str:
+    path = parsed.path or "/"
+    if parsed.query:
+        return f"{path}?{parsed.query}"
+    return path
+
+
+async def self_test_gateway_tls_probe(url: str, verify_value: bool | str) -> tuple[int, dict[str, str]]:
+    parsed = urlsplit(url)
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme != "https" or not parsed.netloc or not hostname:
+        raise ValueError("self-test route must be an HTTPS URL")
+    connect_host = settings.self_test_tls_gateway_host.strip() or hostname
+    connect_port = settings.self_test_tls_gateway_port if settings.self_test_tls_gateway_host.strip() else parsed.port or 443
+    if connect_port <= 0 or connect_port > 65535:
+        raise ValueError("self-test gateway port is invalid")
+
+    context = self_test_tls_context(verify_value)
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(connect_host, connect_port, ssl=context, server_hostname=hostname),
+            timeout=5.0,
+        )
+        request = (
+            f"GET {self_test_http_target(parsed)} HTTP/1.1\r\n"
+            f"Host: {parsed.netloc}\r\n"
+            "Accept: application/json\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+        writer.write(request.encode("ascii"))
+        await asyncio.wait_for(writer.drain(), timeout=5.0)
+        raw = b""
+        while b"\r\n\r\n" not in raw and len(raw) <= 65536:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=5.0)
+            if not chunk:
+                break
+            raw += chunk
+        header_block, separator, _body = raw.partition(b"\r\n\r\n")
+        if not separator:
+            raise ValueError("TLS gateway response did not include complete HTTP headers")
+        lines = header_block.decode("iso-8859-1").split("\r\n")
+        status_parts = lines[0].split(" ", 2)
+        if len(status_parts) < 2 or not status_parts[1].isdigit():
+            raise ValueError("TLS gateway response did not include a valid HTTP status")
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            name, delimiter, value = line.partition(":")
+            if not delimiter:
+                continue
+            normalized_name = name.strip()
+            normalized_value = value.strip()
+            if normalized_name in headers:
+                headers[normalized_name] = f"{headers[normalized_name]}, {normalized_value}"
+            else:
+                headers[normalized_name] = normalized_value
+        return int(status_parts[1]), headers
+    finally:
+        if writer is not None:
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+
+
+async def self_test_httpx_tls_probe(client: httpx.AsyncClient, url: str) -> tuple[int, httpx.Headers]:
+    response = await client.get(url, headers={"Accept": "application/json"})
+    return response.status_code, response.headers
+
+
 SELF_TEST_PUBLIC_HOST_KEYS = ("chat", "control", "media", "comfy", "voice", "models", "api")
 ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD = b"b1 artifact delivery self-test\n"
 CADDY_CA_DOWNLOAD_FILENAME = "b1-ai-hub-caddy-root.crt"
@@ -7471,6 +7552,7 @@ async def self_test_tls_routing() -> dict[str, Any]:
     if not urls:
         return selftest_policy.check("tls:routing", "warning", "no TLS routing self-test URLs are configured")
     verify_value = self_test_tls_verify_value()
+    gateway_host = settings.self_test_tls_gateway_host.strip()
     async with httpx.AsyncClient(timeout=5.0, verify=verify_value) as client:
         for url in urls:
             parsed = urlsplit(url)
@@ -7478,17 +7560,20 @@ async def self_test_tls_routing() -> dict[str, Any]:
                 routes.append({"url": url, "status": "failed", "detail": "self-test route must be an HTTPS URL"})
                 continue
             try:
-                response = await client.get(url, headers={"Accept": "application/json"})
-            except httpx.HTTPError as exc:
+                if gateway_host:
+                    status_code, headers = await self_test_gateway_tls_probe(url, verify_value)
+                else:
+                    status_code, headers = await self_test_httpx_tls_probe(client, url)
+            except (OSError, ValueError, TimeoutError, ssl.SSLError, httpx.HTTPError, asyncio.TimeoutError) as exc:
                 routes.append({"url": url, "status": "failed", "detail": exc.__class__.__name__})
                 continue
-            header_failures = selftest_policy.gateway_security_header_failures(response.headers)
-            route_ok = response.status_code < 400 and not header_failures
+            header_failures = selftest_policy.gateway_security_header_failures(headers)
+            route_ok = status_code < 400 and not header_failures
             route: dict[str, Any] = {
                 "url": url,
                 "route_keys": self_test_route_keys(url),
                 "status": "ok" if route_ok else "failed",
-                "http_status": response.status_code,
+                "http_status": status_code,
                 "security_headers": "ok" if not header_failures else "failed",
             }
             if header_failures:
@@ -7503,6 +7588,8 @@ async def self_test_tls_routing() -> dict[str, Any]:
             "routes": routes,
             "expected_route_keys": list(SELF_TEST_PUBLIC_HOST_KEYS),
             "verify_tls": settings.self_test_tls_verify,
+            "gateway_connect_host": gateway_host or None,
+            "gateway_connect_port": settings.self_test_tls_gateway_port if gateway_host else None,
             "ca_file": settings.self_test_tls_ca_file if Path(settings.self_test_tls_ca_file).is_file() else None,
         },
     )

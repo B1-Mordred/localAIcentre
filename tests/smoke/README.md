@@ -32,7 +32,7 @@ export B1_SMOKE_RESOLVE_HOSTS=api.ai.b1.germering=127.0.0.1,ai.b1.germering=127.
 For the default Caddy internal CA, either trust the generated root certificate on the test machine or pass it directly:
 
 ```bash
-export B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 ```
 
 For temporary lab runs only, TLS verification can be disabled:

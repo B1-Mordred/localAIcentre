@@ -68,7 +68,7 @@
       "preferred_runtimes": ["audio-cpu"],
       "target_class": "small CPU embedding model",
       "selection_guidance": "Use a CPU-only ONNX or equivalent manifest so RAG and Model Hub metadata remain available without consuming the GPU lease.",
-      "resource_estimate": { "vram_gib": 0.0, "ram_gib": 0.5, "disk_gib": 0.2 },
+      "resource_estimate": { "vram_gib": 0.0, "ram_gib": 0.8, "disk_gib": 0.2 },
       "target_resource_label": "recommended",
       "runtime_policy": "cpu-resident",
       "default_limits": { "cpu_resident_allowed": true },

@@ -148,6 +148,9 @@ ACCEPTANCE_TEMPLATE_FILES = (
     "image-edit-job.json",
     "short-video-job.json",
 )
+CADDY_INTERNAL_CA_SOURCE = Path("data/caddy/caddy/pki/authorities/local/root.crt")
+CADDY_INTERNAL_CA_EXPORT = Path("data/control-plane/caddy-root.crt")
+CADDY_CA_MAX_BYTES = 1024 * 1024
 
 
 def secure_secret_path(path: Path, mode: int) -> None:
@@ -372,6 +375,49 @@ def copy_acceptance_templates(root: Path, source: Path | None = None) -> list[st
     return created
 
 
+def export_caddy_internal_ca(root: Path) -> dict[str, str | bool | int | None]:
+    source = root / CADDY_INTERNAL_CA_SOURCE
+    target = root / CADDY_INTERNAL_CA_EXPORT
+    result: dict[str, str | bool | int | None] = {
+        "source": str(source),
+        "target": str(target),
+        "exported": False,
+        "reason": None,
+        "size_bytes": None,
+    }
+    if not source.exists():
+        result["reason"] = "missing"
+        return result
+    if source.is_symlink():
+        result["reason"] = "source_symlink_refused"
+        return result
+    if not source.is_file():
+        result["reason"] = "source_not_regular_file"
+        return result
+    size = source.stat().st_size
+    result["size_bytes"] = size
+    if size <= 0 or size > CADDY_CA_MAX_BYTES:
+        result["reason"] = "source_size_invalid"
+        return result
+    target.parent.mkdir(parents=True, exist_ok=True)
+    secure_app_path(target.parent)
+    temporary = target.with_name(f".{target.name}.partial")
+    try:
+        with source.open("rb") as source_handle, temporary.open("wb") as target_handle:
+            shutil.copyfileobj(source_handle, target_handle)
+        secure_app_file(temporary)
+        os.replace(temporary, target)
+        secure_app_file(target)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    result["exported"] = True
+    result["reason"] = "ok"
+    return result
+
+
 def bootstrap(root: Path) -> dict[str, list[str]]:
     created_dirs: list[str] = []
     created_secrets: list[str] = []
@@ -399,15 +445,33 @@ def bootstrap(root: Path) -> dict[str, list[str]]:
     secure_secret_path(runtime_env, 0o640)
     created_templates.extend(copy_acceptance_templates(root))
 
-    return {"created_dirs": created_dirs, "created_secrets": created_secrets, "created_templates": created_templates}
+    return {
+        "created_dirs": created_dirs,
+        "created_secrets": created_secrets,
+        "created_templates": created_templates,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap B1 AI Hub external directories and generated secrets.")
     parser.add_argument("--root", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"))
+    parser.add_argument(
+        "--export-caddy-ca-only",
+        action="store_true",
+        help="Export Caddy's generated internal root CA into the control-plane data directory.",
+    )
     args = parser.parse_args()
-    result = bootstrap(Path(args.root).resolve())
-    print(f"B1 AI Hub bootstrap complete under {Path(args.root).resolve()}")
+    root = Path(args.root).resolve()
+    if args.export_caddy_ca_only:
+        result = export_caddy_internal_ca(root)
+        print(f"B1 AI Hub Caddy CA export complete under {root}")
+        print(f"source: {result['source']}")
+        print(f"target: {result['target']}")
+        print(f"exported: {result['exported']}")
+        print(f"reason: {result['reason']}")
+        return
+    result = bootstrap(root)
+    print(f"B1 AI Hub bootstrap complete under {root}")
     print(f"created directories: {len(result['created_dirs'])}")
     print(f"created secrets: {', '.join(result['created_secrets']) if result['created_secrets'] else 'none'}")
     print(f"created acceptance templates: {len(result['created_templates'])}")

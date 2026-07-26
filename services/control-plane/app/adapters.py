@@ -426,6 +426,7 @@ def build_runtime_registry(
                 ),
                 requires_gpu=True,
                 native_api=True,
+                health_path="/system_stats",
             ),
             RuntimeAdapter(
                 name="voicebox",
@@ -434,6 +435,7 @@ def build_runtime_registry(
                 operations=("text-to-speech", "voice-cloning"),
                 requires_gpu=True,
                 native_api=True,
+                health_path="/health",
             ),
             RuntimeAdapter(
                 name="audio-cpu",

@@ -91,6 +91,17 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(aliases["tts-fast"]["cpu_resident_allowed"])
         self.assertEqual(aliases["tts-fast"]["cpu_resident_reason"], "CPU residency is disabled by policy")
 
+    def test_installed_cpu_recommendation_promotes_placeholder_alias_status(self) -> None:
+        seed_catalog = load_catalog(ROOT / "model-catalog", self.policy)
+        embedding = seed_catalog.get_manifest("b1-minilm-l6-v2-onnx-q4")
+        self.assertIsNotNone(embedding)
+
+        installed = load_catalog(ROOT / "model-catalog", self.policy, extra_manifests=[embedding.to_dict()])
+        aliases = {model["id"]: model for model in installed.to_openai_list()["data"]}
+
+        self.assertEqual(aliases["embedding-default"]["status"], "installed")
+        self.assertEqual(aliases["embedding-default"]["resolved_model"]["id"], "b1-minilm-l6-v2-onnx-q4")
+
     def test_manifest_schema_declares_seed_and_governance_fields(self) -> None:
         schema = json.loads((ROOT / "model-catalog" / "schemas" / "model-manifest.schema.json").read_text(encoding="utf-8"))
         properties = set(schema["properties"])

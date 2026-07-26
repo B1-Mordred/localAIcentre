@@ -88,7 +88,7 @@ B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json \
 make live-smoke-acceptance
 ```
 
-The smoke suite checks gateway health, Open WebUI `/health` through the chat virtual host with HTTPS and Caddy media-capture/security-header proof, authenticated model listing, an async `tts-fast` media job, non-placeholder TTS artifact proof, resolved runtime/model evidence, SSE job events through a terminal state, artifact download, artifact metadata integrity, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. Scaffold or unmarked `audio-cpu` output fails the non-placeholder proof. When `B1_SMOKE_EVIDENCE` is set, the suite writes the machine-readable smoke proof ingested by Control Center handoff reports. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt` or trust that root certificate on the test machine. Use `B1_SMOKE_ALLOW_PLACEHOLDER=1` only for labelled development dry runs; the evidence remains incomplete and cannot satisfy handoff. See `tests/smoke/README.md` for temporary-host and TLS options.
+The smoke suite checks gateway health, Open WebUI `/health` through the chat virtual host with HTTPS and Caddy media-capture/security-header proof, authenticated model listing, an async `tts-fast` media job, non-placeholder TTS artifact proof, resolved runtime/model evidence, SSE job events through a terminal state, artifact download, artifact metadata integrity, and optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` is set. Scaffold or unmarked `audio-cpu` output fails the non-placeholder proof. When `B1_SMOKE_EVIDENCE` is set, the suite writes the machine-readable smoke proof ingested by Control Center handoff reports. With the default Caddy internal CA, set `B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt` or trust that root certificate on the test machine. Use `B1_SMOKE_ALLOW_PLACEHOLDER=1` only for labelled development dry runs; the evidence remains incomplete and cannot satisfy handoff. See `tests/smoke/README.md` for temporary-host and TLS options.
 
 After installing real GPU model manifests and publishing at least one target-host ComfyUI API prompt/workflow, run the cross-runtime RTX acceptance suite during a maintenance validation window:
 
@@ -125,7 +125,7 @@ The generated acceptance env sets `B1_ACCEPTANCE_REPORT_OUTPUT`, `B1_ACCEPTANCE_
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...
-export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
 export B1_GPU_ACCEPTANCE_RUN_RECOVERY_ACTION=1
 export B1_GPU_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/cross-runtime-gpu.json
@@ -190,7 +190,7 @@ Run LocalAI runtime acceptance before cross-runtime acceptance:
 ```bash
 export B1_LOCALAI_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_LOCALAI_ACCEPTANCE_API_KEY=...
-export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_LOCALAI_ACCEPTANCE_CHAT_MODEL=chat-default
 export B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json
 make localai-acceptance

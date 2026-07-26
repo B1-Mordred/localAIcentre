@@ -158,6 +158,8 @@ class Settings:
     self_test_tls_urls: tuple[str, ...]
     self_test_tls_ca_file: str
     self_test_tls_verify: bool
+    self_test_tls_gateway_host: str
+    self_test_tls_gateway_port: int
     self_test_tiny_inference_enabled: bool
     self_test_unload_runtime: str
 
@@ -284,7 +286,7 @@ def load_settings() -> Settings:
         cors_allow_origins=cors_allow_origins,
         trusted_proxy_cidrs=_words("B1_TRUSTED_PROXY_CIDRS", "127.0.0.1/32 ::1/128 172.16.0.0/12 fd00::/8"),
         caddy_tls_args=os.getenv("B1_CADDY_TLS_ARGS", "internal").strip(),
-        caddy_internal_ca_file=os.getenv("B1_CADDY_INTERNAL_CA_FILE", "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt"),
+        caddy_internal_ca_file=os.getenv("B1_CADDY_INTERNAL_CA_FILE", "/srv/b1-ai-hub/data/control-plane/caddy-root.crt"),
         self_test_tls_urls=_words(
             "B1_SELF_TEST_TLS_URLS",
             _default_self_test_tls_urls(
@@ -297,8 +299,10 @@ def load_settings() -> Settings:
                 host_api=host_api,
             ),
         ),
-        self_test_tls_ca_file=os.getenv("B1_SELF_TEST_TLS_CA_FILE", "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt"),
+        self_test_tls_ca_file=os.getenv("B1_SELF_TEST_TLS_CA_FILE", "/srv/b1-ai-hub/data/control-plane/caddy-root.crt"),
         self_test_tls_verify=_bool("B1_SELF_TEST_TLS_VERIFY", True),
+        self_test_tls_gateway_host=os.getenv("B1_SELF_TEST_TLS_GATEWAY_HOST", "gateway").strip(),
+        self_test_tls_gateway_port=_int("B1_SELF_TEST_TLS_GATEWAY_PORT", 443),
         self_test_tiny_inference_enabled=_bool("B1_SELF_TEST_TINY_INFERENCE_ENABLED", True),
         self_test_unload_runtime=os.getenv("B1_SELF_TEST_UNLOAD_RUNTIME", "localai").strip().lower(),
     )

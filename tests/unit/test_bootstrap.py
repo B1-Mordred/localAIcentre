@@ -230,6 +230,31 @@ class BootstrapTests(unittest.TestCase):
                 self.assertTrue(path.exists(), relative)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o664)
 
+    def test_caddy_internal_ca_export_copies_generated_root_for_control_plane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "data" / "caddy" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+            source.parent.mkdir(parents=True)
+            source.write_text("test root ca\n", encoding="utf-8")
+
+            result = bootstrap.export_caddy_internal_ca(root)
+            target = root / "data" / "control-plane" / "caddy-root.crt"
+
+            self.assertTrue(result["exported"])
+            self.assertEqual(result["reason"], "ok")
+            self.assertEqual(target.read_text(encoding="utf-8"), "test root ca\n")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o664)
+
+    def test_caddy_internal_ca_export_reports_missing_root_without_creating_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            result = bootstrap.export_caddy_internal_ca(root)
+
+            self.assertFalse(result["exported"])
+            self.assertEqual(result["reason"], "missing")
+            self.assertFalse((root / "data" / "control-plane" / "caddy-root.crt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

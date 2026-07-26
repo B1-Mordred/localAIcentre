@@ -109,7 +109,7 @@ The opt-in compatibility harness can enforce that proof against the local Compos
 export B1_REMOTE_NODES_LIVE_TEST=1
 export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
 export B1_AI_HUB_API_KEY=...
-export B1_AI_HUB_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_AI_HUB_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_AI_HUB_DOWNLOAD_DIR=/tmp/b1-remote-node-output
 export B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose
 make remote-nodes-non-comfy-compatibility

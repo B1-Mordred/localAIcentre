@@ -121,6 +121,31 @@ services:
       retries: 5
       start_period: 20s
 
+  caddy-ca-export:
+    image: python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+    <<: *service-defaults
+    read_only: true
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    command:
+      - python
+      - /opt/b1/deploy/scripts/bootstrap.py
+      - --root
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}
+      - --export-caddy-ca-only
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - ./deploy/scripts:/opt/b1/deploy/scripts:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane
+    networks:
+      - app
+    restart: "no"
+
   open-webui:
     build:
       context: ./deploy/open-webui
@@ -284,10 +309,12 @@ services:
       B1_SESSION_COOKIE_SECURE: ${B1_SESSION_COOKIE_SECURE:-true}
       B1_SESSION_TTL_SECONDS: ${B1_SESSION_TTL_SECONDS:-28800}
       B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
-      B1_CADDY_INTERNAL_CA_FILE: ${B1_CADDY_INTERNAL_CA_FILE:-/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt}
+      B1_CADDY_INTERNAL_CA_FILE: ${B1_CADDY_INTERNAL_CA_FILE:-/srv/b1-ai-hub/data/control-plane/caddy-root.crt}
       B1_SELF_TEST_TLS_URLS: ${B1_SELF_TEST_TLS_URLS:-}
-      B1_SELF_TEST_TLS_CA_FILE: ${B1_SELF_TEST_TLS_CA_FILE:-/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt}
+      B1_SELF_TEST_TLS_CA_FILE: ${B1_SELF_TEST_TLS_CA_FILE:-/srv/b1-ai-hub/data/control-plane/caddy-root.crt}
       B1_SELF_TEST_TLS_VERIFY: ${B1_SELF_TEST_TLS_VERIFY:-true}
+      B1_SELF_TEST_TLS_GATEWAY_HOST: ${B1_SELF_TEST_TLS_GATEWAY_HOST:-gateway}
+      B1_SELF_TEST_TLS_GATEWAY_PORT: ${B1_SELF_TEST_TLS_GATEWAY_PORT:-443}
       B1_SELF_TEST_TINY_INFERENCE_ENABLED: ${B1_SELF_TEST_TINY_INFERENCE_ENABLED:-true}
       B1_SELF_TEST_UNLOAD_RUNTIME: ${B1_SELF_TEST_UNLOAD_RUNTIME:-localai}
     depends_on:
@@ -363,6 +390,7 @@ services:
       context: ./services/runtime-agent
     <<: *service-defaults
     read_only: true
+    gpus: all
     group_add:
       - "${B1_DOCKER_GID:-0}"
     environment:
@@ -379,6 +407,8 @@ services:
       B1_RUNTIME_AGENT_CLIENT_CERT_FILE: /run/secrets/runtime_agent_client.crt
       B1_RUNTIME_AGENT_CLIENT_KEY_FILE: /run/secrets/runtime_agent_client.key
       B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED: ${B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED:-true}
+      NVIDIA_VISIBLE_DEVICES: ${B1_RUNTIME_AGENT_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${B1_RUNTIME_AGENT_NVIDIA_DRIVER_CAPABILITIES:-utility}
       B1_COMPOSE_PROJECT: ${B1_PROJECT_NAME:-b1-ai-hub}
       B1_METRIC_PATHS: /srv/b1-ai-hub,/tmp
       B1_ROLLBACK_SERVICES: ${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway}

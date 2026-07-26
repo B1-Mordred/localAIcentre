@@ -342,6 +342,24 @@ class ComposePolicyTests(unittest.TestCase):
         healthcheck = "\n".join(str(item) for item in gateway["healthcheck"]["test"])
         self.assertIn("http://127.0.0.1:2019/config/", healthcheck)
 
+    def test_caddy_ca_export_runs_after_gateway_and_writes_control_plane_copy(self) -> None:
+        service = self.compose["services"]["caddy-ca-export"]
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["restart"], "no")
+        self.assertIn("no-new-privileges:true", service["security_opt"])
+        self.assertEqual(service["cap_drop"], ["ALL"])
+        self.assertEqual(service["cap_add"], ["CHOWN", "DAC_OVERRIDE", "FOWNER"])
+        self.assertEqual(service["depends_on"]["gateway"]["condition"], "service_healthy")
+        self.assertIn("--export-caddy-ca-only", service["command"])
+        self.assertIn(
+            "${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:ro",
+            service["volumes"],
+        )
+        self.assertIn(
+            "${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane",
+            service["volumes"],
+        )
+
     def test_gateway_permissions_policy_scopes_browser_capture_to_interactive_hosts(self) -> None:
         caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
         self.assertIn('Permissions-Policy "camera=(), microphone=(), geolocation=()"', caddyfile)
@@ -915,6 +933,9 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_RUNTIME_AGENT_CLIENT_CERT_FILE"], "/run/secrets/runtime_agent_client.crt")
         self.assertEqual(environment["B1_RUNTIME_AGENT_CLIENT_KEY_FILE"], "/run/secrets/runtime_agent_client.key")
         self.assertEqual(environment["B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED"], "${B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED:-true}")
+        self.assertEqual(service["gpus"], "all")
+        self.assertEqual(environment["NVIDIA_VISIBLE_DEVICES"], "${B1_RUNTIME_AGENT_NVIDIA_VISIBLE_DEVICES:-all}")
+        self.assertEqual(environment["NVIDIA_DRIVER_CAPABILITIES"], "${B1_RUNTIME_AGENT_NVIDIA_DRIVER_CAPABILITIES:-utility}")
         self.assertEqual(environment["B1_METRIC_PATHS"], "/srv/b1-ai-hub,/tmp")
         self.assertEqual(environment["B1_ENABLE_MUTATIONS"], "${B1_ENABLE_MUTATIONS:-false}")
         self.assertEqual(environment["B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE"], "${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}")

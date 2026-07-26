@@ -28,7 +28,7 @@ Compose bootstrap copies editable job templates once to `/srv/b1-ai-hub/workflow
 ```bash
 export B1_WORKFLOWS_API_BASE=https://api.ai.b1.germering
 export B1_WORKFLOWS_API_KEY=...
-export B1_WORKFLOWS_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_WORKFLOWS_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_WORKFLOWS_IMAGE_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-generation-job.json
 export B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/image-edit-job.json
 export B1_WORKFLOWS_VIDEO_JOB_FILE=/srv/b1-ai-hub/workflows/acceptance/short-video-job.json
@@ -45,7 +45,7 @@ Run the LocalAI runtime suite on the target host after a real `chat-default` or 
 ```bash
 export B1_LOCALAI_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_LOCALAI_ACCEPTANCE_API_KEY=...
-export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_LOCALAI_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_LOCALAI_ACCEPTANCE_CHAT_MODEL=chat-default
 export B1_LOCALAI_ACCEPTANCE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/localai-runtime.json
 make localai-acceptance
@@ -60,7 +60,7 @@ Run the GPU acceptance suite only on the target host, or during an equivalent ma
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering
 export B1_GPU_ACCEPTANCE_API_KEY=...
-export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_GPU_ACCEPTANCE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_GPU_ACCEPTANCE_CHAT_MODEL=chat-default
 export B1_GPU_ACCEPTANCE_COMFY_MODEL=image-default
 export B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE=/srv/b1-ai-hub/workflows/acceptance/text-to-image-api-prompt.json
@@ -79,7 +79,7 @@ Run the restart reconciliation suite during a maintenance validation window afte
 ```bash
 export B1_RESTART_RECONCILIATION_API_BASE=https://api.ai.b1.germering
 export B1_RESTART_RECONCILIATION_API_KEY=...
-export B1_RESTART_RECONCILIATION_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_RESTART_RECONCILIATION_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_RESTART_RECONCILIATION_STARTED_AFTER="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker compose restart control-plane
 export B1_RESTART_RECONCILIATION_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/restart-reconciliation.json

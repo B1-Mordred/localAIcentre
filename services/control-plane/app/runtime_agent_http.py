@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from typing import Any
 
 
@@ -14,9 +15,12 @@ def runtime_agent_httpx_kwargs(
     if not base_url.lower().startswith("https://"):
         return {}
 
-    kwargs: dict[str, Any] = {"verify": ca_file if verify_tls and ca_file else verify_tls}
+    if verify_tls:
+        context = ssl.create_default_context(cafile=ca_file or None)
+    else:
+        context = ssl._create_unverified_context()
     if client_cert_file and client_key_file:
-        kwargs["cert"] = (client_cert_file, client_key_file)
+        context.load_cert_chain(client_cert_file, client_key_file)
     elif client_cert_file:
-        kwargs["cert"] = client_cert_file
-    return kwargs
+        context.load_cert_chain(client_cert_file)
+    return {"verify": context, "trust_env": False}

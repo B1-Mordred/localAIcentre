@@ -571,6 +571,43 @@ class ModelLifecycleTests(unittest.TestCase):
             "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/low/en_US-amy-low.onnx.json",
         )
 
+    def test_seed_cpu_embedding_and_stt_download_plans_are_stageable(self) -> None:
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            embedding_plan = model_lifecycle.build_download_plan(
+                catalog.get_manifest("b1-minilm-l6-v2-onnx-q4"),
+                root,
+                policy=ResourcePolicy(),
+                known_aliases=set(catalog.aliases_by_id),
+                model_profiles=catalog.list_profiles(),
+            )
+            stt_plan = model_lifecycle.build_download_plan(
+                catalog.get_manifest("b1-vosk-small-en-us-0.15"),
+                root,
+                policy=ResourcePolicy(),
+                known_aliases=set(catalog.aliases_by_id),
+                model_profiles=catalog.list_profiles(),
+            )
+
+        self.assertTrue(embedding_plan["can_download"], embedding_plan["blockers"])
+        self.assertEqual(embedding_plan["status"], "downloadable")
+        self.assertEqual(embedding_plan["file_count"], 6)
+        self.assertEqual(embedding_plan["files"][0]["source_type"], "huggingface")
+        self.assertEqual(
+            embedding_plan["files"][0]["source_url"],
+            "https://huggingface.co/onnx-community/all-MiniLM-L6-v2-ONNX/resolve/aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f/config.json",
+        )
+        self.assertTrue(stt_plan["can_download"], stt_plan["blockers"])
+        self.assertEqual(stt_plan["status"], "downloadable")
+        self.assertEqual(stt_plan["file_count"], 1)
+        self.assertEqual(stt_plan["files"][0]["source_type"], "direct-url")
+        self.assertEqual(
+            stt_plan["files"][0]["source_url"],
+            "https://alphacephei.com/kaldi/models/vosk-model-small-en-us-0.15.zip",
+        )
+
     def test_download_url_builders_reject_encoded_file_path_controls(self) -> None:
         direct_payload = manifest_payload(
             "5" * 64,

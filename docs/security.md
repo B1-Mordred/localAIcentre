@@ -42,7 +42,7 @@ export B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1
 export B1_SECURITY_BROWSER_USERNAME=admin
 export B1_SECURITY_BROWSER_PASSWORD=...
 export B1_SECURITY_ARTIFACT_JOB_ID=<completed-job-with-artifact>
-export B1_SECURITY_CA_FILE=/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt
+export B1_SECURITY_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
 export B1_SECURITY_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/security-acceptance.json
 make security-acceptance
 ```

@@ -6,8 +6,8 @@
   "modality": "embedding",
   "operations": ["embedding"],
   "source": {
-    "type": "direct-url",
-    "url": "https://huggingface.co/onnx-community/all-MiniLM-L6-v2-ONNX/resolve/aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f/",
+    "type": "huggingface",
+    "url": "https://huggingface.co/onnx-community/all-MiniLM-L6-v2-ONNX",
     "revision": "aff7a1dc4e8a1ea593e6ea21e95c22ef0a25966f"
   },
   "files": [

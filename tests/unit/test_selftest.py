@@ -63,6 +63,36 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["observed"]["largest_gpu_memory_total_mib"], 12288)
 
+    def test_hardware_resource_policy_accepts_kernel_reserved_32gb_class_ram(self) -> None:
+        result = selftest.hardware_resource_policy_check(
+            {
+                "gpu": {
+                    "available": True,
+                    "devices": [
+                        {
+                            "name": "RTX 3060",
+                            "memory_total_mib": 12288,
+                            "memory_free_mib": 11264,
+                        }
+                    ],
+                },
+                "memory": {
+                    "total_bytes": int(31.8 * 1024**3),
+                    "available_bytes": 24 * 1024**3,
+                },
+            },
+            {
+                "gpu_total_vram_gib": 12.0,
+                "gpu_reserve_vram_gib": 1.5,
+                "host_total_ram_gib": 32.0,
+                "host_reserve_ram_gib": 6.0,
+            },
+            "production",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["policy"]["host_total_ram_kernel_reserve_tolerance"], 0.97)
+
     def test_hardware_resource_policy_fails_undersized_production_host(self) -> None:
         result = selftest.hardware_resource_policy_check(
             {

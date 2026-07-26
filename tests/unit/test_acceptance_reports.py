@@ -2195,7 +2195,7 @@ def sample_tls_routing_check(route_keys: tuple[str, ...] | None = None) -> dict[
             ],
             "expected_route_keys": ["chat", "control", "media", "comfy", "voice", "models", "api"],
             "verify_tls": True,
-            "ca_file": "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
+            "ca_file": "/srv/b1-ai-hub/data/control-plane/caddy-root.crt",
         },
     }
 
@@ -2211,7 +2211,7 @@ def sample_caddy_ca_check(status: str = "ok") -> dict[str, Any]:
             "tls_mode": "internal",
             "required": True,
             "available": status == "ok",
-            "path": "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
+            "path": "/srv/b1-ai-hub/data/control-plane/caddy-root.crt",
             "sha256": "a" * 64 if status == "ok" else None,
             "fingerprint_sha256": ":".join(["AA"] * 32) if status == "ok" else None,
             "download_url": "/admin/tls/caddy-ca/root.crt" if status == "ok" else None,

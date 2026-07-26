@@ -185,11 +185,12 @@ class VlmOpenAiApiTests(unittest.TestCase):
         self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
         self.patch_attr("call_openai_runtime_json", call_openai_runtime_json)
 
-        response = asyncio.run(main.embeddings(main.EmbeddingRequest(model="embedding-default", input="hello"), authorization="Bearer key"))
+        response = asyncio.run(main.embeddings(main.EmbeddingRequest(model="embedding-default", input="hello", dimensions=8), authorization="Bearer key"))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls[0], {"resolver": "embedding-default", "modality": "embedding", "runtime_policy": "any", "operation": "embeddings"})
         self.assertEqual(calls[1]["path"], "/v1/embeddings")
+        self.assertEqual(calls[1]["payload"]["dimensions"], 8)
         self.assertEqual(calls[1]["runtime"], "audio-cpu")
         self.assertEqual(calls[1]["owner_id"], "client_1")
 

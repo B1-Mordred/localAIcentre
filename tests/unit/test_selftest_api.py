@@ -1039,6 +1039,7 @@ class SelfTestApiTests(unittest.TestCase):
                 self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
                 self_test_tls_ca_file=str(ca_file),
                 self_test_tls_verify=True,
+                self_test_tls_gateway_host="",
             )
             result = asyncio.run(main.self_test_tls_routing())
 
@@ -1076,6 +1077,7 @@ class SelfTestApiTests(unittest.TestCase):
         self.patch_settings(
             self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
             self_test_tls_verify=False,
+            self_test_tls_gateway_host="",
         )
 
         result = asyncio.run(main.self_test_tls_routing())
@@ -1084,6 +1086,46 @@ class SelfTestApiTests(unittest.TestCase):
         route = result["data"]["routes"][0]
         self.assertEqual(route["security_headers"], "failed")
         self.assertIn("missing strict-transport-security", route["header_failures"])
+
+    def test_tls_routing_probe_can_resolve_public_host_through_gateway_service(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        async def fake_gateway_probe(url: str, verify_value: bool | str) -> tuple[int, dict[str, str]]:
+            calls.append(
+                {
+                    "url": url,
+                    "verify_value": verify_value,
+                    "gateway_host": main.settings.self_test_tls_gateway_host,
+                    "gateway_port": main.settings.self_test_tls_gateway_port,
+                }
+            )
+            return (
+                200,
+                {
+                    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                },
+            )
+
+        self.patch_attr("self_test_gateway_tls_probe", fake_gateway_probe)
+        self.patch_settings(
+            self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
+            self_test_tls_verify=False,
+            self_test_tls_gateway_host="gateway",
+            self_test_tls_gateway_port=443,
+        )
+
+        result = asyncio.run(main.self_test_tls_routing())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(calls[0]["url"], "https://api.ai.b1.germering/healthz")
+        self.assertEqual(calls[0]["gateway_host"], "gateway")
+        self.assertEqual(calls[0]["gateway_port"], 443)
+        self.assertEqual(result["data"]["gateway_connect_host"], "gateway")
+        self.assertEqual(result["data"]["gateway_connect_port"], 443)
 
     def test_caddy_internal_ca_status_and_download_use_configured_root(self) -> None:
         self.patch_auth({"admin:read"})

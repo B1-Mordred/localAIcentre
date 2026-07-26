@@ -16,6 +16,9 @@ from pathlib import Path, PurePath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
+
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -605,9 +608,6 @@ def log_json(**payload: Any) -> None:
 
 
 def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeRequestTracker | None = None):
-    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-    from fastapi.responses import JSONResponse, Response
-
     import httpx
 
     app = FastAPI(title="B1 Voicebox Runtime Proxy", docs_url=None, redoc_url=None)

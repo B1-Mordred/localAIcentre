@@ -350,6 +350,10 @@ def runtime_smoke_summary_for_manifest(manifest: ModelManifest) -> dict[str, Any
     return runtime_smoke_public_summary(manifest.runtime_smoke, manifest.preferred_runtime)
 
 
+def manifest_is_internal_placeholder(manifest: ModelManifest) -> bool:
+    return manifest.license.name == "internal-placeholder" or any(file.format == "internal" for file in manifest.files)
+
+
 @dataclass(frozen=True)
 class AliasDefinition:
     alias: str
@@ -377,7 +381,9 @@ class CatalogAlias:
             return "disabled"
         if self.manifest is None:
             return self.alias.status
-        if self.alias.status == "uninstalled":
+        if manifest_is_internal_placeholder(self.manifest):
+            return self.alias.status
+        if self.alias.status in {"uninstalled", "cpu-placeholder"}:
             return "installed"
         return self.alias.status
 
