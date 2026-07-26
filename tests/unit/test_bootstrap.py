@@ -176,6 +176,7 @@ class BootstrapTests(unittest.TestCase):
 
         prompt = json.loads((source / "text-to-image-api-prompt.json").read_text(encoding="utf-8"))
         smoke_prompt = json.loads((source / "native-comfyui-smoke-prompt.json").read_text(encoding="utf-8"))
+        upload_save_prompt = json.loads((source / "native-comfyui-upload-save-prompt.json").read_text(encoding="utf-8"))
         image_job = json.loads((source / "image-generation-job.json").read_text(encoding="utf-8"))
         image_edit_job = json.loads((source / "image-edit-job.json").read_text(encoding="utf-8"))
         video_job = json.loads((source / "short-video-job.json").read_text(encoding="utf-8"))
@@ -185,6 +186,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("SaveImage", {node.get("class_type") for node in prompt["prompt"].values()})
         self.assertIn("B1RuntimeTinyImage", {node.get("class_type") for node in smoke_prompt["prompt"].values()})
         self.assertIn("SaveImage", {node.get("class_type") for node in smoke_prompt["prompt"].values()})
+        self.assertIn("LoadImage", {node.get("class_type") for node in upload_save_prompt["prompt"].values()})
+        self.assertIn("SaveImage", {node.get("class_type") for node in upload_save_prompt["prompt"].values()})
 
         for body, modality, operation, model in (
             (image_job, "image", "generation", "image-default"),

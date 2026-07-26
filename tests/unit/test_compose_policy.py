@@ -273,6 +273,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("workflows/acceptance", healthcheck)
         for filename in (
             "native-comfyui-smoke-prompt.json",
+            "native-comfyui-upload-save-prompt.json",
             "text-to-image-api-prompt.json",
             "image-generation-job.json",
             "image-edit-job.json",

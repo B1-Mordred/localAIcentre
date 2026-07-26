@@ -31,6 +31,10 @@ class AcceptanceEnvTests(unittest.TestCase):
             text,
         )
         self.assertIn(
+            'export B1_NATIVE_COMFYUI_PROMPT_FILE="${B1_NATIVE_COMFYUI_PROMPT_FILE:-/srv/example/workflows/acceptance/native-comfyui-upload-save-prompt.json}"',
+            text,
+        )
+        self.assertIn(
             'export B1_WORKFLOWS_IMAGE_JOB_FILE="${B1_WORKFLOWS_IMAGE_JOB_FILE:-/srv/example/workflows/acceptance/image-generation-job.json}"',
             text,
         )

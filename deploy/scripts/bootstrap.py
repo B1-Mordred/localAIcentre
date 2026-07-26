@@ -143,6 +143,7 @@ APP_WRITABLE_DIRS = [
 ACCEPTANCE_TEMPLATE_FILES = (
     "README.md",
     "native-comfyui-smoke-prompt.json",
+    "native-comfyui-upload-save-prompt.json",
     "text-to-image-api-prompt.json",
     "image-generation-job.json",
     "image-edit-job.json",

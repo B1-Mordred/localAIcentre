@@ -237,7 +237,7 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
 
     lines.extend(section("Prompt, job, and artifact inputs"))
     lines.append(shell_default_literal("B1_GPU_ACCEPTANCE_COMFY_PROMPT_FILE", str(workflows_root / "text-to-image-api-prompt.json")))
-    lines.append(shell_default_literal("B1_NATIVE_COMFYUI_PROMPT_FILE", str(workflows_root / "text-to-image-api-prompt.json")))
+    lines.append(shell_default_literal("B1_NATIVE_COMFYUI_PROMPT_FILE", str(workflows_root / "native-comfyui-upload-save-prompt.json")))
     lines.append(shell_default_literal("B1_WORKFLOWS_IMAGE_JOB_FILE", str(workflows_root / "image-generation-job.json")))
     lines.append(shell_default_literal("B1_WORKFLOWS_IMAGE_EDIT_JOB_FILE", str(workflows_root / "image-edit-job.json")))
     lines.append(shell_default_literal("B1_WORKFLOWS_VIDEO_JOB_FILE", str(workflows_root / "short-video-job.json")))

@@ -48,10 +48,11 @@ NATIVE_COMFYUI_REQUIRED_CHECKS = (
 
 ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
 COMFYUI_OUTPUT_KEYS = ("images", "videos", "gifs", "audio")
+PROMPT_UPLOAD_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 TINY_PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a"
     "0000000d49484452000000010000000108060000001f15c489"
-    "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
+    "0000000d4944415478da63d0cf2ffe0f0003f30211fd222ccb"
     "0000000049454e44ae426082"
 )
 
@@ -179,6 +180,41 @@ def prompt_metadata(payload: dict[str, Any], *, source: str, file_path: str = ""
         "route_level_smoke": contains_class_type(payload, TINY_COMFYUI_SMOKE_CLASS),
         "default_prompt_file": source == "default-smoke-file",
     }
+
+
+def normalize_prompt_upload_filename(filename: str) -> str:
+    value = filename.strip()
+    if not value:
+        raise AssertionError("LoadImage input filename is empty")
+    if value != filename:
+        raise AssertionError(f"LoadImage input filename contains surrounding whitespace: {filename!r}")
+    if len(value) > 180:
+        raise AssertionError(f"LoadImage input filename is too long: {filename!r}")
+    if "/" in value or "\\" in value:
+        raise AssertionError(f"LoadImage input filename must be a plain filename: {filename!r}")
+    if value in {".", ".."} or ".." in value:
+        raise AssertionError(f"LoadImage input filename must not contain traversal segments: {filename!r}")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise AssertionError(f"LoadImage input filename contains control characters: {filename!r}")
+    suffix = Path(value).suffix.lower()
+    if suffix not in PROMPT_UPLOAD_IMAGE_EXTENSIONS:
+        raise AssertionError(f"LoadImage input filename must use a supported image extension: {filename!r}")
+    return value
+
+
+def prompt_load_image_filenames(payload: dict[str, Any]) -> list[str]:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, dict):
+        return []
+    filenames: set[str] = set()
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict) or node.get("class_type") != "LoadImage":
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict) or not isinstance(inputs.get("image"), str):
+            raise AssertionError(f"LoadImage node {node_id} must declare inputs.image as a filename")
+        filenames.add(normalize_prompt_upload_filename(inputs["image"]))
+    return sorted(filenames)
 
 
 def load_prompt_payload_with_metadata() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -523,6 +559,38 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
             response_keys=response_keys,
         )
         self.samples.append({"label": "upload-mask", "filename": filename, "response_keys": response_keys})
+
+    def preload_prompt_images(self) -> None:
+        filenames = prompt_load_image_filenames(self.prompt_payload)
+        if not filenames:
+            return
+        uploaded: list[dict[str, Any]] = []
+        for filename in filenames:
+            payload = self.request_multipart_json(
+                "POST",
+                "/upload/image",
+                {"type": "input", "overwrite": "true"},
+                {"image": (filename, "image/png", TINY_PNG_BYTES)},
+                timeout=60,
+            )
+            self.assertIsInstance(payload, dict)
+            uploaded.append(
+                {
+                    "filename": filename,
+                    "response_keys": sorted(str(key) for key in payload.keys()),
+                    "name": str(payload.get("name") or ""),
+                    "type": str(payload.get("type") or ""),
+                    "subfolder_present": isinstance(payload.get("subfolder"), str),
+                }
+            )
+        self.record_check(
+            "prompt_load_images_preloaded",
+            path="/upload/image",
+            upload_count=len(uploaded),
+            filenames=filenames,
+            uploaded=uploaded,
+        )
+        self.samples.append({"label": "prompt-loadimage-preload", "upload_count": len(uploaded), "filenames": filenames})
 
     async def connect_websocket(self):
         import websockets
@@ -878,6 +946,7 @@ class NativeComfyUiCompatibilityTests(unittest.TestCase):
         self.record_metadata_check("queue_accessible", "/queue")
         image_upload = self.verify_image_upload()
         self.verify_mask_upload(image_upload)
+        self.preload_prompt_images()
 
         prompt_id = asyncio.run(self.submit_prompt_and_collect_ws())
         history = self.wait_for_history(prompt_id)

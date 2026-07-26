@@ -63,6 +63,28 @@ class NativeComfyUiLiveHarnessHelperTests(unittest.TestCase):
         self.assertEqual(metadata["node_count"], 2)
         self.assertEqual(metadata["class_type_count"], 2)
 
+    def test_upload_save_prompt_is_handoff_candidate_without_model_weights(self) -> None:
+        path = ROOT / "workflows" / "acceptance" / "native-comfyui-upload-save-prompt.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+
+        metadata = native_comfyui_live.prompt_metadata(payload, source="env-file", file_path=str(path))
+
+        self.assertEqual(metadata["file_name"], "native-comfyui-upload-save-prompt.json")
+        self.assertFalse(metadata["route_level_smoke"])
+        self.assertFalse(metadata["default_prompt_file"])
+        self.assertEqual(metadata["node_count"], 2)
+        self.assertEqual(metadata["class_type_count"], 2)
+        self.assertEqual(metadata["class_types"], ["LoadImage", "SaveImage"])
+        self.assertEqual(native_comfyui_live.prompt_load_image_filenames(payload), ["b1-native-comfyui-acceptance-input.png"])
+
+    def test_prompt_load_image_filename_validation_rejects_paths(self) -> None:
+        for filename in ("../secret.png", "nested/input.png", "nested\\input.png", "bad.txt", " input.png"):
+            with self.subTest(filename=filename):
+                payload = {"prompt": {"1": {"class_type": "LoadImage", "inputs": {"image": filename}}}}
+
+                with self.assertRaises(AssertionError):
+                    native_comfyui_live.prompt_load_image_filenames(payload)
+
     def test_multipart_form_data_builds_upload_image_body_without_credentials(self) -> None:
         body, content_type = native_comfyui_live.multipart_form_data(
             {"type": "input", "overwrite": "true"},
