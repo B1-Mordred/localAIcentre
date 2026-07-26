@@ -71,6 +71,17 @@ class SettingsTests(unittest.TestCase):
             ("https://api.override.test/healthz", "https://control.override.test/"),
         )
 
+    def test_caddy_internal_ca_file_is_separate_from_self_test_ca(self) -> None:
+        self.patch_env(
+            B1_CADDY_INTERNAL_CA_FILE="/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt",
+            B1_SELF_TEST_TLS_CA_FILE="/etc/ssl/certs/custom-test-bundle.pem",
+        )
+
+        settings = settings_module.load_settings()
+
+        self.assertEqual(settings.caddy_internal_ca_file, "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt")
+        self.assertEqual(settings.self_test_tls_ca_file, "/etc/ssl/certs/custom-test-bundle.pem")
+
 
 if __name__ == "__main__":
     unittest.main()

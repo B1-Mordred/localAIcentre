@@ -153,6 +153,7 @@ class Settings:
     session_ttl_seconds: int
     cors_allow_origins: tuple[str, ...]
     trusted_proxy_cidrs: tuple[str, ...]
+    caddy_internal_ca_file: str
     self_test_tls_urls: tuple[str, ...]
     self_test_tls_ca_file: str
     self_test_tls_verify: bool
@@ -281,6 +282,7 @@ def load_settings() -> Settings:
         session_ttl_seconds=_int("B1_SESSION_TTL_SECONDS", 8 * 60 * 60),
         cors_allow_origins=cors_allow_origins,
         trusted_proxy_cidrs=_words("B1_TRUSTED_PROXY_CIDRS", "127.0.0.1/32 ::1/128 172.16.0.0/12 fd00::/8"),
+        caddy_internal_ca_file=os.getenv("B1_CADDY_INTERNAL_CA_FILE", "/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt"),
         self_test_tls_urls=_words(
             "B1_SELF_TEST_TLS_URLS",
             _default_self_test_tls_urls(

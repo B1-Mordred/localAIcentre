@@ -281,6 +281,7 @@ services:
       B1_SESSION_COOKIE_NAME: ${B1_SESSION_COOKIE_NAME:-b1_ai_hub_session}
       B1_SESSION_COOKIE_SECURE: ${B1_SESSION_COOKIE_SECURE:-true}
       B1_SESSION_TTL_SECONDS: ${B1_SESSION_TTL_SECONDS:-28800}
+      B1_CADDY_INTERNAL_CA_FILE: ${B1_CADDY_INTERNAL_CA_FILE:-/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt}
       B1_SELF_TEST_TLS_URLS: ${B1_SELF_TEST_TLS_URLS:-}
       B1_SELF_TEST_TLS_CA_FILE: ${B1_SELF_TEST_TLS_CA_FILE:-/srv/b1-ai-hub/data/caddy/pki/authorities/local/root.crt}
       B1_SELF_TEST_TLS_VERIFY: ${B1_SELF_TEST_TLS_VERIFY:-true}

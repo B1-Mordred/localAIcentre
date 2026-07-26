@@ -5,6 +5,7 @@ B1 AI Hub is LAN-only by default. Do not expose it through router port forwardin
 Controls implemented or planned:
 
 - HTTPS via Caddy, defaulting to the internal LAN CA while allowing externally supplied certificate files through `B1_CADDY_TLS_ARGS` and a read-only `$B1_DATA_ROOT/secrets/caddy-certs` mount
+- authenticated Caddy internal root-certificate status/download through `GET /admin/tls/caddy-ca*`, constrained to `B1_CADDY_INTERNAL_CA_FILE` with symlink and non-regular-file refusal
 - persisted CORS allowlists with no wildcard credentialed origins
 - secure session cookies and CSRF protection for browser mutations
 - local browser passwords stored as scrypt hashes

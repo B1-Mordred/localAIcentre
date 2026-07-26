@@ -256,6 +256,8 @@ External Voicebox UIs and REST/MCP clients must use `https://voice.ai.b1.germeri
 
 The default Caddyfile uses `B1_CADDY_TLS_ARGS=internal`, which expands to Caddy's `tls internal` mode for every B1 virtual host. Export the Caddy root certificate from `$B1_DATA_ROOT/data/caddy/pki/authorities/local/root.crt` after first boot and install it only on trusted LAN clients.
 
+Control Center exposes the same file under System -> LAN TLS CA. It shows the configured path, regular-file status, byte count, modified time, SHA-256 fingerprint, route host map, and blockers before enabling the authenticated Download Root action. The backing API is `GET /admin/tls/caddy-ca` and `GET /admin/tls/caddy-ca/root.crt`; it reads only `B1_CADDY_INTERNAL_CA_FILE`, defaults to the Caddy internal root, and refuses symlinks or non-regular files.
+
 The control-plane self-test uses the same root certificate path by default for its public gateway routing probes. With `B1_SELF_TEST_TLS_URLS` empty, it checks chat/control/media at `/` and ComfyUI/Voicebox/Model Hub/API at `/healthz`. If you replace Caddy certificates or test through different internal URLs, set `B1_SELF_TEST_TLS_URLS` and `B1_SELF_TEST_TLS_CA_FILE` in `.env` before restarting the control plane.
 
 Externally supplied certificates can be used without source changes:

@@ -231,6 +231,26 @@ type NetworkPolicyPayload = {
   updated_at?: string | null;
 };
 
+type CaddyCaStatus = {
+  object: "caddy_internal_ca";
+  status: string;
+  path: string;
+  tls_mode: string;
+  download_url?: string | null;
+  available: boolean;
+  readable: boolean;
+  regular_file: boolean;
+  symlink: boolean;
+  size_bytes?: number | null;
+  sha256?: string | null;
+  fingerprint_sha256?: string | null;
+  modified_at?: string | null;
+  hosts: Record<string, string>;
+  trust_guidance?: string[];
+  blockers: string[];
+  blocker_count: number;
+};
+
 type BackupSummary = {
   name: string;
   created_at?: string;
@@ -1685,8 +1705,8 @@ async function downloadJobArtifact(artifact: JobArtifact, index: number): Promis
   return filename;
 }
 
-async function downloadAcceptanceReportFile(reportId: string, filename: AcceptanceReportFileName): Promise<string> {
-  const response = await apiFetch(`/admin/acceptance-reports/${encodeURIComponent(reportId)}/files/${encodeURIComponent(filename)}`, { method: "GET" });
+async function downloadAuthenticatedFile(path: string, downloadName: string): Promise<string> {
+  const response = await apiFetch(path, { method: "GET" });
   if (!response.ok) {
     const text = await response.text();
     let parsed: any = null;
@@ -1699,7 +1719,6 @@ async function downloadAcceptanceReportFile(reportId: string, filename: Acceptan
   }
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
-  const downloadName = `${reportId}-${filename}`;
   const link = document.createElement("a");
   link.href = url;
   link.download = downloadName;
@@ -1708,6 +1727,17 @@ async function downloadAcceptanceReportFile(reportId: string, filename: Acceptan
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
   return downloadName;
+}
+
+async function downloadAcceptanceReportFile(reportId: string, filename: AcceptanceReportFileName): Promise<string> {
+  return downloadAuthenticatedFile(
+    `/admin/acceptance-reports/${encodeURIComponent(reportId)}/files/${encodeURIComponent(filename)}`,
+    `${reportId}-${filename}`
+  );
+}
+
+async function downloadCaddyRootCertificate(): Promise<string> {
+  return downloadAuthenticatedFile("/admin/tls/caddy-ca/root.crt", "b1-ai-hub-caddy-root.crt");
 }
 
 function parseSseEvent(raw: string): { event: string; data: string } | null {
@@ -4989,6 +5019,7 @@ function System() {
   const [networkPolicy, setNetworkPolicy] = useState<NetworkPolicyPayload | null>(null);
   const [networkCorsOrigins, setNetworkCorsOrigins] = useState("");
   const [networkTrustedProxyCidrs, setNetworkTrustedProxyCidrs] = useState("");
+  const [caddyCa, setCaddyCa] = useState<CaddyCaStatus | null>(null);
   const [maintenance, setMaintenance] = useState<MaintenanceState | null>(null);
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [updates, setUpdates] = useState<UpdatePlan[]>([]);
@@ -5038,6 +5069,12 @@ function System() {
     apiJson<NetworkPolicyPayload>(`/admin/network-policy`)
       .then(setNetworkPolicyPayload)
       .catch(() => setNetworkPolicy(null));
+  };
+
+  const loadCaddyCa = () => {
+    apiJson<CaddyCaStatus>(`/admin/tls/caddy-ca`)
+      .then(setCaddyCa)
+      .catch(() => setCaddyCa(null));
   };
 
   const loadMaintenance = () => {
@@ -5130,6 +5167,15 @@ function System() {
     setBusy(true);
     setMessage(`downloading ${filename}`);
     downloadAcceptanceReportFile(reportId, filename)
+      .then((downloadName) => setMessage(`downloaded ${downloadName}`))
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const downloadCaddyCa = () => {
+    setBusy(true);
+    setMessage("downloading Caddy root");
+    downloadCaddyRootCertificate()
       .then((downloadName) => setMessage(`downloaded ${downloadName}`))
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
@@ -5421,6 +5467,7 @@ function System() {
     loadResourcePolicy();
     loadAdmissionPolicy();
     loadNetworkPolicy();
+    loadCaddyCa();
     loadMaintenance();
     loadUpdates();
   }, []);
@@ -5560,6 +5607,43 @@ function System() {
             <small>{networkPolicy.effective.trusted_proxy_cidrs.length} active</small>
           </label>
         </div>
+      )}
+      <div className="subsection-title">
+        <KeyRound size={16} />
+        <h3>LAN TLS CA</h3>
+      </div>
+      <div className="toolbar">
+        <button title="Refresh Caddy CA status" onClick={loadCaddyCa} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Download Caddy root certificate" onClick={downloadCaddyCa} disabled={busy || !caddyCa?.available}><Download size={16} />Download Root</button>
+        <span className={`status-pill ${caddyCa?.available ? "ok" : caddyCa?.status === "blocked" ? "failed" : "warning"}`}>{caddyCa?.status ?? "unknown"}</span>
+        <span className="toolbar-status">{caddyCa?.path ?? "Caddy CA status unavailable"}</span>
+      </div>
+      <div className="metric-grid">
+        <Metric
+          label="Root"
+          value={caddyCa?.available ? "ready" : "missing"}
+          detail={caddyCa?.modified_at ? formatDateTime(caddyCa.modified_at) : caddyCa?.blockers[0] ?? "not loaded"}
+        />
+        <Metric
+          label="Fingerprint"
+          value={caddyCa?.sha256 ? caddyCa.sha256.slice(0, 12) : "none"}
+          detail={caddyCa?.fingerprint_sha256 ?? "no fingerprint"}
+        />
+        <Metric
+          label="Size"
+          value={formatBytes(caddyCa?.size_bytes ?? 0)}
+          detail={caddyCa?.regular_file ? "regular file" : caddyCa?.symlink ? "symlink blocked" : "not a regular file"}
+        />
+        <Metric
+          label="Hosts"
+          value={formatCount(Object.keys(caddyCa?.hosts ?? {}).length)}
+          detail={Object.entries(caddyCa?.hosts ?? {}).map(([key, host]) => `${key}:${host}`).join(", ") || "no hosts"}
+        />
+      </div>
+      {!!caddyCa?.blockers.length && (
+        <ul className="acceptance-blockers">
+          {caddyCa.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+        </ul>
       )}
       <div className="subsection-title">
         <PauseCircle size={16} />

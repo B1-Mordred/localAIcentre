@@ -273,6 +273,60 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertEqual(route["security_headers"], "failed")
         self.assertIn("missing strict-transport-security", route["header_failures"])
 
+    def test_caddy_internal_ca_status_and_download_use_configured_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            content = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+            ca_file.write_bytes(content)
+            expected_digest = main.hashlib.sha256(content).hexdigest()
+            self.patch_settings(caddy_internal_ca_file=str(ca_file))
+
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            response = asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "ok")
+        self.assertTrue(status["available"])
+        self.assertEqual(status["sha256"], expected_digest)
+        self.assertEqual(status["download_url"], "/admin/tls/caddy-ca/root.crt")
+        self.assertEqual(status["fingerprint_sha256"], ":".join(expected_digest[index : index + 2].upper() for index in range(0, 64, 2)))
+        self.assertEqual(response.body, content)
+        self.assertEqual(response.media_type, "application/x-x509-ca-cert")
+        self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
+        self.assertIn("b1-ai-hub-caddy-root.crt", response.headers["content-disposition"])
+
+    def test_caddy_internal_ca_download_refuses_missing_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_internal_ca_file=str(Path(tmp) / "missing-root.crt"))
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "missing")
+        self.assertFalse(status["available"])
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_caddy_internal_ca_download_refuses_symlink_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.crt"
+            target.write_text("target ca\n", encoding="utf-8")
+            link = Path(tmp) / "root.crt"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            self.patch_settings(caddy_internal_ca_file=str(link))
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "blocked")
+        self.assertTrue(status["symlink"])
+        self.assertFalse(status["available"])
+        self.assertEqual(raised.exception.status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

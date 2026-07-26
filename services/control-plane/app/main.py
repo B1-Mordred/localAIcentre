@@ -8,7 +8,9 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import re
+import stat
 import uuid
 from contextlib import suppress
 from dataclasses import asdict
@@ -7146,6 +7148,8 @@ def self_test_tls_verify_value() -> bool | str:
 
 
 SELF_TEST_PUBLIC_HOST_KEYS = ("chat", "control", "media", "comfy", "voice", "models", "api")
+CADDY_CA_DOWNLOAD_FILENAME = "b1-ai-hub-caddy-root.crt"
+CADDY_CA_MAX_BYTES = 1024 * 1024
 
 
 def normalized_public_host(value: str) -> str:
@@ -7167,6 +7171,105 @@ def self_test_public_host_map() -> dict[str, str]:
         "api": settings.host_api,
     }
     return {key: normalized_public_host(value) for key, value in hosts.items() if normalized_public_host(value)}
+
+
+def caddy_internal_ca_path() -> Path:
+    return Path(settings.caddy_internal_ca_file)
+
+
+def read_regular_file_no_symlink(path: Path, *, max_bytes: int) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise OSError("not a regular file")
+        if file_stat.st_size > max_bytes:
+            raise OSError("file exceeds maximum export size")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            content = handle.read(max_bytes + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(content) > max_bytes:
+        raise OSError("file exceeds maximum export size")
+    return content
+
+
+def caddy_internal_ca_status_payload() -> dict[str, Any]:
+    path = caddy_internal_ca_path()
+    blockers: list[str] = []
+    payload: dict[str, Any] = {
+        "object": "caddy_internal_ca",
+        "status": "missing",
+        "path": str(path),
+        "tls_mode": "internal",
+        "download_url": None,
+        "available": False,
+        "readable": False,
+        "regular_file": False,
+        "symlink": False,
+        "size_bytes": None,
+        "sha256": None,
+        "fingerprint_sha256": None,
+        "modified_at": None,
+        "hosts": self_test_public_host_map(),
+        "trust_guidance": [
+            "Download this root certificate only from the authenticated Control Center or admin API.",
+            "Install it only on trusted LAN clients that need to reach the B1 AI Hub HTTPS virtual hosts.",
+            "Compare the SHA-256 fingerprint before trusting the certificate.",
+            "Do not install the root certificate on machines outside the LAN trust boundary.",
+        ],
+        "blockers": blockers,
+    }
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        blockers.append("Caddy internal CA root certificate has not been generated yet; start the gateway once with tls internal.")
+        payload["blocker_count"] = len(blockers)
+        return payload
+    except OSError as exc:
+        blockers.append(f"Caddy internal CA root certificate cannot be inspected: {exc.__class__.__name__}")
+        payload["status"] = "blocked"
+        payload["blocker_count"] = len(blockers)
+        return payload
+    payload["symlink"] = stat.S_ISLNK(stat_result.st_mode)
+    if payload["symlink"]:
+        blockers.append("Caddy internal CA root certificate path is a symlink; refusing browser/API export.")
+    regular_file = stat.S_ISREG(stat_result.st_mode) and not payload["symlink"]
+    payload["regular_file"] = regular_file
+    if not regular_file:
+        blockers.append("Caddy internal CA root certificate path is not a regular file.")
+    payload["size_bytes"] = stat_result.st_size
+    payload["modified_at"] = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC).isoformat()
+    if regular_file and stat_result.st_size > CADDY_CA_MAX_BYTES:
+        blockers.append("Caddy internal CA root certificate exceeds the maximum export size.")
+    if regular_file and stat_result.st_size <= CADDY_CA_MAX_BYTES:
+        try:
+            content = read_regular_file_no_symlink(path, max_bytes=CADDY_CA_MAX_BYTES)
+        except OSError as exc:
+            blockers.append(f"Caddy internal CA root certificate is not readable: {exc.__class__.__name__}")
+        else:
+            digest = hashlib.sha256(content).hexdigest()
+            payload.update(
+                {
+                    "status": "ok",
+                    "available": True,
+                    "readable": True,
+                    "sha256": digest,
+                    "fingerprint_sha256": ":".join(digest[index : index + 2].upper() for index in range(0, len(digest), 2)),
+                    "download_url": "/admin/tls/caddy-ca/root.crt",
+                }
+            )
+    if blockers:
+        payload["status"] = "blocked"
+        payload["available"] = False
+        payload["download_url"] = None
+    payload["blocker_count"] = len(blockers)
+    return payload
 
 
 def self_test_route_keys(url: str) -> list[str]:
@@ -7470,6 +7573,50 @@ async def admin_self_test(authorization: str | None = Header(default=None)) -> d
     auth = await authenticate(authorization)
     require_scope(auth, "admin:read")
     return await build_self_test_report(auth.subject_id)
+
+
+@app.get("/admin/tls/caddy-ca")
+async def admin_caddy_internal_ca_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    return await asyncio.to_thread(caddy_internal_ca_status_payload)
+
+
+@app.get(
+    "/admin/tls/caddy-ca/root.crt",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Caddy internal CA root certificate",
+            "content": {"application/x-x509-ca-cert": {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
+async def admin_caddy_internal_ca_root(authorization: str | None = Header(default=None)) -> Response:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:read")
+    status = await asyncio.to_thread(caddy_internal_ca_status_payload)
+    if not status.get("available"):
+        detail = "; ".join(status.get("blockers") or ["Caddy internal CA root certificate is not available"])
+        raise HTTPException(status_code=404 if status.get("status") == "missing" else 409, detail=detail)
+    path = caddy_internal_ca_path()
+    try:
+        content = await asyncio.to_thread(read_regular_file_no_symlink, path, max_bytes=CADDY_CA_MAX_BYTES)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"Caddy internal CA root certificate cannot be read: {exc.__class__.__name__}") from exc
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != status.get("sha256"):
+        raise HTTPException(status_code=409, detail="Caddy internal CA root certificate changed during export; retry the download")
+    return Response(
+        content=content,
+        media_type="application/x-x509-ca-cert",
+        headers={
+            "Content-Disposition": f'attachment; filename="{CADDY_CA_DOWNLOAD_FILENAME}"',
+            "ETag": f'"sha256:{digest}"',
+            "Cache-Control": "private, no-store",
+            "X-B1-SHA256": digest,
+        },
+    )
 
 
 @app.get("/admin/acceptance-reports")

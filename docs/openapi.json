@@ -7747,6 +7747,101 @@
         "summary": "Admin Status"
       }
     },
+    "/admin/tls/caddy-ca": {
+      "get": {
+        "operationId": "admin_caddy_internal_ca_status_admin_tls_caddy_ca_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Caddy Internal Ca Status Admin Tls Caddy Ca Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Caddy Internal Ca Status"
+      }
+    },
+    "/admin/tls/caddy-ca/root.crt": {
+      "get": {
+        "operationId": "admin_caddy_internal_ca_root_admin_tls_caddy_ca_root_crt_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-x509-ca-cert": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Caddy internal CA root certificate"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Caddy Internal Ca Root"
+      }
+    },
     "/admin/updates": {
       "get": {
         "operationId": "admin_updates_admin_updates_get",

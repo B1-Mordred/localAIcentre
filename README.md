@@ -275,7 +275,7 @@ These virtual hosts are configurable through `.env`:
 | `https://models.ai.b1.germering/` | Model Hub and blobs |
 | `https://api.ai.b1.germering/` | Unified API |
 
-For LAN TLS, the default Caddy configuration uses an internal CA. See [docs/installation.md](./docs/installation.md) and [docs/security.md](./docs/security.md) before trusting the generated root certificate.
+For LAN TLS, the default Caddy configuration uses an internal CA. Control Center -> System -> LAN TLS CA shows the root certificate fingerprint and authenticated download action. See [docs/installation.md](./docs/installation.md) and [docs/security.md](./docs/security.md) before trusting the generated root certificate.
 
 ## Safety
 

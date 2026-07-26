@@ -201,6 +201,16 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("row.blockers.concat(row.placeholderReasons).join", self.source)
         self.assertIn("No production-required runtime rows recorded", self.source)
 
+    def test_system_tab_surfaces_caddy_ca_root_export(self) -> None:
+        self.assertIn("type CaddyCaStatus", self.source)
+        self.assertIn("/admin/tls/caddy-ca", self.source)
+        self.assertIn("/admin/tls/caddy-ca/root.crt", self.source)
+        self.assertIn("downloadCaddyRootCertificate", self.source)
+        self.assertIn("LAN TLS CA", self.source)
+        self.assertIn("Download Root", self.source)
+        self.assertIn("fingerprint_sha256", self.source)
+        self.assertIn("caddyCa?.blockers", self.source)
+
     def test_runtimes_tab_edits_voicebox_profiles(self) -> None:
         self.assertIn("type VoiceSampleArtifact", self.source)
         self.assertIn("type VoiceProfileForm", self.source)
