@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
+import socket
 import ssl
 import stat
 import sys
@@ -27,6 +29,7 @@ TOKEN_ENV = "B1_MODELHUB_TOKEN"
 TOKEN_FILE_ENV = "B1_MODELHUB_TOKEN_FILE"
 CA_FILE_ENV = "B1_MODELHUB_CA_FILE"
 ALLOW_INSECURE_HTTP_ENV = "B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP"
+RESOLVE_HOSTS_ENV = "B1_MODELHUB_RESOLVE_HOSTS"
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -120,10 +123,12 @@ def resolve_ca_file(args: argparse.Namespace) -> str | None:
 
 
 def modelhub_urlopen(request: urllib.request.Request, *, timeout: int, ca_file: str | None = None) -> Any:
-    if not ca_file:
-        return urllib.request.urlopen(request, timeout=timeout)
-    context = ssl.create_default_context(cafile=ca_file)
-    return urllib.request.urlopen(request, timeout=timeout, context=context)
+    resolve_hosts = parse_resolve_hosts(os.getenv(RESOLVE_HOSTS_ENV, ""))
+    with temporary_host_resolution(resolve_hosts):
+        if not ca_file:
+            return urllib.request.urlopen(request, timeout=timeout)
+        context = ssl.create_default_context(cafile=ca_file)
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
 
 
 def require_private_token_file(path: Path) -> None:
@@ -300,6 +305,55 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_resolve_host(hostname: str) -> str:
+    return hostname.strip().lower().rstrip(".")
+
+
+def parse_resolve_hosts(raw: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in re.split(r"[,\s]+", raw.strip()):
+        if not item:
+            continue
+        if "=" not in item:
+            raise RuntimeError(f"{RESOLVE_HOSTS_ENV} entries must use host=address: {item!r}")
+        host, address = item.split("=", 1)
+        host = normalize_resolve_host(host)
+        address = address.strip()
+        if not host or not address:
+            raise RuntimeError(f"{RESOLVE_HOSTS_ENV} entries require a non-empty host and address: {item!r}")
+        if "://" in host or "/" in host or "/" in address:
+            raise RuntimeError(f"{RESOLVE_HOSTS_ENV} entries must not include schemes or paths: {item!r}")
+        mapping[host] = address
+    return mapping
+
+
+@contextlib.contextmanager
+def temporary_host_resolution(resolve_hosts: dict[str, str]) -> Any:
+    if not resolve_hosts:
+        yield
+        return
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def mapped_getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[Any, ...]]:
+        lookup_host = host.decode("ascii", errors="ignore") if isinstance(host, bytes) else str(host or "")
+        mapped_host = resolve_hosts.get(normalize_resolve_host(lookup_host))
+        return original_getaddrinfo(mapped_host or host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = mapped_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
 
 
 def catalog_default_models(base_url: str, token: str | None, ca_file: str | None = None) -> list[str]:

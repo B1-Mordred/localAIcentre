@@ -76,6 +76,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog_models["b1-vosk-small-en-us-0.15"]["installation_status"], "available")
         self.assertFalse(catalog_models["b1-vosk-small-en-us-0.15"]["downloadable"])
         self.assertIn("stt-default", catalog_models["b1-vosk-small-en-us-0.15"]["aliases"])
+        self.assertEqual(catalog_models["b1-modelhub-inference-only-policy-probe"]["status"], "installed")
+        self.assertFalse(catalog_models["b1-modelhub-inference-only-policy-probe"]["downloadable"])
+        self.assertEqual(catalog_models["b1-modelhub-inference-only-policy-probe"]["execution_modes"], ["hosted-inference"])
+        self.assertEqual(catalog_models["b1-modelhub-inference-only-policy-probe"]["license"]["redistribution"], "inference-only")
         profiles = {profile["id"]: profile for profile in self.catalog.to_catalog()["profiles"]}
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["aliases"], ["chat-default", "chat-fast"])
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["resource_label"], "recommended")
@@ -258,6 +262,11 @@ class CatalogTests(unittest.TestCase):
         stt_versions = self.catalog.versions_for("b1-vosk-small-en-us-0.15")
         self.assertEqual(stt_versions[0]["status"], "available")
         self.assertFalse(stt_versions[0]["downloadable"])
+
+        policy_versions = self.catalog.versions_for("b1-modelhub-inference-only-policy-probe")
+        self.assertEqual(policy_versions[0]["status"], "installed")
+        self.assertFalse(policy_versions[0]["downloadable"])
+        self.assertEqual(policy_versions[0]["license"]["redistribution"], "inference-only")
 
     def test_inference_only_manifest_cannot_be_downloadable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

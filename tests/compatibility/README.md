@@ -70,8 +70,9 @@ export B1_MODELHUB_LIVE_TEST=1
 export B1_MODELHUB_URL=https://models.ai.b1.germering
 export B1_MODELHUB_TOKEN=...
 export B1_MODELHUB_CA_FILE=/path/to/b1-caddy-root.crt
+export B1_MODELHUB_RESOLVE_HOSTS=models.ai.b1.germering=127.0.0.1
 export B1_MODELHUB_SYNC_MODEL=chat-default
-export B1_MODELHUB_INFERENCE_ONLY_MODEL=tts-quality
+export B1_MODELHUB_INFERENCE_ONLY_MODEL=b1-modelhub-inference-only-policy-probe
 export B1_MODELHUB_ACCEPT_LICENSES=1
 export B1_MODELHUB_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/modelhub-client-sync.json
 make modelhub-compatibility

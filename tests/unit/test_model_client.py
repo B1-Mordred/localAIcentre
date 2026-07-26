@@ -219,6 +219,57 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(seen["url"], "http://modelhub/modelhub/v1/catalog")
         self.assertEqual(seen["authorization"], "Bearer secret-token")
 
+    def test_request_json_applies_temporary_host_resolution(self) -> None:
+        seen: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+        def fake_getaddrinfo(
+            host: str | bytes | None,
+            port: str | int | None,
+            family: int = 0,
+            type: int = 0,
+            proto: int = 0,
+            flags: int = 0,
+        ) -> list[tuple[Any, ...]]:
+            seen["resolved_host"] = host
+            seen["resolved_port"] = port
+            return []
+
+        def fake_urlopen(request: object, timeout: int = 30) -> FakeResponse:
+            seen["url"] = request.full_url
+            client.socket.getaddrinfo("models.ai.b1.germering", 443)
+            return FakeResponse()
+
+        original_getaddrinfo = client.socket.getaddrinfo
+        original_urlopen = client.urllib.request.urlopen
+        try:
+            client.socket.getaddrinfo = fake_getaddrinfo
+            client.urllib.request.urlopen = fake_urlopen
+            with patch.dict(os.environ, {client.RESOLVE_HOSTS_ENV: "models.ai.b1.germering=127.0.0.1"}, clear=False):
+                self.assertEqual(client.request_json("https://models.ai.b1.germering", "/modelhub/v1/catalog", None), {"ok": True})
+        finally:
+            client.socket.getaddrinfo = original_getaddrinfo
+            client.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(seen["url"], "https://models.ai.b1.germering/modelhub/v1/catalog")
+        self.assertEqual(seen["resolved_host"], "127.0.0.1")
+        self.assertEqual(seen["resolved_port"], 443)
+        self.assertIs(client.socket.getaddrinfo, original_getaddrinfo)
+
+    def test_request_json_rejects_invalid_temporary_host_resolution_entries(self) -> None:
+        with patch.dict(os.environ, {client.RESOLVE_HOSTS_ENV: "https://models.ai.b1.germering=127.0.0.1"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "must not include schemes or paths"):
+                client.request_json("https://models.ai.b1.germering", "/modelhub/v1/catalog", None)
+
     def test_resolve_token_reads_private_token_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             token_file = Path(tmp) / "token"
