@@ -662,6 +662,45 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(scheduled[0]["prompt_id"], "prompt_native_1")
 
+    def test_prompt_rejection_after_prepare_marks_runtime_idle_and_releases_lease(self) -> None:
+        fake = FakeDatabase()
+        main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
+
+        async def proxy(base_url: str, path: str, request: FakeRequest, body: bytes | None = None, timeout_seconds: float = 120.0) -> Response:
+            return Response(
+                content=b'{"error":"validation failed"}',
+                media_type="application/json",
+                status_code=400,
+            )
+
+        main.proxy_http_bytes = proxy  # type: ignore[assignment]
+
+        response = asyncio.run(main.comfy_prompt(FakeRequest({"client_id": "client-1", "prompt": {"1": {"class_type": "MissingNode"}}})))
+
+        job = next(iter(fake.jobs.values()))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["stage"], "comfyui_prompt_rejected")
+        self.assertEqual(job["failure_category"], "comfyui_validation_error")
+        self.assertEqual(fake.releases, [f"comfyui-prompt-{job['id']}"])
+        self.assertEqual(
+            runner.calls,
+            [
+                "unload_other_gpu_runtimes",
+                "verify_vram_or_recover",
+                "load_runtime_model",
+                "warm_runtime_model",
+                "record_runtime_idle_for_job",
+            ],
+        )
+        self.assertEqual(runner.idle[0]["job"]["runtime"], "comfyui")
+        self.assertEqual(runner.idle[0]["job"]["model_alias"], "comfyui-native")
+        self.assertEqual(runner.idle[0]["details"]["source"], "comfyui_native_compatibility")
+        self.assertEqual(runner.idle[0]["details"]["prompt_id"], "unsubmitted")
+        self.assertEqual(runner.idle[0]["details"]["last_state"], "failed")
+
     def test_prompt_idempotency_replay_returns_existing_native_prompt_without_forwarding(self) -> None:
         fake = FakeDatabase()
         main.database = fake
@@ -1329,6 +1368,12 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             ["models/checkpoints", "upload/image", "api/userdata/workflows/example.json", "models/checkpoints"],
         )
 
+    def test_comfyui_catchall_registers_options_for_native_preflight_passthrough(self) -> None:
+        matching_routes = [route for route in main.app.routes if getattr(route, "path", None) == "/{path:path}"]
+        method_sets = [set(getattr(route, "methods", set()) or set()) for route in matching_routes]
+
+        self.assertTrue(any("OPTIONS" in methods for methods in method_sets), method_sets)
+
     def test_compatibility_passthrough_requires_gateway_header_and_auth(self) -> None:
         async def proxy(*_: Any, **__: Any) -> Response:
             raise AssertionError("unauthorized or non-compatibility requests must not be proxied")
@@ -1539,7 +1584,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
 
         main.proxy_http_bytes = proxy  # type: ignore[assignment]
 
-        for path in ("b1/runtime/unload", "manager/queue/start", "customnode/install", "api/customnode/update"):
+        for path in ("b1", "b1/runtime/unload", "manager/queue/start", "customnode/install", "api/customnode/update"):
             with self.subTest(path=path):
                 with self.assertRaises(main.HTTPException) as raised:
                     asyncio.run(main.proxy_comfyui_compatibility(path, FakeRequest({}, method="POST")))

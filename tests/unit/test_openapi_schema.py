@@ -37,7 +37,7 @@ REQUIRED_PUBLIC_ROUTE_METHODS = {
     "/modelhub/v1/clients/{id}/policy": {"put"},
     "/modelhub/v1/clients/{id}": {"delete"},
 }
-COMFYUI_PASSTHROUGH_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+COMFYUI_PASSTHROUGH_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 ASYNC_MEDIA_POST_ROUTES = {
     "/v1/images/generations",
     "/v1/images/edits",

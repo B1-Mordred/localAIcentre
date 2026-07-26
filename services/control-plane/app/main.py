@@ -164,6 +164,7 @@ COMFYUI_MUTATING_CORE_PREFIXES: dict[str, set[str]] = {
     "api/userdata/": {"POST", "PUT", "PATCH", "DELETE"},
 }
 COMFYUI_DENIED_PREFIXES = (
+    "b1",
     "b1/",
     "manager",
     "manager/",
@@ -3026,6 +3027,14 @@ def path_matches_prefix(normalized_path: str, prefix: str) -> bool:
     return path_lower == normalized_prefix or path_lower.startswith(f"{normalized_prefix}/")
 
 
+def path_is_or_under_prefix(normalized_path: str, prefix: str) -> bool:
+    normalized_prefix = prefix.strip("/").lower()
+    path_lower = normalized_path.lower()
+    if not normalized_prefix:
+        return False
+    return path_lower == normalized_prefix or path_lower.startswith(f"{normalized_prefix}/")
+
+
 def approved_comfyui_route_prefixes() -> set[str]:
     try:
         pins = node_pin_registry_snapshot()
@@ -3052,7 +3061,7 @@ def require_comfyui_passthrough_allowed(path: str, method: str) -> str:
     normalized_path = normalize_comfyui_passthrough_path(path)
     path_lower = normalized_path.lower()
     method_upper = method.upper()
-    if any(path_lower.startswith(prefix) for prefix in COMFYUI_DENIED_PREFIXES):
+    if any(path_is_or_under_prefix(path_lower, prefix) for prefix in COMFYUI_DENIED_PREFIXES):
         raise HTTPException(
             status_code=403,
             detail={"code": "comfyui_route_denied", "message": "ComfyUI compatibility route is blocked by policy", "path": normalized_path},
@@ -3086,7 +3095,7 @@ def require_comfyui_websocket_allowed(path: str) -> str:
     path_lower = normalized_path.lower()
     if path_lower == "ws":
         return normalized_path
-    if any(path_lower.startswith(prefix) for prefix in COMFYUI_DENIED_PREFIXES):
+    if any(path_is_or_under_prefix(path_lower, prefix) for prefix in COMFYUI_DENIED_PREFIXES):
         raise HTTPException(
             status_code=403,
             detail={"code": "comfyui_route_denied", "message": "ComfyUI WebSocket route is blocked by policy", "path": normalized_path},
@@ -10520,15 +10529,17 @@ async def comfy_prompt(request: Request, idempotency_key: str | None = Header(de
     lease_owner: str | None = None
     release_lease = True
     load_started: float | None = None
+    runtime_prepared = False
     try:
         lease_owner, _ = await acquire_comfyui_prompt_lease(job_id)
         load_started = monotonic()
         await prepare_comfyui_native_runtime(job)
+        runtime_prepared = True
         await database.update_job(job_id, load_time_ms=elapsed_milliseconds(load_started))
         response = await proxy_http_bytes(settings.comfyui_url, "/prompt", request, body_bytes)
         prompt_id = comfyui_prompt_id_from_response(response)
         if response.status_code >= 400:
-            await database.update_job(
+            failed = await database.update_job(
                 job_id,
                 state=JobState.FAILED.value,
                 stage="comfyui_prompt_rejected",
@@ -10537,6 +10548,9 @@ async def comfy_prompt(request: Request, idempotency_key: str | None = Header(de
                 failure_category="comfyui_validation_error",
                 failure_message=f"ComfyUI returned HTTP {response.status_code}",
             )
+            if runtime_prepared:
+                with suppress(Exception):
+                    await mark_comfyui_native_runtime_idle(failed, "unsubmitted", JobState.FAILED.value)
             return response
         if not prompt_id:
             await database.update_job(
@@ -10654,7 +10668,7 @@ async def compatibility_ws(path: str, websocket: WebSocket) -> None:
     await websocket.close(code=1008)
 
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], include_in_schema=False)
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
 async def compatibility_passthrough(path: str, request: Request) -> Response:
     compatibility = compatibility_header_value(request.headers)
     if compatibility.startswith("comfyui"):
