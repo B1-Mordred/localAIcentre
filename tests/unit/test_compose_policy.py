@@ -547,6 +547,8 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("B1_APPLIANCE_HOSTNAME is the B1-defined", docs)
         self.assertIn("B1_APPLIANCE_HOSTNAME=ai.b1.germering", env_text)
         self.assertIn("B1_EXPECTED_TARGET_HOST=ai.b1.germering", env_text)
+        self.assertIn("make verify-system-hostname", docs)
+        self.assertIn("make apply-system-hostname", docs)
         self.assertIn("the target OS hostname must present", docs)
         self.assertIn("hostname_authority=b1-appliance-config", installation)
         self.assertIn("Do not configure a static host IP", installation)

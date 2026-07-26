@@ -18,7 +18,15 @@ nvidia-smi
 stat -c '%g' /var/run/docker.sock
 ```
 
-`B1_APPLIANCE_HOSTNAME` defines the intended appliance system hostname/FQDN. Set the target OS hostname to that value before cutover and do not let DHCP become the hostname authority. Do not configure a static host IP in the repository or Compose project; acquire address, gateway, route, and resolver properties through the host DHCP client or a DHCP reservation, then point LAN DNS records for the B1 virtual hosts at that assigned address.
+`B1_APPLIANCE_HOSTNAME` defines the intended appliance system hostname/FQDN. B1 AI Hub owns that hostname policy; DHCP must not become the hostname authority. The helper below verifies or applies only the OS hostname, deriving the static hostname from the first label of `B1_APPLIANCE_HOSTNAME`, and never changes interfaces, static addresses, routes, gateways, or resolver configuration:
+
+```bash
+make verify-system-hostname
+# Only when the current OS hostname is wrong:
+sudo -E make apply-system-hostname
+```
+
+Do not configure a static host IP in the repository or Compose project; acquire address, gateway, route, and resolver properties through the host DHCP client or a DHCP reservation, then point LAN DNS records for the B1 virtual hosts at that assigned address.
 
 For production, prefer `make prepare-production-env` instead of manually copying `.env.production.example`; it creates or updates `.env`, validates/stamps `B1_APPLIANCE_HOSTNAME` as a hostname/FQDN, keeps the backward-compatible `B1_EXPECTED_TARGET_HOST` value synchronized, and sets `B1_DOCKER_GID` from the host Docker socket GID. To prepare a non-default appliance name, run `B1_APPLIANCE_HOSTNAME=ai.example.lan make prepare-production-env`. Do not use an IP address, URL, or host:port value there. If you prepare `.env` manually, set `B1_DOCKER_GID` to the final command's value when runtime-agent should read Docker service status and bounded logs while remaining non-root.
 The migration inventory records host identity, target-host identity readiness, observed interfaces, non-loopback addresses, default routes, DHCP-route evidence, DNS records, NVIDIA driver/toolkit readiness, Docker's `nvidia` runtime availability, the socket owner, group, mode, configured `B1_DOCKER_GID`, and `runtime_agent_group_access_ready`; unresolved warnings there block final backup/migration/rollback evidence. Verify `migration_readiness.target_identity.accepted=true`, `migration_readiness.target_identity.expected_target_host` matches `B1_APPLIANCE_HOSTNAME`, and `hostname_authority=b1-appliance-config` before using the report for cutover. Also verify `migration_readiness.networking.hostname_authority=b1-appliance-config`, `migration_readiness.networking.hostname_source=system-hostname`, and `migration_readiness.networking.network_property_source=host-dhcp-client`, proving the B1-defined hostname is present on the OS while DHCP supplies the network properties.
