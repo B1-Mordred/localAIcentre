@@ -7476,6 +7476,42 @@ def comfyui_build_info_pinned(payload: dict[str, Any]) -> bool:
     )
 
 
+def comfyui_status_payload_ok(payload: dict[str, Any]) -> bool:
+    if payload.get("status") != "ok" or payload.get("runtime") != "comfyui" or payload.get("action") != "status":
+        return False
+    queue = payload.get("queue")
+    memory = payload.get("memory")
+    model_folders = payload.get("model_folders")
+    build_info = payload.get("build_info")
+    capabilities = payload.get("capabilities")
+    if not isinstance(queue, dict) or not isinstance(memory, dict) or not isinstance(model_folders, dict):
+        return False
+    for key in ("running", "queued", "tasks_remaining"):
+        value = queue.get(key)
+        if not isinstance(value, int) or value < 0:
+            return False
+    if "available" not in memory or not isinstance(memory.get("available"), bool):
+        return False
+    folders = model_folders.get("folders")
+    if not isinstance(folders, list):
+        return False
+    folder_count = model_folders.get("folder_count")
+    file_count = model_folders.get("file_count")
+    if not isinstance(folder_count, int) or folder_count < 0 or not isinstance(file_count, int) or file_count < 0:
+        return False
+    if folder_count != len(folders):
+        return False
+    if not isinstance(build_info, dict) or not comfyui_build_info_pinned(build_info):
+        return False
+    if not isinstance(capabilities, dict):
+        return False
+    actions = capabilities.get("actions")
+    if not isinstance(actions, list):
+        return False
+    action_names = {item for item in actions if isinstance(item, str)}
+    return {"status", "load", "warm", "smoke", "unload", "build-info"}.issubset(action_names)
+
+
 async def self_test_comfyui_build_info() -> dict[str, Any]:
     if settings.runtime_deployment_mode == "production" and "comfyui" not in set(settings.runtime_production_required):
         return selftest_policy.check(
@@ -7525,6 +7561,58 @@ async def self_test_comfyui_build_info() -> dict[str, Any]:
         comfyui_build_info_failure_status(),
         "ComfyUI build-info hook did not report pinned upstream commit and source archive SHA-256",
         {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "build_info": payload},
+    )
+
+
+async def self_test_comfyui_status() -> dict[str, Any]:
+    if settings.runtime_deployment_mode == "production" and "comfyui" not in set(settings.runtime_production_required):
+        return selftest_policy.check(
+            "runtime:comfyui-status",
+            "ok",
+            "ComfyUI is not required by the production runtime policy",
+            {"required": False, "runtime": "comfyui"},
+        )
+    url = f"{settings.comfyui_url.rstrip('/')}/b1/runtime/status"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.post(url, json={}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return selftest_policy.check(
+            "runtime:comfyui-status",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI status hook is unreachable: {exc.__class__.__name__}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url},
+        )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    if response.status_code in {404, 405}:
+        return selftest_policy.check(
+            "runtime:comfyui-status",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI status hook is not supported by the deployed runtime image: HTTP {response.status_code}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code},
+        )
+    if response.status_code >= 400:
+        return selftest_policy.check(
+            "runtime:comfyui-status",
+            comfyui_build_info_failure_status(),
+            f"ComfyUI status hook returned HTTP {response.status_code}",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "payload": payload},
+        )
+    if isinstance(payload, dict) and comfyui_status_payload_ok(payload):
+        return selftest_policy.check(
+            "runtime:comfyui-status",
+            "ok",
+            "ComfyUI runtime reports queue, memory, model-folder, and lifecycle capability status",
+            {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "status": payload},
+        )
+    return selftest_policy.check(
+        "runtime:comfyui-status",
+        comfyui_build_info_failure_status(),
+        "ComfyUI status hook did not report the required queue, memory, model-folder, lifecycle, and pinned build metadata",
+        {"required": comfyui_build_info_required(), "runtime": "comfyui", "url": url, "http_status": response.status_code, "status": payload},
     )
 
 
@@ -7588,6 +7676,7 @@ async def run_operator_self_test_probes(subject_id: str) -> list[dict[str, Any]]
         self_test_tiny_inference(subject_id),
         self_test_runtime_unload(),
         self_test_comfyui_build_info(),
+        self_test_comfyui_status(),
         self_test_artifact_delivery(),
     )
 

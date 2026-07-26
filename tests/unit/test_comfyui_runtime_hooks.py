@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 import unittest
@@ -200,6 +201,29 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertFalse(info["pinned"])
         self.assertEqual(info["upstream_commit"], "")
         self.assertEqual(info["source_archive_sha256"], "")
+
+    def test_status_reports_queue_memory_model_folder_summary_and_capabilities(self) -> None:
+        hooks, _routes, queue = load_hooks({"checkpoints": ["sdxl/base.safetensors", "sdxl/refiner.safetensors"], "vae": ["sdxl.vae.safetensors"]})
+        queue.running.append(object())
+        queue.queued.append(object())
+
+        result = hooks.handle_status({})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["runtime"], "comfyui")
+        self.assertEqual(result["action"], "status")
+        self.assertEqual(result["queue"]["running"], 1)
+        self.assertEqual(result["queue"]["queued"], 1)
+        self.assertEqual(result["queue"]["tasks_remaining"], 2)
+        self.assertTrue(result["memory"]["available"])
+        self.assertEqual(result["memory"]["loaded_model_count"], 1)
+        self.assertEqual(result["model_folders"]["folder_count"], len(hooks.B1_MODEL_FOLDERS))
+        self.assertEqual(result["model_folders"]["file_count"], 3)
+        self.assertEqual(result["model_folders"]["folders"][0]["folder"], "checkpoints")
+        self.assertEqual(result["model_folders"]["folders"][0]["file_count"], 2)
+        self.assertNotIn("base.safetensors", json.dumps(result["model_folders"]))
+        self.assertTrue({"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(set(result["capabilities"]["actions"])))
+        self.assertTrue(result["build_info"]["pinned"])
 
     def test_model_matching_accepts_folder_path_basename_and_stem(self) -> None:
         hooks, _routes, _queue = load_hooks()

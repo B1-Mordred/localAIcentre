@@ -60,6 +60,7 @@ The image installs the B1-owned `b1_runtime_hooks` custom-node package. It regis
 The GPU runner can call internal B1 hooks on the selected runtime before submission:
 
 - `POST /b1/runtime/load`
+- `POST /b1/runtime/status`
 - `POST /b1/runtime/warm`
 - `POST /b1/runtime/smoke`
 - `POST /b1/runtime/unload`
@@ -70,12 +71,13 @@ Production Compose mounts `$B1_DATA_ROOT/secrets/runtime_control_token` read-onl
 Hook behavior is intentionally bounded:
 
 - `load` checks ComfyUI-visible model folders when possible and returns `unconfirmed` because the native prompt/workflow still performs final dependency validation and lazy model loading.
+- `status` returns scheduler-facing queue counts, a VRAM/memory snapshot, model-folder file counts, lifecycle capabilities, and the same pinned build metadata returned by `build-info`. It does not expose model filenames, prompts, uploads, or node inputs.
 - `warm` returns `unconfirmed` unless `B1_COMFYUI_HOOK_WARM_ENABLED=true`.
 - `smoke` returns `unconfirmed` unless `B1_COMFYUI_HOOK_SMOKE_ENABLED=true`.
 - enabled `warm`/`smoke` run a manifest-provided native API-format prompt from `runtime_smoke.comfyui.prompt` when present; this uses ComfyUI's own validation, queue, history, and lazy model loading, and reports bounded hook measurements back to the control plane.
 - when no native prompt is configured, enabled `warm`/`smoke` fall back to a tiny B1 no-op output node through ComfyUI's native queue; this proves the ComfyUI execution loop is responsive, but it is not a model-specific workflow acceptance test.
 - `B1RuntimeTinyImage` is available for deterministic native compatibility smoke prompts that need a viewable image artifact without loading model weights.
 - `unload` sets ComfyUI's native `unload_models` and `free_memory` flags and, when the queue is idle, immediately calls native model/cache cleanup.
-- `build-info` returns the B1 hook package version, `Comfy-Org/ComfyUI` upstream version, pinned upstream commit, and source archive SHA-256. `/admin/self-test` calls it over the internal runtime URL and fails in production when ComfyUI is required but the deployed runtime does not report pinned metadata.
+- `build-info` returns the B1 hook package version, `Comfy-Org/ComfyUI` upstream version, pinned upstream commit, and source archive SHA-256. `/admin/self-test` calls it and `status` over the internal runtime URL and fails in production when ComfyUI is required but the deployed runtime does not report pinned metadata or lifecycle/status evidence.
 
 Use `B1_COMFYUI_HOOK_STRICT_MODEL_LIST=true` only when installed manifests resolve to filenames or relative paths visible in ComfyUI model folders. Override `B1_COMFYUI_HOOK_MODEL_FOLDERS` only if approved custom nodes introduce additional model folder keys that should participate in lifecycle checks. Production acceptance should install ComfyUI-backed manifests with `runtime_smoke.schema=b1-ai-hub-runtime-smoke/v1` and a small model-specific `runtime_smoke.comfyui.prompt`, then persist measured VRAM data for the exact published workflows and model manifests on the target RTX 3060/32 GB host.

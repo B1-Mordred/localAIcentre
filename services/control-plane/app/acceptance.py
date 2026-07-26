@@ -4070,6 +4070,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("ComfyUI build-info readiness check is absent")
         elif comfyui_build.get("status") != "ok":
             blockers.append(f"ComfyUI build-info readiness check is {comfyui_build.get('status', 'unknown')}")
+        comfyui_status = _check_by_name(report.get("self_test") or {}, "runtime:comfyui-status")
+        if not comfyui_status:
+            blockers.append("ComfyUI status readiness check is absent")
+        elif comfyui_status.get("status") != "ok":
+            blockers.append(f"ComfyUI status readiness check is {comfyui_status.get('status', 'unknown')}")
     gpu_check = _check_by_name(report.get("self_test") or {}, "gpu:nvml")
     if not gpu_check:
         blockers.append("GPU/NVML check is absent")

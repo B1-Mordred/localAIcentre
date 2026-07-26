@@ -201,6 +201,25 @@ def iter_model_files() -> list[dict[str, str]]:
     return files
 
 
+def model_folder_summary() -> dict[str, Any]:
+    folders: list[dict[str, Any]] = []
+    total_files = 0
+    for folder in configured_model_folders():
+        try:
+            names = folder_paths.get_filename_list(folder)
+        except Exception as exc:
+            folders.append({"folder": folder, "available": False, "file_count": 0, "error": exc.__class__.__name__})
+            continue
+        file_count = len([name for name in names if isinstance(name, str)])
+        total_files += file_count
+        folders.append({"folder": folder, "available": True, "file_count": file_count})
+    return {
+        "folders": folders,
+        "folder_count": len(folders),
+        "file_count": total_files,
+    }
+
+
 def model_available(candidates: list[str], files: list[dict[str, str]]) -> bool:
     wanted = set()
     for candidate in candidates:
@@ -266,6 +285,22 @@ def handle_load(payload: dict[str, Any]) -> dict[str, Any]:
         reason="comfyui_loads_models_from_native_workflow",
         queue=queue_counts(),
         memory=memory_snapshot(),
+    )
+
+
+def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
+    return json_response(
+        "ok",
+        "status",
+        queue=queue_counts(),
+        memory=memory_snapshot(),
+        model_folders=model_folder_summary(),
+        build_info=comfyui_build_info(),
+        capabilities={
+            "actions": ["status", "build-info", "load", "warm", "smoke", "unload"],
+            "native_api": True,
+            "scheduler_controlled": True,
+        },
     )
 
 
@@ -465,6 +500,8 @@ async def runtime_action(request: web.Request) -> web.Response:
 
     if action == "load":
         result = handle_load(payload)
+    elif action == "status":
+        result = handle_status(payload)
     elif action == "warm":
         result = await handle_warm(payload)
     elif action == "smoke":
