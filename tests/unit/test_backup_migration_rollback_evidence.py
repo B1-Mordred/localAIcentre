@@ -60,6 +60,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
 
     def create_plan_files(self, root: Path, old_stack_backup_dir: Path) -> tuple[Path, Path, Path, Path]:
         target_identity = {
+            "hostname_authority": "b1-ai-hub-configuration",
             "expected_target_host": "ai.b1.germering",
             "expected_short_hostname": "ai",
             "observed_hostname": "ai",
@@ -158,6 +159,7 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                 "target_identity_readiness": {"available": True, **target_identity},
                 "networking_readiness": {
                     "available": True,
+                    "hostname_authority": "b1-ai-hub-configuration",
                     "hostname_source": "system-hostname",
                     "network_property_source": "host-dhcp-client",
                     "b1_manages_host_networking": False,
@@ -297,7 +299,15 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
             ["monitoring.ai.b1.germering"],
         )
         self.assertTrue(payload["checks"]["old_stack_inventory_reviewed"]["target_identity"]["accepted"])
+        self.assertEqual(
+            payload["checks"]["old_stack_inventory_reviewed"]["target_identity"]["hostname_authority"],
+            "b1-ai-hub-configuration",
+        )
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["target_identity_readiness"]["accepted"])
+        self.assertEqual(
+            payload["checks"]["cutover_plan_reviewed"]["networking_readiness"]["hostname_authority"],
+            "b1-ai-hub-configuration",
+        )
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["hardware_readiness"]["accepted"])
         self.assertTrue(payload["checks"]["cutover_plan_reviewed"]["gpu_runtime_readiness"]["accepted"])

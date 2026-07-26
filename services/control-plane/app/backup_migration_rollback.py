@@ -141,6 +141,7 @@ def verify_inventory(path: Path) -> dict[str, Any]:
     warnings = _string_list(target_identity.get("warnings"))
     if (
         target_identity.get("accepted") is not True
+        or target_identity.get("hostname_authority") != "b1-ai-hub-configuration"
         or target_identity.get("operator_must_review_target_identity") is True
         or warnings
         or not any(
@@ -153,6 +154,7 @@ def verify_inventory(path: Path) -> dict[str, Any]:
         "path": str(path.resolve()),
         "container_classification_count": len(classification.get("containers") or []),
         "target_identity": {
+            "hostname_authority": "b1-ai-hub-configuration",
             "expected_target_host": target_identity.get("expected_target_host") or "",
             "expected_short_hostname": target_identity.get("expected_short_hostname") or "",
             "observed_hostname": target_identity.get("observed_hostname") or "",
@@ -309,6 +311,7 @@ def verify_cutover_target_identity_readiness(payload: dict[str, Any]) -> dict[st
         raise EvidenceError("cutover target host identity readiness is unavailable")
     if (
         target_identity.get("accepted") is not True
+        or target_identity.get("hostname_authority") != "b1-ai-hub-configuration"
         or target_identity.get("operator_must_review_target_identity") is True
         or warnings
     ):
@@ -320,6 +323,7 @@ def verify_cutover_target_identity_readiness(payload: dict[str, Any]) -> dict[st
         raise EvidenceError("cutover target host identity does not match the expected host")
     return {
         "available": True,
+        "hostname_authority": "b1-ai-hub-configuration",
         "expected_target_host": target_identity.get("expected_target_host") or "",
         "expected_short_hostname": target_identity.get("expected_short_hostname") or "",
         "observed_hostname": target_identity.get("observed_hostname") or "",
@@ -387,7 +391,9 @@ def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, An
     if networking.get("available") is not True:
         raise EvidenceError("cutover host DHCP/networking readiness is unavailable")
     if (
-        networking.get("hostname_source") != "system-hostname"
+        networking.get("hostname_authority") != "b1-ai-hub-configuration"
+        or networking.get("hostname_source") != "system-hostname"
+        or networking.get("network_property_source") != "host-dhcp-client"
         or networking.get("b1_manages_host_networking") is not False
         or networking.get("b1_static_ip_configures") is not False
         or networking.get("has_dhcp_default_route") is not True
@@ -406,8 +412,9 @@ def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, An
         raise EvidenceError("cutover host DHCP/networking readiness has no default route")
     return {
         "available": True,
+        "hostname_authority": "b1-ai-hub-configuration",
         "hostname_source": "system-hostname",
-        "network_property_source": networking.get("network_property_source") or "",
+        "network_property_source": "host-dhcp-client",
         "b1_manages_host_networking": False,
         "b1_static_ip_configures": False,
         "non_loopback_address_count": non_loopback_address_count,

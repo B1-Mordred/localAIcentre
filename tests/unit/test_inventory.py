@@ -120,7 +120,12 @@ class InventoryTests(unittest.TestCase):
             family="inet",
         )
         network = inventory.summarize_host_network(interfaces, routes, dns)
+        self.assertEqual(network["hostname_authority"], "b1-ai-hub-configuration")
         self.assertEqual(network["hostname_source"], "system-hostname")
+        self.assertEqual(
+            network["expected_operator_networking"],
+            "B1-defined hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+        )
         self.assertFalse(network["b1_static_ip_configures"])
         self.assertTrue(network["has_dhcp_default_route"])
         self.assertEqual(network["non_loopback_address_count"], 1)
@@ -131,6 +136,7 @@ class InventoryTests(unittest.TestCase):
             {"hostname": "ai", "fqdn": "ai.b1.germering", "platform_node": "ai"},
             "ai.b1.germering",
         )
+        self.assertEqual(target_identity["hostname_authority"], "b1-ai-hub-configuration")
         self.assertTrue(target_identity["accepted"])
         self.assertTrue(target_identity["hostname_matches_expected"])
         self.assertTrue(target_identity["fqdn_matches_expected"])
@@ -446,6 +452,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["host"]["dns"]["records"]["monitoring.ai.b1.germering"], ["192.168.2.100"])
         self.assertEqual(report["host"]["network"]["interfaces"][0]["ifname"], "eno1")
         self.assertEqual(report["host"]["network"]["default_routes"][0]["protocol"], "dhcp")
+        self.assertEqual(report["migration_readiness"]["target_identity"]["hostname_authority"], "b1-ai-hub-configuration")
+        self.assertEqual(report["migration_readiness"]["networking"]["hostname_authority"], "b1-ai-hub-configuration")
         self.assertEqual(report["migration_readiness"]["networking"]["hostname_source"], "system-hostname")
         self.assertEqual(report["migration_readiness"]["networking"]["network_property_source"], "host-dhcp-client")
         self.assertFalse(report["migration_readiness"]["networking"]["b1_manages_host_networking"])
