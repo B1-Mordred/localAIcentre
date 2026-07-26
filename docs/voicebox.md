@@ -23,6 +23,7 @@ Current implementation status:
 - queued `tts/speech` jobs resolved to `voicebox` acquire the global GPU lease, call internal `/v1/audio/speech`, and store returned audio as durable artifacts
 - synchronous OpenAI-compatible `POST /v1/audio/speech` resolves the public alias, rewrites it to the immutable model ID, and proxies Voicebox requests under a scheduler lease
 - native `POST https://voice.ai.b1.germering/v1/audio/speech` compatibility requests keep the client's upstream payload intact but now acquire the same global GPU lease and run the unload/VRAM-verify/load/warm path before reaching the internal Voicebox proxy
+- synchronous and native Voicebox speech renew the scheduler lease while the upstream call is outstanding and fail with `scheduler_lease_lost` if the lease cannot be retained
 - read-only native Voicebox HTTP, non-speech native routes, and native WebSocket traffic remain immediate compatibility passthroughs with B1 credentials stripped
 - synchronous speech can use a B1 voice profile ID in `voice`, `voice_profile`, or `voice_profile_id`; if `model` is omitted, the active profile's `model_alias` selects the runtime/model
 - queued Voicebox speech jobs revalidate the referenced profile before submission, then forward the same bounded profile envelope under the GPU lease

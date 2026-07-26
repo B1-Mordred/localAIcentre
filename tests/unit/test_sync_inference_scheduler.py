@@ -237,6 +237,72 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
             ],
         )
 
+    def test_lease_renewal_helper_renews_waiting_synchronous_call(self) -> None:
+        calls: list[Any] = []
+        original_wait = main.asyncio.wait
+
+        async def runtime_call() -> str:
+            calls.append("runtime-call")
+            await asyncio.sleep(0)
+            return "ok"
+
+        async def renew_inference_lease(owner: str | None) -> bool:
+            calls.append({"renew": owner})
+            return True
+
+        wait_count = 0
+
+        async def fake_wait(tasks: set[Any], timeout: float | None = None) -> tuple[set[Any], set[Any]]:
+            nonlocal wait_count
+            calls.append({"wait_timeout": timeout})
+            wait_count += 1
+            if wait_count == 1:
+                await asyncio.sleep(0)
+                return set(), set(tasks)
+            return set(tasks), set()
+
+        self.patch_attr("renew_inference_lease", renew_inference_lease)
+        main.asyncio.wait = fake_wait  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.asyncio, "wait", original_wait))
+        self.patch_settings(sync_inference_lease_ttl_seconds=90)
+
+        result = asyncio.run(main.await_with_inference_lease_renewal("lease_chat", "chat", runtime_call()))
+
+        self.assertEqual(result, "ok")
+        self.assertIn({"renew": "lease_chat"}, calls)
+        self.assertIn({"wait_timeout": 30}, calls)
+
+    def test_lease_renewal_helper_cancels_when_scheduler_lease_is_lost(self) -> None:
+        calls: list[Any] = []
+        original_wait = main.asyncio.wait
+
+        async def runtime_call() -> str:
+            calls.append("runtime-call")
+            await asyncio.Event().wait()
+            return "unreachable"
+
+        async def renew_inference_lease(owner: str | None) -> bool:
+            calls.append({"renew": owner})
+            return False
+
+        async def fake_wait(tasks: set[Any], timeout: float | None = None) -> tuple[set[Any], set[Any]]:
+            calls.append({"wait_timeout": timeout})
+            await asyncio.sleep(0)
+            return set(), set(tasks)
+
+        self.patch_attr("renew_inference_lease", renew_inference_lease)
+        main.asyncio.wait = fake_wait  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.asyncio, "wait", original_wait))
+        self.patch_settings(sync_inference_lease_ttl_seconds=90)
+
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.await_with_inference_lease_renewal("lease_chat", "chat", runtime_call()))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["type"], "scheduler_lease_lost")
+        self.assertEqual(caught.exception.detail["operation"], "chat")
+        self.assertIn({"renew": "lease_chat"}, calls)
+
     def test_acquire_inference_lease_rejects_nonmatching_active_reservation(self) -> None:
         calls: list[dict[str, Any]] = []
 

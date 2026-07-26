@@ -40,6 +40,36 @@ class ControlPlaneSourceTests(unittest.TestCase):
             ),
         )
 
+    def test_synchronous_gpu_inference_paths_renew_scheduler_lease(self) -> None:
+        self.assertIn("async def await_with_inference_lease_renewal", self.source)
+        self.assertIn("renew_inference_lease(owner)", self.source)
+        self.assertIn('"GPU scheduler lease was lost during synchronous inference"', self.source)
+        self.assertRegex(
+            self.source,
+            re.compile(
+                r"async def call_openai_runtime_json\(.*?"
+                r"await_with_inference_lease_renewal\(\s*owner,\s*operation,\s*adapter\.post_openai_json",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            self.source,
+            re.compile(
+                r"async def proxy_voicebox_compatibility\(.*?"
+                r"await_with_inference_lease_renewal\(\s*lease_owner,\s*\"voicebox-native-speech\",\s*proxy_http_bytes",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            self.source,
+            re.compile(
+                r"async def audio_speech\(.*?"
+                r"await_with_inference_lease_renewal\(\s*lease_owner,\s*\"audio-speech\",\s*proxy_http_bytes_to_url.*?"
+                r"await_with_inference_lease_renewal\(\s*lease_owner,\s*\"audio-speech\",\s*proxy_http_bytes\(",
+                re.DOTALL,
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

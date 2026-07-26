@@ -2721,6 +2721,36 @@ async def renew_inference_lease(owner: str | None) -> bool:
     return bool(lease.get("acquired"))
 
 
+async def await_with_inference_lease_renewal(owner: str | None, operation: str, awaitable: Any) -> Any:
+    if owner is None:
+        return await awaitable
+
+    task = asyncio.create_task(awaitable)
+    renew_interval = max(15, min(60, settings.sync_inference_lease_ttl_seconds // 3))
+    try:
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout=renew_interval)
+            if task in done:
+                return await task
+            if not await renew_inference_lease(owner):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "GPU scheduler lease was lost during synchronous inference",
+                        "type": "scheduler_lease_lost",
+                        "operation": operation,
+                    },
+                )
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
 async def release_inference_lease(owner: str | None) -> None:
     if owner is not None:
         await database.release_scheduler_owner(owner)
@@ -2838,12 +2868,16 @@ async def proxy_voicebox_compatibility(path: str, request: Request, auth: AuthCo
     try:
         lease_owner = await acquire_inference_lease(resolution, "voicebox-native-speech", owner_id=auth.subject_id)
         runtime_prepared = await prepare_sync_gpu_runtime(resolution, "voicebox-native-speech")
-        return await proxy_http_bytes(
-            settings.voicebox_url,
-            path,
-            request,
-            body=body,
-            timeout_seconds=float(settings.sync_inference_lease_ttl_seconds),
+        return await await_with_inference_lease_renewal(
+            lease_owner,
+            "voicebox-native-speech",
+            proxy_http_bytes(
+                settings.voicebox_url,
+                path,
+                request,
+                body=body,
+                timeout_seconds=float(settings.sync_inference_lease_ttl_seconds),
+            ),
         )
     except RuntimePreparationError as exc:
         raise HTTPException(
@@ -3393,7 +3427,11 @@ async def call_openai_runtime_json(
     prepared = False
     try:
         prepared = await prepare_sync_gpu_runtime(resolution, operation)
-        status_code, headers, body = await adapter.post_openai_json(path, forwarded)
+        status_code, headers, body = await await_with_inference_lease_renewal(
+            owner,
+            operation,
+            adapter.post_openai_json(path, forwarded),
+        )
     except RuntimePreparationError as exc:
         raise HTTPException(status_code=503, detail=runtime_prepare_error_detail(exc, resolution, operation)) from exc
     except httpx.HTTPError as exc:
@@ -9981,14 +10019,28 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     try:
         prepared = await prepare_sync_gpu_runtime(resolution, "audio-speech")
         if adapter is not None and adapter.openai_compatible:
-            return await proxy_http_bytes_to_url(
-                adapter.openai_url("/v1/audio/speech"),
+            return await await_with_inference_lease_renewal(
+                lease_owner,
+                "audio-speech",
+                proxy_http_bytes_to_url(
+                    adapter.openai_url("/v1/audio/speech"),
+                    request,
+                    body=forwarded_body,
+                    timeout_seconds=1800.0,
+                    extra_headers=adapter.request_headers(),
+                ),
+            )
+        return await await_with_inference_lease_renewal(
+            lease_owner,
+            "audio-speech",
+            proxy_http_bytes(
+                base_url,
+                "/v1/audio/speech",
                 request,
                 body=forwarded_body,
                 timeout_seconds=1800.0,
-                extra_headers=adapter.request_headers(),
             )
-        return await proxy_http_bytes(base_url, "/v1/audio/speech", request, body=forwarded_body, timeout_seconds=1800.0)
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
