@@ -31,6 +31,29 @@ B1_MODEL_FOLDERS = (
     "upscale_models",
     "embeddings",
 )
+B1_MODEL_VIEW_ROOT_DEFAULT = "/srv/b1-ai-hub/models"
+B1_MODEL_VIEW_FOLDER_PATHS = {
+    "checkpoints": ("diffusion/checkpoints",),
+    "diffusion_models": ("diffusion/diffusion_models", "diffusion/unet", "video"),
+    "text_encoders": ("diffusion/text_encoders", "vision/text_encoders"),
+    "clip_vision": ("vision/clip_vision",),
+    "vae": ("diffusion/vae",),
+    "loras": ("diffusion/loras",),
+    "controlnet": ("diffusion/controlnet",),
+    "upscale_models": ("diffusion/upscale_models",),
+    "embeddings": ("embeddings",),
+    "configs": ("diffusion/configs",),
+    "audio_encoders": ("audio_encoders",),
+    "model_patches": ("model_patches",),
+}
+B1_MODEL_VIEW_SYNC_STATE: set[tuple[str, str]] = set()
+B1_MODEL_VIEW_SYNC_LAST: dict[str, Any] = {
+    "status": "not-run",
+    "root": B1_MODEL_VIEW_ROOT_DEFAULT,
+    "manifest_count": 0,
+    "added_path_count": 0,
+    "folder_count": 0,
+}
 COMFYUI_UPSTREAM_REPOSITORY = "Comfy-Org/ComfyUI"
 COMFYUI_HOOK_VERSION_DEFAULT = "b1-comfyui-hooks/v0.3.77-b1"
 COMFYUI_UPSTREAM_VERSION_DEFAULT = "v0.3.77"
@@ -188,7 +211,123 @@ def configured_model_folders() -> tuple[str, ...]:
     return folders or B1_MODEL_FOLDERS
 
 
+def b1_model_view_root() -> Path:
+    return Path(os.getenv("B1_COMFYUI_MODEL_VIEW_ROOT", B1_MODEL_VIEW_ROOT_DEFAULT))
+
+
+def _manifest_declared_comfyui(marker: dict[str, Any]) -> bool:
+    if marker.get("runtime") == "comfyui":
+        return True
+    manifest = marker.get("manifest")
+    if isinstance(manifest, dict):
+        runtimes = manifest.get("runtimes")
+        return isinstance(runtimes, list) and "comfyui" in runtimes
+    return False
+
+
+def _file_folder_name(relative_path: str) -> str | None:
+    normalized = relative_path.replace("\\", "/").strip("/")
+    for folder, prefixes in B1_MODEL_VIEW_FOLDER_PATHS.items():
+        for prefix in prefixes:
+            prefix = prefix.strip("/")
+            if normalized == prefix or normalized.startswith(f"{prefix}/"):
+                return folder
+    return None
+
+
+def _invalidate_folder_cache(folders: set[str]) -> None:
+    cache = getattr(folder_paths, "filename_list_cache", None)
+    if isinstance(cache, dict):
+        for folder in folders:
+            cache.pop(folder, None)
+
+
+def sync_b1_model_view_paths() -> dict[str, Any]:
+    global B1_MODEL_VIEW_SYNC_STATE
+    root = b1_model_view_root()
+    if not root.is_dir():
+        B1_MODEL_VIEW_SYNC_LAST.update(
+            {
+                "status": "unavailable",
+                "root": str(root),
+                "reason": "model_view_root_missing",
+                "manifest_count": 0,
+                "added_path_count": 0,
+                "folder_count": 0,
+            }
+        )
+        return dict(B1_MODEL_VIEW_SYNC_LAST)
+
+    if not hasattr(folder_paths, "add_model_folder_path"):
+        B1_MODEL_VIEW_SYNC_LAST.update(
+            {
+                "status": "unavailable",
+                "root": str(root),
+                "reason": "folder_paths_add_model_folder_path_missing",
+                "manifest_count": 0,
+                "added_path_count": 0,
+                "folder_count": 0,
+            }
+        )
+        return dict(B1_MODEL_VIEW_SYNC_LAST)
+
+    discovered: set[tuple[str, str]] = set()
+    manifest_count = 0
+    for marker_path in root.glob("*/*/manifest.b1.json"):
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(marker, dict) or marker.get("format") != "b1-ai-hub-runtime-view/v1":
+            continue
+        if not _manifest_declared_comfyui(marker):
+            continue
+        manifest_count += 1
+        view_root = marker_path.parent
+        files = marker.get("files")
+        if not isinstance(files, list):
+            continue
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            relative_path = item.get("path")
+            if not isinstance(relative_path, str) or not relative_path.strip():
+                continue
+            folder = _file_folder_name(relative_path)
+            if not folder:
+                continue
+            candidate = view_root / relative_path.replace("\\", "/")
+            if not candidate.is_file():
+                continue
+            discovered.add((folder, str(candidate.parent)))
+
+    added = 0
+    for folder, path in sorted(discovered):
+        try:
+            folder_paths.add_model_folder_path(folder, path, True)
+            added += 1
+        except Exception:
+            continue
+
+    if discovered != B1_MODEL_VIEW_SYNC_STATE:
+        changed_folders = {folder for folder, _path in discovered}.union({folder for folder, _path in B1_MODEL_VIEW_SYNC_STATE})
+        _invalidate_folder_cache(changed_folders)
+        B1_MODEL_VIEW_SYNC_STATE = set(discovered)
+
+    B1_MODEL_VIEW_SYNC_LAST.update(
+        {
+            "status": "ok",
+            "root": str(root),
+            "manifest_count": manifest_count,
+            "added_path_count": added,
+            "folder_count": len({folder for folder, _path in discovered}),
+        }
+    )
+    return dict(B1_MODEL_VIEW_SYNC_LAST)
+
+
 def iter_model_files() -> list[dict[str, str]]:
+    sync_b1_model_view_paths()
     files: list[dict[str, str]] = []
     for folder in configured_model_folders():
         try:
@@ -202,6 +341,7 @@ def iter_model_files() -> list[dict[str, str]]:
 
 
 def model_folder_summary() -> dict[str, Any]:
+    runtime_view_sync = sync_b1_model_view_paths()
     folders: list[dict[str, Any]] = []
     total_files = 0
     for folder in configured_model_folders():
@@ -217,6 +357,7 @@ def model_folder_summary() -> dict[str, Any]:
         "folders": folders,
         "folder_count": len(folders),
         "file_count": total_files,
+        "runtime_view_sync": runtime_view_sync,
     }
 
 
@@ -314,8 +455,11 @@ async def handle_warm(payload: dict[str, Any]) -> dict[str, Any]:
     if error is not None:
         return error
     if prompt is not None:
-        return await run_queue_prompt_smoke("warm", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds)
-    return await run_noop_queue_smoke("warm")
+        return attach_payload_identity(
+            await run_queue_prompt_smoke("warm", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds),
+            payload,
+        )
+    return attach_payload_identity(await run_noop_queue_smoke("warm"), payload)
 
 
 async def handle_smoke(payload: dict[str, Any]) -> dict[str, Any]:
@@ -328,8 +472,11 @@ async def handle_smoke(payload: dict[str, Any]) -> dict[str, Any]:
     if error is not None:
         return error
     if prompt is not None:
-        return await run_queue_prompt_smoke("smoke", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds)
-    return await run_noop_queue_smoke("smoke")
+        return attach_payload_identity(
+            await run_queue_prompt_smoke("smoke", prompt, "b1_native_prompt", "native_prompt", timeout_seconds=timeout_seconds),
+            payload,
+        )
+    return attach_payload_identity(await run_noop_queue_smoke("smoke"), payload)
 
 
 def unload_idle_now() -> dict[str, Any]:
@@ -419,6 +566,15 @@ def configured_comfyui_prompt(payload: dict[str, Any], action: str) -> tuple[dic
                 return None, error, None
             return prompt, None, default_timeout
     return None, None, None
+
+
+def attach_payload_identity(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(result)
+    for key in ("model", "model_alias", "resolved_model_version"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip() and key not in enriched:
+            enriched[key] = value.strip()
+    return enriched
 
 
 def prompt_measurements(prompt: dict[str, Any], elapsed_ms: int, memory: dict[str, Any]) -> dict[str, Any]:

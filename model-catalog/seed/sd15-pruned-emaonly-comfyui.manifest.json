@@ -1,0 +1,144 @@
+{
+  "id": "b1-sd15-pruned-emaonly-comfyui",
+  "version": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+  "display_name": "Stable Diffusion 1.5 Pruned EMA-only for ComfyUI",
+  "description": "Pinned single-file SD 1.5 checkpoint for proving managed ComfyUI image generation and image-edit aliases on the initial 6 GB VRAM / 32 GB RAM B1 AI Hub host. It is a practical proof target, not the final quality recommendation.",
+  "modality": "image",
+  "operations": ["image-generation", "image-edit"],
+  "source": {
+    "type": "direct-url",
+    "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/v1-5-pruned-emaonly.safetensors",
+    "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+    "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa"
+  },
+  "files": [
+    {
+      "path": "diffusion/checkpoints/sd-v1-5-pruned-emaonly-b1.safetensors",
+      "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa",
+      "size_bytes": 4265146304,
+      "format": "safetensors",
+      "quantization": "fp32-pruned-emaonly"
+    }
+  ],
+  "runtimes": ["comfyui"],
+  "preferred_runtime": "comfyui",
+  "resource_estimate": {
+    "vram_gib": 4.8,
+    "ram_gib": 8.0,
+    "disk_gib": 3.98,
+    "max_resolution": "512x512"
+  },
+  "license": {
+    "name": "CreativeML Open RAIL-M",
+    "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "redistribution": "downloadable",
+    "attribution": "Stable Diffusion v1.5, RunwayML and Stability AI",
+    "acceptance_required": true
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["image-default", "image-edit"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "runtime_adapter_versions": {
+    "comfyui": "b1-runtime-adapter/v1alpha1"
+  },
+  "runtime_smoke": {
+    "schema": "b1-ai-hub-runtime-smoke/v1",
+    "description": "Tiny 256x256, 4-step native ComfyUI SD 1.5 prompt through CheckpointLoaderSimple, CLIPTextEncode, KSampler, VAEDecode, and SaveImage.",
+    "comfyui": {
+      "timeout_seconds": 900,
+      "prompt": {
+        "3": {
+          "class_type": "CheckpointLoaderSimple",
+          "inputs": {
+            "ckpt_name": "sd-v1-5-pruned-emaonly-b1.safetensors"
+          }
+        },
+        "4": {
+          "class_type": "CLIPTextEncode",
+          "inputs": {
+            "text": "simple geometric proof image, clean composition, colored blocks",
+            "clip": ["3", 1]
+          }
+        },
+        "5": {
+          "class_type": "CLIPTextEncode",
+          "inputs": {
+            "text": "text, watermark, low quality",
+            "clip": ["3", 1]
+          }
+        },
+        "6": {
+          "class_type": "EmptyLatentImage",
+          "inputs": {
+            "width": 256,
+            "height": 256,
+            "batch_size": 1
+          }
+        },
+        "7": {
+          "class_type": "KSampler",
+          "inputs": {
+            "seed": 101,
+            "steps": 4,
+            "cfg": 5.0,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 1.0,
+            "model": ["3", 0],
+            "positive": ["4", 0],
+            "negative": ["5", 0],
+            "latent_image": ["6", 0]
+          }
+        },
+        "8": {
+          "class_type": "VAEDecode",
+          "inputs": {
+            "samples": ["7", 0],
+            "vae": ["3", 2]
+          }
+        },
+        "9": {
+          "class_type": "SaveImage",
+          "inputs": {
+            "images": ["8", 0],
+            "filename_prefix": "b1-model-smoke/sd15"
+          }
+        }
+      }
+    }
+  },
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-07-26T22:30:00+00:00",
+    "source": "catalog seed from pinned Hugging Face metadata; live RTX 3060 Laptop 6 GB smoke required before handoff",
+    "original_resource_estimate": {
+      "vram_gib": 4.8,
+      "ram_gib": 8.0,
+      "disk_gib": 3.98,
+      "max_resolution": "512x512"
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 4.8,
+      "ram_gib": 8.0,
+      "disk_gib": 3.98,
+      "max_resolution": "512x512"
+    },
+    "runs": [
+      {
+        "id": "sd15-pruned-emaonly-catalog-metadata-20260726",
+        "type": "catalog-metadata",
+        "status": "ok",
+        "runtime": "comfyui",
+        "model_alias": "image-default",
+        "resolved_model_version": "b1-sd15-pruned-emaonly-comfyui@451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+        "peak_vram_mib": 4915,
+        "peak_ram_mib": 8192,
+        "hook": {
+          "status": "unconfirmed",
+          "reason": "catalog_metadata_not_runtime_smoke"
+        }
+      }
+    ]
+  }
+}

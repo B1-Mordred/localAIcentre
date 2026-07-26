@@ -1606,13 +1606,13 @@ class ModelAdminApiTests(unittest.TestCase):
             fake_database = FakeDatabase(row, [row], active_jobs=0)
             self.patch_common(root, fake_database, audit_events)
 
-            async def fake_runtime_smoke(manifest: Any, auth: Any) -> dict[str, Any]:
+            async def fake_runtime_smoke(manifest: Any, auth: Any, *, model_alias: str | None = None) -> dict[str, Any]:
                 return {
                     "id": "modelsmoke_test",
                     "type": "install-smoke",
                     "status": "ok",
                     "runtime": manifest.preferred_runtime,
-                    "model_alias": manifest.aliases[0],
+                    "model_alias": model_alias or manifest.aliases[0],
                     "resolved_model_version": f"{manifest.id}@{manifest.version}",
                     "started_at": "2026-07-23T00:00:00+00:00",
                     "completed_at": "2026-07-23T00:00:03+00:00",
@@ -1928,6 +1928,29 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(job["request_params"]["runtime_smoke"], runtime_smoke)
         self.assertEqual(payload["runtime_smoke"], runtime_smoke)
         self.assertEqual(payload["runtime_smoke_config"], runtime_smoke["localai"])
+
+    def test_model_smoke_runtime_job_can_target_declared_alias(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = main.model_lifecycle.parse_uploaded_manifest(
+            {**manifest_payload(digest, len(data)), "aliases": ["image-default", "image-edit"]}
+        )
+        auth = AuthContext(subject_id="test-admin", role=Role.ADMIN, scopes=frozenset({"*"}))
+
+        job = main.model_smoke_runtime_job(manifest, auth, model_alias="image-edit")
+        resolution = main.model_smoke_resolution(manifest, model_alias="image-edit")
+
+        self.assertEqual(job["model_alias"], "image-edit")
+        self.assertEqual(resolution.public_alias, "image-edit")
+
+    def test_model_smoke_runtime_job_rejects_undeclared_alias(self) -> None:
+        data = b"tiny model"
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = main.model_lifecycle.parse_uploaded_manifest(manifest_payload(digest, len(data)))
+        auth = AuthContext(subject_id="test-admin", role=Role.ADMIN, scopes=frozenset({"*"}))
+
+        with self.assertRaisesRegex(ValueError, "not declared"):
+            main.model_smoke_runtime_job(manifest, auth, model_alias="image-edit")
 
     def test_model_runtime_smoke_cpu_records_zero_load_and_hook_metrics(self) -> None:
         data = b"tiny cpu model"

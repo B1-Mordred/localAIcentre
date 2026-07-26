@@ -1205,6 +1205,18 @@
       },
       "ModelSmokeTestRequest": {
         "properties": {
+          "model_alias": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Alias"
+          },
           "persist": {
             "default": true,
             "title": "Persist",

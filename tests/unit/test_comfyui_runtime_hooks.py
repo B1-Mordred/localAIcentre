@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -107,7 +108,14 @@ def load_hooks(folder_names: dict[str, list[str]] | None = None):
 
     folder_paths_mod = types.ModuleType("folder_paths")
     names = folder_names or {"checkpoints": ["sdxl/base.safetensors"], "vae": ["sdxl.vae.safetensors"]}
+    folder_paths_mod.added_paths = []
+    folder_paths_mod.filename_list_cache = {}
     folder_paths_mod.get_filename_list = lambda folder: names.get(folder, [])
+
+    def add_model_folder_path(folder: str, path: str, is_default: bool = False) -> None:
+        folder_paths_mod.added_paths.append((folder, path, is_default))
+
+    folder_paths_mod.add_model_folder_path = add_model_folder_path
 
     fake_modules = {
         "aiohttp": aiohttp_mod,
@@ -224,6 +232,41 @@ class ComfyUiRuntimeHooksTests(unittest.TestCase):
         self.assertNotIn("base.safetensors", json.dumps(result["model_folders"]))
         self.assertTrue({"status", "build-info", "load", "warm", "smoke", "unload"}.issubset(set(result["capabilities"]["actions"])))
         self.assertTrue(result["build_info"]["pinned"])
+
+    def test_syncs_comfyui_runtime_view_manifest_paths_into_folder_registry(self) -> None:
+        hooks, _routes, _queue = load_hooks({"checkpoints": []})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            view = root / "b1-image-model" / "20260726" / "diffusion" / "checkpoints"
+            view.mkdir(parents=True)
+            (view / "tiny.safetensors").write_bytes(b"safe")
+            marker = root / "b1-image-model" / "20260726" / "manifest.b1.json"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "format": "b1-ai-hub-runtime-view/v1",
+                        "runtime": "comfyui",
+                        "model_ref": "b1-image-model@20260726",
+                        "files": [{"path": "diffusion/checkpoints/tiny.safetensors"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hooks.folder_paths.filename_list_cache["checkpoints"] = object()
+
+            with patch.dict("os.environ", {"B1_COMFYUI_MODEL_VIEW_ROOT": str(root)}, clear=False):
+                summary = hooks.sync_b1_model_view_paths()
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["manifest_count"], 1)
+        self.assertEqual(summary["added_path_count"], 1)
+        self.assertEqual(summary["folder_count"], 1)
+        self.assertEqual(
+            hooks.folder_paths.added_paths,
+            [("checkpoints", str(view), True)],
+        )
+        self.assertNotIn("checkpoints", hooks.folder_paths.filename_list_cache)
 
     def test_model_matching_accepts_folder_path_basename_and_stem(self) -> None:
         hooks, _routes, _queue = load_hooks()

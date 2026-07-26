@@ -457,6 +457,7 @@ class ModelDownloadInstallRequest(BaseModel):
 
 class ModelSmokeTestRequest(BaseModel):
     persist: bool = True
+    model_alias: str | None = Field(default=None, max_length=128)
 
 
 class ModelRemoveRequest(BaseModel):
@@ -5527,8 +5528,18 @@ def parse_download_manifest(row: dict[str, Any]) -> Any:
         raise HTTPException(status_code=422, detail=f"stored download manifest is invalid: {exc}") from exc
 
 
-def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> dict[str, Any]:
-    model_alias = manifest.aliases[0] if manifest.aliases else manifest.id
+def model_smoke_alias(manifest: Any, requested_alias: str | None = None) -> str:
+    if requested_alias is None or not requested_alias.strip():
+        return manifest.aliases[0] if manifest.aliases else manifest.id
+    candidate = requested_alias.strip()
+    allowed = {manifest.id, *list(manifest.aliases or [])}
+    if candidate not in allowed:
+        raise ValueError(f"model smoke alias is not declared by manifest: {candidate}")
+    return candidate
+
+
+def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None, model_alias: str | None = None) -> dict[str, Any]:
+    selected_alias = model_smoke_alias(manifest, model_alias)
     request_params: dict[str, Any] = {"source": "admin_model_smoke_test"}
     runtime_smoke = getattr(manifest, "runtime_smoke", None)
     if isinstance(runtime_smoke, dict) and runtime_smoke:
@@ -5536,7 +5547,7 @@ def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> d
     return {
         "id": f"modelsmoke_{uuid.uuid4().hex}",
         "runtime": manifest.preferred_runtime,
-        "model_alias": model_alias,
+        "model_alias": selected_alias,
         "resolved_model_version": f"{manifest.id}@{manifest.version}",
         "modality": manifest.modality,
         "operation": "model-smoke",
@@ -5547,10 +5558,11 @@ def model_smoke_runtime_job(manifest: Any, auth: AuthContext | None = None) -> d
     }
 
 
-def model_smoke_resolution(manifest: Any) -> RuntimeResolution:
+def model_smoke_resolution(manifest: Any, model_alias: str | None = None) -> RuntimeResolution:
+    selected_alias = model_smoke_alias(manifest, model_alias)
     requires_gpu = manifest.preferred_runtime in GPU_RUNTIMES and manifest.resource_estimate.vram_gib > 0
     return RuntimeResolution(
-        public_alias=manifest.aliases[0] if manifest.aliases else manifest.id,
+        public_alias=selected_alias,
         model_id=manifest.id,
         model_version=manifest.version,
         resolved_model_version=f"{manifest.id}@{manifest.version}",
@@ -5729,9 +5741,9 @@ def runtime_control_payload_for_smoke(job: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-async def run_model_runtime_smoke(manifest: Any, auth: AuthContext) -> dict[str, Any]:
-    job = model_smoke_runtime_job(manifest, auth)
-    resolution = model_smoke_resolution(manifest)
+async def run_model_runtime_smoke(manifest: Any, auth: AuthContext, *, model_alias: str | None = None) -> dict[str, Any]:
+    job = model_smoke_runtime_job(manifest, auth, model_alias=model_alias)
+    resolution = model_smoke_resolution(manifest, model_alias=model_alias)
     started = monotonic()
     started_at = datetime.now(tz=UTC)
     load_time_ms: int | None = None
@@ -5806,9 +5818,12 @@ async def run_model_runtime_smoke(manifest: Any, auth: AuthContext) -> dict[str,
     }
 
 
-async def smoke_test_model_record(row: dict[str, Any], auth: AuthContext, *, persist: bool = True) -> dict[str, Any]:
+async def smoke_test_model_record(row: dict[str, Any], auth: AuthContext, *, persist: bool = True, model_alias: str | None = None) -> dict[str, Any]:
     manifest = parse_model_record_manifest(row)
-    run = await run_model_runtime_smoke(manifest, auth)
+    try:
+        run = await run_model_runtime_smoke(manifest, auth, model_alias=model_alias)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     updated_row = row
     measurement_info: dict[str, Any] | None = None
     if persist and run.get("status") == "ok":
@@ -10436,7 +10451,7 @@ async def admin_model_smoke_test(
     row = await database.get_model_record(model_id, version)
     if row is None:
         raise HTTPException(status_code=404, detail="installed model record not found")
-    result = await smoke_test_model_record(row, auth, persist=request.persist)
+    result = await smoke_test_model_record(row, auth, persist=request.persist, model_alias=request.model_alias)
     return {
         "model": public_model_record(result["model_record"]),
         "smoke_test": result["smoke_test"],
