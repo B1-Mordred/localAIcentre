@@ -282,6 +282,7 @@ PREFLIGHT_REQUIRED_CHECKS = (
     "tls_ca_file",
     "evidence_outputs",
     "workflow_inputs",
+    "backup_migration_rollback_inputs",
     "production_topology",
     "handoff_safety_gates",
     "modelhub_license_review",
