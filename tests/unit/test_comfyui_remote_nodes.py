@@ -156,10 +156,12 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
             nodes.CONFIG_FILE_ENV: os.environ.get(nodes.CONFIG_FILE_ENV),
             nodes.CA_FILE_ENV: os.environ.get(nodes.CA_FILE_ENV),
             nodes.ALLOW_INSECURE_HTTP_ENV: os.environ.get(nodes.ALLOW_INSECURE_HTTP_ENV),
+            nodes.RESOLVE_HOSTS_ENV: os.environ.get(nodes.RESOLVE_HOSTS_ENV),
         }
         os.environ[nodes.CONFIG_FILE_ENV] = ""
         os.environ.pop(nodes.CA_FILE_ENV, None)
         os.environ.pop(nodes.ALLOW_INSECURE_HTTP_ENV, None)
+        os.environ.pop(nodes.RESOLVE_HOSTS_ENV, None)
 
         def restore_environment() -> None:
             for key, value in original_values.items():
@@ -273,6 +275,55 @@ class ComfyUiRemoteNodesTests(unittest.TestCase):
         self.assertEqual(seen["cafile"], str(ca_path))
         self.assertEqual(seen["context"], "ssl-context")
         self.assertEqual(seen["timeout"], 7)
+
+    def test_request_json_can_temporarily_resolve_acceptance_hosts(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_getaddrinfo(
+            host: str | bytes | None,
+            port: str | int | None,
+            family: int = 0,
+            type: int = 0,
+            proto: int = 0,
+            flags: int = 0,
+        ) -> list[tuple[Any, ...]]:
+            seen["resolved_host"] = host
+            seen["resolved_port"] = port
+            return []
+
+        def fake_urlopen(request: Any, timeout: int = 0) -> FakeResponse:
+            seen["url"] = request.full_url
+            nodes.socket.getaddrinfo("api.ai.b1.germering", 443)
+            return FakeResponse(json.dumps({"ok": True}).encode("utf-8"))
+
+        original_getaddrinfo = nodes.socket.getaddrinfo
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.socket.getaddrinfo = fake_getaddrinfo
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.socket, "getaddrinfo", original_getaddrinfo))
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="https://api.ai.b1.germering",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_RESOLVE_HOSTS="api.ai.b1.germering=127.0.0.1",
+        ):
+            result = nodes.request_json("/healthz")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://api.ai.b1.germering/healthz")
+        self.assertEqual(seen["resolved_host"], "127.0.0.1")
+        self.assertEqual(seen["resolved_port"], 443)
+        self.assertIs(nodes.socket.getaddrinfo, fake_getaddrinfo)
+
+    def test_request_json_rejects_invalid_temporary_host_resolution_entries(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="https://api.ai.b1.germering",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_RESOLVE_HOSTS="https://api.ai.b1.germering=127.0.0.1",
+        ):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "must not include schemes or paths"):
+                nodes.request_json("/healthz")
 
     def test_local_config_file_supplies_api_key_base_download_dir_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

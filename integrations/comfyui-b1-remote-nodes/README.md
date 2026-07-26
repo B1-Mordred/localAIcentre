@@ -20,6 +20,8 @@ Environment variables take precedence. `B1_AI_HUB_API_KEY_FILE` is preferred for
 
 If the B1 gateway uses Caddy's internal CA and this external ComfyUI process does not trust it globally, set `B1_AI_HUB_CA_FILE` or `ca_file` to the exported root certificate from `$B1_DATA_ROOT/data/control-plane/caddy-root.crt`. Requests with an API key refuse plain HTTP unless `B1_AI_HUB_ALLOW_INSECURE_HTTP=true` is set for an isolated development harness.
 
+For local acceptance rehearsals before LAN DNS is delegated, set `B1_AI_HUB_RESOLVE_HOSTS` to comma- or space-separated `host=address` entries such as `api.ai.b1.germering=127.0.0.1`. This only affects the current Python process and does not change `/etc/hosts`; production clients should rely on real LAN DNS.
+
 Available nodes:
 
 - `B1 List Models`

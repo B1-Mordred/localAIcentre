@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import mimetypes
 import os
 import re
+import socket
 import secrets
 import ssl
 import time
@@ -26,6 +28,7 @@ API_KEY_ENV = "B1_AI_HUB_API_KEY"
 API_KEY_FILE_ENV = "B1_AI_HUB_API_KEY_FILE"
 CA_FILE_ENV = "B1_AI_HUB_CA_FILE"
 ALLOW_INSECURE_HTTP_ENV = "B1_AI_HUB_ALLOW_INSECURE_HTTP"
+RESOLVE_HOSTS_ENV = "B1_AI_HUB_RESOLVE_HOSTS"
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_FORM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -135,6 +138,55 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_resolve_host(hostname: str) -> str:
+    return hostname.strip().lower().rstrip(".")
+
+
+def parse_resolve_hosts(raw: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in re.split(r"[,\s]+", raw.strip()):
+        if not item:
+            continue
+        if "=" not in item:
+            raise B1RemoteNodeError(f"{RESOLVE_HOSTS_ENV} entries must use host=address: {item!r}")
+        host, address = item.split("=", 1)
+        host = normalize_resolve_host(host)
+        address = address.strip()
+        if not host or not address:
+            raise B1RemoteNodeError(f"{RESOLVE_HOSTS_ENV} entries require a non-empty host and address: {item!r}")
+        if "://" in host or "/" in host or "/" in address:
+            raise B1RemoteNodeError(f"{RESOLVE_HOSTS_ENV} entries must not include schemes or paths: {item!r}")
+        mapping[host] = address
+    return mapping
+
+
+@contextlib.contextmanager
+def temporary_host_resolution(resolve_hosts: dict[str, str]) -> Any:
+    if not resolve_hosts:
+        yield
+        return
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def mapped_getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[Any, ...]]:
+        lookup_host = host.decode("ascii", errors="ignore") if isinstance(host, bytes) else str(host or "")
+        mapped_host = resolve_hosts.get(normalize_resolve_host(lookup_host))
+        return original_getaddrinfo(mapped_host or host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = mapped_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
 
 
 def has_unsafe_path_segment(path: str) -> bool:
@@ -310,10 +362,12 @@ def enforce_token_transport_security(url: str, token: str) -> None:
 
 def b1_urlopen(request: urllib.request.Request, *, timeout: int) -> Any:
     configured_ca = ca_file()
-    if not configured_ca:
-        return urllib.request.urlopen(request, timeout=timeout)
-    context = ssl.create_default_context(cafile=configured_ca)
-    return urllib.request.urlopen(request, timeout=timeout, context=context)
+    resolve_hosts = parse_resolve_hosts(os.getenv(RESOLVE_HOSTS_ENV, ""))
+    with temporary_host_resolution(resolve_hosts):
+        if not configured_ca:
+            return urllib.request.urlopen(request, timeout=timeout)
+        context = ssl.create_default_context(cafile=configured_ca)
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
 
 
 def request_json(
