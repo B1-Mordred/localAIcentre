@@ -157,7 +157,7 @@ export B1_ACCEPTANCE_API_KEY=...
 . /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
 ```
 
-Before starting the full live group, run the non-network preflight. It parses the generated env file safely, checks required scoped keys and final handoff values, verifies Caddy CA and evidence paths, rejects unedited acceptance templates such as `REPLACE_WITH_*` placeholders or the tiny ComfyUI smoke prompt, and writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json` for the handoff report:
+Before starting the full live group, run the non-network preflight. It parses the generated env file safely, checks required scoped keys and final handoff values, verifies Caddy CA and evidence paths, verifies the production runtime topology (`B1_RUNTIME_DEPLOYMENT_MODE=production`, required LocalAI/ComfyUI/audio-cpu/Voicebox runtimes, production Compose overlays/profiles, and non-scaffold CPU engines), rejects unedited acceptance templates such as `REPLACE_WITH_*` placeholders or the tiny ComfyUI smoke prompt, and writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json` for the handoff report:
 
 ```bash
 make acceptance-preflight

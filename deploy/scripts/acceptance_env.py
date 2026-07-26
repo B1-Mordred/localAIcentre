@@ -128,6 +128,18 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append(shell_assign_literal("B1_GPU_ACCEPTANCE_ENFORCE_VRAM_RESERVE", "true"))
     lines.append(shell_assign_literal("B1_MODELHUB_ACCEPT_LICENSES", "0"))
 
+    lines.extend(section("Production runtime topology"))
+    lines.append("# These values should normally come from the production .env prepared by make prepare-production-env.")
+    lines.append(shell_default_expression("B1_RUNTIME_DEPLOYMENT_MODE", ""))
+    lines.append(shell_default_expression("B1_RUNTIME_PRODUCTION_REQUIRED", ""))
+    lines.append(shell_default_expression("COMPOSE_FILE", ""))
+    lines.append(shell_default_expression("COMPOSE_PROFILES", ""))
+    lines.append(shell_default_expression("COMPOSE_PATH_SEPARATOR", ""))
+    lines.append(shell_default_expression("B1_CPU_AUDIO_ENABLE_PLACEHOLDER", ""))
+    lines.append(shell_default_expression("B1_CPU_AUDIO_ENGINE", ""))
+    lines.append(shell_default_expression("B1_CPU_EMBEDDING_ENGINE", ""))
+    lines.append(shell_default_expression("B1_CPU_STT_ENGINE", ""))
+
     lines.extend(section("Common API keys"))
     for key in (
         "B1_AI_HUB_API_KEY",

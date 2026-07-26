@@ -3137,6 +3137,35 @@ class AcceptanceReportTests(unittest.TestCase):
             report["acceptance_blockers"],
         )
 
+    def test_report_blocks_handoff_when_operator_preflight_lacks_production_topology(self) -> None:
+        old_required_checks = [
+            name for name in acceptance.PREFLIGHT_REQUIRED_CHECKS if name != "production_topology"
+        ]
+        old_checks = [
+            {"name": name, "status": "ok", "detail": "validated"}
+            for name in old_required_checks
+        ]
+        snapshot = acceptance.preflight_evidence_snapshot(
+            {
+                "format": "b1-ai-hub-operator-live-acceptance-preflight/v1",
+                "generated_at": "2026-07-24T12:15:00+00:00",
+                "status": "ok",
+                "summary": {"ok": len(old_checks), "warning": 0, "fail": 0},
+                "checks": old_checks,
+            }
+        )
+        live_evidence = sample_live_evidence(operator_preflight=snapshot)
+        report = sample_report(live_evidence=live_evidence)
+        summary = acceptance.public_report_summary(report)
+
+        self.assertEqual(snapshot["missing_checks"], ["production_topology"])
+        self.assertFalse(summary["operator_preflight_evidence_ready"])
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn(
+            "operator live-acceptance preflight evidence is missing required checks: production_topology",
+            report["acceptance_blockers"],
+        )
+
     def test_operator_preflight_snapshot_accepts_warnings_without_blocking_handoff(self) -> None:
         checks = [
             {"name": name, "status": "ok", "detail": "validated"}

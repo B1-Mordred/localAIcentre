@@ -80,6 +80,20 @@ REQUIRED_FINAL_VALUES = (
     "B1_MODELHUB_SYNC_MODEL",
     "B1_MODELHUB_INFERENCE_ONLY_MODEL",
 )
+REQUIRED_HANDOFF_RUNTIMES = ("localai", "comfyui", "audio-cpu", "voicebox")
+RUNTIME_COMPOSE_FILES = {
+    "localai": "compose.production-localai.yaml",
+    "comfyui": "compose.production-comfyui.yaml",
+    "voicebox": "compose.production-voicebox.yaml",
+}
+RUNTIME_COMPOSE_PROFILES = {
+    "voicebox": "voicebox",
+}
+REQUIRED_CPU_ENGINE_KEYS = (
+    "B1_CPU_AUDIO_ENGINE",
+    "B1_CPU_EMBEDDING_ENGINE",
+    "B1_CPU_STT_ENGINE",
+)
 SAFETY_EXPECTED_VALUES = {
     "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP": "false",
     "B1_MODEL_CLIENT_ALLOW_INSECURE_HTTP": "false",
@@ -292,6 +306,82 @@ def check_safety_gates(ctx: PreflightContext) -> list[PreflightCheck]:
             )
         )
     return checks
+
+
+def split_words(value: str) -> list[str]:
+    return [part.strip().lower() for part in re.split(r"[,\s]+", value) if part.strip()]
+
+
+def compose_file_basenames(ctx: PreflightContext) -> list[str]:
+    raw = env_value(ctx, "COMPOSE_FILE") or env_value(ctx, "B1_COMPOSE_FILE")
+    separator = env_value(ctx, "COMPOSE_PATH_SEPARATOR") or os.pathsep
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(separator) if part.strip()]
+    if len(parts) == 1 and separator != ";" and ";" in raw:
+        parts = [part.strip() for part in raw.split(";") if part.strip()]
+    return [Path(part).name for part in parts]
+
+
+def check_production_topology(ctx: PreflightContext) -> PreflightCheck:
+    mode = env_value(ctx, "B1_RUNTIME_DEPLOYMENT_MODE").lower()
+    required_runtimes = set(split_words(env_value(ctx, "B1_RUNTIME_PRODUCTION_REQUIRED")))
+    selected_files = compose_file_basenames(ctx)
+    selected_file_set = set(selected_files)
+    profiles = set(split_words(env_value(ctx, "COMPOSE_PROFILES") or env_value(ctx, "B1_COMPOSE_PROFILES")))
+
+    required_files = ["compose.yaml"]
+    required_files.extend(
+        RUNTIME_COMPOSE_FILES[runtime]
+        for runtime in REQUIRED_HANDOFF_RUNTIMES
+        if runtime in RUNTIME_COMPOSE_FILES
+    )
+    required_profiles = sorted(
+        RUNTIME_COMPOSE_PROFILES[runtime]
+        for runtime in REQUIRED_HANDOFF_RUNTIMES
+        if runtime in RUNTIME_COMPOSE_PROFILES
+    )
+    missing_files = [filename for filename in required_files if filename not in selected_file_set]
+    missing_runtimes = [runtime for runtime in REQUIRED_HANDOFF_RUNTIMES if runtime not in required_runtimes]
+    missing_profiles = [profile for profile in required_profiles if profile not in profiles]
+
+    cpu_engine_failures = []
+    placeholder_enabled = normalized_bool(ctx.env.get("B1_CPU_AUDIO_ENABLE_PLACEHOLDER"))
+    if placeholder_enabled != "false":
+        cpu_engine_failures.append(
+            {
+                "key": "B1_CPU_AUDIO_ENABLE_PLACEHOLDER",
+                "expected": "false",
+                "observed": placeholder_enabled or "<unset>",
+            }
+        )
+    for key in REQUIRED_CPU_ENGINE_KEYS:
+        observed = env_value(ctx, key).lower()
+        if not observed or observed == "scaffold":
+            cpu_engine_failures.append({"key": key, "reason": "missing_or_scaffold", "observed": observed or "<unset>"})
+
+    mode_mismatch = mode != "production"
+    data = {
+        "runtime_deployment_mode": mode or "<unset>",
+        "runtime_deployment_mode_mismatch": mode_mismatch,
+        "production_required_runtimes": sorted(required_runtimes),
+        "required_handoff_runtimes": list(REQUIRED_HANDOFF_RUNTIMES),
+        "missing_required_runtimes": missing_runtimes,
+        "selected_file_basenames": selected_files,
+        "required_compose_files": required_files,
+        "missing_compose_files": missing_files,
+        "compose_profiles": sorted(profiles),
+        "required_compose_profiles": required_profiles,
+        "missing_compose_profiles": missing_profiles,
+        "cpu_engine_failures": cpu_engine_failures,
+    }
+    if mode_mismatch or missing_runtimes or missing_files or missing_profiles or cpu_engine_failures:
+        return fail(
+            "production_topology",
+            "production runtime topology is not ready for final live acceptance",
+            **data,
+        )
+    return ok("production_topology", "production runtime topology is ready for final live acceptance", **data)
 
 
 def check_urls(ctx: PreflightContext) -> PreflightCheck:
@@ -526,6 +616,7 @@ def run_preflight(ctx: PreflightContext) -> dict[str, Any]:
         check_ca_file(ctx),
         check_evidence_outputs(ctx),
         check_workflow_files(ctx),
+        check_production_topology(ctx),
     ]
     checks.extend(check_safety_gates(ctx))
     checks.extend(check_final_values(ctx))

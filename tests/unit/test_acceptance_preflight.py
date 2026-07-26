@@ -38,6 +38,14 @@ class AcceptancePreflightTests(unittest.TestCase):
             "B1_MODELHUB_INFERENCE_ONLY_MODEL": "chat-quality",
             "B1_SECURITY_BROWSER_USERNAME": "admin",
             "B1_SECURITY_BROWSER_PASSWORD": "correct horse battery staple",
+            "B1_RUNTIME_DEPLOYMENT_MODE": "production",
+            "B1_RUNTIME_PRODUCTION_REQUIRED": "localai,comfyui,audio-cpu,voicebox",
+            "COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml",
+            "COMPOSE_PROFILES": "voicebox",
+            "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "false",
+            "B1_CPU_AUDIO_ENGINE": "piper",
+            "B1_CPU_EMBEDDING_ENGINE": "onnx",
+            "B1_CPU_STT_ENGINE": "vosk",
         }
 
     def write_json(self, path: Path, payload: str) -> None:
@@ -189,6 +197,7 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(report["status"], "ok", report)
         self.assertEqual(report["summary"]["fail"], 0)
         self.assertEqual(self.check_by_name(report, "workflow_inputs")["status"], "ok")
+        self.assertEqual(self.check_by_name(report, "production_topology")["status"], "ok")
         text = acceptance_preflight.human_report(report)
         self.assertNotIn("b1k_acceptance.secret", text)
         self.assertNotIn("correct horse battery staple", text)
@@ -272,6 +281,76 @@ class AcceptancePreflightTests(unittest.TestCase):
         urls = self.check_by_name(report, "urls")
         self.assertEqual(urls["status"], "fail")
         self.assertIn("B1_SMOKE_OPEN_WEBUI_BASE", urls["data"]["insecure"])
+
+    def test_preflight_rejects_development_runtime_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file, {"B1_RUNTIME_DEPLOYMENT_MODE": "development"})
+
+        self.assertEqual(report["status"], "fail")
+        topology = self.check_by_name(report, "production_topology")
+        self.assertEqual(topology["status"], "fail")
+        self.assertTrue(topology["data"]["runtime_deployment_mode_mismatch"])
+
+    def test_preflight_rejects_missing_production_compose_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(
+                root,
+                env_file,
+                {"COMPOSE_FILE": "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml"},
+            )
+
+        self.assertEqual(report["status"], "fail")
+        topology = self.check_by_name(report, "production_topology")
+        self.assertEqual(topology["status"], "fail")
+        self.assertIn("compose.production-voicebox.yaml", topology["data"]["missing_compose_files"])
+
+    def test_preflight_rejects_missing_voicebox_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file, {"COMPOSE_PROFILES": ""})
+
+        self.assertEqual(report["status"], "fail")
+        topology = self.check_by_name(report, "production_topology")
+        self.assertEqual(topology["status"], "fail")
+        self.assertIn("voicebox", topology["data"]["missing_compose_profiles"])
+
+    def test_preflight_rejects_scaffold_cpu_engines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(
+                root,
+                env_file,
+                {
+                    "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true",
+                    "B1_CPU_AUDIO_ENGINE": "scaffold",
+                    "B1_CPU_EMBEDDING_ENGINE": "",
+                    "B1_CPU_STT_ENGINE": "",
+                },
+            )
+
+        self.assertEqual(report["status"], "fail")
+        topology = self.check_by_name(report, "production_topology")
+        self.assertEqual(topology["status"], "fail")
+        failure_keys = {item["key"] for item in topology["data"]["cpu_engine_failures"]}
+        self.assertEqual(
+            failure_keys,
+            {
+                "B1_CPU_AUDIO_ENABLE_PLACEHOLDER",
+                "B1_CPU_AUDIO_ENGINE",
+                "B1_CPU_EMBEDDING_ENGINE",
+                "B1_CPU_STT_ENGINE",
+            },
+        )
 
 
 if __name__ == "__main__":
