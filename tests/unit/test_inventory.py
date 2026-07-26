@@ -120,7 +120,7 @@ class InventoryTests(unittest.TestCase):
             family="inet",
         )
         network = inventory.summarize_host_network(interfaces, routes, dns)
-        self.assertEqual(network["hostname_authority"], "system-hostname")
+        self.assertEqual(network["hostname_authority"], "b1-appliance-config")
         self.assertEqual(network["hostname_source"], "system-hostname")
         self.assertEqual(
             network["expected_operator_networking"],
@@ -136,7 +136,7 @@ class InventoryTests(unittest.TestCase):
             {"hostname": "ai", "fqdn": "ai.b1.germering", "platform_node": "ai"},
             "ai.b1.germering",
         )
-        self.assertEqual(target_identity["hostname_authority"], "system-hostname")
+        self.assertEqual(target_identity["hostname_authority"], "b1-appliance-config")
         self.assertTrue(target_identity["accepted"])
         self.assertTrue(target_identity["hostname_matches_expected"])
         self.assertTrue(target_identity["fqdn_matches_expected"])
@@ -452,8 +452,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["host"]["dns"]["records"]["monitoring.ai.b1.germering"], ["192.168.2.100"])
         self.assertEqual(report["host"]["network"]["interfaces"][0]["ifname"], "eno1")
         self.assertEqual(report["host"]["network"]["default_routes"][0]["protocol"], "dhcp")
-        self.assertEqual(report["migration_readiness"]["target_identity"]["hostname_authority"], "system-hostname")
-        self.assertEqual(report["migration_readiness"]["networking"]["hostname_authority"], "system-hostname")
+        self.assertEqual(report["migration_readiness"]["target_identity"]["hostname_authority"], "b1-appliance-config")
+        self.assertEqual(report["migration_readiness"]["networking"]["hostname_authority"], "b1-appliance-config")
         self.assertEqual(report["migration_readiness"]["networking"]["hostname_source"], "system-hostname")
         self.assertEqual(report["migration_readiness"]["networking"]["network_property_source"], "host-dhcp-client")
         self.assertFalse(report["migration_readiness"]["networking"]["b1_manages_host_networking"])

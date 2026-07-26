@@ -629,7 +629,7 @@ def summarize_host_network(
         warnings.append("Inventory did not resolve any configured B1 virtual-host DNS records; verify LAN DNS before cutover")
 
     return {
-        "hostname_authority": "system-hostname",
+        "hostname_authority": "b1-appliance-config",
         "hostname_source": "system-hostname",
         "network_property_source": "host-dhcp-client",
         "b1_manages_host_networking": False,
@@ -1455,7 +1455,7 @@ def summarize_target_identity(identity: dict[str, Any], expected_target_host: st
             f"platform_node={observed_platform_node or '<missing>'}"
         )
     return {
-        "hostname_authority": "system-hostname",
+        "hostname_authority": "b1-appliance-config",
         "expected_target_host": expected,
         "expected_short_hostname": expected_short,
         "observed_hostname": observed_hostname,

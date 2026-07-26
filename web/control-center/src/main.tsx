@@ -3862,7 +3862,7 @@ function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverN
   const targetReady = (
     targetIdentity.available === true
     && targetIdentity.accepted === true
-    && targetIdentity.hostname_authority === "system-hostname"
+    && targetIdentity.hostname_authority === "b1-appliance-config"
     && targetIdentity.operator_must_review_target_identity !== true
     && targetMatches
     && targetWarnings.length === 0
@@ -3871,7 +3871,7 @@ function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverN
   const networkWarnings = stringList(networking.warnings);
   const networkReady = (
     networking.available === true
-    && networking.hostname_authority === "system-hostname"
+    && networking.hostname_authority === "b1-appliance-config"
     && networking.hostname_source === "system-hostname"
     && networking.network_property_source === "host-dhcp-client"
     && networking.b1_manages_host_networking === false

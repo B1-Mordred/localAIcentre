@@ -45,7 +45,7 @@ class CutoverPlanTests(unittest.TestCase):
     ) -> dict[str, Any]:
         records = dns_records if dns_records is not None else {host: ["192.168.2.100"] for host in cutover.PRODUCTION_HOSTS}
         target_identity_payload = target_identity if target_identity is not None else {
-            "hostname_authority": "system-hostname",
+            "hostname_authority": "b1-appliance-config",
             "expected_target_host": "ai.b1.germering",
             "expected_short_hostname": "ai",
             "observed_hostname": "ai",
@@ -59,7 +59,7 @@ class CutoverPlanTests(unittest.TestCase):
             "warnings": [],
         }
         networking_payload = networking if networking is not None else {
-            "hostname_authority": "system-hostname",
+            "hostname_authority": "b1-appliance-config",
             "hostname_source": "system-hostname",
             "network_property_source": "host-dhcp-client",
             "b1_manages_host_networking": False,
@@ -311,11 +311,11 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertEqual(plan["dns_readiness"]["optional_missing_hosts"], ["monitoring.ai.b1.germering"])
         self.assertEqual(plan["b1_ai_hub"]["optional_hosts"], ["monitoring.ai.b1.germering"])
         self.assertEqual(plan["b1_ai_hub"]["expected_target_host"], "ai.b1.germering")
-        self.assertEqual(plan["target_identity_readiness"]["hostname_authority"], "system-hostname")
+        self.assertEqual(plan["target_identity_readiness"]["hostname_authority"], "b1-appliance-config")
         self.assertTrue(plan["target_identity_readiness"]["accepted"])
         self.assertTrue(plan["target_identity_readiness"]["fqdn_matches_expected"])
         self.assertFalse(plan["target_identity_readiness"]["operator_must_review_target_identity"])
-        self.assertEqual(plan["networking_readiness"]["hostname_authority"], "system-hostname")
+        self.assertEqual(plan["networking_readiness"]["hostname_authority"], "b1-appliance-config")
         self.assertEqual(plan["networking_readiness"]["hostname_source"], "system-hostname")
         self.assertEqual(plan["networking_readiness"]["network_property_source"], "host-dhcp-client")
         self.assertFalse(plan["networking_readiness"]["b1_static_ip_configures"])
@@ -349,7 +349,7 @@ class CutoverPlanTests(unittest.TestCase):
                 root / "inventory.json",
                 self.inventory(
                     networking={
-                        "hostname_authority": "system-hostname",
+                        "hostname_authority": "b1-appliance-config",
                         "hostname_source": "system-hostname",
                         "network_property_source": "host-dhcp-client",
                         "b1_manages_host_networking": False,
@@ -394,7 +394,7 @@ class CutoverPlanTests(unittest.TestCase):
                 root / "inventory.json",
                 self.inventory(
                     target_identity={
-                        "hostname_authority": "system-hostname",
+                        "hostname_authority": "b1-appliance-config",
                         "expected_target_host": "ai.b1.germering",
                         "expected_short_hostname": "ai",
                         "observed_hostname": "b1-5",

@@ -356,7 +356,7 @@ def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[s
         target_identity = {
             "available": False,
             "accepted": False,
-            "hostname_authority": "system-hostname",
+            "hostname_authority": "b1-appliance-config",
             "expected_target_host": PRODUCTION_HOSTS[0],
             "observed_hostname": identity.get("hostname"),
             "observed_fqdn": identity.get("fqdn"),
@@ -367,8 +367,8 @@ def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[s
         return target_identity, ["Target host identity readiness was not present in inventory; rerun inventory before cutover"]
 
     warnings = [str(item) for item in target_identity.get("warnings", []) if isinstance(item, str)]
-    if target_identity.get("hostname_authority") != "system-hostname":
-        warnings.append("inventory target hostname authority is not the system hostname")
+    if target_identity.get("hostname_authority") != "b1-appliance-config":
+        warnings.append("inventory target hostname authority is not the B1 appliance configuration")
     if target_identity.get("accepted") is not True and not warnings:
         warnings.append("inventory host identity does not match the expected target host")
     if target_identity.get("operator_must_review_target_identity") is True and not warnings:
@@ -398,7 +398,7 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         return (
             {
                 "available": False,
-                "hostname_authority": "system-hostname",
+                "hostname_authority": "b1-appliance-config",
                 "hostname_source": "system-hostname",
                 "network_property_source": "host-dhcp-client",
                 "b1_manages_host_networking": False,
@@ -410,8 +410,8 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         )
 
     warnings = [str(item) for item in networking.get("warnings", []) if isinstance(item, str)]
-    if networking.get("hostname_authority") != "system-hostname":
-        warnings.append("target hostname policy must use the B1-defined system hostname, not a DHCP-supplied hostname")
+    if networking.get("hostname_authority") != "b1-appliance-config":
+        warnings.append("target hostname policy must be defined by B1 appliance configuration, not DHCP")
     if networking.get("b1_static_ip_configures") is not False:
         warnings.append("B1 networking policy must not configure a static host IP address")
     if networking.get("hostname_source") != "system-hostname":

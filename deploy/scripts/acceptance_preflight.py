@@ -668,8 +668,8 @@ def validate_target_identity_payload(
         )
     if not observed_expected or not valid_hostname_reference(observed_expected):
         failures.append(f"{label} target identity does not record a valid system hostname/FQDN")
-    if payload.get("hostname_authority") != "system-hostname":
-        failures.append(f"{label} target hostname authority must be the system hostname, not DHCP")
+    if payload.get("hostname_authority") != "b1-appliance-config":
+        failures.append(f"{label} target hostname authority must be the B1 appliance configuration, not DHCP")
     if payload.get("accepted") is not True:
         failures.append(f"{label} target identity is not accepted")
     if payload.get("operator_must_review_target_identity") is True:
@@ -690,8 +690,8 @@ def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[
         return [f"{label} DHCP/networking readiness is missing"]
     if payload.get("available") is False:
         failures.append(f"{label} DHCP/networking readiness is unavailable")
-    if payload.get("hostname_authority") != "system-hostname":
-        failures.append(f"{label} target hostname authority must be the B1-defined system hostname")
+    if payload.get("hostname_authority") != "b1-appliance-config":
+        failures.append(f"{label} target hostname authority must be the B1 appliance configuration")
     if payload.get("hostname_source") != "system-hostname":
         failures.append(f"{label} B1-defined hostname must be present as the target system hostname")
     if payload.get("network_property_source") != "host-dhcp-client":

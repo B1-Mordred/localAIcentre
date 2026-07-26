@@ -2808,8 +2808,8 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
         missing.append("old_stack_inventory_reviewed.target_identity.operator_must_review_target_identity_false")
     if not _nonempty_text(inventory_identity.get("expected_target_host")):
         missing.append("old_stack_inventory_reviewed.target_identity.expected_target_host")
-    if inventory_identity.get("hostname_authority") != "system-hostname":
-        missing.append("old_stack_inventory_reviewed.target_identity.hostname_authority_system_hostname")
+    if inventory_identity.get("hostname_authority") != "b1-appliance-config":
+        missing.append("old_stack_inventory_reviewed.target_identity.hostname_authority_b1_appliance_config")
     if not _nonempty_text(inventory_identity.get("observed_hostname")) and not _nonempty_text(inventory_identity.get("observed_fqdn")):
         missing.append("old_stack_inventory_reviewed.target_identity.observed_identity")
     if not any(
@@ -2895,8 +2895,8 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
         missing.append("cutover_plan_reviewed.target_identity_readiness.operator_must_review_target_identity_false")
     if not _nonempty_text(target_identity.get("expected_target_host")):
         missing.append("cutover_plan_reviewed.target_identity_readiness.expected_target_host")
-    if target_identity.get("hostname_authority") != "system-hostname":
-        missing.append("cutover_plan_reviewed.target_identity_readiness.hostname_authority_system_hostname")
+    if target_identity.get("hostname_authority") != "b1-appliance-config":
+        missing.append("cutover_plan_reviewed.target_identity_readiness.hostname_authority_b1_appliance_config")
     if not any(
         target_identity.get(key) is True
         for key in ("hostname_matches_expected", "fqdn_matches_expected", "platform_node_matches_expected")
@@ -2906,8 +2906,8 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
     networking = cutover.get("networking_readiness") if isinstance(cutover.get("networking_readiness"), dict) else {}
     if networking.get("available") is not True:
         missing.append("cutover_plan_reviewed.networking_readiness.available")
-    if networking.get("hostname_authority") != "system-hostname":
-        missing.append("cutover_plan_reviewed.networking_readiness.hostname_authority_system_hostname")
+    if networking.get("hostname_authority") != "b1-appliance-config":
+        missing.append("cutover_plan_reviewed.networking_readiness.hostname_authority_b1_appliance_config")
     if networking.get("hostname_source") != "system-hostname":
         missing.append("cutover_plan_reviewed.networking_readiness.hostname_source_system")
     if networking.get("network_property_source") != "host-dhcp-client":
@@ -4567,7 +4567,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("cutover target host identity readiness is unavailable")
         elif (
             target_identity.get("accepted") is not True
-            or target_identity.get("hostname_authority") != "system-hostname"
+            or target_identity.get("hostname_authority") != "b1-appliance-config"
             or target_identity.get("operator_must_review_target_identity") is True
             or not any(
                 target_identity.get(key) is True
@@ -4580,7 +4580,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         if networking.get("available") is not True:
             blockers.append("cutover host DHCP/networking readiness is unavailable")
         elif (
-            networking.get("hostname_authority") != "system-hostname"
+            networking.get("hostname_authority") != "b1-appliance-config"
             or networking.get("hostname_source") != "system-hostname"
             or networking.get("network_property_source") != "host-dhcp-client"
             or networking.get("b1_manages_host_networking") is not False
@@ -5693,7 +5693,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     )
     target_identity_ready = (
         target_identity_readiness.get("available") is True
-        and target_identity_readiness.get("hostname_authority") == "system-hostname"
+        and target_identity_readiness.get("hostname_authority") == "b1-appliance-config"
         and target_identity_readiness.get("accepted") is True
         and target_identity_readiness.get("operator_must_review_target_identity") is not True
         and any(
@@ -5704,7 +5704,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     )
     networking_ready = (
         networking_readiness.get("available") is True
-        and networking_readiness.get("hostname_authority") == "system-hostname"
+        and networking_readiness.get("hostname_authority") == "b1-appliance-config"
         and networking_readiness.get("hostname_source") == "system-hostname"
         and networking_readiness.get("network_property_source") == "host-dhcp-client"
         and networking_readiness.get("b1_manages_host_networking") is False

@@ -300,7 +300,7 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("<strong>Target Host</strong>", self.source)
         self.assertIn("<strong>DHCP Networking</strong>", self.source)
         self.assertIn("<h4>Target Host and DHCP</h4>", self.source)
-        self.assertIn('targetIdentity.hostname_authority === "system-hostname"', self.source)
+        self.assertIn('targetIdentity.hostname_authority === "b1-appliance-config"', self.source)
         self.assertIn('networking.network_property_source === "host-dhcp-client"', self.source)
         self.assertIn("networking.b1_static_ip_configures === false", self.source)
         self.assertIn("networking.has_dhcp_default_route === true", self.source)
