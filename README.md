@@ -150,14 +150,14 @@ Generate a sourceable live-acceptance environment file with all default URLs, CA
 make acceptance-env
 ```
 
-The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE` for the Open WebUI chat-host proof. Review it, fill the blank API-key, Model Hub, browser-session, and restart-drill values, then source it before running the live acceptance targets:
+The generated `$B1_BACKUP_ROOT/acceptance/operator-live-acceptance.env` intentionally contains no secrets and refuses to overwrite an existing file. It fills the default LAN URLs from the configured hosts, including `B1_SMOKE_OPEN_WEBUI_BASE` for the Open WebUI chat-host proof. Review it, fill the blank API-key, Model Hub, browser-session, restart-drill, and backup/migration/rollback artifact values, then source it before running the live acceptance targets:
 
 ```bash
 export B1_ACCEPTANCE_API_KEY=...
 . /srv/b1-ai-hub/backups/acceptance/operator-live-acceptance.env
 ```
 
-Before starting the full live group, run the non-network preflight. It parses the generated env file safely, checks required scoped keys and final handoff values, verifies Caddy CA and evidence paths, verifies the production runtime topology (`B1_RUNTIME_DEPLOYMENT_MODE=production`, required LocalAI/ComfyUI/audio-cpu/Voicebox runtimes, production Compose overlays/profiles, and non-scaffold CPU engines), rejects unedited acceptance templates such as `REPLACE_WITH_*` placeholders or the tiny ComfyUI smoke prompt, and writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json` for the handoff report:
+Before starting the full live group, run the non-network preflight. It parses the generated env file safely, checks required scoped keys and final handoff values, verifies Caddy CA and evidence paths, verifies the production runtime topology (`B1_RUNTIME_DEPLOYMENT_MODE=production`, required LocalAI/ComfyUI/audio-cpu/Voicebox runtimes, production Compose overlays/profiles, and non-scaffold CPU engines), verifies the reviewed backup/migration/rollback artifact paths and machine-readable formats needed for final evidence generation, rejects unedited acceptance templates such as `REPLACE_WITH_*` placeholders or the tiny ComfyUI smoke prompt, and writes `$B1_BACKUP_ROOT/acceptance/operator-preflight.json` for the handoff report:
 
 ```bash
 make acceptance-preflight
@@ -234,7 +234,7 @@ make acceptance-preflight
 make operator-live-acceptance
 ```
 
-`make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. The live harnesses stamp source commit, ref, and dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*` environment variables; the final acceptance report blocks handoff when stamped evidence is dirty, invalid, or from a different commit than the report source-control snapshot. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts.
+`make operator-live-acceptance` also depends on `repository-quality-evidence` and `acceptance-preflight`, so a dirty source tree, failed local quality gate, stale environment, missing backup/migration/rollback artifact input, or unsafe local handoff setting stops before the live API/GPU tests run. The group writes repository-quality, operator-preflight, live smoke, installed workflow, LocalAI, GPU, compatibility, security, and restart-reconciliation evidence files under `$B1_BACKUP_ROOT/acceptance/`. The live harnesses stamp source commit, ref, and dirty-state metadata from Git or `B1_SOURCE_*`/`GIT_*` environment variables; the final acceptance report blocks handoff when stamped evidence is dirty, invalid, or from a different commit than the report source-control snapshot. Backup, migration, cutover, and rollback evidence is still generated from reviewed backup and runbook artifacts after the preflight has verified those artifact inputs are present.
 
 Live harness evidence is written atomically with `0640` permissions and refuses symlink targets or symlinked parent directories, so handoff JSON cannot be redirected outside the reviewed backup root.
 

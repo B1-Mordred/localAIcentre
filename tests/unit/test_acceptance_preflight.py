@@ -134,6 +134,95 @@ class AcceptancePreflightTests(unittest.TestCase):
             }
             """,
         )
+        self.write_backup_migration_files(root)
+
+    def write_backup_migration_files(self, root: Path) -> dict[str, str]:
+        b1_backup = root / "backups" / "b1-acceptance"
+        self.write_json(
+            b1_backup / "manifest.json",
+            """
+            {
+              "format": "b1-ai-hub-backup/v1",
+              "postgres_dump_included": true,
+              "files": [{"path": "data/control-plane/postgres-logical-export.json"}]
+            }
+            """,
+        )
+        restore_report = root / "restore-tests" / "b1-acceptance" / "restore-report.json"
+        self.write_json(
+            restore_report,
+            """
+            {
+              "status": "restored",
+              "backup": "b1-acceptance",
+              "files_verified": 1,
+              "postgres_dump_included": true
+            }
+            """,
+        )
+        inventory = root / "backups" / "inventory-acceptance.json"
+        self.write_json(
+            inventory,
+            """
+            {
+              "format": "b1-ai-hub-host-inventory/v1",
+              "classification": {"containers": []}
+            }
+            """,
+        )
+        old_stack = root / "backups" / "old-stack-acceptance"
+        self.write_json(
+            old_stack / "manifest.json",
+            """
+            {
+              "format": "b1-ai-hub-old-stack-backup/v1",
+              "safety": {"old_stack_deletion_allowed": false}
+            }
+            """,
+        )
+        open_webui_plan = root / "backups" / "open-webui-migration-plan.json"
+        self.write_json(
+            open_webui_plan,
+            """
+            {
+              "format": "b1-ai-hub-open-webui-migration-plan/v1",
+              "warnings": []
+            }
+            """,
+        )
+        cutover_plan = root / "backups" / "cutover-plan.json"
+        self.write_json(
+            cutover_plan,
+            """
+            {
+              "format": "b1-ai-hub-cutover-plan/v1",
+              "warnings": [],
+              "safety": {
+                "deletes_nothing": true,
+                "old_stack_deletion_allowed": false
+              }
+            }
+            """,
+        )
+        rollback_report = root / "backups" / "rollback-rehearsal.json"
+        self.write_json(
+            rollback_report,
+            """
+            {
+              "format": "b1-ai-hub-rollback-rehearsal/v1",
+              "status": "ok"
+            }
+            """,
+        )
+        return {
+            "B1_BACKUP_DIR": str(b1_backup),
+            "RESTORE_REPORT": str(restore_report),
+            "INVENTORY": str(inventory),
+            "OLD_STACK_BACKUP": str(old_stack),
+            "OPEN_WEBUI_PLAN": str(open_webui_plan),
+            "CUTOVER_PLAN": str(cutover_plan),
+            "ROLLBACK_REPORT": str(rollback_report),
+        }
 
     def generate_env_file(self, root: Path, *, license_accepted: bool = True) -> Path:
         output = root / "backups" / "acceptance" / "operator-live-acceptance.env"
@@ -146,10 +235,21 @@ class AcceptancePreflightTests(unittest.TestCase):
         return output
 
     def run_report(self, root: Path, env_file: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
-        merged = {**self.base_env(), **(env or {})}
+        merged = {**self.base_env(), **self.backup_migration_env(root), **(env or {})}
         loaded = acceptance_preflight.load_env_exports(env_file, merged)
         context = acceptance_preflight.PreflightContext(data_root=root, env=loaded, env_file=env_file)
         return acceptance_preflight.run_preflight(context)
+
+    def backup_migration_env(self, root: Path) -> dict[str, str]:
+        return {
+            "B1_BACKUP_DIR": str(root / "backups" / "b1-acceptance"),
+            "RESTORE_REPORT": str(root / "restore-tests" / "b1-acceptance" / "restore-report.json"),
+            "INVENTORY": str(root / "backups" / "inventory-acceptance.json"),
+            "OLD_STACK_BACKUP": str(root / "backups" / "old-stack-acceptance"),
+            "OPEN_WEBUI_PLAN": str(root / "backups" / "open-webui-migration-plan.json"),
+            "CUTOVER_PLAN": str(root / "backups" / "cutover-plan.json"),
+            "ROLLBACK_REPORT": str(root / "backups" / "rollback-rehearsal.json"),
+        }
 
     def check_by_name(self, report: dict[str, Any], name: str) -> dict[str, Any]:
         for check in report["checks"]:
@@ -197,6 +297,7 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(report["status"], "ok", report)
         self.assertEqual(report["summary"]["fail"], 0)
         self.assertEqual(self.check_by_name(report, "workflow_inputs")["status"], "ok")
+        self.assertEqual(self.check_by_name(report, "backup_migration_rollback_inputs")["status"], "ok")
         self.assertEqual(self.check_by_name(report, "production_topology")["status"], "ok")
         text = acceptance_preflight.human_report(report)
         self.assertNotIn("b1k_acceptance.secret", text)
@@ -293,6 +394,47 @@ class AcceptancePreflightTests(unittest.TestCase):
         api_keys = self.check_by_name(report, "api_keys")
         self.assertEqual(api_keys["status"], "fail")
         self.assertIn("wrong_type", api_keys["data"])
+
+    def test_preflight_rejects_missing_backup_migration_rollback_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file, {"B1_BACKUP_DIR": ""})
+
+        self.assertEqual(report["status"], "fail")
+        check = self.check_by_name(report, "backup_migration_rollback_inputs")
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("B1_BACKUP_DIR", str(check["data"]))
+
+    def test_preflight_rejects_bad_backup_migration_artifact_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            self.write_json(root / "backups" / "cutover-plan.json", '{"format": "wrong", "warnings": []}')
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file)
+
+        self.assertEqual(report["status"], "fail")
+        check = self.check_by_name(report, "backup_migration_rollback_inputs")
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("unsupported format wrong", str(check["data"]))
+
+    def test_preflight_rejects_malformed_restore_report_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            self.write_json(
+                root / "restore-tests" / "b1-acceptance" / "restore-report.json",
+                '{"status": "restored", "files_verified": "many", "postgres_dump_included": true}',
+            )
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file)
+
+        self.assertEqual(report["status"], "fail")
+        check = self.check_by_name(report, "backup_migration_rollback_inputs")
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("restore report does not record verified files", str(check["data"]))
 
     def test_preflight_rejects_plain_http_open_webui_smoke_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

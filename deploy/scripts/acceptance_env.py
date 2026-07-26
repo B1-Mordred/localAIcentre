@@ -48,6 +48,7 @@ EVIDENCE_FILES = {
     "B1_VOICEBOX_EVIDENCE": "voicebox-remote.json",
     "B1_SECURITY_EVIDENCE": "security-acceptance.json",
     "B1_RESTART_RECONCILIATION_EVIDENCE": "restart-reconciliation.json",
+    "B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE": "backup-migration-rollback.json",
 }
 
 
@@ -229,6 +230,13 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append(shell_default_expression("B1_RESTART_RECONCILIATION_STARTED_AFTER", ""))
     lines.append(shell_default_expression("B1_MODELHUB_SYNC_MODEL", ""))
     lines.append(shell_default_expression("B1_MODELHUB_INFERENCE_ONLY_MODEL", ""))
+    lines.append(shell_default_expression("B1_BACKUP_DIR", ""))
+    lines.append(shell_default_expression("RESTORE_REPORT", ""))
+    lines.append(shell_default_expression("INVENTORY", ""))
+    lines.append(shell_default_expression("OLD_STACK_BACKUP", ""))
+    lines.append(shell_default_expression("OPEN_WEBUI_PLAN", ""))
+    lines.append(shell_default_expression("CUTOVER_PLAN", ""))
+    lines.append(shell_default_expression("ROLLBACK_REPORT", "$B1_BACKUP_ROOT/rollback-rehearsal.json"))
     lines.append(shell_default_expression("B1_SECURITY_BROWSER_USERNAME", ""))
     lines.append(shell_default_expression("B1_SECURITY_BROWSER_PASSWORD", ""))
     lines.append(shell_default_expression("B1_SECURITY_BROWSER_SESSION_COOKIE", ""))
@@ -243,8 +251,9 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append("# 1. export B1_ACCEPTANCE_API_KEY=... or edit the key lines above.")
     lines.append("# 2. Fill B1_RESTART_RECONCILIATION_STARTED_AFTER after preparing and restarting the drill state.")
     lines.append("# 3. Fill B1_MODELHUB_SYNC_MODEL and B1_MODELHUB_INFERENCE_ONLY_MODEL after reviewing Model Hub permissions.")
-    lines.append("# 4. Source this file, then run: make acceptance-preflight")
-    lines.append("# 5. When preflight passes, run: make operator-live-acceptance")
+    lines.append("# 4. Fill B1_BACKUP_DIR, RESTORE_REPORT, INVENTORY, OLD_STACK_BACKUP, OPEN_WEBUI_PLAN, CUTOVER_PLAN, and ROLLBACK_REPORT after backup/migration/rollback review.")
+    lines.append("# 5. Source this file, then run: make acceptance-preflight")
+    lines.append("# 6. When preflight passes, run: make operator-live-acceptance")
     return "\n".join(lines) + "\n"
 
 

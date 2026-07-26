@@ -31,6 +31,7 @@ from source_metadata import stamp_source_metadata  # noqa: E402
 
 PREFLIGHT_FORMAT = "b1-ai-hub-operator-live-acceptance-preflight/v1"
 MAX_JSON_FILE_BYTES = 2 * 1024 * 1024
+MAX_ARTIFACT_JSON_FILE_BYTES = 64 * 1024 * 1024
 MODEL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 EXPORT_RE = re.compile(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 DEFAULT_EXPR_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}$")
@@ -80,6 +81,21 @@ REQUIRED_FINAL_VALUES = (
     "B1_RESTART_RECONCILIATION_STARTED_AFTER",
     "B1_MODELHUB_SYNC_MODEL",
     "B1_MODELHUB_INFERENCE_ONLY_MODEL",
+)
+B1_BACKUP_FORMAT = "b1-ai-hub-backup/v1"
+OLD_STACK_BACKUP_FORMAT = "b1-ai-hub-old-stack-backup/v1"
+INVENTORY_FORMAT = "b1-ai-hub-host-inventory/v1"
+OPEN_WEBUI_PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
+CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
+ROLLBACK_REHEARSAL_FORMAT = "b1-ai-hub-rollback-rehearsal/v1"
+BACKUP_MIGRATION_ROLLBACK_INPUTS = (
+    ("B1_BACKUP_DIR", "B1 AI Hub backup directory", "dir_manifest", B1_BACKUP_FORMAT),
+    ("RESTORE_REPORT", "alternate-directory restore report", "json", None),
+    ("INVENTORY", "old-stack host inventory", "json", INVENTORY_FORMAT),
+    ("OLD_STACK_BACKUP", "old-stack backup directory", "dir_manifest", OLD_STACK_BACKUP_FORMAT),
+    ("OPEN_WEBUI_PLAN", "Open WebUI migration plan", "json", OPEN_WEBUI_PLAN_FORMAT),
+    ("CUTOVER_PLAN", "cutover and rollback plan", "json", CUTOVER_PLAN_FORMAT),
+    ("ROLLBACK_REPORT", "rollback rehearsal report", "json", ROLLBACK_REHEARSAL_FORMAT),
 )
 REQUIRED_HANDOFF_RUNTIMES = ("localai", "comfyui", "audio-cpu", "voicebox")
 RUNTIME_COMPOSE_FILES = {
@@ -456,7 +472,7 @@ def check_evidence_outputs(ctx: PreflightContext) -> PreflightCheck:
     return ok("evidence_outputs", "evidence output paths are writable or creatable", count=len(EVIDENCE_FILES))
 
 
-def load_json_file(path: Path) -> dict[str, Any]:
+def load_json_file(path: Path, *, max_bytes: int = MAX_JSON_FILE_BYTES) -> dict[str, Any]:
     if path.is_symlink():
         raise AcceptancePreflightError("path is a symlink")
     if not path.is_file():
@@ -464,8 +480,8 @@ def load_json_file(path: Path) -> dict[str, Any]:
     size = path.stat().st_size
     if size <= 0:
         raise AcceptancePreflightError("file is empty")
-    if size > MAX_JSON_FILE_BYTES:
-        raise AcceptancePreflightError(f"file is larger than {MAX_JSON_FILE_BYTES} bytes")
+    if size > max_bytes:
+        raise AcceptancePreflightError(f"file is larger than {max_bytes} bytes")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise AcceptancePreflightError("file must contain a JSON object")
@@ -547,6 +563,110 @@ def check_workflow_files(ctx: PreflightContext) -> PreflightCheck:
     return ok("workflow_inputs", "workflow/prompt JSON files are present and edited for handoff", count=len(checked))
 
 
+def symlinked_path_component(path: Path) -> str | None:
+    current = path
+    while True:
+        try:
+            if current.is_symlink():
+                return str(current)
+        except OSError:
+            return str(current)
+        if current == current.parent:
+            return None
+        current = current.parent
+
+
+def load_artifact_json(path: Path) -> dict[str, Any]:
+    symlink = symlinked_path_component(path)
+    if symlink:
+        raise AcceptancePreflightError(f"path contains symlink component: {symlink}")
+    return load_json_file(path, max_bytes=MAX_ARTIFACT_JSON_FILE_BYTES)
+
+
+def backup_manifest(path: Path) -> dict[str, Any]:
+    symlink = symlinked_path_component(path)
+    if symlink:
+        raise AcceptancePreflightError(f"path contains symlink component: {symlink}")
+    if not path.is_dir():
+        raise AcceptancePreflightError("directory does not exist")
+    return load_artifact_json(path / "manifest.json")
+
+
+def int_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_backup_migration_payload(key: str, payload: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if key == "B1_BACKUP_DIR":
+        if payload.get("postgres_dump_included") is not True:
+            failures.append("B1 backup manifest does not include PostgreSQL dump coverage")
+    elif key == "RESTORE_REPORT":
+        if payload.get("status") != "restored":
+            failures.append("restore report status is not restored")
+        files_verified = int_value(payload.get("files_verified"))
+        if files_verified is None or files_verified <= 0:
+            failures.append("restore report does not record verified files")
+        if payload.get("postgres_dump_included") is not True:
+            failures.append("restore report does not preserve PostgreSQL dump coverage")
+    elif key == "OLD_STACK_BACKUP":
+        safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+        if safety.get("old_stack_deletion_allowed") is not False:
+            failures.append("old-stack backup manifest does not explicitly forbid deletion")
+    elif key == "OPEN_WEBUI_PLAN":
+        if payload.get("warnings"):
+            failures.append("Open WebUI migration plan still has warnings")
+    elif key == "CUTOVER_PLAN":
+        safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+        if payload.get("warnings"):
+            failures.append("cutover plan still has warnings")
+        if safety.get("deletes_nothing") is not True or safety.get("old_stack_deletion_allowed") is not False:
+            failures.append("cutover plan safety invariants are incomplete")
+    elif key == "ROLLBACK_REPORT":
+        if payload.get("status") != "ok":
+            failures.append("rollback rehearsal report status is not ok")
+    return failures
+
+
+def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCheck:
+    failures = []
+    checked = []
+    for key, label, kind, expected_format in BACKUP_MIGRATION_ROLLBACK_INPUTS:
+        raw = env_value(ctx, key)
+        if not raw:
+            failures.append({"key": key, "label": label, "reason": "unset"})
+            continue
+        path = Path(raw)
+        try:
+            payload = backup_manifest(path) if kind == "dir_manifest" else load_artifact_json(path)
+        except (OSError, json.JSONDecodeError, AcceptancePreflightError) as exc:
+            failures.append({"key": key, "label": label, "path": str(path), "reason": str(exc)})
+            continue
+        observed_format = str(payload.get("format") or "")
+        input_failures = []
+        if expected_format is not None and observed_format != expected_format:
+            input_failures.append(f"unsupported format {observed_format or '<missing>'}")
+        input_failures.extend(validate_backup_migration_payload(key, payload))
+        if input_failures:
+            failures.append({"key": key, "label": label, "path": str(path), "failures": input_failures})
+            continue
+        checked.append({"key": key, "path": str(path)})
+    if failures:
+        return fail(
+            "backup_migration_rollback_inputs",
+            "backup, migration, and rollback artifacts are missing or not ready for evidence generation",
+            failures=failures,
+        )
+    return ok(
+        "backup_migration_rollback_inputs",
+        "backup, migration, and rollback artifacts are present for final evidence generation",
+        count=len(checked),
+    )
+
+
 def parse_utc_datetime(value: str) -> bool:
     raw = value.strip()
     if raw.endswith("Z"):
@@ -617,6 +737,7 @@ def run_preflight(ctx: PreflightContext) -> dict[str, Any]:
         check_ca_file(ctx),
         check_evidence_outputs(ctx),
         check_workflow_files(ctx),
+        check_backup_migration_rollback_inputs(ctx),
         check_production_topology(ctx),
     ]
     checks.extend(check_safety_gates(ctx))
