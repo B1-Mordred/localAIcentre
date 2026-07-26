@@ -2079,9 +2079,25 @@ def _restart_reconciliation_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("control_plane_restarted.expected_after")
     if started_at is not None and expected_after is not None and started_at <= expected_after:
         missing.append("control_plane_restarted.started_after_expected_after")
+    if _nonempty_text(restarted.get("api_status")) != "ok":
+        missing.append("control_plane_restarted.api_status")
+    required_runners = set(_as_string_list(restarted.get("required_runners")))
+    if not {"cpu-job-runner", "gpu-job-runner"}.issubset(required_runners):
+        missing.append("control_plane_restarted.required_runners")
+    missing_required_runners = _as_string_list(restarted.get("missing_required_runners"))
+    if missing_required_runners:
+        missing.append("control_plane_restarted.missing_required_runners_empty")
+    if _positive_int(restarted.get("record_count")) < 2:
+        missing.append("control_plane_restarted.record_count")
 
-    def require_runner_record(check_name: str, required_runtime_names: set[str]) -> dict[str, Any]:
+    def require_runner_record(check_name: str, runner_name: str, required_runtime_names: set[str]) -> dict[str, Any]:
         record = _check_record(checks, check_name)
+        if _nonempty_text(record.get("runner")) != runner_name:
+            missing.append(f"{check_name}.runner")
+        if _nonempty_text(record.get("runner_status")) != "ok":
+            missing.append(f"{check_name}.runner_status")
+        if record.get("required_runner_present") is not True:
+            missing.append(f"{check_name}.required_runner_present")
         runtime_names = set(_as_string_list(record.get("runtime_names")))
         if not runtime_names:
             missing.append(f"{check_name}.runtime_names")
@@ -2091,14 +2107,20 @@ def _restart_reconciliation_summary(payload: dict[str, Any]) -> dict[str, Any]:
             count = _integer_value(record.get(count_key))
             if count is None or count < 0:
                 missing.append(f"{check_name}.{count_key}")
-        if _parse_utc_datetime(record.get("started_at")) is None:
+        runner_started_at = _parse_utc_datetime(record.get("started_at"))
+        runner_completed_at = _parse_utc_datetime(record.get("completed_at"))
+        if runner_started_at is None:
             missing.append(f"{check_name}.started_at")
-        if _parse_utc_datetime(record.get("completed_at")) is None:
+        elif expected_after is not None and runner_started_at <= expected_after:
+            missing.append(f"{check_name}.started_after_expected_after")
+        if runner_completed_at is None:
             missing.append(f"{check_name}.completed_at")
+        elif runner_started_at is not None and runner_completed_at < runner_started_at:
+            missing.append(f"{check_name}.completed_after_started_at")
         return record
 
-    require_runner_record("cpu_runner_reconciled", {"audio-cpu"})
-    require_runner_record("gpu_runner_reconciled", {"localai", "comfyui", "voicebox"})
+    require_runner_record("cpu_runner_reconciled", "cpu-job-runner", {"audio-cpu"})
+    require_runner_record("gpu_runner_reconciled", "gpu-job-runner", {"localai", "comfyui", "voicebox"})
 
     requeued = _check_record(checks, "waiting_jobs_requeued")
     requeued_observed = _positive_int(requeued.get("observed"))

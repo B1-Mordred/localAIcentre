@@ -399,24 +399,38 @@ def sample_restart_reconciliation_checks() -> dict[str, dict[str, Any]]:
             "recorded_at": "2026-07-24T12:51:00+00:00",
             "started_at": "2026-07-24T12:51:10+00:00",
             "expected_after": "2026-07-24T12:50:55+00:00",
+            "api_status": "ok",
+            "required_runners": ["cpu-job-runner", "gpu-job-runner"],
+            "missing_required_runners": [],
+            "record_count": 2,
         },
         "cpu_runner_reconciled": {
             "status": "ok",
             "recorded_at": "2026-07-24T12:52:00+00:00",
+            "runner": "cpu-job-runner",
+            "runner_status": "ok",
+            "required_runner_present": True,
             "runtime_names": ["audio-cpu"],
             "started_at": "2026-07-24T12:51:11+00:00",
             "completed_at": "2026-07-24T12:51:12+00:00",
             "marked_recovery_required": 0,
             "requeued": 1,
+            "requeued_job_ids": ["job_cpu_waiting_1"],
+            "recovery_required_job_ids": [],
         },
         "gpu_runner_reconciled": {
             "status": "ok",
             "recorded_at": "2026-07-24T12:52:00+00:00",
+            "runner": "gpu-job-runner",
+            "runner_status": "ok",
+            "required_runner_present": True,
             "runtime_names": ["localai", "comfyui", "voicebox"],
             "started_at": "2026-07-24T12:51:11+00:00",
             "completed_at": "2026-07-24T12:51:13+00:00",
             "marked_recovery_required": 1,
             "requeued": 1,
+            "requeued_job_ids": ["job_gpu_waiting_1"],
+            "recovery_required_job_ids": ["job_gpu_active_1"],
         },
         "waiting_jobs_requeued": {
             "status": "ok",
@@ -3893,8 +3907,14 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(snapshot["missing_checks"], [])
         self.assertIn("control_plane_restarted.started_at", snapshot["missing_reconciliation_evidence"])
         self.assertIn("control_plane_restarted.expected_after", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("control_plane_restarted.api_status", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("control_plane_restarted.required_runners", snapshot["missing_reconciliation_evidence"])
         self.assertIn("cpu_runner_reconciled.runtime_names", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("cpu_runner_reconciled.runner", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("cpu_runner_reconciled.runner_status", snapshot["missing_reconciliation_evidence"])
         self.assertIn("gpu_runner_reconciled.runtime_names", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("gpu_runner_reconciled.runner", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("gpu_runner_reconciled.runner_status", snapshot["missing_reconciliation_evidence"])
         self.assertIn("waiting_jobs_requeued.observed", snapshot["missing_reconciliation_evidence"])
         self.assertIn("active_jobs_marked_recovery_required.observed", snapshot["missing_reconciliation_evidence"])
         self.assertIn("interrupted_job_ids_recorded.requeued_job_ids", snapshot["missing_reconciliation_evidence"])
@@ -3913,6 +3933,26 @@ class AcceptanceReportTests(unittest.TestCase):
             "restart reconciliation evidence is missing detailed proof:",
             "\n".join(report["acceptance_blockers"]),
         )
+
+    def test_restart_reconciliation_snapshot_requires_fresh_runner_windows(self) -> None:
+        payload = {
+            "format": "b1-ai-hub-restart-reconciliation-acceptance/v1",
+            "generated_at": "2026-07-24T12:55:00+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "checks": sample_restart_reconciliation_checks(),
+            "samples": [{"label": "startup-reconciliation"}],
+        }
+        payload["checks"]["cpu_runner_reconciled"] = {
+            **payload["checks"]["cpu_runner_reconciled"],
+            "started_at": "2026-07-24T12:50:00+00:00",
+            "completed_at": "2026-07-24T12:49:59+00:00",
+        }
+
+        snapshot = acceptance.restart_reconciliation_evidence_snapshot(payload)
+
+        self.assertIn("cpu_runner_reconciled.started_after_expected_after", snapshot["missing_reconciliation_evidence"])
+        self.assertIn("cpu_runner_reconciled.completed_after_started_at", snapshot["missing_reconciliation_evidence"])
 
     def test_restart_reconciliation_snapshot_requires_interrupted_job_id_evidence(self) -> None:
         snapshot = acceptance.restart_reconciliation_evidence_snapshot(

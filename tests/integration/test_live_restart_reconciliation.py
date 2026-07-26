@@ -127,6 +127,10 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
                 self.assertEqual(record.get("status"), "ok", record)
                 self.assertTrue(record.get("started_at"), record)
                 self.assertTrue(record.get("completed_at"), record)
+                started_at = parse_timestamp(str(record["started_at"]))
+                completed_at = parse_timestamp(str(record["completed_at"]))
+                self.assertGreater(started_at, self.started_after, record)
+                self.assertGreaterEqual(completed_at, started_at, record)
                 return record
         raise AssertionError(f"{runner} startup reconciliation record is absent")
 
@@ -136,35 +140,62 @@ class LiveRestartReconciliationAcceptanceTests(unittest.TestCase):
             self.skipTest("provided restart reconciliation key lacks runtimes:read scope")
         self.assertEqual(status, 200, payload)
         self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("status"), "ok", payload)
 
         started_at = parse_timestamp(str(payload.get("control_plane_started_at") or ""))
         self.assertGreater(started_at, self.started_after)
+        required_runners = payload.get("required_runners") if isinstance(payload.get("required_runners"), list) else []
+        missing_required_runners = (
+            payload.get("missing_required_runners") if isinstance(payload.get("missing_required_runners"), list) else []
+        )
+        self.assertIn("cpu-job-runner", required_runners, payload)
+        self.assertIn("gpu-job-runner", required_runners, payload)
+        self.assertEqual(missing_required_runners, [], payload)
         self.record_check(
             "control_plane_restarted",
             started_at=started_at.isoformat(),
             expected_after=self.started_after.isoformat(),
+            api_status=payload.get("status"),
+            required_runners=required_runners,
+            missing_required_runners=missing_required_runners,
+            record_count=len(payload.get("records") if isinstance(payload.get("records"), list) else []),
         )
 
         records = payload.get("records")
         self.assertIsInstance(records, list, payload)
         typed_records = [record for record in records if isinstance(record, dict)]
-        required_runners = payload.get("required_runners") if isinstance(payload.get("required_runners"), list) else []
-        self.assertIn("cpu-job-runner", required_runners, payload)
-        self.assertIn("gpu-job-runner", required_runners, payload)
 
         cpu = self.ok_record_by_runner(typed_records, "cpu-job-runner")
         gpu = self.ok_record_by_runner(typed_records, "gpu-job-runner")
         self.record_check(
             "cpu_runner_reconciled",
+            runner="cpu-job-runner",
+            runner_status=cpu.get("status"),
+            required_runner_present="cpu-job-runner" in required_runners,
+            started_at=cpu.get("started_at"),
+            completed_at=cpu.get("completed_at"),
             marked_recovery_required=int(cpu.get("marked_recovery_required") or 0),
             requeued=int(cpu.get("requeued") or 0),
             runtime_names=cpu.get("runtime_names"),
+            requeued_job_ids=cpu.get("requeued_job_ids") if isinstance(cpu.get("requeued_job_ids"), list) else [],
+            recovery_required_job_ids=(
+                cpu.get("recovery_required_job_ids") if isinstance(cpu.get("recovery_required_job_ids"), list) else []
+            ),
         )
         self.record_check(
             "gpu_runner_reconciled",
+            runner="gpu-job-runner",
+            runner_status=gpu.get("status"),
+            required_runner_present="gpu-job-runner" in required_runners,
+            started_at=gpu.get("started_at"),
+            completed_at=gpu.get("completed_at"),
             marked_recovery_required=int(gpu.get("marked_recovery_required") or 0),
             requeued=int(gpu.get("requeued") or 0),
             runtime_names=gpu.get("runtime_names"),
+            requeued_job_ids=gpu.get("requeued_job_ids") if isinstance(gpu.get("requeued_job_ids"), list) else [],
+            recovery_required_job_ids=(
+                gpu.get("recovery_required_job_ids") if isinstance(gpu.get("recovery_required_job_ids"), list) else []
+            ),
         )
 
         total_requeued = sum(int(record.get("requeued") or 0) for record in typed_records)
