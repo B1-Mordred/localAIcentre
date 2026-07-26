@@ -81,16 +81,17 @@ async def healthz() -> dict[str, Any]:
     }
 
 
-def artifact_etag(file_stat: os.stat_result) -> str:
-    return f'"artifact:{file_stat.st_mtime_ns:x}-{file_stat.st_size:x}"'
+def artifact_etag(digest: str) -> str:
+    return etag_for_sha256(digest)
 
 
-def artifact_headers(file_stat: os.stat_result) -> dict[str, str]:
+def artifact_headers(file_stat: os.stat_result, digest: str) -> dict[str, str]:
     return {
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=0, must-revalidate",
         "Content-Length": str(file_stat.st_size),
-        "ETag": artifact_etag(file_stat),
+        "ETag": artifact_etag(digest),
+        "X-Checksum-SHA256": digest,
         "Last-Modified": str(int(file_stat.st_mtime)),
     }
 
@@ -105,7 +106,11 @@ def artifact_response(path: Path, request: Request, head_only: bool = False) -> 
     except BlobStoreError as exc:
         raise blobstore_http_exception(exc) from exc
     size = file_stat.st_size
-    headers = artifact_headers(file_stat)
+    try:
+        digest = sha256_file(path)
+    except BlobStoreError as exc:
+        raise blobstore_http_exception(exc) from exc
+    headers = artifact_headers(file_stat, digest)
     if if_none_match_matches(request.headers.get("if-none-match"), headers["ETag"]):
         return Response(status_code=304, headers={key: value for key, value in headers.items() if key != "Content-Length"})
     try:

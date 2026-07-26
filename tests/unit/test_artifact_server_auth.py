@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import os
 import sys
@@ -93,6 +94,51 @@ class ArtifactServerAuthTests(unittest.TestCase):
             health = asyncio.run(artifact_main.healthz())
 
         self.assertTrue(health["auth_required"])
+
+    def test_artifact_download_headers_are_content_addressed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "result.wav"
+            payload = b"artifact-payload"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+
+            response = artifact_main.artifact_response(path, self.request(), head_only=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["etag"], f'"sha256:{digest}"')
+        self.assertEqual(response.headers["x-checksum-sha256"], digest)
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
+
+    def test_artifact_range_response_keeps_digest_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "result.bin"
+            payload = b"0123456789"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            request = SimpleNamespace(headers={"range": "bytes=2-5"})
+
+            response = artifact_main.artifact_response(path, request, head_only=True)
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["etag"], f'"sha256:{digest}"')
+        self.assertEqual(response.headers["x-checksum-sha256"], digest)
+        self.assertEqual(response.headers["content-range"], "bytes 2-5/10")
+        self.assertEqual(response.headers["content-length"], "4")
+
+    def test_artifact_if_none_match_uses_sha256_etag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "result.txt"
+            payload = b"same"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            request = SimpleNamespace(headers={"if-none-match": f'W/"sha256:{digest}"'})
+
+            response = artifact_main.artifact_response(path, request)
+
+        self.assertEqual(response.status_code, 304)
+        self.assertEqual(response.headers["etag"], f'"sha256:{digest}"')
+        self.assertEqual(response.headers["x-checksum-sha256"], digest)
+        self.assertNotIn("content-length", response.headers)
 
 
 if __name__ == "__main__":
