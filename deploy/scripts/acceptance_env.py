@@ -51,6 +51,10 @@ EVIDENCE_FILES = {
     "B1_BACKUP_MIGRATION_ROLLBACK_EVIDENCE": "backup-migration-rollback.json",
 }
 
+PRODUCTION_COMPOSE_FILE = "compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml"
+PRODUCTION_COMPOSE_PROFILES = "voicebox"
+PRODUCTION_COMPOSE_PATH_SEPARATOR = ":"
+
 
 @dataclass(frozen=True)
 class AcceptanceEnvConfig:
@@ -146,9 +150,9 @@ def render_acceptance_env(config: AcceptanceEnvConfig) -> str:
     lines.append("# These values should normally come from the production .env prepared by make prepare-production-env.")
     lines.append(shell_default_expression("B1_RUNTIME_DEPLOYMENT_MODE", ""))
     lines.append(shell_default_expression("B1_RUNTIME_PRODUCTION_REQUIRED", ""))
-    lines.append(shell_default_expression("COMPOSE_FILE", ""))
-    lines.append(shell_default_expression("COMPOSE_PROFILES", ""))
-    lines.append(shell_default_expression("COMPOSE_PATH_SEPARATOR", ""))
+    lines.append(shell_default_literal("COMPOSE_FILE", PRODUCTION_COMPOSE_FILE))
+    lines.append(shell_default_literal("COMPOSE_PROFILES", PRODUCTION_COMPOSE_PROFILES))
+    lines.append(shell_default_literal("COMPOSE_PATH_SEPARATOR", PRODUCTION_COMPOSE_PATH_SEPARATOR))
     lines.append(shell_default_expression("B1_CPU_AUDIO_ENABLE_PLACEHOLDER", ""))
     lines.append(shell_default_expression("B1_CPU_AUDIO_ENGINE", ""))
     lines.append(shell_default_expression("B1_CPU_EMBEDDING_ENGINE", ""))

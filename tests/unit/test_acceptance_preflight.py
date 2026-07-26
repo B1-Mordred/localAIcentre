@@ -733,7 +733,7 @@ class AcceptancePreflightTests(unittest.TestCase):
             root = Path(tmp)
             self.write_operator_files(root)
             env_file = self.generate_env_file(root)
-            report = self.run_report(root, env_file, {"COMPOSE_PROFILES": ""})
+            report = self.run_report(root, env_file, {"COMPOSE_PROFILES": "monitoring"})
 
         self.assertEqual(report["status"], "fail")
         topology = self.check_by_name(report, "production_topology")

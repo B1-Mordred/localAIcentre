@@ -62,8 +62,12 @@ class AcceptanceEnvTests(unittest.TestCase):
         self.assertIn('export B1_MODELHUB_ACCEPT_LICENSES="0"', text)
         self.assertIn('export B1_RUNTIME_DEPLOYMENT_MODE="${B1_RUNTIME_DEPLOYMENT_MODE:-}"', text)
         self.assertIn('export B1_RUNTIME_PRODUCTION_REQUIRED="${B1_RUNTIME_PRODUCTION_REQUIRED:-}"', text)
-        self.assertIn('export COMPOSE_FILE="${COMPOSE_FILE:-}"', text)
-        self.assertIn('export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"', text)
+        self.assertIn(
+            'export COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml:compose.production-localai.yaml:compose.production-comfyui.yaml:compose.production-voicebox.yaml}"',
+            text,
+        )
+        self.assertIn('export COMPOSE_PROFILES="${COMPOSE_PROFILES:-voicebox}"', text)
+        self.assertIn('export COMPOSE_PATH_SEPARATOR="${COMPOSE_PATH_SEPARATOR:-:}"', text)
         self.assertIn('export B1_CPU_AUDIO_ENABLE_PLACEHOLDER="${B1_CPU_AUDIO_ENABLE_PLACEHOLDER:-}"', text)
         self.assertIn('export B1_CPU_AUDIO_ENGINE="${B1_CPU_AUDIO_ENGINE:-}"', text)
         self.assertIn('export B1_CPU_EMBEDDING_ENGINE="${B1_CPU_EMBEDDING_ENGINE:-}"', text)
