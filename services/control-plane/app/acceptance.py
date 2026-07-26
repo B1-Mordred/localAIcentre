@@ -4279,6 +4279,11 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         blockers.append("Caddy internal CA readiness check is absent")
     elif caddy_ca.get("status") != "ok":
         blockers.append(f"Caddy internal CA readiness check is {caddy_ca.get('status', 'unknown')}")
+    starter_workflows = _check_by_name(report.get("self_test") or {}, "workflows:starter-readiness")
+    if not starter_workflows:
+        blockers.append("starter workflow readiness check is absent")
+    elif starter_workflows.get("status") != "ok":
+        blockers.append(f"starter workflow readiness check is {starter_workflows.get('status', 'unknown')}")
     required_runtimes = {item.lower() for item in _as_string_list(compose_selection.get("production_required_runtimes"))}
     if "localai" in required_runtimes:
         localai_build = _check_by_name(report.get("self_test") or {}, "runtime:localai-build-info")

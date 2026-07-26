@@ -2220,6 +2220,41 @@ def sample_caddy_ca_check(status: str = "ok") -> dict[str, Any]:
     }
 
 
+def sample_starter_workflow_check(status: str = "ok") -> dict[str, Any]:
+    return {
+        "name": "workflows:starter-readiness",
+        "status": status,
+        "detail": "starter workflows are seeded and CPU Media Studio workflows are ready"
+        if status == "ok"
+        else "CPU starter workflows are not ready: tts",
+        "data": {
+            "required_starter_workflows": [
+                "text-to-image",
+                "image-to-image",
+                "inpainting-outpainting",
+                "background-removal",
+                "upscaling",
+                "text-to-video",
+                "image-to-video",
+                "frame-interpolation",
+                "tts",
+                "transcription",
+            ],
+            "missing": [] if status == "ok" else ["transcription"],
+            "cpu_ready": [
+                {"id": "tts", "status": "published", "selected_runtime": "audio-cpu", "ready": True},
+                {"id": "transcription", "status": "published", "selected_runtime": "audio-cpu", "ready": True},
+            ]
+            if status == "ok"
+            else [],
+            "cpu_blockers": [] if status == "ok" else [{"id": "tts", "reasons": ["dependencies are not ready"]}],
+            "pending_gpu_or_model_workflows": [
+                {"id": "text-to-image", "status": "needs_dependencies", "selected_runtime": "comfyui", "workflow_json_node_count": 0}
+            ],
+        },
+    }
+
+
 def sample_localai_build_info_check(status: str = "ok") -> dict[str, Any]:
     return {
         "name": "runtime:localai-build-info",
@@ -2459,6 +2494,7 @@ def sample_report(**overrides: Any) -> dict[str, Any]:
                 {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
                 sample_tls_routing_check(),
                 sample_caddy_ca_check(),
+                sample_starter_workflow_check(),
                 sample_localai_build_info_check(),
                 sample_localai_status_check(),
                 sample_audio_cpu_build_info_check(),
@@ -3189,6 +3225,77 @@ class AcceptanceReportTests(unittest.TestCase):
 
         self.assertFalse(report["operator_handoff_ready"])
         self.assertIn("Caddy internal CA readiness check is failed", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_without_starter_workflow_readiness_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "ok",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_build_info_check(),
+                    sample_audio_cpu_status_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("starter workflow readiness check is absent", report["acceptance_blockers"])
+
+    def test_report_blocks_handoff_for_failed_starter_workflow_readiness_check(self) -> None:
+        report = sample_report(
+            self_test={
+                "status": "failed",
+                "checks": [
+                    {"name": "database", "status": "ok", "detail": "PostgreSQL ping completed"},
+                    sample_tls_routing_check(),
+                    sample_caddy_ca_check(),
+                    sample_starter_workflow_check("failed"),
+                    sample_localai_build_info_check(),
+                    sample_localai_status_check(),
+                    sample_audio_cpu_build_info_check(),
+                    sample_audio_cpu_status_check(),
+                    sample_voicebox_build_info_check(),
+                    sample_voicebox_status_check(),
+                    sample_comfyui_build_info_check(),
+                    sample_comfyui_status_check(),
+                    {"name": "gpu:nvml", "status": "ok", "detail": "GPU metrics are available"},
+                    {
+                        "name": "hardware:resource-policy",
+                        "status": "ok",
+                        "detail": "observed GPU/RAM satisfy the effective resource policy and reserves",
+                    },
+                    {"name": "runtimes:production-readiness", "status": "ok", "detail": "ready"},
+                    {
+                        "name": "runtime-agent:mutation-guard",
+                        "status": "ok",
+                        "detail": "runtime-agent mutation surface is authenticated, allowlisted, mTLS-protected, and rate-limited",
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(report["operator_handoff_ready"])
+        self.assertIn("starter workflow readiness check is failed", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_without_required_localai_build_info_check(self) -> None:
         report = sample_report(
