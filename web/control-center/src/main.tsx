@@ -422,6 +422,17 @@ type SelfTestCheck = {
   data?: Record<string, unknown>;
 };
 
+type RuntimeLifecycleBundle = {
+  runtime: string;
+  required: boolean;
+  aggregateStatus: string;
+  checks: SelfTestCheck[];
+  buildCheck?: SelfTestCheck;
+  statusCheck?: SelfTestCheck;
+  highlights: string[];
+  blockers: string[];
+};
+
 type RuntimeReadinessRow = {
   runtime: string;
   required: boolean;
@@ -3200,6 +3211,8 @@ function Runtimes() {
   const composeMissing = stringList(composeSelection?.missing_files)
     .concat(stringList(composeSelection?.missing_profiles).map((item) => `profile:${item}`));
   const readinessRows = runtimeReadinessRows(readiness);
+  const lifecycleGroups = lifecycleBundles(lifecycleChecks, productionRequired);
+  const lifecycleByRuntime = new Map(lifecycleGroups.map((bundle) => [bundle.runtime, bundle]));
 
   return (
     <div className="panel-grid">
@@ -3222,6 +3235,44 @@ function Runtimes() {
             <small>{composeReadiness.detail}</small>
             <small>files: {composeFiles.length ? composeFiles.join(", ") : "none"} / profiles: {composeProfiles.length ? composeProfiles.join(", ") : "none"}</small>
             {composeMissing.length ? <small>missing: {composeMissing.join(", ")}</small> : <small>all required runtime overlays selected</small>}
+          </div>
+        )}
+        {lifecycleGroups.length > 0 && (
+          <div className="acceptance-detail-section">
+            <h4>Lifecycle Readiness</h4>
+            <div className="runtime-lifecycle-grid">
+              {lifecycleGroups.map((bundle) => (
+                <div className="runtime-lifecycle-card" key={bundle.runtime}>
+                  <div className="runtime-lifecycle-heading">
+                    <code>{bundle.runtime}</code>
+                    <span className={statusPillClass(bundle.aggregateStatus)}>{bundle.aggregateStatus}</span>
+                    <small>{bundle.required ? "production required" : "policy optional"}</small>
+                  </div>
+                  <div className="runtime-lifecycle-checks">
+                    <div>
+                      <span>Build</span>
+                      <strong className={statusPillClass(bundle.buildCheck?.status ?? "missing")}>{bundle.buildCheck?.status ?? "missing"}</strong>
+                    </div>
+                    <div>
+                      <span>Status</span>
+                      <strong className={statusPillClass(bundle.statusCheck?.status ?? "missing")}>{bundle.statusCheck?.status ?? "missing"}</strong>
+                    </div>
+                  </div>
+                  <ul className="runtime-evidence-list">
+                    {(bundle.highlights.length ? bundle.highlights : ["no lifecycle payload highlights reported"]).slice(0, 6).map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                  {bundle.blockers.length > 0 && (
+                    <ul className="runtime-evidence-list runtime-blocker-list">
+                      {bundle.blockers.slice(0, 4).map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
         {readinessRows.length > 0 && (
@@ -3279,6 +3330,7 @@ function Runtimes() {
         const capabilities = runtimeCapabilitySummary(reportedCapabilities) || capabilitySummary(details.capabilities);
         const contract = runtime.adapter_contract;
         const surfaces = contract?.surfaces;
+        const lifecycle = lifecycleByRuntime.get(runtime.name);
         return (
           <section className="panel" key={runtime.name}>
             <SectionTitle icon={<TerminalSquare size={18} />} title={runtime.name} />
@@ -3290,6 +3342,15 @@ function Runtimes() {
                 {runtime.runtime_state?.job_id && <tr><td>Last job</td><td>{runtime.runtime_state.job_id}</td></tr>}
                 <tr><td>GPU lease</td><td>{runtime.requires_gpu ? "required" : "not required"}</td></tr>
                 <tr><td>API</td><td>{runtime.openai_compatible ? "OpenAI" : runtime.native_api ? "native" : "internal"}</td></tr>
+                {lifecycle && (
+                  <tr>
+                    <td>Lifecycle</td>
+                    <td>
+                      <span className={statusPillClass(lifecycle.aggregateStatus)}>{lifecycle.aggregateStatus}</span>
+                      <small>{lifecycle.checks.map((check) => `${check.name.replace(/^runtime:/, "")} ${check.status}`).join(" / ")}</small>
+                    </td>
+                  </tr>
+                )}
                 {contract && <tr><td>Contract</td><td>{contract.version}<small>{surfaces ? `${surfaces.scheduler ?? "scheduler"} / ${surfaces.submit ?? "submit"} / ${surfaces.events ?? "events"}` : ""}</small></td></tr>}
                 {details.engine !== undefined && <tr><td>Engine</td><td>{String(details.engine)}</td></tr>}
                 {details.placeholder !== undefined && <tr><td>Placeholder</td><td>{booleanLabel(details.placeholder)}</td></tr>}
@@ -3488,6 +3549,178 @@ function stringList(value: unknown): string[] {
     .filter((item): item is string | number | boolean => ["string", "number", "boolean"].includes(typeof item))
     .map((item) => String(item).trim())
     .filter(Boolean);
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function shortRef(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const digest = text.match(/sha256:([0-9a-f]{64})$/i);
+  if (digest) return `sha256:${digest[1].slice(0, 12)}`;
+  if (/^[0-9a-f]{40,64}$/i.test(text)) return text.slice(0, 12);
+  return text.length > 48 ? `${text.slice(0, 45)}...` : text;
+}
+
+function checkRuntimeName(check: SelfTestCheck): string {
+  const data = objectOrNull(check.data);
+  if (typeof data?.runtime === "string" && data.runtime.trim()) return data.runtime.trim();
+  const name = check.name.replace(/^runtime:/, "");
+  const matched = RUNTIME_OPTIONS.find((runtime) => name.startsWith(`${runtime}-`));
+  return matched ?? name.split("-")[0] ?? "runtime";
+}
+
+function lifecyclePayload(check: SelfTestCheck | undefined, key: "build_info" | "status"): Record<string, unknown> | null {
+  return objectOrNull(objectOrNull(check?.data)?.[key]);
+}
+
+function aggregateLifecycleStatus(checks: SelfTestCheck[]): string {
+  const statuses = checks.map((check) => check.status);
+  if (statuses.some((status) => ["failed", "invalid", "error"].some((marker) => status.includes(marker)))) return "failed";
+  if (statuses.some((status) => ["warning", "disabled", "pending", "degraded"].some((marker) => status.includes(marker)))) return "warning";
+  if (statuses.length && statuses.every((status) => ["ok", "ready", "healthy", "eligible", "configured"].includes(status))) return "ok";
+  return statuses.length ? "mixed" : "missing";
+}
+
+function operationStatusLine(operations: Record<string, unknown> | null): string {
+  if (!operations) return "";
+  const enabled = Object.entries(operations)
+    .filter(([, value]) => value === true)
+    .map(([name]) => name);
+  const disabled = Object.entries(operations)
+    .filter(([, value]) => value === false)
+    .map(([name]) => name);
+  return [
+    enabled.length ? `operations enabled: ${enabled.join(", ")}` : "",
+    disabled.length ? `disabled: ${disabled.join(", ")}` : ""
+  ].filter(Boolean).join(" / ");
+}
+
+function lifecycleActionsLine(statusPayload: Record<string, unknown> | null): string {
+  const capabilities = objectOrNull(statusPayload?.capabilities);
+  const actions = stringList(capabilities?.actions);
+  return actions.length ? `hooks: ${actions.join(", ")}` : "";
+}
+
+function buildInfoLine(buildInfo: Record<string, unknown> | null): string {
+  if (!buildInfo) return "";
+  const parts = [
+    buildInfo.pinned !== undefined ? `pinned ${booleanLabel(buildInfo.pinned)}` : "",
+    typeof buildInfo.runtime_version === "string" ? `runtime ${shortRef(buildInfo.runtime_version)}` : "",
+    typeof buildInfo.hook_version === "string" ? `hook ${shortRef(buildInfo.hook_version)}` : "",
+    typeof buildInfo.upstream_version === "string" ? `upstream ${shortRef(buildInfo.upstream_version)}` : "",
+    typeof buildInfo.upstream_commit === "string" ? `commit ${shortRef(buildInfo.upstream_commit)}` : "",
+    typeof buildInfo.source_archive_sha256 === "string" ? `source ${shortRef(buildInfo.source_archive_sha256)}` : "",
+    typeof buildInfo.base_image === "string" ? `base ${shortRef(buildInfo.base_image)}` : "",
+    typeof buildInfo.upstream_image === "string" ? `image ${shortRef(buildInfo.upstream_image)}` : "",
+    typeof buildInfo.piper_release === "string" ? `Piper ${shortRef(buildInfo.piper_release)}` : "",
+    typeof buildInfo.piper_asset_sha256 === "string" ? `Piper asset ${shortRef(buildInfo.piper_asset_sha256)}` : ""
+  ].filter(Boolean);
+  return parts.length ? `build: ${parts.join(" / ")}` : "build: metadata reported";
+}
+
+function audioCpuLifecycleLines(statusPayload: Record<string, unknown>): string[] {
+  const capabilities = objectOrNull(statusPayload.capabilities);
+  const engines = objectOrNull(statusPayload.engines);
+  const placeholder = objectOrNull(statusPayload.placeholder);
+  const residency = objectOrNull(statusPayload.cpu_residency);
+  const headroom = objectOrNull(residency?.headroom);
+  const engineLine = engines
+    ? Object.entries(engines)
+      .map(([operation, raw]) => {
+        const probe = objectOrNull(raw);
+        const engine = typeof probe?.engine === "string" ? probe.engine : "unknown";
+        const availability = probe?.available === true ? "ready" : "unavailable";
+        const marker = probe?.placeholder === true ? "placeholder" : availability;
+        return `${operation} ${engine} ${marker}`;
+      })
+      .join(" / ")
+    : "";
+  return [
+    statusPayload.gpu_lease_required === false ? "lease: CPU path, no GPU lease" : "lease: GPU requirement unclear",
+    operationStatusLine(objectOrNull(capabilities?.operations)),
+    engineLine ? `engines: ${engineLine}` : "",
+    placeholder ? `placeholder: ${placeholder.enabled === true ? "enabled" : "disabled"}${stringList(placeholder.operations).length ? ` for ${stringList(placeholder.operations).join(", ")}` : ""}` : "",
+    residency ? `CPU residency: ${residency.enabled === true ? "enabled" : "disabled"} / headroom ${headroom?.ok === true ? "ok" : "not ready"}${numberOrNull(headroom?.reserve_ram_gib) !== null ? ` / reserve ${numberOrNull(headroom?.reserve_ram_gib)} GiB` : ""}` : ""
+  ].filter(Boolean);
+}
+
+function localAiLifecycleLines(statusPayload: Record<string, unknown>): string[] {
+  const guardrails = objectOrNull(statusPayload.guardrails);
+  const modelProbe = objectOrNull(statusPayload.model_probe);
+  return [
+    guardrails ? `guardrails: ${guardrails.status ?? "unknown"} / max backends ${guardrails.max_active_backends ?? "unknown"} / watchdog ${booleanLabel(guardrails.watchdog_idle)}` : "",
+    modelProbe ? `model probe: ${modelProbe.status ?? "unknown"} / ${modelProbe.model_count ?? 0} model${modelProbe.model_count === 1 ? "" : "s"}` : "",
+    lifecycleActionsLine(statusPayload)
+  ].filter(Boolean);
+}
+
+function comfyUiLifecycleLines(statusPayload: Record<string, unknown>): string[] {
+  const queue = objectOrNull(statusPayload.queue);
+  const memory = objectOrNull(statusPayload.memory);
+  const modelFolders = objectOrNull(statusPayload.model_folders);
+  return [
+    queue ? `queue: ${queue.running ?? 0} running / ${queue.queued ?? 0} queued / ${queue.tasks_remaining ?? 0} remaining` : "",
+    memory ? `memory probe: ${memory.available === true ? "available" : "unavailable"}` : "",
+    modelFolders ? `model folders: ${modelFolders.folder_count ?? 0} folders / ${modelFolders.file_count ?? 0} files` : "",
+    lifecycleActionsLine(statusPayload)
+  ].filter(Boolean);
+}
+
+function voiceboxLifecycleLines(statusPayload: Record<string, unknown>): string[] {
+  const process = objectOrNull(statusPayload.process);
+  const inventory = objectOrNull(statusPayload.model_inventory);
+  return [
+    process ? `process: ${process.running === true ? "running" : "stopped"}` : "",
+    typeof statusPayload.active_requests === "number" ? `active requests: ${statusPayload.active_requests}` : "",
+    inventory ? `model inventory: ${inventory.entry_count ?? 0} entries / ${inventory.available_root_count ?? 0} roots` : "",
+    lifecycleActionsLine(statusPayload)
+  ].filter(Boolean);
+}
+
+function runtimeLifecycleHighlights(runtime: string, buildInfo: Record<string, unknown> | null, statusPayload: Record<string, unknown> | null): string[] {
+  const lines = [buildInfoLine(buildInfo)].filter(Boolean);
+  if (!statusPayload) return lines;
+  if (runtime === "audio-cpu") return lines.concat(audioCpuLifecycleLines(statusPayload));
+  if (runtime === "localai") return lines.concat(localAiLifecycleLines(statusPayload));
+  if (runtime === "comfyui") return lines.concat(comfyUiLifecycleLines(statusPayload));
+  if (runtime === "voicebox") return lines.concat(voiceboxLifecycleLines(statusPayload));
+  return lines.concat(lifecycleActionsLine(statusPayload)).filter(Boolean);
+}
+
+function lifecycleBundles(checks: SelfTestCheck[], requiredRuntimes: string[]): RuntimeLifecycleBundle[] {
+  const byRuntime = new Map<string, SelfTestCheck[]>();
+  checks.forEach((check) => {
+    const runtime = checkRuntimeName(check);
+    byRuntime.set(runtime, [...(byRuntime.get(runtime) ?? []), check]);
+  });
+  return Array.from(byRuntime.entries())
+    .map(([runtime, runtimeChecks]) => {
+      const buildCheck = runtimeChecks.find((check) => check.name.includes("build-info"));
+      const statusCheck = runtimeChecks.find((check) => check.name.endsWith("-status"));
+      const required = requiredRuntimes.includes(runtime) || runtimeChecks.some((check) => objectOrNull(check.data)?.required === true);
+      const blockers = runtimeChecks
+        .filter((check) => !["ok", "ready", "healthy", "eligible", "configured"].includes(check.status))
+        .map((check) => `${check.name.replace(/^runtime:/, "")}: ${check.detail}`);
+      if (required && !buildCheck) blockers.push("build-info hook missing");
+      if (required && !statusCheck) blockers.push("status hook missing");
+      return {
+        runtime,
+        required,
+        aggregateStatus: aggregateLifecycleStatus(runtimeChecks),
+        checks: runtimeChecks,
+        buildCheck,
+        statusCheck,
+        highlights: runtimeLifecycleHighlights(runtime, lifecyclePayload(buildCheck, "build_info"), lifecyclePayload(statusCheck, "status")),
+        blockers
+      };
+    })
+    .sort((a, b) => {
+      const requiredOrder = Number(b.required) - Number(a.required);
+      return requiredOrder || RUNTIME_OPTIONS.indexOf(a.runtime) - RUNTIME_OPTIONS.indexOf(b.runtime) || a.runtime.localeCompare(b.runtime);
+    });
 }
 
 function runtimeReadinessRows(check: SelfTestCheck | null): RuntimeReadinessRow[] {

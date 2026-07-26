@@ -482,6 +482,82 @@ td small {
   gap: 8px;
 }
 
+.runtime-lifecycle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.runtime-lifecycle-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid #d8ded7;
+  border-radius: 8px;
+  background: #f8faf8;
+  padding: 12px;
+}
+
+.runtime-lifecycle-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-lifecycle-heading code {
+  overflow-wrap: anywhere;
+}
+
+.runtime-lifecycle-heading small {
+  color: #5c675f;
+  margin-left: auto;
+}
+
+.runtime-lifecycle-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-lifecycle-checks div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border-left: 3px solid #a6b7aa;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.runtime-lifecycle-checks span {
+  color: #5c675f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-lifecycle-checks strong {
+  justify-self: start;
+}
+
+.runtime-evidence-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: #38413b;
+  font-size: 13px;
+}
+
+.runtime-evidence-list li {
+  overflow-wrap: anywhere;
+}
+
+.runtime-blocker-list {
+  border-top: 1px solid #ead6d6;
+  color: #822424;
+  padding-top: 8px;
+}
+
 .acceptance-pin-summary {
   display: flex;
   flex-wrap: wrap;
