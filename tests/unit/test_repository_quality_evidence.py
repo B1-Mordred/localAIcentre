@@ -38,6 +38,8 @@ class RepositoryQualityEvidenceTests(unittest.TestCase):
                     quality_command="make quality-container",
                     secret_scan_command="make secret-scan",
                     generated_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+                    quality_passed=True,
+                    secret_scan_passed=True,
                 )
 
         self.assertEqual(payload["format"], repository_quality_evidence.EVIDENCE_FORMAT)
@@ -48,9 +50,17 @@ class RepositoryQualityEvidenceTests(unittest.TestCase):
         self.assertEqual(set(payload["checks"]), {"quality_container", "secret_scan"})
         self.assertIn("backend_unit_tests", payload["checks"]["quality_container"]["coverage"])
         self.assertIn("source_secret_scan", payload["checks"]["secret_scan"]["coverage"])
+        quality_summary = payload["checks"]["quality_container"]["result_summary"]
+        self.assertEqual(quality_summary["outcome"], "passed")
+        self.assertEqual(quality_summary["exit_code"], 0)
+        self.assertEqual(quality_summary["required_by_target"], "repository-quality-evidence")
+        quality_result_labels = {item["label"] for item in quality_summary["test_results"]}
+        self.assertIn("backend_unit_tests", quality_result_labels)
+        self.assertIn("frontend_media_studio_audit", quality_result_labels)
+        self.assertEqual(payload["samples"][0]["verified_check_count"], 2)
         self.assertEqual(payload["samples"][0]["label"], "repository-quality")
 
-    def test_build_evidence_marks_dirty_source_incomplete_unless_allowed(self) -> None:
+    def test_build_evidence_marks_dirty_source_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             with patch.object(
@@ -68,20 +78,39 @@ class RepositoryQualityEvidenceTests(unittest.TestCase):
                     quality_command="make quality-container",
                     secret_scan_command="make secret-scan",
                     generated_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
-                )
-                rehearsal = repository_quality_evidence.build_evidence(
-                    repo_root=repo,
-                    quality_command="make quality-container",
-                    secret_scan_command="make secret-scan",
-                    generated_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
-                    allow_dirty=True,
+                    quality_passed=True,
+                    secret_scan_passed=True,
                 )
 
         self.assertEqual(incomplete["status"], "incomplete")
         self.assertTrue(incomplete["source_dirty"])
         self.assertEqual(incomplete["dirty_path_count"], 1)
-        self.assertEqual(rehearsal["status"], "ok")
-        self.assertTrue(rehearsal["source_dirty"])
+
+    def test_build_evidence_marks_unverified_gates_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            with patch.object(
+                repository_quality_evidence,
+                "source_state",
+                return_value={
+                    "source_commit": "c" * 40,
+                    "source_branch": "agent/test",
+                    "source_dirty": False,
+                    "dirty_path_count": 0,
+                },
+            ):
+                payload = repository_quality_evidence.build_evidence(
+                    repo_root=repo,
+                    quality_command="make quality-container",
+                    secret_scan_command="make secret-scan",
+                    generated_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+                )
+
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertEqual(payload["checks"]["quality_container"]["status"], "unverified")
+        self.assertEqual(payload["checks"]["quality_container"]["result_summary"]["outcome"], "unverified")
+        self.assertIsNone(payload["checks"]["quality_container"]["result_summary"]["exit_code"])
+        self.assertEqual(payload["samples"][0]["verified_check_count"], 0)
 
     def test_write_private_json_refuses_symlink_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -33,6 +33,32 @@ else:
     MISSING_DEPENDENCY = ""
 
 
+def sample_repository_quality_check(check_name: str, command: str) -> dict[str, Any]:
+    coverage = list(acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE[check_name])
+    return {
+        "status": "ok",
+        "command": command,
+        "recorded_at": "2026-07-24T12:10:00+00:00",
+        "coverage": coverage,
+        "result_summary": {
+            "outcome": "passed",
+            "exit_code": 0,
+            "verification_method": "make prerequisite completed before evidence writer",
+            "required_by_target": "repository-quality-evidence",
+            "test_result_count": len(coverage),
+            "test_results": [
+                {
+                    "label": label,
+                    "kind": "quality",
+                    "command": f"{command} [{label}]",
+                    "status": "passed",
+                }
+                for label in coverage
+            ],
+        },
+    }
+
+
 def complete_operator_evidence() -> dict[str, bool]:
     return {item["key"]: True for item in acceptance.required_operator_evidence_items()}
 
@@ -917,18 +943,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "missing_checks": [],
             "missing_quality_evidence": [],
             "checks": {
-                "quality_container": {
-                    "status": "ok",
-                    "command": "make quality-container",
-                    "recorded_at": "2026-07-24T12:10:00+00:00",
-                    "coverage": list(acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE["quality_container"]),
-                },
-                "secret_scan": {
-                    "status": "ok",
-                    "command": "make secret-scan",
-                    "recorded_at": "2026-07-24T12:10:00+00:00",
-                    "coverage": list(acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE["secret_scan"]),
-                },
+                "quality_container": sample_repository_quality_check("quality_container", "make quality-container"),
+                "secret_scan": sample_repository_quality_check("secret_scan", "make secret-scan"),
             },
             "sample_count": 1,
             "sample_labels": ["repository-quality"],
@@ -2275,6 +2291,36 @@ class AcceptanceReportTests(unittest.TestCase):
         blockers = "; ".join(report["acceptance_blockers"])
         self.assertIn("repository quality evidence status is incomplete", blockers)
         self.assertIn("repository quality evidence is missing detailed proof: source_dirty_false, dirty_path_count_zero", blockers)
+
+    def test_repository_quality_snapshot_requires_result_summary(self) -> None:
+        payload = sample_live_evidence()["repository_quality"]
+        payload["checks"]["quality_container"] = {
+            key: value
+            for key, value in payload["checks"]["quality_container"].items()
+            if key != "result_summary"
+        }
+
+        snapshot = acceptance.repository_quality_evidence_snapshot(payload)
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertIn("quality_container.result_summary", snapshot["missing_quality_evidence"])
+
+    def test_repository_quality_snapshot_requires_passed_result_details(self) -> None:
+        payload = sample_live_evidence()["repository_quality"]
+        summary = payload["checks"]["quality_container"]["result_summary"]
+        summary["outcome"] = "unverified"
+        summary["exit_code"] = None
+        summary["test_results"][0]["status"] = "failed"
+
+        snapshot = acceptance.repository_quality_evidence_snapshot(payload)
+
+        self.assertIn("quality_container.result_summary.outcome_passed", snapshot["missing_quality_evidence"])
+        self.assertIn("quality_container.result_summary.exit_code_zero", snapshot["missing_quality_evidence"])
+        first_label = acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE["quality_container"][0]
+        self.assertIn(
+            f"quality_container.result_summary.test_results.{first_label}.status",
+            snapshot["missing_quality_evidence"],
+        )
 
     def test_report_blocks_handoff_when_repository_quality_commit_mismatches_source(self) -> None:
         live_evidence = sample_live_evidence()
@@ -5315,6 +5361,10 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(quality_snapshot["source_commit"], "c" * 40)
         self.assertFalse(quality_snapshot["source_dirty"])
         self.assertEqual(quality_snapshot["command_count"], 2)
+        self.assertEqual(
+            quality_snapshot["quality_result_detail_count"],
+            sum(len(items) for items in acceptance.REPOSITORY_QUALITY_REQUIRED_COVERAGE.values()),
+        )
         preflight_snapshot = snapshot["operator_preflight"]
         self.assertTrue(preflight_snapshot["available"])
         self.assertEqual(preflight_snapshot["source_path"], str(preflight.resolve()))

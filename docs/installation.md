@@ -100,7 +100,7 @@ Before final handoff, record repository quality evidence from a clean checkout:
 make repository-quality-evidence
 ```
 
-The target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit and required local gate coverage. `make operator-live-acceptance` depends on this target, so final evidence cannot be collected from a dirty tree or without the broad local checks passing.
+The target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, explicit successful-gate assertions, and a per-coverage test-result summary. `make operator-live-acceptance` depends on this target, so final evidence cannot be collected from a dirty tree, from a direct script shortcut, or without the broad local checks passing.
 
 ```bash
 export B1_GPU_ACCEPTANCE_API_BASE=https://api.ai.b1.germering

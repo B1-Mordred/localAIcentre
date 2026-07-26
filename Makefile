@@ -76,7 +76,7 @@ backend-python-quality-container:
 	docker run --rm -e PYTHONPYCACHEPREFIX=/tmp/pycache -e PIP_DEFAULT_TIMEOUT="$(B1_PIP_DEFAULT_TIMEOUT)" -e PIP_RETRIES="$(B1_PIP_RETRIES)" -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$(CURDIR):/repo" -w /repo "$(B1_QUALITY_PYTHON_IMAGE)" sh -c 'python -m pip install PyYAML==6.0.2 $(foreach requirement,$(B1_SERVICE_REQUIREMENTS),-r $(requirement)) && python -m compileall -q services deploy integrations tests && python -m unittest discover -s tests/unit -v && python deploy/scripts/generate_openapi.py --output docs/openapi.json --check && python deploy/scripts/generate_openapi_client.py --check'
 
 repository-quality-evidence: quality-container secret-scan
-	python3 deploy/scripts/repository_quality_evidence.py --output "$(B1_REPOSITORY_QUALITY_EVIDENCE)" --force
+	python3 deploy/scripts/repository_quality_evidence.py --output "$(B1_REPOSITORY_QUALITY_EVIDENCE)" --quality-passed --secret-scan-passed --force
 
 compose-config:
 	docker compose config --quiet

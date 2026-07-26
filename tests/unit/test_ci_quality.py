@@ -119,6 +119,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn('--output "$(B1_PREFLIGHT_EVIDENCE)"', self.makefile_text)
         self.assertIn("\nrepository-quality-evidence:", self.makefile_text)
         self.assertIn("repository_quality_evidence.py", self.makefile_text)
+        self.assertIn("--quality-passed --secret-scan-passed", self.makefile_text)
         self.assertIn('B1_REPOSITORY_QUALITY_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/repository-quality.json', self.makefile_text)
 
         expected_targets = (

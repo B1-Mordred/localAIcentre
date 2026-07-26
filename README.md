@@ -169,7 +169,7 @@ Record repository quality evidence only after the source tree is clean and the b
 make repository-quality-evidence
 ```
 
-That target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, clean/dirty state, and coverage labels consumed by the final handoff report.
+That target runs `make quality-container` and `make secret-scan`, then writes `$B1_BACKUP_ROOT/acceptance/repository-quality.json` with the exact source commit, clean/dirty state, explicit pass assertions for those prerequisite gates, and per-coverage test-result summaries consumed by the final handoff report. Running the evidence script directly without those Make prerequisites leaves the checks unverified and is rejected for handoff.
 
 Run LocalAI runtime acceptance after a real chat alias is installed and smoke-tested, then run target-host cross-runtime GPU acceptance after real GPU models, persisted model-smoke measurements, and a ComfyUI API prompt are installed:
 

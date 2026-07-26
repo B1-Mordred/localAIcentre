@@ -2607,6 +2607,7 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
 def _repository_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     missing: list[str] = []
+    detail_count = 0
     source_commit = _nonempty_text(payload.get("source_commit")).lower()
     if not re.fullmatch(r"[a-f0-9]{40}", source_commit):
         missing.append("source_commit")
@@ -2625,12 +2626,47 @@ def _repository_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
         for item in required_coverage:
             if item not in coverage:
                 missing.append(f"{check_name}.coverage.{item}")
+        summary = check.get("result_summary") if isinstance(check.get("result_summary"), dict) else {}
+        if not summary:
+            missing.append(f"{check_name}.result_summary")
+            continue
+        if summary.get("outcome") != "passed":
+            missing.append(f"{check_name}.result_summary.outcome_passed")
+        if summary.get("exit_code") != 0:
+            missing.append(f"{check_name}.result_summary.exit_code_zero")
+        if _nonempty_text(summary.get("verification_method")) == "":
+            missing.append(f"{check_name}.result_summary.verification_method")
+        if summary.get("required_by_target") != "repository-quality-evidence":
+            missing.append(f"{check_name}.result_summary.required_by_target")
+        test_results = summary.get("test_results")
+        if not isinstance(test_results, list) or not test_results:
+            missing.append(f"{check_name}.result_summary.test_results")
+            continue
+        detail_count += len(test_results)
+        declared_count = _integer_value(summary.get("test_result_count"))
+        if declared_count != len(test_results):
+            missing.append(f"{check_name}.result_summary.test_result_count")
+        results_by_label = {
+            str(item.get("label")): item
+            for item in test_results
+            if isinstance(item, dict) and _nonempty_text(item.get("label"))
+        }
+        for item in required_coverage:
+            result = results_by_label.get(item)
+            if not isinstance(result, dict):
+                missing.append(f"{check_name}.result_summary.test_results.{item}")
+                continue
+            if result.get("status") != "passed":
+                missing.append(f"{check_name}.result_summary.test_results.{item}.status")
+            if _nonempty_text(result.get("command")) == "":
+                missing.append(f"{check_name}.result_summary.test_results.{item}.command")
     return {
         "source_commit": source_commit,
         "source_branch": _nonempty_text(payload.get("source_branch")),
         "source_dirty": payload.get("source_dirty"),
         "dirty_path_count": dirty_path_count if dirty_path_count is not None else 0,
         "command_count": len(checks),
+        "quality_result_detail_count": detail_count,
         "missing_quality_evidence": missing,
     }
 
