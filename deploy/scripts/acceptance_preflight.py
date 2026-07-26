@@ -89,6 +89,7 @@ INVENTORY_FORMAT = "b1-ai-hub-host-inventory/v1"
 OPEN_WEBUI_PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
 CUTOVER_PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 ROLLBACK_REHEARSAL_FORMAT = "b1-ai-hub-rollback-rehearsal/v1"
+NETWORK_DHCP_PLAN_FORMAT = "b1-ai-hub-network-dhcp-plan/v1"
 BACKUP_MIGRATION_ROLLBACK_INPUTS = (
     ("B1_BACKUP_DIR", "B1 AI Hub backup directory", "dir_manifest", B1_BACKUP_FORMAT),
     ("RESTORE_REPORT", "alternate-directory restore report", "json", None),
@@ -606,6 +607,62 @@ def string_list(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, str)]
 
 
+def dhcp_default_route_warning(value: str) -> bool:
+    lowered = value.lower()
+    return "dhcp-owned default route" in lowered or "dhcp default-route evidence" in lowered
+
+
+def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: str = "") -> dict[str, Any]:
+    if not plan:
+        return {"available": False}
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
+    dhcp_addresses = plan.get("dhcp_reserved_appliance_addresses")
+    if not isinstance(dhcp_addresses, list):
+        dhcp_addresses = plan.get("required_dhcp_reservations")
+    if not isinstance(dhcp_addresses, list):
+        dhcp_addresses = []
+    static_addresses = plan.get("host_infrastructure_static_addresses")
+    if not isinstance(static_addresses, list):
+        static_addresses = []
+    blockers = string_list(plan.get("blockers"))
+    ready = (
+        plan.get("format") == NETWORK_DHCP_PLAN_FORMAT
+        and plan.get("status") == "ready"
+        and plan.get("ready_to_apply") is True
+        and plan.get("reservation_confirmed") is True
+        and plan.get("b1_static_ip_configures") is False
+        and safety.get("read_only") is True
+        and safety.get("host_networking_changed") is False
+        and safety.get("b1_static_ip_configures") is False
+        and bool(dhcp_addresses)
+        and not blockers
+    )
+    return {
+        "available": True,
+        "source": source,
+        "ready": ready,
+        "status": plan.get("status"),
+        "ready_to_apply": plan.get("ready_to_apply") is True,
+        "reservation_confirmed": plan.get("reservation_confirmed") is True,
+        "dhcp_reserved_appliance_addresses": dhcp_addresses,
+        "host_infrastructure_static_addresses": static_addresses,
+        "blockers": blockers,
+        "warnings": string_list(plan.get("warnings")),
+    }
+
+
+def load_optional_network_dhcp_plan(ctx: PreflightContext) -> dict[str, Any]:
+    raw = env_value(ctx, "B1_NETWORK_DHCP_PLAN")
+    if not raw:
+        return {"available": False}
+    path = Path(raw)
+    try:
+        payload = load_artifact_json(path)
+    except (OSError, json.JSONDecodeError, AcceptancePreflightError) as exc:
+        return {"available": False, "source": str(path), "reason": str(exc)}
+    return network_dhcp_plan_summary(payload, source=str(path))
+
+
 def normalized_hostname(value: Any) -> str:
     return str(value or "").strip().lower().rstrip(".")
 
@@ -684,10 +741,25 @@ def validate_target_identity_payload(
     return failures
 
 
-def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[str]:
+def validate_networking_payload(
+    payload: dict[str, Any],
+    *,
+    label: str,
+    network_dhcp_plan: dict[str, Any] | None = None,
+) -> list[str]:
     failures: list[str] = []
     if not payload:
         return [f"{label} DHCP/networking readiness is missing"]
+    external_plan_ready = bool((network_dhcp_plan or {}).get("ready"))
+    direct_dhcp_proof = payload.get("has_dhcp_default_route") is True
+    embedded_plan_proof = (
+        payload.get("has_dhcp_network_proof") is True
+        and str(payload.get("network_proof") or "") in {"direct-dhcp-default-route", "operator-reviewed-dhcp-reservation-plan"}
+    )
+    has_network_proof = direct_dhcp_proof or embedded_plan_proof or external_plan_ready
+    warnings = string_list(payload.get("warnings"))
+    if has_network_proof and not direct_dhcp_proof:
+        warnings = [warning for warning in warnings if not dhcp_default_route_warning(warning)]
     if payload.get("available") is False:
         failures.append(f"{label} DHCP/networking readiness is unavailable")
     if payload.get("hostname_authority") != "b1-appliance-config":
@@ -700,11 +772,11 @@ def validate_networking_payload(payload: dict[str, Any], *, label: str) -> list[
         failures.append(f"{label} must not let B1 AI Hub manage host networking")
     if payload.get("b1_static_ip_configures") is not False:
         failures.append(f"{label} must not configure a static host IP")
-    if payload.get("has_dhcp_default_route") is not True:
-        failures.append(f"{label} does not prove a DHCP-owned default route")
-    if payload.get("operator_must_review_networking") is True:
+    if not has_network_proof:
+        failures.append(f"{label} does not prove a DHCP-owned default route or confirmed DHCP-reservation plan")
+    if payload.get("operator_must_review_networking") is True and not (has_network_proof and not warnings):
         failures.append(f"{label} DHCP/networking requires operator review")
-    if string_list(payload.get("warnings")):
+    if warnings:
         failures.append(f"{label} DHCP/networking still has warnings")
     if (int_value(payload.get("non_loopback_address_count")) or 0) <= 0:
         failures.append(f"{label} has no non-loopback host address evidence")
@@ -776,6 +848,7 @@ def validate_backup_migration_payload(
     payload: dict[str, Any],
     *,
     expected_target_host: str,
+    network_dhcp_plan: dict[str, Any] | None = None,
 ) -> list[str]:
     failures: list[str] = []
     if key == "B1_BACKUP_DIR":
@@ -804,7 +877,13 @@ def validate_backup_migration_payload(
                 expected_target_host=expected_target_host,
             )
         )
-        failures.extend(validate_networking_payload(networking_payload(payload), label="inventory"))
+        failures.extend(
+            validate_networking_payload(
+                networking_payload(payload),
+                label="inventory",
+                network_dhcp_plan=network_dhcp_plan,
+            )
+        )
     elif key == "CUTOVER_PLAN":
         safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
         if payload.get("warnings"):
@@ -820,7 +899,13 @@ def validate_backup_migration_payload(
                 expected_target_host=expected_target_host,
             )
         )
-        failures.extend(validate_networking_payload(networking, label="cutover plan"))
+        failures.extend(
+            validate_networking_payload(
+                networking,
+                label="cutover plan",
+                network_dhcp_plan=network_dhcp_plan,
+            )
+        )
     elif key == "ROLLBACK_REPORT":
         if payload.get("status") != "ok":
             failures.append("rollback rehearsal report status is not ok")
@@ -830,6 +915,7 @@ def validate_backup_migration_payload(
 def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCheck:
     failures = []
     checked = []
+    network_plan = load_optional_network_dhcp_plan(ctx)
     expected_target_host = (
         env_value(ctx, "B1_APPLIANCE_HOSTNAME")
         or env_value(ctx, "B1_EXPECTED_TARGET_HOST")
@@ -855,6 +941,7 @@ def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCh
                 key,
                 payload,
                 expected_target_host=expected_target_host,
+                network_dhcp_plan=network_plan,
             )
         )
         if input_failures:
@@ -866,11 +953,13 @@ def check_backup_migration_rollback_inputs(ctx: PreflightContext) -> PreflightCh
             "backup_migration_rollback_inputs",
             "backup, migration, and rollback artifacts are missing or not ready for evidence generation",
             failures=failures,
+            network_dhcp_plan=network_plan,
         )
     return ok(
         "backup_migration_rollback_inputs",
         "backup, migration, and rollback artifacts are present for final evidence generation",
         count=len(checked),
+        network_dhcp_plan=network_plan,
     )
 
 

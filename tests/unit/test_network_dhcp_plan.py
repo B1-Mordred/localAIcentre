@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -135,6 +137,12 @@ class NetworkDhcpPlanTests(unittest.TestCase):
 
         self.assertEqual(plan["status"], "operator-review-required")
         self.assertTrue(any("static host-infrastructure address is not present" in blocker for blocker in plan["blockers"]))
+
+    def test_reservation_confirmed_can_come_from_environment(self) -> None:
+        with patch.dict(os.environ, {"B1_DHCP_RESERVATION_CONFIRMED": "1"}):
+            args = network_dhcp_plan.parse_args([])
+
+        self.assertTrue(args.reservation_confirmed)
 
     def test_write_private_json_refuses_symlink_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

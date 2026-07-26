@@ -24,6 +24,13 @@ def utc_now() -> datetime:
     return datetime.now(tz=UTC)
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def default_command_runner(command: list[str]) -> dict[str, Any]:
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=15)
@@ -422,7 +429,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help="Static host-infrastructure IPv4 address to preserve, optionally ADDRESS[/PREFIX]=purpose. May be repeated.",
     )
-    parser.add_argument("--reservation-confirmed", action="store_true", help="Operator has confirmed matching DHCP reservations.")
+    parser.add_argument(
+        "--reservation-confirmed",
+        action="store_true",
+        default=env_bool("B1_DHCP_RESERVATION_CONFIRMED"),
+        help="Operator has confirmed matching DHCP reservations.",
+    )
     parser.add_argument("--output", default=os.getenv("B1_NETWORK_DHCP_PLAN", ""))
     return parser.parse_args(argv)
 

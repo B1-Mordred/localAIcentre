@@ -3868,7 +3868,16 @@ function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverN
     && targetWarnings.length === 0
   );
 
-  const networkWarnings = stringList(networking.warnings);
+  const directDhcpRoute = networking.has_dhcp_default_route === true;
+  const reservationPlan = objectOrNull(networking.dhcp_reservation_plan);
+  const hasDhcpNetworkProof = directDhcpRoute
+    || networking.has_dhcp_network_proof === true
+    || reservationPlan?.ready === true;
+  const networkWarnings = stringList(networking.warnings).filter((warning) => {
+    if (directDhcpRoute || !hasDhcpNetworkProof) return true;
+    const lower = warning.toLowerCase();
+    return !lower.includes("dhcp-owned default route") && !lower.includes("dhcp default-route evidence");
+  });
   const networkReady = (
     networking.available === true
     && networking.hostname_authority === "b1-appliance-config"
@@ -3879,7 +3888,7 @@ function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverN
     && Number(networking.non_loopback_address_count ?? 0) > 0
     && Number(networking.default_route_address_count ?? 0) > 0
     && Number(networking.default_route_count ?? 0) > 0
-    && networking.has_dhcp_default_route === true
+    && hasDhcpNetworkProof
     && networking.operator_must_review_networking !== true
     && networkWarnings.length === 0
   );
@@ -3905,6 +3914,7 @@ function acceptanceCutoverNetworkRows(report: Record<string, unknown>): CutoverN
         `network properties ${String(networking.network_property_source ?? "unknown")}`,
         `static host IP ${booleanLabel(networking.b1_static_ip_configures)}`,
         `DHCP default route ${booleanLabel(networking.has_dhcp_default_route)}`,
+        `DHCP proof ${String(networking.network_proof ?? (directDhcpRoute ? "direct-dhcp-default-route" : "unknown"))}`,
         `${String(networking.non_loopback_address_count ?? 0)} non-loopback address${Number(networking.non_loopback_address_count ?? 0) === 1 ? "" : "es"}`
       ].join(" / "),
       warnings: networkWarnings

@@ -437,6 +437,56 @@ class BackupMigrationRollbackEvidenceTests(unittest.TestCase):
                     rollback_report=rollback_report,
                 )
 
+    def test_build_evidence_accepts_cutover_network_dhcp_reservation_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            b1_backup, restore_report = self.create_b1_backup_and_restore(root)
+            old_stack = self.create_old_stack_backup(root)
+            inventory_path, open_webui_plan, cutover_plan, rollback_report = self.create_plan_files(root, old_stack)
+            payload = json.loads(cutover_plan.read_text(encoding="utf-8"))
+            payload["networking_readiness"]["default_route_protocols"] = ["static"]
+            payload["networking_readiness"]["has_dhcp_default_route"] = False
+            payload["networking_readiness"]["has_dhcp_network_proof"] = True
+            payload["networking_readiness"]["network_proof"] = "operator-reviewed-dhcp-reservation-plan"
+            payload["networking_readiness"]["operator_must_review_networking"] = False
+            payload["networking_readiness"]["warnings"] = ["Inventory did not prove a DHCP-owned default route"]
+            payload["networking_readiness"]["dhcp_reservation_plan"] = {
+                "ready": True,
+                "ready_to_apply": True,
+                "reservation_confirmed": True,
+                "dhcp_reserved_appliance_addresses": [{"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"}],
+                "host_infrastructure_static_addresses": [
+                    {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"}
+                ],
+                "blockers": [],
+            }
+            self.write_json(cutover_plan, payload)
+            rollback_report = rollback_rehearsal.write_report(
+                rollback_report,
+                rollback_rehearsal.build_report(
+                    cutover_plan_path=cutover_plan,
+                    rehearsed_by="operator",
+                    rollback_commands_tested=True,
+                    old_resources_preserved=True,
+                ),
+            )
+
+            result = evidence.build_evidence(
+                b1_backup=b1_backup,
+                restore_report=restore_report,
+                inventory=inventory_path,
+                old_stack_backup_path=old_stack,
+                open_webui_plan=open_webui_plan,
+                cutover_plan=cutover_plan,
+                rollback_report=rollback_report,
+            )
+
+        networking = result["checks"]["cutover_plan_reviewed"]["networking_readiness"]
+        self.assertTrue(networking["has_dhcp_network_proof"])
+        self.assertFalse(networking["has_dhcp_default_route"])
+        self.assertEqual(networking["network_proof"], "operator-reviewed-dhcp-reservation-plan")
+        self.assertEqual(networking["warnings"], [])
+
     def test_build_evidence_rejects_inventory_target_identity_requiring_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

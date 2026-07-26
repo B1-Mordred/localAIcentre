@@ -578,6 +578,85 @@ class AcceptancePreflightTests(unittest.TestCase):
         self.assertEqual(check["status"], "fail")
         self.assertIn("DHCP-owned default route", str(check["data"]))
 
+    def test_preflight_accepts_confirmed_network_dhcp_plan_for_static_technitium_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_operator_files(root)
+            self.write_json(
+                root / "backups" / "inventory-acceptance.json",
+                """
+                {
+                  "format": "b1-ai-hub-host-inventory/v1",
+                  "migration_readiness": {
+                    "target_identity": {
+                      "hostname_authority": "b1-appliance-config",
+                      "expected_target_host": "ai.b1.germering",
+                      "expected_short_hostname": "ai",
+                      "observed_hostname": "ai",
+                      "observed_fqdn": "ai.b1.germering",
+                      "observed_platform_node": "ai",
+                      "hostname_matches_expected": true,
+                      "fqdn_matches_expected": true,
+                      "platform_node_matches_expected": true,
+                      "accepted": true,
+                      "operator_must_review_target_identity": false,
+                      "warnings": []
+                    },
+                    "networking": {
+                      "hostname_authority": "b1-appliance-config",
+                      "hostname_source": "system-hostname",
+                      "network_property_source": "host-dhcp-client",
+                      "b1_manages_host_networking": false,
+                      "b1_static_ip_configures": false,
+                      "non_loopback_address_count": 2,
+                      "default_route_address_count": 2,
+                      "default_route_count": 1,
+                      "default_route_protocols": ["static"],
+                      "has_dhcp_default_route": false,
+                      "operator_must_review_networking": true,
+                      "warnings": ["Inventory did not prove a DHCP-owned default route"]
+                    }
+                  },
+                  "classification": {"containers": []}
+                }
+                """,
+            )
+            self.write_json(
+                root / "backups" / "network-dhcp-plan.json",
+                """
+                {
+                  "format": "b1-ai-hub-network-dhcp-plan/v1",
+                  "status": "ready",
+                  "ready_to_apply": true,
+                  "reservation_confirmed": true,
+                  "b1_static_ip_configures": false,
+                  "safety": {
+                    "read_only": true,
+                    "host_networking_changed": false,
+                    "b1_static_ip_configures": false
+                  },
+                  "dhcp_reserved_appliance_addresses": [
+                    {"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"}
+                  ],
+                  "host_infrastructure_static_addresses": [
+                    {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"}
+                  ],
+                  "blockers": [],
+                  "warnings": []
+                }
+                """,
+            )
+            env_file = self.generate_env_file(root)
+            report = self.run_report(root, env_file)
+
+        check = self.check_by_name(report, "backup_migration_rollback_inputs")
+        self.assertEqual(check["status"], "ok")
+        self.assertTrue(check["data"]["network_dhcp_plan"]["ready"])
+        self.assertEqual(
+            check["data"]["network_dhcp_plan"]["host_infrastructure_static_addresses"][0]["address"],
+            "192.168.2.2",
+        )
+
     def test_preflight_rejects_static_legacy_comfy_listener_binding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -6231,7 +6231,7 @@ class AcceptanceReportTests(unittest.TestCase):
         )
         self.assertIn("cutover_plan_reviewed.dns_readiness.common_addresses", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("cutover_plan_reviewed.target_identity_readiness.accepted", snapshot["missing_backup_migration_rollback_evidence"])
-        self.assertIn("cutover_plan_reviewed.networking_readiness.has_dhcp_default_route", snapshot["missing_backup_migration_rollback_evidence"])
+        self.assertIn("cutover_plan_reviewed.networking_readiness.has_dhcp_network_proof", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("cutover_plan_reviewed.resources_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.cutover_plan_sha256", snapshot["missing_backup_migration_rollback_evidence"])
         self.assertIn("rollback_rehearsed.rollback_actions_sha256", snapshot["missing_backup_migration_rollback_evidence"])
@@ -6430,6 +6430,47 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertFalse(summary["cutover_preservation_ready"])
         self.assertFalse(summary["cutover_networking_ready"])
         self.assertIn("cutover host DHCP/networking readiness requires operator review", report["acceptance_blockers"])
+
+    def test_report_accepts_cutover_network_dhcp_reservation_proof(self) -> None:
+        report = sample_report(
+            cutover_preservation=sample_cutover_preservation(
+                networking_readiness={
+                    "available": True,
+                    "hostname_authority": "b1-appliance-config",
+                    "hostname_source": "system-hostname",
+                    "network_property_source": "host-dhcp-client",
+                    "b1_manages_host_networking": False,
+                    "b1_static_ip_configures": False,
+                    "non_loopback_address_count": 2,
+                    "default_route_interfaces": ["eno1"],
+                    "default_route_address_count": 2,
+                    "default_route_count": 1,
+                    "default_route_protocols": ["static"],
+                    "has_dhcp_default_route": False,
+                    "has_dhcp_network_proof": True,
+                    "network_proof": "operator-reviewed-dhcp-reservation-plan",
+                    "dhcp_reservation_plan": {
+                        "ready": True,
+                        "ready_to_apply": True,
+                        "reservation_confirmed": True,
+                        "dhcp_reserved_appliance_addresses": [
+                            {"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"}
+                        ],
+                        "host_infrastructure_static_addresses": [
+                            {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"}
+                        ],
+                        "blockers": [],
+                    },
+                    "dns_record_count": 7,
+                    "operator_must_review_networking": False,
+                    "warnings": ["Inventory did not prove a DHCP-owned default route"],
+                }
+            )
+        )
+
+        summary = acceptance.public_report_summary(report)
+        self.assertTrue(summary["cutover_networking_ready"])
+        self.assertNotIn("cutover host DHCP/networking readiness requires operator review", report["acceptance_blockers"])
 
     def test_report_blocks_handoff_when_open_webui_preservation_requires_review(self) -> None:
         report = sample_report(

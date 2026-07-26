@@ -803,6 +803,36 @@ def _append_unique(items: list[str], value: str) -> None:
         items.append(value)
 
 
+def _dhcp_network_proof_ready(networking: dict[str, Any]) -> bool:
+    if networking.get("has_dhcp_default_route") is True:
+        return True
+    if networking.get("has_dhcp_network_proof") is True and str(networking.get("network_proof") or "") in {
+        "direct-dhcp-default-route",
+        "operator-reviewed-dhcp-reservation-plan",
+    }:
+        return True
+    plan = networking.get("dhcp_reservation_plan") if isinstance(networking.get("dhcp_reservation_plan"), dict) else {}
+    return (
+        plan.get("ready") is True
+        and plan.get("reservation_confirmed") is True
+        and plan.get("ready_to_apply") is True
+        and bool(plan.get("dhcp_reserved_appliance_addresses"))
+        and not _as_string_list(plan.get("blockers"))
+    )
+
+
+def _effective_networking_warnings(networking: dict[str, Any]) -> list[str]:
+    warnings = _as_string_list(networking.get("warnings"))
+    if networking.get("has_dhcp_default_route") is not True and _dhcp_network_proof_ready(networking):
+        warnings = [
+            warning
+            for warning in warnings
+            if "dhcp-owned default route" not in warning.lower()
+            and "dhcp default-route evidence" not in warning.lower()
+        ]
+    return warnings
+
+
 def _runtime_name(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -3040,8 +3070,8 @@ def _backup_migration_rollback_summary(payload: dict[str, Any]) -> dict[str, Any
         missing.append("cutover_plan_reviewed.networking_readiness.default_route_address_count")
     if _positive_int(networking.get("default_route_count")) < 1:
         missing.append("cutover_plan_reviewed.networking_readiness.default_route_count")
-    if networking.get("has_dhcp_default_route") is not True:
-        missing.append("cutover_plan_reviewed.networking_readiness.has_dhcp_default_route")
+    if not _dhcp_network_proof_ready(networking):
+        missing.append("cutover_plan_reviewed.networking_readiness.has_dhcp_network_proof")
     if networking.get("operator_must_review_networking") is not False:
         missing.append("cutover_plan_reviewed.networking_readiness.operator_must_review_networking_false")
 
@@ -4710,6 +4740,7 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
         ):
             blockers.append("cutover target host identity readiness requires operator review")
         networking = preservation.get("networking_readiness") if isinstance(preservation.get("networking_readiness"), dict) else {}
+        networking_warnings = _effective_networking_warnings(networking)
         if networking.get("available") is not True:
             blockers.append("cutover host DHCP/networking readiness is unavailable")
         elif (
@@ -4718,12 +4749,12 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             or networking.get("network_property_source") != "host-dhcp-client"
             or networking.get("b1_manages_host_networking") is not False
             or networking.get("b1_static_ip_configures") is not False
-            or networking.get("has_dhcp_default_route") is not True
+            or not _dhcp_network_proof_ready(networking)
             or networking.get("operator_must_review_networking") is True
             or _positive_int(networking.get("non_loopback_address_count")) < 1
             or _positive_int(networking.get("default_route_address_count")) < 1
             or _positive_int(networking.get("default_route_count")) < 1
-            or _as_string_list(networking.get("warnings"))
+            or networking_warnings
         ):
             blockers.append("cutover host DHCP/networking readiness requires operator review")
         hardware = preservation.get("hardware_readiness") if isinstance(preservation.get("hardware_readiness"), dict) else {}
@@ -5411,6 +5442,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "default_route_count",
         "default_route_protocols",
         "has_dhcp_default_route",
+        "has_dhcp_network_proof",
+        "network_proof",
         "operator_must_review_networking",
     ):
         if key in networking_readiness:
@@ -5845,9 +5878,9 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and _positive_int(networking_readiness.get("non_loopback_address_count")) >= 1
         and _positive_int(networking_readiness.get("default_route_address_count")) >= 1
         and _positive_int(networking_readiness.get("default_route_count")) >= 1
-        and networking_readiness.get("has_dhcp_default_route") is True
+        and _dhcp_network_proof_ready(networking_readiness)
         and networking_readiness.get("operator_must_review_networking") is not True
-        and not _as_string_list(networking_readiness.get("warnings"))
+        and not _effective_networking_warnings(networking_readiness)
     )
     open_webui_preservation_ready = (
         open_webui_readiness.get("plan_supplied") is True and open_webui_readiness.get("operator_must_review_open_webui") is not True

@@ -36,6 +36,7 @@ B1_NETWORK_CONNECTION ?= lan-dhcp-dns
 B1_NETWORK_DHCP_PLAN ?= $(B1_BACKUP_ROOT)/network-dhcp-plan.json
 B1_DHCP_REQUIRED_ADDRESSES ?= 192.168.2.100=b1-ai-hub-gateway
 B1_STATIC_INFRASTRUCTURE_ADDRESSES ?= 192.168.2.2/24=technitium-dhcp-dns
+B1_DHCP_RESERVATION_CONFIRMED ?= 0
 CADDY_IMAGE ?= caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 B1_QUALITY_PYTHON ?= python3.12
 B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
@@ -56,7 +57,7 @@ apply-system-hostname:
 	python3 deploy/scripts/system_hostname.py --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --apply
 
 network-dhcp-plan:
-	B1_DHCP_REQUIRED_ADDRESSES="$(B1_DHCP_REQUIRED_ADDRESSES)" B1_STATIC_INFRASTRUCTURE_ADDRESSES="$(B1_STATIC_INFRASTRUCTURE_ADDRESSES)" python3 deploy/scripts/network_dhcp_plan.py --connection "$(B1_NETWORK_CONNECTION)" --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --dns-admin-url "$(B1_DNS_ADMIN_URL)" --output "$(B1_NETWORK_DHCP_PLAN)"
+	B1_DHCP_REQUIRED_ADDRESSES="$(B1_DHCP_REQUIRED_ADDRESSES)" B1_STATIC_INFRASTRUCTURE_ADDRESSES="$(B1_STATIC_INFRASTRUCTURE_ADDRESSES)" B1_DHCP_RESERVATION_CONFIRMED="$(B1_DHCP_RESERVATION_CONFIRMED)" python3 deploy/scripts/network_dhcp_plan.py --connection "$(B1_NETWORK_CONNECTION)" --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --dns-admin-url "$(B1_DNS_ADMIN_URL)" --output "$(B1_NETWORK_DHCP_PLAN)"
 
 bootstrap:
 	python3 deploy/scripts/bootstrap.py --root "$(B1_DATA_ROOT)"
@@ -261,7 +262,9 @@ cutover-plan:
 	@test -n "$(SCOPE)" || (echo "SCOPE=/path/to/old-stack-scope.json is required" >&2; exit 2)
 	@test -n "$(BACKUP)" || (echo "BACKUP=/path/to/old-stack-backup is required" >&2; exit 2)
 	@test -n "$(OPEN_WEBUI_PLAN)" || (echo "OPEN_WEBUI_PLAN=/path/to/open-webui-migration-plan.json is required" >&2; exit 2)
-	python3 deploy/scripts/cutover.py --inventory "$(INVENTORY)" --scope "$(SCOPE)" --backup "$(BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" --output "$(B1_BACKUP_ROOT)/cutover-plan.json"
+	network_arg=(); \
+	if [ -n "$(B1_NETWORK_DHCP_PLAN)" ] && [ -f "$(B1_NETWORK_DHCP_PLAN)" ]; then network_arg=(--network-dhcp-plan "$(B1_NETWORK_DHCP_PLAN)"); fi; \
+	python3 deploy/scripts/cutover.py --inventory "$(INVENTORY)" --scope "$(SCOPE)" --backup "$(BACKUP)" --open-webui-plan "$(OPEN_WEBUI_PLAN)" "$${network_arg[@]}" --output "$(B1_BACKUP_ROOT)/cutover-plan.json"
 
 rollback-rehearsal-report:
 	@test -n "$(CUTOVER_PLAN)" || (echo "CUTOVER_PLAN=/path/to/cutover-plan.json is required" >&2; exit 2)

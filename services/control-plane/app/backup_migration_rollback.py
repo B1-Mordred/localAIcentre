@@ -267,6 +267,36 @@ def _int_value(value: Any) -> int | None:
         return None
 
 
+def _dhcp_network_proof_ready(networking: dict[str, Any]) -> bool:
+    if networking.get("has_dhcp_default_route") is True:
+        return True
+    if networking.get("has_dhcp_network_proof") is True and str(networking.get("network_proof") or "") in {
+        "direct-dhcp-default-route",
+        "operator-reviewed-dhcp-reservation-plan",
+    }:
+        return True
+    plan = networking.get("dhcp_reservation_plan") if isinstance(networking.get("dhcp_reservation_plan"), dict) else {}
+    return (
+        plan.get("ready") is True
+        and plan.get("reservation_confirmed") is True
+        and plan.get("ready_to_apply") is True
+        and bool(plan.get("dhcp_reserved_appliance_addresses"))
+        and not _string_list(plan.get("blockers"))
+    )
+
+
+def _effective_networking_warnings(networking: dict[str, Any]) -> list[str]:
+    warnings = _string_list(networking.get("warnings"))
+    if networking.get("has_dhcp_default_route") is not True and _dhcp_network_proof_ready(networking):
+        warnings = [
+            warning
+            for warning in warnings
+            if "dhcp-owned default route" not in warning.lower()
+            and "dhcp default-route evidence" not in warning.lower()
+        ]
+    return warnings
+
+
 def _preserved_resource_count(resources: dict[str, list[str]]) -> int:
     return sum(len(resources.get(key, [])) for key in rollback_rehearsal.PRESERVED_RESOURCE_KEYS)
 
@@ -387,7 +417,8 @@ def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, An
     networking = payload.get("networking_readiness") if isinstance(payload.get("networking_readiness"), dict) else {}
     if not networking:
         raise EvidenceError("cutover host DHCP/networking readiness is missing")
-    warnings = _string_list(networking.get("warnings"))
+    warnings = _effective_networking_warnings(networking)
+    network_proof_ready = _dhcp_network_proof_ready(networking)
     if networking.get("available") is not True:
         raise EvidenceError("cutover host DHCP/networking readiness is unavailable")
     if (
@@ -396,7 +427,7 @@ def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, An
         or networking.get("network_property_source") != "host-dhcp-client"
         or networking.get("b1_manages_host_networking") is not False
         or networking.get("b1_static_ip_configures") is not False
-        or networking.get("has_dhcp_default_route") is not True
+        or not network_proof_ready
         or networking.get("operator_must_review_networking") is True
         or warnings
     ):
@@ -422,7 +453,12 @@ def verify_cutover_networking_readiness(payload: dict[str, Any]) -> dict[str, An
         "default_route_count": default_route_count,
         "default_route_interfaces": _string_list(networking.get("default_route_interfaces")),
         "default_route_protocols": _string_list(networking.get("default_route_protocols")),
-        "has_dhcp_default_route": True,
+        "has_dhcp_default_route": networking.get("has_dhcp_default_route") is True,
+        "has_dhcp_network_proof": True,
+        "network_proof": networking.get("network_proof") or "direct-dhcp-default-route",
+        "dhcp_reservation_plan": networking.get("dhcp_reservation_plan")
+        if isinstance(networking.get("dhcp_reservation_plan"), dict)
+        else {},
         "dns_record_count": networking.get("dns_record_count"),
         "operator_must_review_networking": False,
         "warnings": [],

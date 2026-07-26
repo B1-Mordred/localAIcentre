@@ -270,6 +270,28 @@ class CutoverPlanTests(unittest.TestCase):
     def write_open_webui_plan(self, path: Path, inventory_path: Path, backup_dir: Path, **kwargs: Any) -> Path:
         return self.write_json(path, self.open_webui_plan(inventory_path, backup_dir, **kwargs))
 
+    def network_dhcp_plan(self, *, confirmed: bool = True) -> dict[str, Any]:
+        return {
+            "format": "b1-ai-hub-network-dhcp-plan/v1",
+            "status": "ready" if confirmed else "operator-review-required",
+            "ready_to_apply": confirmed,
+            "reservation_confirmed": confirmed,
+            "b1_static_ip_configures": False,
+            "safety": {
+                "read_only": True,
+                "host_networking_changed": False,
+                "b1_static_ip_configures": False,
+            },
+            "dhcp_reserved_appliance_addresses": [
+                {"address": "192.168.2.100", "purpose": "b1-ai-hub-gateway"},
+            ],
+            "host_infrastructure_static_addresses": [
+                {"address": "192.168.2.2", "cidr": "192.168.2.2/24", "purpose": "technitium-dhcp-dns"},
+            ],
+            "blockers": [] if confirmed else ["operator has not confirmed matching DHCP reservations in the LAN DHCP server"],
+            "warnings": [],
+        }
+
     def test_build_plan_verifies_backup_and_renders_cutover_and_rollback_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -390,6 +412,98 @@ class CutoverPlanTests(unittest.TestCase):
         self.assertFalse(plan["networking_readiness"]["has_dhcp_default_route"])
         self.assertTrue(plan["networking_readiness"]["operator_must_review_networking"])
         self.assertTrue(any("Host DHCP/networking requires operator review" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_accepts_confirmed_dhcp_reservation_plan_for_static_technitium_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            static_networking = {
+                "hostname_authority": "b1-appliance-config",
+                "hostname_source": "system-hostname",
+                "network_property_source": "host-dhcp-client",
+                "b1_manages_host_networking": False,
+                "b1_static_ip_configures": False,
+                "expected_operator_networking": "B1-defined system hostname plus host-managed DHCP lease/reservation and LAN DNS records",
+                "non_loopback_address_count": 2,
+                "default_route_interfaces": ["eno1"],
+                "default_route_address_count": 2,
+                "default_route_count": 1,
+                "default_route_protocols": ["static"],
+                "has_dhcp_default_route": False,
+                "dns_record_count": 7,
+                "operator_must_review_networking": True,
+                "warnings": ["Inventory did not prove a DHCP-owned default route"],
+            }
+            inventory_path = self.write_json(root / "inventory.json", self.inventory(networking=static_networking))
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            network_plan_path = self.write_json(root / "network-dhcp-plan.json", self.network_dhcp_plan(confirmed=True))
+            backup_dir = self.make_verified_backup(root, scope_path)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                network_dhcp_plan_path=network_plan_path,
+            )
+
+        self.assertFalse(plan["networking_readiness"]["has_dhcp_default_route"])
+        self.assertTrue(plan["networking_readiness"]["has_dhcp_network_proof"])
+        self.assertEqual(plan["networking_readiness"]["network_proof"], "operator-reviewed-dhcp-reservation-plan")
+        self.assertFalse(plan["networking_readiness"]["operator_must_review_networking"])
+        self.assertEqual(plan["networking_readiness"]["warnings"], [])
+        self.assertEqual(
+            plan["networking_readiness"]["dhcp_reservation_plan"]["host_infrastructure_static_addresses"][0]["address"],
+            "192.168.2.2",
+        )
+        self.assertFalse(any("Host DHCP/networking requires operator review" in warning for warning in plan["warnings"]))
+
+    def test_build_plan_rejects_unconfirmed_dhcp_reservation_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            static_networking = {
+                "hostname_authority": "b1-appliance-config",
+                "hostname_source": "system-hostname",
+                "network_property_source": "host-dhcp-client",
+                "b1_manages_host_networking": False,
+                "b1_static_ip_configures": False,
+                "non_loopback_address_count": 2,
+                "default_route_interfaces": ["eno1"],
+                "default_route_address_count": 2,
+                "default_route_count": 1,
+                "default_route_protocols": ["static"],
+                "has_dhcp_default_route": False,
+                "dns_record_count": 7,
+                "operator_must_review_networking": True,
+                "warnings": ["Inventory did not prove a DHCP-owned default route"],
+            }
+            inventory_path = self.write_json(root / "inventory.json", self.inventory(networking=static_networking))
+            scope_path = self.write_json(root / "scope.json", self.scope(root))
+            network_plan_path = self.write_json(root / "network-dhcp-plan.json", self.network_dhcp_plan(confirmed=False))
+            backup_dir = self.make_verified_backup(root, scope_path)
+
+            plan = cutover.build_plan(
+                inventory_path=inventory_path,
+                scope_path=scope_path,
+                backup_dir=backup_dir,
+                b1_data_root="/srv/b1-ai-hub",
+                project_name="b1-ai-hub",
+                temporary_http_port=18080,
+                temporary_https_port=18443,
+                production_http_port=80,
+                production_https_port=443,
+                network_dhcp_plan_path=network_plan_path,
+            )
+
+        self.assertFalse(plan["networking_readiness"]["has_dhcp_network_proof"])
+        self.assertEqual(plan["networking_readiness"]["network_proof"], "missing")
+        self.assertTrue(plan["networking_readiness"]["operator_must_review_networking"])
 
     def test_build_plan_warns_when_target_identity_does_not_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

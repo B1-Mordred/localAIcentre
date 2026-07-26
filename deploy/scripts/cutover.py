@@ -21,6 +21,7 @@ from app.private_files import PrivateFileError, write_private_json  # noqa: E402
 PLAN_FORMAT = "b1-ai-hub-cutover-plan/v1"
 INVENTORY_FORMAT = old_stack_backup.INVENTORY_FORMAT
 OPEN_WEBUI_PLAN_FORMAT = "b1-ai-hub-open-webui-migration-plan/v1"
+NETWORK_DHCP_PLAN_FORMAT = "b1-ai-hub-network-dhcp-plan/v1"
 BLOCKED_CONTAINER_CLASSIFICATIONS = {"b1-ai-hub-current-preserve", "preserve-unrelated"}
 BLOCKED_SERVICE_CLASSIFICATIONS = {"b1-ai-hub-current-preserve", "preserve-unrelated"}
 PRODUCTION_HOSTS = (
@@ -68,6 +69,59 @@ def load_open_webui_plan(path: Path) -> dict[str, Any]:
     if plan.get("format") != OPEN_WEBUI_PLAN_FORMAT:
         raise CutoverPlanError("unsupported Open WebUI migration plan format")
     return plan
+
+
+def load_network_dhcp_plan(path: Path) -> dict[str, Any]:
+    plan = load_json_file(path)
+    if plan.get("format") != NETWORK_DHCP_PLAN_FORMAT:
+        raise CutoverPlanError("unsupported network DHCP plan format")
+    return plan
+
+
+def network_dhcp_plan_summary(plan: dict[str, Any] | None, source: Path | None = None) -> dict[str, Any]:
+    if not plan:
+        return {"available": False}
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
+    dhcp_addresses = plan.get("dhcp_reserved_appliance_addresses")
+    if not isinstance(dhcp_addresses, list):
+        dhcp_addresses = plan.get("required_dhcp_reservations")
+    if not isinstance(dhcp_addresses, list):
+        dhcp_addresses = []
+    static_addresses = plan.get("host_infrastructure_static_addresses")
+    if not isinstance(static_addresses, list):
+        static_addresses = []
+    blockers = [str(item) for item in plan.get("blockers", []) if isinstance(item, str)]
+    ready = (
+        plan.get("status") == "ready"
+        and plan.get("ready_to_apply") is True
+        and plan.get("reservation_confirmed") is True
+        and plan.get("b1_static_ip_configures") is False
+        and safety.get("read_only") is True
+        and safety.get("host_networking_changed") is False
+        and safety.get("b1_static_ip_configures") is False
+        and bool(dhcp_addresses)
+        and not blockers
+    )
+    return {
+        "available": True,
+        "source": str(source) if source else "",
+        "status": plan.get("status"),
+        "ready_to_apply": plan.get("ready_to_apply") is True,
+        "reservation_confirmed": plan.get("reservation_confirmed") is True,
+        "b1_static_ip_configures": plan.get("b1_static_ip_configures"),
+        "read_only": safety.get("read_only"),
+        "host_networking_changed": safety.get("host_networking_changed"),
+        "dhcp_reserved_appliance_addresses": dhcp_addresses,
+        "host_infrastructure_static_addresses": static_addresses,
+        "blockers": blockers,
+        "warnings": [str(item) for item in plan.get("warnings", []) if isinstance(item, str)],
+        "ready": ready,
+    }
+
+
+def dhcp_default_route_warning(value: str) -> bool:
+    lowered = value.lower()
+    return "dhcp-owned default route" in lowered or "dhcp default-route evidence" in lowered
 
 
 def scope_names(scope: dict[str, Any], key: str) -> list[str]:
@@ -422,7 +476,12 @@ def analyze_target_identity_readiness(inventory: dict[str, Any]) -> tuple[dict[s
     }, cutover_warnings
 
 
-def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def analyze_networking_readiness(
+    inventory: dict[str, Any],
+    *,
+    network_dhcp_plan: dict[str, Any] | None = None,
+    network_dhcp_plan_path: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     readiness = inventory.get("migration_readiness") if isinstance(inventory.get("migration_readiness"), dict) else {}
     networking = readiness.get("networking") if isinstance(readiness.get("networking"), dict) else {}
     if not networking:
@@ -445,6 +504,9 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         )
 
     warnings = [str(item) for item in networking.get("warnings", []) if isinstance(item, str)]
+    plan_summary = network_dhcp_plan_summary(network_dhcp_plan, network_dhcp_plan_path)
+    direct_dhcp_proof = networking.get("has_dhcp_default_route") is True
+    reservation_plan_proof = bool(plan_summary.get("ready"))
     if networking.get("hostname_authority") != "b1-appliance-config":
         warnings.append("target hostname policy must be defined by B1 appliance configuration, not DHCP")
     if networking.get("b1_static_ip_configures") is not False:
@@ -459,10 +521,28 @@ def analyze_networking_readiness(inventory: dict[str, Any]) -> tuple[dict[str, A
         default_route_address_count = 0
     if default_route_address_count <= 0:
         warnings.append("Default-route interface address evidence is missing from the inventory")
-    if networking.get("has_dhcp_default_route") is not True and not any("DHCP" in warning for warning in warnings):
-        warnings.append("DHCP default-route evidence is missing from the inventory")
+    if not direct_dhcp_proof:
+        if reservation_plan_proof:
+            warnings = [warning for warning in warnings if not dhcp_default_route_warning(warning)]
+        elif not any("DHCP" in warning for warning in warnings):
+            warnings.append("DHCP default-route evidence is missing from the inventory")
+    network_proof = (
+        "direct-dhcp-default-route"
+        if direct_dhcp_proof
+        else "operator-reviewed-dhcp-reservation-plan"
+        if reservation_plan_proof
+        else "missing"
+    )
     cutover_warnings = [f"Host DHCP/networking requires operator review before cutover: {warning}" for warning in warnings]
-    return {**networking, "available": True, "operator_must_review_networking": bool(cutover_warnings), "warnings": warnings}, cutover_warnings
+    return {
+        **networking,
+        "available": True,
+        "has_dhcp_network_proof": direct_dhcp_proof or reservation_plan_proof,
+        "network_proof": network_proof,
+        "dhcp_reservation_plan": plan_summary,
+        "operator_must_review_networking": bool(cutover_warnings),
+        "warnings": warnings,
+    }, cutover_warnings
 
 
 def same_resolved_path(left: str | None, right: Path) -> bool:
@@ -671,9 +751,11 @@ def build_plan(
     production_http_port: int,
     production_https_port: int,
     open_webui_plan_path: Path | None = None,
+    network_dhcp_plan_path: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     inventory = load_inventory(inventory_path)
+    network_dhcp_plan = load_network_dhcp_plan(network_dhcp_plan_path) if network_dhcp_plan_path else None
     scope = old_stack_backup.load_scope(scope_path)
     backup_verification = old_stack_backup.verify_backup(backup_dir)
     warnings = validate_scope_against_inventory(scope, inventory)
@@ -689,7 +771,11 @@ def build_plan(
     warnings.extend(dns_warnings)
     target_identity_readiness, target_identity_warnings = analyze_target_identity_readiness(inventory)
     warnings.extend(target_identity_warnings)
-    networking_readiness, networking_warnings = analyze_networking_readiness(inventory)
+    networking_readiness, networking_warnings = analyze_networking_readiness(
+        inventory,
+        network_dhcp_plan=network_dhcp_plan,
+        network_dhcp_plan_path=network_dhcp_plan_path,
+    )
     warnings.extend(networking_warnings)
     hardware_readiness, hardware_warnings = analyze_hardware_readiness(inventory)
     warnings.extend(hardware_warnings)
@@ -853,6 +939,7 @@ def main() -> None:
     parser.add_argument("--scope", required=True)
     parser.add_argument("--backup", required=True)
     parser.add_argument("--open-webui-plan", default=None)
+    parser.add_argument("--network-dhcp-plan", default=None)
     parser.add_argument("--output", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub") + f"/backups/cutover-plan-{utc_stamp()}.json")
     parser.add_argument("--b1-root", default=os.getenv("B1_DATA_ROOT", "/srv/b1-ai-hub"))
     parser.add_argument("--project-name", default=os.getenv("B1_PROJECT_NAME", "b1-ai-hub"))
@@ -873,6 +960,7 @@ def main() -> None:
             production_http_port=args.production_http_port,
             production_https_port=args.production_https_port,
             open_webui_plan_path=Path(args.open_webui_plan) if args.open_webui_plan else None,
+            network_dhcp_plan_path=Path(args.network_dhcp_plan) if args.network_dhcp_plan else None,
         )
         output = write_plan(plan, Path(args.output))
     except (CutoverPlanError, old_stack_backup.OldStackBackupError) as exc:
