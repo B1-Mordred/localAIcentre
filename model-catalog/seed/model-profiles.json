@@ -98,10 +98,11 @@
       "preferred_runtimes": ["voicebox"],
       "target_class": "scheduled quality TTS or validated voice-cloning profile",
       "selection_guidance": "Install only manifests validated against the pinned Voicebox runtime; protect voice samples and route GPU profiles through the global lease.",
-      "resource_estimate": { "vram_gib": 8.0, "ram_gib": 10.0, "disk_gib": 8.0 },
+      "resource_estimate": { "vram_gib": 4.8, "ram_gib": 7.0, "disk_gib": 3.0 },
       "target_resource_label": "expected",
       "runtime_policy": "voicebox-managed",
-      "default_limits": { "parallel_requests": 1 }
+      "default_limits": { "parallel_requests": 1 },
+      "candidate_manifest_ids": ["b1-resembleai-chatterbox-voicebox"]
     },
     {
       "id": "small-cpu-stt",

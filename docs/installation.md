@@ -179,7 +179,7 @@ docker compose -f compose.yaml -f compose.production-localai.yaml up -d
 
 The override:
 
-- replaces the mock build with the B1 LocalAI wrapper image `b1-ai-hub/localai:v4.7.1-b1`, built from official LocalAI CUDA 12 image `localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973`
+- replaces the mock build with the B1 LocalAI wrapper image `b1-ai-hub/localai:v4.7.1-laguna-b1`, built from official LocalAI CUDA 12 image `localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973` and current pinned llama.cpp backend `quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04`
 - switches `LOCALAI_URL` from `http://localai:8000` to the B1 wrapper on `http://localai:8080`, which forwards normal LocalAI API traffic to the private upstream LocalAI listener on `127.0.0.1:18080`
 - keeps LocalAI on the internal `runtime` network with no published backend port
 - mounts `$B1_DATA_ROOT/models/runtime-views/localai` read-only at `/srv/b1-ai-hub/models`

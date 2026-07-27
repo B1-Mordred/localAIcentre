@@ -22,10 +22,11 @@ The production bill of materials must record the exact image references, upstrea
 - Python and Node base images
 - any approved ComfyUI custom nodes
 
-Pinned image versions currently used by the first runnable slice are documented in `compose.yaml`. The production LocalAI override builds `b1-ai-hub/localai:v4.7.1-b1` from the official upstream image and pins:
+Pinned image versions currently used by the first runnable slice are documented in `compose.yaml`. The production LocalAI override builds `b1-ai-hub/localai:v4.7.1-laguna-b1` from the official upstream image and pins:
 
 - image: `localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973`
 - verified linux/amd64 platform manifest: `sha256:1b27b2469dcd78b21c33034eb3503efcb07330380b9ade00c14c48b2b09b641d`
+- llama.cpp backend image: `quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04`
 - source image repository: `https://hub.docker.com/r/localai/localai`
 - upstream project: `https://github.com/mudler/LocalAI`
 - upstream license: MIT as declared by the LocalAI project

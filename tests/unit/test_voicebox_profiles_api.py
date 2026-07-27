@@ -192,6 +192,7 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
                     sha256="A" * 64,
                     mime_type="audio/wav",
                     bytes=4096,
+                    reference_text="The narrator says this exact reference line.",
                 )
             ],
         )
@@ -201,6 +202,7 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.assertTrue(result["id"].startswith("vp_"))
         self.assertEqual(result["model_alias"], "tts-quality")
         self.assertEqual(result["sample_artifacts"][0]["sha256"], "a" * 64)
+        self.assertEqual(result["sample_artifacts"][0]["reference_text"], "The narrator says this exact reference line.")
         self.assertEqual(audit_events[0]["event_type"], "voice_profile.created")
         self.assertEqual(audit_events[0]["metadata"]["sample_artifact_count"], 1)
         self.assertNotIn("sample_artifacts", audit_events[0]["metadata"])

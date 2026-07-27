@@ -202,11 +202,29 @@ def model_hint_text(manifest: dict[str, Any], relative_file: str) -> str:
     )
 
 
+def clamp_gpu_layers(value: int, *, allow_auto_fit: bool = False) -> int:
+    if allow_auto_fit and value == -1:
+        return -1
+    return max(0, value)
+
+
 def is_gemma4_e4b(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
     if prompt_family != "gemma4":
         return False
     hint = model_hint_text(manifest, relative_file)
     return "gemma-4-e4b" in hint or "gemma4-e4b" in hint or "e4b" in hint
+
+
+def is_laguna_xs21(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
+    if prompt_family != "laguna-xs-2.1":
+        return False
+    hint = model_hint_text(manifest, relative_file)
+    return (
+        "laguna-xs-2.1" in hint
+        or "laguna-xs-21" in hint
+        or "laguna-xs_2.1" in hint
+        or "poolside laguna xs 2.1" in hint
+    )
 
 
 def manifest_context_size(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> int:
@@ -217,6 +235,8 @@ def manifest_context_size(manifest: dict[str, Any], relative_file: str, prompt_f
     maximum = max(512, env_int("B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE", 4096))
     if is_gemma4_e4b(manifest, relative_file, prompt_family):
         maximum = max(512, env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE", 4096))
+    if is_laguna_xs21(manifest, relative_file, prompt_family):
+        maximum = max(512, env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_CONTEXT_SIZE", 32768))
     return max(512, min(declared, maximum))
 
 
@@ -238,17 +258,19 @@ def manifest_file_size_gib(manifest: dict[str, Any], view_root: Path, relative_f
 def managed_gpu_layers(manifest: dict[str, Any], view_root: Path, relative_file: str, prompt_family: str | None) -> int:
     forced = os.getenv("B1_LOCALAI_MANAGED_GPU_LAYERS")
     if forced is not None:
-        return max(0, env_int("B1_LOCALAI_MANAGED_GPU_LAYERS", 0))
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GPU_LAYERS", 0), allow_auto_fit=True)
     if is_gemma4_e4b(manifest, relative_file, prompt_family):
-        return max(0, env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS", 32))
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS", 32))
+    if is_laguna_xs21(manifest, relative_file, prompt_family):
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS", -1), allow_auto_fit=True)
     size_gib = manifest_file_size_gib(manifest, view_root, relative_file)
     medium_threshold = max(0.1, env_float("B1_LOCALAI_MANAGED_MEDIUM_MODEL_SIZE_GIB", 2.0))
     large_threshold = max(medium_threshold, env_float("B1_LOCALAI_MANAGED_LARGE_MODEL_SIZE_GIB", 5.0))
     if size_gib >= large_threshold:
-        return max(0, env_int("B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS", 24))
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS", 24))
     if size_gib >= medium_threshold:
-        return max(0, env_int("B1_LOCALAI_MANAGED_MEDIUM_GPU_LAYERS", 28))
-    return max(0, env_int("B1_LOCALAI_MANAGED_SMALL_GPU_LAYERS", 99999999))
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_MEDIUM_GPU_LAYERS", 28))
+    return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_SMALL_GPU_LAYERS", 99999999))
 
 
 def localai_prompt_family(manifest: dict[str, Any], view_root: Path, relative_file: str) -> str | None:
@@ -257,15 +279,21 @@ def localai_prompt_family(manifest: dict[str, Any], view_root: Path, relative_fi
     architecture = str(metadata.get("general.architecture") or "").strip().lower()
     if architecture == "gemma4":
         return "gemma4"
+    if architecture == "laguna":
+        return "laguna-xs-2.1"
     model_hint = model_hint_text(manifest, relative_file)
     if "gemma-4" in model_hint or "gemma4" in model_hint:
         return "gemma4"
+    if "laguna-xs-2.1" in model_hint or "laguna-xs-21" in model_hint:
+        return "laguna-xs-2.1"
     return None
 
 
 def localai_parameter_defaults(prompt_family: str | None) -> dict[str, Any]:
     if prompt_family == "gemma4":
         return {"temperature": 1.0, "top_p": 0.95, "top_k": 64}
+    if prompt_family == "laguna-xs-2.1":
+        return {"temperature": 1.0, "top_p": 1.0, "top_k": 20}
     return {"temperature": 0.2}
 
 
@@ -276,19 +304,64 @@ def localai_template_lines(prompt_family: str | None) -> list[str]:
 
 
 def localai_generation_control_lines(prompt_family: str | None) -> list[str]:
-    if prompt_family != "gemma4":
+    if prompt_family == "gemma4":
+        return [
+            "chat_template_kwargs:",
+            "  enable_thinking: false",
+            "reasoning:",
+            "  disable_reasoning: true",
+            "  disable_reasoning_tag_prefill: true",
+            "stopwords:",
+            "  - '<turn|>'",
+            "  - '<|turn>user'",
+            "  - '<|turn>system'",
+        ]
+    if prompt_family == "laguna-xs-2.1":
+        return [
+            "chat_template_kwargs:",
+            "  enable_thinking: true",
+        ]
+    return []
+
+
+def localai_batch_size(prompt_family: str | None) -> int:
+    if prompt_family == "laguna-xs-2.1":
+        return max(32, env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_BATCH", 1024))
+    return max(32, env_int("B1_LOCALAI_MANAGED_BATCH", 128))
+
+
+def localai_fit_target_mib(prompt_family: str | None) -> int:
+    if prompt_family == "laguna-xs-2.1":
+        return max(256, env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_FIT_TARGET_MIB", 1024))
+    return max(256, env_int("B1_LOCALAI_MANAGED_FIT_TARGET_MIB", 1024))
+
+
+def localai_fit_ctx(prompt_family: str | None) -> int:
+    if prompt_family == "laguna-xs-2.1":
+        return max(512, env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_FIT_MIN_CONTEXT", 1024))
+    return max(512, env_int("B1_LOCALAI_MANAGED_FIT_MIN_CONTEXT", 1024))
+
+
+def localai_extra_config_lines(prompt_family: str | None) -> list[str]:
+    if prompt_family != "laguna-xs-2.1":
         return []
     return [
-        "chat_template_kwargs:",
-        "  enable_thinking: false",
-        "reasoning:",
-        "  disable_reasoning: true",
-        "  disable_reasoning_tag_prefill: true",
-        "stopwords:",
-        "  - '<turn|>'",
-        "  - '<|turn>user'",
-        "  - '<|turn>system'",
+        f"flash_attention: {yaml_scalar(os.getenv('B1_LOCALAI_MANAGED_LAGUNA_XS_FLASH_ATTENTION', 'on'))}",
+        f"cache_type_k: {yaml_scalar(os.getenv('B1_LOCALAI_MANAGED_LAGUNA_XS_CACHE_TYPE_K', 'q4_0'))}",
+        f"cache_type_v: {yaml_scalar(os.getenv('B1_LOCALAI_MANAGED_LAGUNA_XS_CACHE_TYPE_V', 'q4_0'))}",
     ]
+
+
+def localai_extra_options(prompt_family: str | None) -> list[str]:
+    if prompt_family != "laguna-xs-2.1":
+        return []
+    options = [
+        f"cache_ram:{max(0, env_int('B1_LOCALAI_MANAGED_LAGUNA_XS_CACHE_RAM_MIB', 1024))}",
+        f"--ubatch-size:{max(1, env_int('B1_LOCALAI_MANAGED_LAGUNA_XS_UBATCH_SIZE', 256))}",
+    ]
+    if env_bool("B1_LOCALAI_MANAGED_LAGUNA_XS_CPU_MOE", True):
+        options.append("--cpu-moe")
+    return options
 
 
 def managed_config_for_manifest(manifest: dict[str, Any], view_root: Path, models_root: Path) -> tuple[str, str] | None:
@@ -312,18 +385,18 @@ def managed_config_for_manifest(manifest: dict[str, Any], view_root: Path, model
     config_name = f"{MANAGED_PREFIX}{config_safe(model_id)}-{config_safe(version)}.yaml"
     backend = os.getenv("B1_LOCALAI_MANAGED_LLAMA_BACKEND", "llama").strip() or "llama"
     threads = max(1, env_int("B1_LOCALAI_MANAGED_THREADS", 4))
-    batch = max(32, env_int("B1_LOCALAI_MANAGED_BATCH", 128))
-    fit_target = max(256, env_int("B1_LOCALAI_MANAGED_FIT_TARGET_MIB", 1024))
-    fit_ctx = max(512, env_int("B1_LOCALAI_MANAGED_FIT_MIN_CONTEXT", 1024))
     prompt_family = localai_prompt_family(manifest, view_root, relative_file)
+    batch = localai_batch_size(prompt_family)
+    fit_target = localai_fit_target_mib(prompt_family)
+    fit_ctx = localai_fit_ctx(prompt_family)
     context_size = manifest_context_size(manifest, relative_file, prompt_family)
     gpu_layers = managed_gpu_layers(manifest, view_root, relative_file, prompt_family)
     mmap = env_bool("B1_LOCALAI_MANAGED_MMAP", True)
     mmlock = env_bool("B1_LOCALAI_MANAGED_MMLOCK", False)
     low_vram = env_bool("B1_LOCALAI_MANAGED_LOW_VRAM", True)
-    f16 = env_bool("B1_LOCALAI_MANAGED_F16", gpu_layers > 0)
+    f16 = env_bool("B1_LOCALAI_MANAGED_F16", gpu_layers != 0)
     parameter_defaults = localai_parameter_defaults(prompt_family)
-    use_jinja = "false" if prompt_family else "true"
+    use_jinja = "false" if prompt_family == "gemma4" else "true"
     parameter_lines = [f"  model: {yaml_scalar(model_path)}"]
     for key, value in parameter_defaults.items():
         parameter_lines.append(f"  {key}: {value}")
@@ -344,6 +417,7 @@ def managed_config_for_manifest(manifest: dict[str, Any], view_root: Path, model
             f"mmlock: {str(mmlock).lower()}",
             f"low_vram: {str(low_vram).lower()}",
             f"f16: {str(f16).lower()}",
+            *localai_extra_config_lines(prompt_family),
             "options:",
             "  - 'parallel:1'",
             "  - 'fit_params:true'",
@@ -351,6 +425,7 @@ def managed_config_for_manifest(manifest: dict[str, Any], view_root: Path, model
             f"  - 'fit_ctx:{fit_ctx}'",
             f"  - 'use_jinja:{use_jinja}'",
             "  - 'warmup:false'",
+            *(f"  - {yaml_scalar(option)}" for option in localai_extra_options(prompt_family)),
             *localai_template_lines(prompt_family),
             *localai_generation_control_lines(prompt_family),
             "",

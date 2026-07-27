@@ -59,6 +59,38 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
             runtime_policy="any",
         )
 
+    def test_chat_request_keeps_openai_tool_and_reasoning_fields(self) -> None:
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "preserve this across the agent loop",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "run_check", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "{\"status\":\"ok\"}"},
+            ],
+            tools=[{"type": "function", "function": {"name": "run_check", "parameters": {"type": "object"}}}],
+            tool_choice="auto",
+            parallel_tool_calls=False,
+        )
+
+        dumped = payload.model_dump(exclude_none=True)
+
+        self.assertIn("tools", dumped)
+        self.assertEqual(dumped["tool_choice"], "auto")
+        self.assertFalse(dumped["parallel_tool_calls"])
+        self.assertEqual(dumped["messages"][0]["reasoning_content"], "preserve this across the agent loop")
+        self.assertEqual(dumped["messages"][0]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(dumped["messages"][1]["tool_call_id"], "call_1")
+
     def test_openai_json_forwarding_prepares_gpu_runtime_after_lease(self) -> None:
         calls: list[dict[str, Any]] = []
 

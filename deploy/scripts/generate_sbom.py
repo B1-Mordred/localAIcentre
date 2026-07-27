@@ -53,6 +53,10 @@ PINNED_RELEASE_ARTIFACTS = (
             {"name": "b1:upstream_image", "value": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973"},
             {"name": "b1:linux_amd64_manifest", "value": "sha256:1b27b2469dcd78b21c33034eb3503efcb07330380b9ade00c14c48b2b09b641d"},
             {"name": "b1:image_config", "value": "sha256:b471c58b8d8897369346189e774ff7e21dfcd51e35dd8f5a5da14300ac44586a"},
+            {
+                "name": "b1:llama_cpp_backend_image",
+                "value": "quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04",
+            },
         ],
     },
     {

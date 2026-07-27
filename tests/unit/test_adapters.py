@@ -384,6 +384,54 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertNotIn("temperature", payload)
         self.assertNotIn("b1_internal_note", payload)
 
+    def test_localai_openai_payload_preserves_reasoning_and_tool_history(self) -> None:
+        catalog = ModelCatalog(
+            aliases=[AliasDefinition(alias="chat-default", modality="llm", preferred_runtime="localai", status="installed")],
+            manifests=[manifest("localai-chat-model", "llm", ["chat-default"], ["localai"], "localai", vram_gib=1.0)],
+            policy=ResourcePolicy(),
+        )
+        registry = self.registry()
+        resolution = registry.resolve(catalog.require_alias("chat-default"), operation="chat")
+        adapter = registry.adapter("localai")
+
+        self.assertIsNotNone(adapter)
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"q\":\"laguna\"}"},
+            }
+        ]
+        messages = [
+            {"role": "user", "content": "check the repo"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "I need to inspect the source before answering.",
+                "tool_calls": tool_calls,
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\":true}"},
+        ]
+
+        payload = adapter.openai_payload(
+            {
+                "model": "chat-default",
+                "messages": messages,
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+                "tool_choice": "auto",
+                "parallel_tool_calls": False,
+            },
+            resolution,
+        )
+
+        self.assertEqual(payload["messages"], messages)
+        self.assertEqual(payload["messages"][1]["reasoning_content"], "I need to inspect the source before answering.")
+        self.assertEqual(payload["messages"][1]["tool_calls"], tool_calls)
+        self.assertEqual(payload["messages"][2]["tool_call_id"], "call_1")
+        self.assertEqual(payload["tools"][0]["function"]["name"], "lookup")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertFalse(payload["parallel_tool_calls"])
+
     def test_external_openai_payload_does_not_send_internal_model_version(self) -> None:
         catalog = ModelCatalog(
             aliases=[AliasDefinition(alias="remote-chat", modality="llm", preferred_runtime="openai-compatible", status="installed")],

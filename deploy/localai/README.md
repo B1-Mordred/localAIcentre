@@ -3,7 +3,7 @@
 LocalAI is the first GPU runtime with a production Compose override. The base `compose.yaml` keeps a mock `localai` runtime for development, while `compose.production-localai.yaml` replaces it with the B1 wrapper image:
 
 ```text
-b1-ai-hub/localai:v4.7.1-b1
+b1-ai-hub/localai:v4.7.1-laguna-b1
 ```
 
 The wrapper image is intentionally thin. It starts the official upstream CUDA 12 image on a private in-container listener and exposes a small stdlib proxy on `:8080` for native LocalAI/OpenAI-compatible traffic plus B1 scheduler lifecycle hooks. The upstream base image is:
@@ -22,6 +22,12 @@ The upstream image config digest inspected during pinning is:
 
 ```text
 sha256:b471c58b8d8897369346189e774ff7e21dfcd51e35dd8f5a5da14300ac44586a
+```
+
+The wrapper replaces the bundled llama.cpp backend with a current pinned CUDA 12 backend for Laguna support:
+
+```text
+quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04
 ```
 
 Use it with:
@@ -46,9 +52,11 @@ $B1_DATA_ROOT/models/runtime-views/localai:/srv/b1-ai-hub/models:ro
 
 At startup, and again before scheduler lifecycle hooks such as `load`, `warm`, and `smoke`, the B1 wrapper scans read-only `manifest.b1.json` files in that runtime view and writes deterministic managed LocalAI YAML configs into `LOCALAI_CONFIG_DIR`. It also writes a combined `b1-managed-models.yaml`, and the production Compose override points `LOCALAI_MODELS_CONFIG_FILE` at that combined file. This lets a Model Hub installed GGUF expose the manifest ID as the LocalAI model name without giving LocalAI write access to the authoritative model library. After a LocalAI-backed model install publishes a new runtime view, the control plane asks runtime-agent to restart only the allowlisted `localai` service and waits for `/readyz` so LocalAI reloads the generated model list without a shell step. If LocalAI is actively serving work, the restart is deferred instead of interrupting the active request. If runtime-agent mutations are disabled or unavailable, the install response and audit record include `localai_config_reload.status` so the operator can see that a manual runtime restart is still required.
 
-The generated GGUF backend defaults to `llama`; the wrapper image bakes in the matching CUDA 12 `llama-cpp` backend from `quay.io/go-skynet/local-ai-backends@sha256:af63c83aea1761b9ae37e2932981b9078e2a41a20f98c687216dd1bb0b59e163` and exposes it through `LOCALAI_BACKENDS_SYSTEM_PATH`. Managed configs explicitly set `context_size`, `batch`, `gpu_layers`, `mmap`, `mmlock`, `low_vram`, and `f16` so LocalAI does not default to full GPU offload on 6 GB systems. The production defaults cap ordinary models at context 2048, use batch 128, fully offload small GGUF files, use 28 GPU layers for medium files, and use 24 GPU layers for files above 5 GiB. Gemma 4 E4B has a separate quality-first profile with context 4096 and 32 GPU layers by default, controlled by `B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE` and `B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS`, so larger 12B-class models keep the conservative cap. Override these with `B1_LOCALAI_MANAGED_*` variables in `.env`, especially `B1_LOCALAI_MANAGED_GPU_LAYERS` for one global forced value or `B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS` for large models. Lower the layer count before increasing context when a model reports CUDA allocation failures; higher layer counts are faster but consume more VRAM.
+The generated GGUF backend defaults to `llama`; the wrapper image bakes in the matching CUDA 12 `llama-cpp` backend from `quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04` and exposes it through `LOCALAI_BACKENDS_SYSTEM_PATH`. Managed configs explicitly set `context_size`, `batch`, `gpu_layers`, `mmap`, `mmlock`, `low_vram`, and `f16` so LocalAI does not default to full GPU offload on 6 GB systems. The production defaults cap ordinary models at context 2048, use batch 128, fully offload small GGUF files, use 28 GPU layers for medium files, and use 24 GPU layers for files above 5 GiB. Gemma 4 E4B has a separate quality-first profile with context 4096 and 32 GPU layers by default, controlled by `B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE` and `B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS`, so larger 12B-class models keep the conservative cap. Poolside Laguna XS 2.1 has a separate quality-first profile for the official Q4_K_M GGUF: context 32768, llama.cpp auto-fit GPU layers (`-1`), flash attention, Q4 KV cache, batch 1024, ubatch 256, 1024 MiB prompt-cache RAM, and CPU MoE enabled by default for the 6 GB VRAM policy. Laguna support requires a llama.cpp build from after the July 22, 2026 merge of upstream PR 25165; older LocalAI backend bundles may report an unknown architecture and must be replaced before smoke testing that model. Override these with `B1_LOCALAI_MANAGED_*` variables in `.env`, especially `B1_LOCALAI_MANAGED_GPU_LAYERS` for one global forced value or `B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS` for large models. Lower the layer count before increasing context when a model reports CUDA allocation failures; higher layer counts are faster but consume more VRAM.
 
 The generator reads bounded GGUF metadata from each managed model view. For Gemma 4 GGUFs it emits an explicit LocalAI-side chat template using the native `<|turn>...<turn|>` markers, disables backend Jinja for that model, disables thinking by default, and applies the model-card sampling defaults (`temperature=1.0`, `top_p=0.95`, `top_k=64`). This avoids prompt echoing when the LocalAI backend does not apply the embedded tokenizer template correctly. Set `B1_LOCALAI_MANAGED_LLAMA_BACKEND` only when validating another backend on the target image. The wrapper only creates or removes files named `b1-managed-*.yaml` that contain the B1 managed marker; operator-created LocalAI config files are left untouched.
+
+Laguna XS 2.1 keeps tokenizer Jinja enabled and explicitly enables thinking in `chat_template_kwargs`. The unified chat path also preserves OpenAI-compatible `reasoning_content`, `tool_calls`, tool response messages, and top-level tool fields when forwarding to LocalAI, so agent loops can retain the full reasoning/tool history required by that model family.
 
 Bootstrap creates the writable state used by the official container:
 

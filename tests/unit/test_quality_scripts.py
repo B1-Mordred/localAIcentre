@@ -73,6 +73,13 @@ class SbomGenerationTests(unittest.TestCase):
             },
             localai["properties"],
         )
+        self.assertIn(
+            {
+                "name": "b1:llama_cpp_backend_image",
+                "value": "quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04",
+            },
+            localai["properties"],
+        )
 
         comfyui = next(component for component in components if component["name"] == "Comfy-Org/ComfyUI")
         self.assertEqual(comfyui["type"], "application")

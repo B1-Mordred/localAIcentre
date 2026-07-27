@@ -36,6 +36,58 @@ class FakeManager:
         return {"running": True, "pid": 123, "returncode": None}
 
 
+class FakeResponse:
+    def __init__(
+        self,
+        status_code: int = 200,
+        *,
+        payload: object | None = None,
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.content = content
+        self.headers = headers or {"content-type": "application/json"}
+
+    def json(self) -> object:
+        if self._payload is None:
+            raise ValueError("no json payload")
+        return self._payload
+
+
+class FakeVoiceboxClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def get(self, url: str) -> FakeResponse:
+        self.calls.append({"method": "GET", "url": url})
+        if url.endswith("/profiles"):
+            return FakeResponse(payload=[])
+        if "/profiles/" in url:
+            return FakeResponse(status_code=404, payload={"detail": "not found"})
+        return FakeResponse()
+
+    async def post(self, url: str, **kwargs: object) -> FakeResponse:
+        call: dict[str, object] = {"method": "POST", "url": url}
+        if "json" in kwargs:
+            call["json"] = kwargs["json"]
+        if "data" in kwargs:
+            call["data"] = kwargs["data"]
+        if "files" in kwargs:
+            file_tuple = kwargs["files"]["file"]  # type: ignore[index]
+            call["file_name"] = file_tuple[0]
+            call["file_content"] = file_tuple[1].read()
+        self.calls.append(call)
+        if url.endswith("/profiles"):
+            return FakeResponse(payload={"id": "native-profile-1"})
+        if url.endswith("/samples"):
+            return FakeResponse(payload={"id": "sample-1"})
+        if url.endswith("/generate/stream"):
+            return FakeResponse(content=b"RIFFvoicebox", headers={"content-type": "audio/wav"})
+        return FakeResponse(status_code=404, payload={"detail": "not found"})
+
+
 class VoiceboxProxyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.proxy = load_proxy()
@@ -288,6 +340,70 @@ class VoiceboxProxyTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.proxy.transform_voicebox_speech_body(json.dumps(payload).encode("utf-8"), "application/json")
+
+    def test_openai_speech_bridge_creates_native_chatterbox_clone_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "voicebox" / "references" / "narrator.wav"
+            sample.parent.mkdir(parents=True)
+            sample.write_bytes(b"wav-reference")
+            client = FakeVoiceboxClient()
+            payload = {
+                "input": "hello from b1",
+                "language": "en",
+                "max_chunk_chars": 1200,
+                "b1_voice_profile": {
+                    "id": "vp_narrator",
+                    "runtime": "voicebox",
+                    "engine": "chatterbox",
+                    "profile_type": "clone",
+                    "model_alias": "tts-quality",
+                    "upstream": {"language": "en"},
+                    "sample_artifacts": [
+                        {
+                            "url": "/artifacts/voicebox/references/narrator.wav",
+                            "sha256": "a" * 64,
+                            "mime_type": "audio/wav",
+                            "bytes": 13,
+                            "reference_text": "This is the narrator reference.",
+                        }
+                    ],
+                },
+            }
+            with patch.dict(
+                "os.environ",
+                {
+                    "B1_VOICEBOX_ARTIFACT_ROOT": str(root),
+                    "B1_VOICEBOX_DATA_DIR": str(root / "data"),
+                    "B1_VOICEBOX_UPSTREAM_URL": "http://voicebox-upstream",
+                },
+                clear=False,
+            ):
+                response = asyncio.run(
+                    self.proxy.voicebox_openai_speech_bridge(
+                        client,
+                        json.dumps(payload).encode("utf-8"),
+                        "application/json",
+                    )
+                )
+
+            create_call = next(call for call in client.calls if call["url"] == "http://voicebox-upstream/profiles")
+            upload_call = next(call for call in client.calls if str(call["url"]).endswith("/samples"))
+            generation_call = next(call for call in client.calls if call["url"] == "http://voicebox-upstream/generate/stream")
+            profile_map = json.loads((root / "data" / "b1-profile-map.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"RIFFvoicebox")
+        self.assertEqual(create_call["json"]["voice_type"], "cloned")
+        self.assertEqual(create_call["json"]["default_engine"], "chatterbox")
+        self.assertEqual(upload_call["data"], {"reference_text": "This is the narrator reference."})
+        self.assertEqual(upload_call["file_content"], b"wav-reference")
+        self.assertEqual(generation_call["json"]["profile_id"], "native-profile-1")
+        self.assertEqual(generation_call["json"]["engine"], "chatterbox")
+        self.assertEqual(generation_call["json"]["text"], "hello from b1")
+        self.assertEqual(generation_call["json"]["max_chunk_chars"], 1200)
+        self.assertEqual(profile_map["vp_narrator"]["native_profile_id"], "native-profile-1")
+        self.assertEqual(profile_map["vp_narrator"]["sample_sha256s"], ["a" * 64])
 
 
 if __name__ == "__main__":

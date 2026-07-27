@@ -1,6 +1,6 @@
 # Voicebox Deployment
 
-This directory contains the B1-managed Jamie Pine Voicebox production image build. There is no published upstream image with immutable base/runtime pins and the B1 Compose hardening contract, so B1 builds from the upstream source archive and patches only dependency references needed for reproducible Git checkouts. Upstream backend dependencies use broad version ranges; `constraints.txt` records the resolved PyPI dependency graph from the validated B1 build.
+This directory contains the B1-managed Jamie Pine Voicebox production image build. There is no published upstream image with immutable base/runtime pins and the B1 Compose hardening contract, so B1 builds from the upstream source archive and patches only dependency references needed for reproducible Git checkouts. The final image also patches Chatterbox's Cangjie mapping lookup to use the verified local snapshot file directly before falling back to Hugging Face cache resolution, avoiding an offline-runtime warning caused by upstream passing the snapshot directory as `cache_dir`. Upstream backend dependencies use broad version ranges; `constraints.txt` records the resolved PyPI dependency graph from the validated B1 build.
 
 Pinned upstream:
 
@@ -41,6 +41,8 @@ Voice profiles, captures, generated audio, and Voicebox's SQLite database are se
 
 The image defaults to `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, so it does not silently download weights at runtime. Model Hub must prepare a Voicebox-compatible runtime view before a profile or engine is enabled.
 
+The final runtime image includes Debian `build-essential` because Chatterbox uses Triton and compiles CUDA helper modules during the first GPU generation. This is not used for arbitrary package installation or user-provided code; the container still runs as the non-root `b1` user and only exposes the bounded B1 proxy API.
+
 ## Scheduler Contract
 
 The control plane is still the only service that may submit managed inference work. GPU Voicebox jobs are routed through the global lease and use `VOICEBOX_URL=http://voicebox:17493` when this override is active.
@@ -75,11 +77,43 @@ The control plane accepts B1-managed voice profiles in synchronous `/v1/audio/sp
 
 For Voicebox profiles, the control plane forwards a bounded `b1_voice_profile` envelope to this proxy. The envelope contains the profile ID, engine, profile type, model alias, safe upstream selector metadata, and sample artifact references/checksums. It never contains inline sample bytes or arbitrary metadata. The proxy consumes that envelope before calling upstream Voicebox: safe metadata such as `upstream_voice`, `upstream_speaker_id`, `language`, `style`, or `speed` is mapped to native fields, B1-only fields are stripped, and read-only `/artifacts/voicebox/...` sample references are translated to in-container paths.
 
+`chatterbox` is the default B1 clone engine for Voicebox profiles. For `POST /v1/audio/speech` with a B1 profile envelope, the proxy provisions or reuses a native Voicebox cloned profile, uploads the mounted reference sample files to that native profile, and calls upstream `/generate/stream` with `engine: "chatterbox"`. The B1-to-native profile mapping is stored in `$B1_DATA_ROOT/data/voicebox/b1-profile-map.json`. Native remote Voicebox clients can still use the same server through `https://voice.ai.b1.germering/` with Voicebox's `/profiles`, `/profiles/{id}/samples`, `/generate`, `/generate/stream`, `/speak`, MCP, and WebSocket routes.
+
+Chatterbox runtime weights must be present before the first offline generation because production sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. The pinned Voicebox backend uses `ResembleAI/chatterbox` revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` and requires only:
+
+- `ve.pt`
+- `t3_mtl23ls_v2.safetensors`
+- `s3gen.pt`
+- `grapheme_mtl_merged_expanded_v1.json`
+- `conds.pt`
+- `Cangjie5_TC.json`
+
+Place those files under `$B1_DATA_ROOT/cache/voicebox/huggingface/hub/models--ResembleAI--chatterbox/snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/` and write the same revision into `.../refs/main`. This mirrors Hugging Face's local cache layout and allows runtime model loading without network access.
+
+Upstream Voicebox assigns `VOICEBOX_MODELS_DIR` to Hugging Face's `HF_HUB_CACHE`, so the same Hugging Face cache shape must also be visible inside the read-only Voicebox runtime model view mounted at `/srv/b1-ai-hub/models`. Model Hub should publish hardlinks or copied verified files under:
+
+```text
+$B1_DATA_ROOT/models/runtime-views/voicebox/models--ResembleAI--chatterbox/
+├── refs/main
+└── snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/
+    ├── Cangjie5_TC.json
+    ├── conds.pt
+    ├── grapheme_mtl_merged_expanded_v1.json
+    ├── s3gen.pt
+    ├── t3_mtl23ls_v2.safetensors
+    └── ve.pt
+```
+
+The multilingual Chatterbox tokenizer also needs `spacy_pkuseg`'s `spacy_ontonotes` model available offline. Store the verified archive at `$B1_DATA_ROOT/data/voicebox/.pkuseg/spacy_ontonotes.zip`, extract it to `$B1_DATA_ROOT/data/voicebox/.pkuseg/spacy_ontonotes/`, and verify SHA-256 `b216e7f92de7ae285aeab8feba2faa8ea8216e5995ff6fb3d391cc8356db1bfe`.
+
 The sample path mapping is controlled by:
 
 - `B1_VOICEBOX_ARTIFACT_ROOT`, defaulting to `/srv/b1-ai-hub/artifacts`
+- `B1_VOICEBOX_PROFILE_MAP_FILE`, defaulting to `/srv/b1-ai-hub/voicebox/b1-profile-map.json`
 - `B1_VOICEBOX_FORWARD_SAMPLE_PATHS`, defaulting to `true`
 - `B1_VOICEBOX_REQUIRE_SAMPLE_PATH_EXISTS`, defaulting to `true`
+- `B1_VOICEBOX_DEFAULT_LANGUAGE`, defaulting to `en`
+- `B1_VOICEBOX_DEFAULT_REFERENCE_TEXT`, defaulting to `B1 voice reference sample`
 - `B1_VOICEBOX_SAMPLE_FIELD`, defaulting to `reference_audio_path`
 - `B1_VOICEBOX_SAMPLE_LIST_FIELD`, defaulting to `reference_audio_paths`
 

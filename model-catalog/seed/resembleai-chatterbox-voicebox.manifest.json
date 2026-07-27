@@ -1,0 +1,96 @@
+{
+  "id": "b1-resembleai-chatterbox-voicebox",
+  "version": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+  "display_name": "ResembleAI Chatterbox Voicebox",
+  "description": "Pinned Chatterbox multilingual TTS and voice-cloning runtime for the managed Voicebox server. Runtime weights are prepared in the Voicebox Hugging Face cache and exposed as hosted inference only by B1.",
+  "modality": "tts",
+  "operations": ["text-to-speech", "voice-cloning"],
+  "source": {
+    "type": "huggingface",
+    "url": "https://huggingface.co/ResembleAI/chatterbox",
+    "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+  },
+  "files": [
+    {
+      "path": "ve.pt",
+      "sha256": "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1",
+      "size_bytes": 5698626,
+      "format": "pytorch",
+      "quantization": "none"
+    },
+    {
+      "path": "t3_mtl23ls_v2.safetensors",
+      "sha256": "b1237586127ce98e7800a68e49938eb5092846862aabcb6e17b2fda7889a6c75",
+      "size_bytes": 2143989752,
+      "format": "safetensors",
+      "quantization": "none"
+    },
+    {
+      "path": "s3gen.pt",
+      "sha256": "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3",
+      "size_bytes": 1057165844,
+      "format": "pytorch",
+      "quantization": "none"
+    },
+    {
+      "path": "conds.pt",
+      "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e",
+      "size_bytes": 107374,
+      "format": "pytorch",
+      "quantization": "none"
+    },
+    {
+      "path": "grapheme_mtl_merged_expanded_v1.json",
+      "sha256": "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf",
+      "size_bytes": 69989,
+      "format": "tokenizer-config",
+      "quantization": "none"
+    },
+    {
+      "path": "Cangjie5_TC.json",
+      "sha256": "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c",
+      "size_bytes": 1920163,
+      "format": "tokenizer-config",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["voicebox"],
+  "preferred_runtime": "voicebox",
+  "resource_estimate": {
+    "vram_gib": 4.8,
+    "ram_gib": 7.0,
+    "disk_gib": 3.0,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "MIT",
+    "url": "https://huggingface.co/ResembleAI/chatterbox",
+    "redistribution": "inference-only",
+    "attribution": "ResembleAI Chatterbox model and Voicebox Chatterbox backend integration.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": ["tts-quality"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "runtime_adapter_versions": {
+    "voicebox": "b1-voicebox-proxy/v0.5.0-b1"
+  },
+  "runtime_smoke": {
+    "schema": "b1-ai-hub-runtime-smoke/v1",
+    "description": "Voicebox Chatterbox speech probe. Enable B1_VOICEBOX_HOOK_SMOKE_ENABLED only when a safe probe voice/profile is configured.",
+    "voicebox": {
+      "payload": {
+        "model": "b1-resembleai-chatterbox-voicebox",
+        "model_alias": "tts-quality",
+        "input": "B1 AI Hub Chatterbox voice smoke test.",
+        "voice": "default",
+        "engine": "chatterbox"
+      },
+      "timeout_seconds": 300
+    }
+  },
+  "deprecation": {
+    "status": "active"
+  }
+}

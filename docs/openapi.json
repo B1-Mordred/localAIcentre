@@ -383,6 +383,7 @@
         "type": "object"
       },
       "ChatCompletionRequest": {
+        "additionalProperties": true,
         "properties": {
           "max_tokens": {
             "anyOf": [
@@ -721,13 +722,19 @@
             "type": "boolean"
           },
           "aliases": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 4,
-            "minItems": 1,
-            "title": "Aliases",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aliases"
           },
           "attribution": {
             "anyOf": [
@@ -1979,6 +1986,19 @@
             "pattern": "^audio/[A-Za-z0-9.+-]+$",
             "title": "Mime Type",
             "type": "string"
+          },
+          "reference_text": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Text"
           },
           "sha256": {
             "pattern": "^[a-fA-F0-9]{64}$",

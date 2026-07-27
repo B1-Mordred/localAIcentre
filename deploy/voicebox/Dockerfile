@@ -99,13 +99,40 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libsndfile1 tini \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libsndfile1 tini build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid "${B1_VOICEBOX_GID}" b1 \
     && useradd --system --uid "${B1_VOICEBOX_UID}" --gid b1 --home-dir /srv/b1-ai-hub/voicebox --shell /usr/sbin/nologin b1
 
 COPY --from=backend-builder /install /usr/local
+
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/usr/local/lib/python3.11/site-packages/chatterbox/models/tokenizers/tokenizer.py")
+text = path.read_text(encoding="utf-8")
+old = """            cangjie_file = hf_hub_download(
+                repo_id=REPO_ID,
+                filename="Cangjie5_TC.json",
+                cache_dir=model_dir
+            )
+"""
+new = """            direct_cangjie_file = Path(model_dir) / "Cangjie5_TC.json" if model_dir else None
+            if direct_cangjie_file is not None and direct_cangjie_file.exists():
+                cangjie_file = str(direct_cangjie_file)
+            else:
+                cangjie_file = hf_hub_download(
+                    repo_id=REPO_ID,
+                    filename="Cangjie5_TC.json",
+                    cache_dir=model_dir
+                )
+"""
+if old not in text:
+    raise SystemExit("expected Chatterbox Cangjie cache lookup was not found")
+path.write_text(text.replace(old, new), encoding="utf-8")
+PY
+
 COPY --from=backend-builder --chown=b1:b1 /build/backend /app/backend
 COPY --from=frontend --chown=b1:b1 /build/web/dist /app/frontend
 COPY b1-voicebox-entrypoint.sh /usr/local/bin/b1-voicebox-entrypoint.sh

@@ -37,9 +37,45 @@ Current implementation status:
 - the B1 proxy exposes read-only `/b1/runtime/build-info` metadata with the proxy version, Jamie Pine Voicebox version, pinned commit, and source archive SHA-256 used by compatibility evidence
 - authenticated `/b1/runtime/status` reports the managed upstream process, active native request count, supported lifecycle actions, pinned build metadata, and model inventory as counts only, so Control Center and update gates can verify Voicebox without leaking model paths
 - for `/v1/audio/speech`, that proxy consumes the B1 profile envelope, strips B1-only fields, maps safe upstream selector metadata such as `upstream_voice`, and translates validated `/artifacts/voicebox/...` sample references to read-only in-container paths for engines that support reference or cloned voices
+- Chatterbox voice cloning is exposed through the same path: a B1 profile with `engine: "chatterbox"`, `profile_type: "clone"`, and one or more sample artifacts is provisioned as a native Voicebox cloned profile and rendered via upstream `/generate/stream`
+- the native profile mapping is kept in `$B1_DATA_ROOT/data/voicebox/b1-profile-map.json`, so remote Voicebox clients can also see and use the generated native cloned profile through `https://voice.ai.b1.germering/`
 - target-host WebSocket and engine-specific speech compatibility are covered by the opt-in compatibility harness and must either pass against the pinned upstream route or record an explicit pinned-upstream limitation
 
 The production override builds Jamie Pine Voicebox `v0.5.0` at commit `2bcb98d1a8b6fe05e15fbc1559e3085669e4035d`, exposes the B1 proxy on the internal native port `17493`, starts upstream Voicebox on loopback `127.0.0.1:17494`, and maps voice data/cache/model views plus the read-only Voicebox artifact namespace into B1-managed paths. The default Compose file still keeps the lightweight placeholder so `docker compose up -d` remains small. Runtime model downloads are disabled by default with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`; Model Hub must prepare compatible runtime views before enabling a Voicebox engine/profile.
+
+The production image includes Debian `build-essential` because the pinned Chatterbox stack uses Triton and compiles CUDA helper modules on the first GPU generation. The compiler is present only inside the non-root Voicebox runtime image; user-facing APIs still cannot execute arbitrary shell commands, install packages, or mount host paths.
+
+The B1 image also patches Chatterbox's Cangjie mapping lookup to prefer the verified local snapshot file before falling back to Hugging Face cache resolution. This keeps multilingual tokenizer startup offline when the runtime view contains `Cangjie5_TC.json`.
+
+For the pinned Chatterbox backend, cache the required `ResembleAI/chatterbox` files under the Voicebox Hugging Face cache before first use:
+
+```text
+$B1_DATA_ROOT/cache/voicebox/huggingface/hub/models--ResembleAI--chatterbox/
+├── refs/main
+└── snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/
+    ├── Cangjie5_TC.json
+    ├── conds.pt
+    ├── grapheme_mtl_merged_expanded_v1.json
+    ├── s3gen.pt
+    ├── t3_mtl23ls_v2.safetensors
+    └── ve.pt
+```
+
+Upstream Voicebox sets `VOICEBOX_MODELS_DIR` as Hugging Face's active `HF_HUB_CACHE`, so Model Hub must also publish that same cache layout into the read-only runtime view mounted at `/srv/b1-ai-hub/models`:
+
+```text
+$B1_DATA_ROOT/models/runtime-views/voicebox/models--ResembleAI--chatterbox/
+├── refs/main
+└── snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/
+    ├── Cangjie5_TC.json
+    ├── conds.pt
+    ├── grapheme_mtl_merged_expanded_v1.json
+    ├── s3gen.pt
+    ├── t3_mtl23ls_v2.safetensors
+    └── ve.pt
+```
+
+The multilingual tokenizer path also requires `spacy_pkuseg`'s `spacy_ontonotes` data offline. Store the verified archive at `$B1_DATA_ROOT/data/voicebox/.pkuseg/spacy_ontonotes.zip`, extract it to `$B1_DATA_ROOT/data/voicebox/.pkuseg/spacy_ontonotes/`, and verify SHA-256 `b216e7f92de7ae285aeab8feba2faa8ea8216e5995ff6fb3d391cc8356db1bfe`.
 
 The lifecycle hooks are conservative. `status` reports process/request/model-count readiness without returning filenames or paths. `load` checks model files/directories visible to Voicebox and returns `unconfirmed` because upstream engine/profile selection performs final validation. `warm` and `smoke` do not synthesize audio unless explicitly enabled with `B1_VOICEBOX_HOOK_WARM_ENABLED=true` or `B1_VOICEBOX_HOOK_SMOKE_ENABLED=true`. `unload` restarts the loopback upstream process only when the proxy has no active native requests, giving the GPU scheduler a bounded cleanup mechanism without terminating the container.
 

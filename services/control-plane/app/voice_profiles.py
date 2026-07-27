@@ -123,6 +123,9 @@ def normalized_sample_artifacts(row: dict[str, Any]) -> list[dict[str, Any]]:
             "mime_type": item.get("mime_type"),
             "bytes": item.get("bytes"),
         }
+        reference_text = item.get("reference_text")
+        if safe_runtime_metadata_value(reference_text):
+            sample["reference_text"] = str(reference_text).strip()[:1000]
         if all(sample.get(key) is not None for key in ("url", "sha256", "mime_type", "bytes")):
             normalized.append(sample)
     return normalized

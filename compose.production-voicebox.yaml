@@ -33,6 +33,9 @@ services:
       B1_VOICEBOX_DATA_DIR: /srv/b1-ai-hub/voicebox
       B1_VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
       B1_VOICEBOX_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
+      B1_VOICEBOX_PROFILE_MAP_FILE: /srv/b1-ai-hub/voicebox/b1-profile-map.json
+      B1_VOICEBOX_DEFAULT_LANGUAGE: ${B1_VOICEBOX_DEFAULT_LANGUAGE:-en}
+      B1_VOICEBOX_DEFAULT_REFERENCE_TEXT: ${B1_VOICEBOX_DEFAULT_REFERENCE_TEXT:-B1 voice reference sample}
       VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
       B1_VOICEBOX_HOOK_STRICT_MODEL_LIST: ${B1_VOICEBOX_HOOK_STRICT_MODEL_LIST:-false}
       B1_VOICEBOX_HOOK_MODEL_ROOTS: ${B1_VOICEBOX_HOOK_MODEL_ROOTS:-/srv/b1-ai-hub/models}

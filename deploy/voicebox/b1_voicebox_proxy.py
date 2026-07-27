@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import hashlib
 import hmac
 import json
 import os
@@ -61,6 +62,33 @@ VOICEBOX_UPSTREAM_COMMIT_DEFAULT = "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d"
 VOICEBOX_SOURCE_ARCHIVE_SHA256_DEFAULT = "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083"
 VOICEBOX_PROXY_VERSION_DEFAULT = "b1-voicebox-proxy/v0.5.0-b1"
 VOICEBOX_LIFECYCLE_ACTIONS = ["status", "build-info", "load", "warm", "smoke", "unload"]
+VOICEBOX_CLONE_ENGINES = {"qwen", "luxtts", "chatterbox", "chatterbox_turbo", "tada"}
+VOICEBOX_LANGUAGES = {
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "de",
+    "fr",
+    "ru",
+    "pt",
+    "es",
+    "it",
+    "he",
+    "ar",
+    "da",
+    "el",
+    "fi",
+    "hi",
+    "ms",
+    "nl",
+    "no",
+    "pl",
+    "sv",
+    "sw",
+    "tr",
+}
+VOICEBOX_PROFILE_MAP_LOCK = threading.Lock()
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -173,7 +201,13 @@ def voicebox_build_info() -> dict[str, Any]:
         "upstream_commit": upstream_commit,
         "source_archive_sha256": source_archive_sha256,
         "pinned": True,
-        "capabilities": {"actions": VOICEBOX_LIFECYCLE_ACTIONS},
+        "capabilities": {
+            "actions": VOICEBOX_LIFECYCLE_ACTIONS,
+            "openai_speech_bridge": True,
+            "voice_cloning": True,
+            "clone_engines": sorted(VOICEBOX_CLONE_ENGINES),
+            "default_clone_engine": "chatterbox",
+        },
     }
 
 
@@ -216,8 +250,10 @@ def voicebox_status(manager: "VoiceboxProcessManager", tracker: "NativeRequestTr
             "actions": VOICEBOX_LIFECYCLE_ACTIONS,
             "native_http_passthrough": True,
             "native_websocket_passthrough": True,
+            "openai_speech_bridge": True,
             "voice_profile_envelope": True,
             "sample_path_forwarding": env_bool("B1_VOICEBOX_FORWARD_SAMPLE_PATHS", True),
+            "clone_engines": sorted(VOICEBOX_CLONE_ENGINES),
         },
     )
 
@@ -467,6 +503,271 @@ def profile_sample_paths(profile: dict[str, Any]) -> list[str]:
         if isinstance(url, str) and url.strip():
             paths.append(local_voicebox_artifact_path(url.strip()))
     return paths
+
+
+def voicebox_data_dir() -> Path:
+    return Path(os.getenv("B1_VOICEBOX_DATA_DIR", "/srv/b1-ai-hub/voicebox")).resolve(strict=False)
+
+
+def voicebox_profile_map_path() -> Path:
+    configured = os.getenv("B1_VOICEBOX_PROFILE_MAP_FILE", "").strip()
+    if configured:
+        return Path(configured).resolve(strict=False)
+    return voicebox_data_dir() / "b1-profile-map.json"
+
+
+def read_voicebox_profile_map() -> dict[str, Any]:
+    path = voicebox_profile_map_path()
+    with VOICEBOX_PROFILE_MAP_LOCK:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_voicebox_profile_map(payload: dict[str, Any]) -> None:
+    path = voicebox_profile_map_path()
+    with VOICEBOX_PROFILE_MAP_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f"{path.suffix}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(path)
+
+
+def safe_voicebox_name_segment(value: str, fallback: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
+    return candidate or fallback
+
+
+def sample_reference_text(sample: dict[str, Any], index: int) -> str:
+    value = sample.get("reference_text")
+    if safe_runtime_scalar(value):
+        return str(value).strip()[:1000]
+    default = os.getenv("B1_VOICEBOX_DEFAULT_REFERENCE_TEXT", "B1 voice reference sample").strip()
+    return (default or f"B1 voice reference sample {index + 1}")[:1000]
+
+
+def profile_sample_items(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    if not env_bool("B1_VOICEBOX_FORWARD_SAMPLE_PATHS", True):
+        return []
+    samples = profile.get("sample_artifacts")
+    if not isinstance(samples, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict):
+            continue
+        url = sample.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        path = Path(local_voicebox_artifact_path(url.strip()))
+        sha256 = str(sample.get("sha256") or "").strip().lower()
+        if not SHA256_RE.fullmatch(sha256):
+            sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        mime_type = str(sample.get("mime_type") or "audio/wav").strip()
+        if not mime_type.startswith("audio/"):
+            mime_type = "audio/wav"
+        items.append(
+            {
+                "path": path,
+                "sha256": sha256,
+                "mime_type": mime_type,
+                "reference_text": sample_reference_text(sample, index),
+            }
+        )
+    return items
+
+
+def voicebox_profile_digest(sample_items: list[dict[str, Any]]) -> str:
+    joined = "\n".join(str(item.get("sha256") or "") for item in sample_items)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+
+
+def native_profile_name(profile: dict[str, Any], engine: str, sample_items: list[dict[str, Any]]) -> str:
+    profile_id = safe_voicebox_name_segment(str(profile.get("id") or "profile"), "profile")
+    digest = voicebox_profile_digest(sample_items)
+    return f"b1-{engine}-{profile_id[:48]}-{digest}"[:100].rstrip("-")
+
+
+def selected_clone_engine(payload: dict[str, Any], profile: dict[str, Any] | None) -> str:
+    raw = ""
+    if isinstance(profile, dict):
+        raw = str(profile.get("engine") or "").strip()
+    if not raw:
+        raw = str(payload.get("engine") or "").strip()
+    engine = (raw or "chatterbox").lower()
+    if engine == "chatterbox-tts":
+        engine = "chatterbox"
+    if engine not in VOICEBOX_CLONE_ENGINES:
+        raise ValueError(f"Voicebox engine {engine!r} does not support cloned B1 voice profiles")
+    return engine
+
+
+def selected_language(payload: dict[str, Any], profile: dict[str, Any] | None) -> str:
+    candidates: list[Any] = [payload.get("language")]
+    if isinstance(profile, dict):
+        upstream = profile.get("upstream") if isinstance(profile.get("upstream"), dict) else {}
+        candidates.append(upstream.get("language") if isinstance(upstream, dict) else None)
+    for value in candidates:
+        if isinstance(value, str):
+            language = value.strip().lower()
+            if language in VOICEBOX_LANGUAGES:
+                return language
+    return os.getenv("B1_VOICEBOX_DEFAULT_LANGUAGE", "en").strip().lower() or "en"
+
+
+def bounded_generation_int(payload: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    value = payload.get(key)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
+def native_generation_payload(payload: dict[str, Any], profile: dict[str, Any] | None, native_profile_id: str, engine: str) -> dict[str, Any]:
+    text = payload.get("input") if isinstance(payload.get("input"), str) else payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Voicebox speech bridge requires non-empty input text")
+    body: dict[str, Any] = {
+        "profile_id": native_profile_id,
+        "text": text,
+        "language": selected_language(payload, profile),
+        "engine": engine,
+        "normalize": payload.get("normalize", True) is not False,
+        "max_chunk_chars": bounded_generation_int(payload, "max_chunk_chars", 800, 100, 5000),
+        "crossfade_ms": bounded_generation_int(payload, "crossfade_ms", 50, 0, 500),
+    }
+    if isinstance(payload.get("seed"), int) and payload["seed"] >= 0:
+        body["seed"] = payload["seed"]
+    if safe_runtime_scalar(payload.get("instruct")):
+        body["instruct"] = str(payload["instruct"]).strip()[:500]
+    return body
+
+
+async def native_profile_exists(client: Any, native_profile_id: str) -> bool:
+    response = await client.get(f"{upstream_http_base_url()}/profiles/{native_profile_id}")
+    return response.status_code < 400
+
+
+async def native_profile_id_for_name(client: Any, name: str) -> str:
+    response = await client.get(f"{upstream_http_base_url()}/profiles")
+    if response.status_code >= 400:
+        return ""
+    try:
+        profiles = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(profiles, list):
+        return ""
+    for item in profiles:
+        if isinstance(item, dict) and item.get("name") == name and isinstance(item.get("id"), str):
+            return item["id"]
+    return ""
+
+
+async def create_native_clone_profile(client: Any, profile: dict[str, Any], engine: str, sample_items: list[dict[str, Any]], language: str) -> str:
+    name = native_profile_name(profile, engine, sample_items)
+    payload = {
+        "name": name,
+        "description": f"B1-managed {engine} cloned voice profile",
+        "language": language,
+        "voice_type": "cloned",
+        "default_engine": engine,
+    }
+    response = await client.post(f"{upstream_http_base_url()}/profiles", json=payload)
+    if response.status_code >= 400:
+        existing = await native_profile_id_for_name(client, name)
+        if existing:
+            return existing
+        raise ValueError(f"native Voicebox profile create failed with HTTP {response.status_code}")
+    try:
+        created = response.json()
+    except ValueError as exc:
+        raise ValueError("native Voicebox profile create returned invalid JSON") from exc
+    native_profile_id = created.get("id") if isinstance(created, dict) else None
+    if not isinstance(native_profile_id, str) or not native_profile_id:
+        raise ValueError("native Voicebox profile create did not return an id")
+    return native_profile_id
+
+
+async def upload_native_profile_sample(client: Any, native_profile_id: str, sample: dict[str, Any]) -> None:
+    path = Path(sample["path"])
+    with path.open("rb") as handle:
+        response = await client.post(
+            f"{upstream_http_base_url()}/profiles/{native_profile_id}/samples",
+            data={"reference_text": sample["reference_text"]},
+            files={"file": (path.name, handle, sample["mime_type"])},
+        )
+    if response.status_code >= 400:
+        raise ValueError(f"native Voicebox sample upload failed with HTTP {response.status_code}")
+
+
+async def ensure_native_clone_profile(client: Any, payload: dict[str, Any], profile: dict[str, Any]) -> str:
+    profile_id = str(profile.get("id") or "").strip()
+    if not profile_id:
+        raise ValueError("B1 voice profile envelope is missing an id")
+    profile_type = str(profile.get("profile_type") or "").strip().lower()
+    if profile_type not in {"clone", "cloned", "reference"}:
+        raise ValueError(f"B1 voice profile type {profile_type!r} is not usable for cloned Voicebox speech")
+    engine = selected_clone_engine(payload, profile)
+    sample_items = profile_sample_items(profile)
+    if not sample_items:
+        raise ValueError("B1 voice profile needs at least one mounted reference sample for Voicebox cloning")
+    sample_sha256s = [str(item["sha256"]) for item in sample_items]
+    mapping = read_voicebox_profile_map()
+    mapped = mapping.get(profile_id) if isinstance(mapping.get(profile_id), dict) else {}
+    native_profile_id = str(mapped.get("native_profile_id") or "").strip() if isinstance(mapped, dict) else ""
+    if (
+        native_profile_id
+        and mapped.get("engine") == engine
+        and mapped.get("sample_sha256s") == sample_sha256s
+        and await native_profile_exists(client, native_profile_id)
+    ):
+        return native_profile_id
+    language = selected_language(payload, profile)
+    native_profile_id = await create_native_clone_profile(client, profile, engine, sample_items, language)
+    for sample in sample_items:
+        await upload_native_profile_sample(client, native_profile_id, sample)
+    mapping[profile_id] = {
+        "native_profile_id": native_profile_id,
+        "engine": engine,
+        "sample_sha256s": sample_sha256s,
+        "profile_name": native_profile_name(profile, engine, sample_items),
+        "updated_at_unix": int(time.time()),
+    }
+    write_voicebox_profile_map(mapping)
+    return native_profile_id
+
+
+async def voicebox_openai_speech_bridge(client: Any, body: bytes, content_type: str) -> Response:
+    if "json" not in content_type.lower():
+        raise ValueError("Voicebox speech bridge requires a JSON request body")
+    try:
+        payload = json.loads(body or b"{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("Voicebox speech request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Voicebox speech request body must be a JSON object")
+    profile = payload.get("b1_voice_profile") if isinstance(payload.get("b1_voice_profile"), dict) else None
+    if profile is not None:
+        engine = selected_clone_engine(payload, profile)
+        native_profile_id = await ensure_native_clone_profile(client, payload, profile)
+    else:
+        engine = selected_clone_engine(payload, None)
+        candidate = payload.get("profile_id") if isinstance(payload.get("profile_id"), str) else payload.get("voice")
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ValueError("Voicebox speech bridge needs a B1 voice profile or native Voicebox profile_id")
+        native_profile_id = candidate.strip()
+    generation_payload = native_generation_payload(payload, profile, native_profile_id, engine)
+    upstream = await client.post(f"{upstream_http_base_url()}/generate/stream", json=generation_payload)
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding"
+    }
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
 def apply_b1_voice_profile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -730,42 +1031,46 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def http_proxy(path: str, request: Request) -> Response:
         request_tracker.begin()
-        body = await request.body()
-        query = request.url.query
-        upstream_path = f"{upstream_http_base_url()}/{path.lstrip('/')}"
-        if query:
-            upstream_path = f"{upstream_path}?{query}"
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"host", "content-length", "authorization"}
-        }
-        forward_body = body
-        if request.method.upper() == "POST" and path.strip("/") == "v1/audio/speech":
-            content_type = request.headers.get("content-type", "")
-            try:
-                forward_body = transform_voicebox_speech_body(body, content_type)
-                if "json" in content_type.lower():
-                    headers["content-type"] = "application/json"
-            except ValueError as exc:
-                request_tracker.end()
-                return JSONResponse(json_response("invalid", "speech", reason=str(exc)), status_code=422)
         try:
-            async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-                upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
-        except httpx.HTTPError as exc:
-            return JSONResponse(
-                json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__),
-                status_code=503,
-            )
+            body = await request.body()
+            query = request.url.query
+            upstream_path = f"{upstream_http_base_url()}/{path.lstrip('/')}"
+            if query:
+                upstream_path = f"{upstream_path}?{query}"
+            headers = {
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"host", "content-length", "authorization"}
+            }
+            forward_body = body
+            if request.method.upper() == "POST" and path.strip("/") == "v1/audio/speech":
+                content_type = request.headers.get("content-type", "")
+                async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+                    try:
+                        return await voicebox_openai_speech_bridge(client, body, content_type)
+                    except ValueError as exc:
+                        return JSONResponse(json_response("invalid", "speech", reason=str(exc)), status_code=422)
+                    except httpx.HTTPError as exc:
+                        return JSONResponse(
+                            json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__),
+                            status_code=503,
+                        )
+            try:
+                async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+                    upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
+            except httpx.HTTPError as exc:
+                return JSONResponse(
+                    json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__),
+                    status_code=503,
+                )
+            response_headers = {
+                key: value
+                for key, value in upstream.headers.items()
+                if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding"
+            }
+            return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
         finally:
             request_tracker.end()
-        response_headers = {
-            key: value
-            for key, value in upstream.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding"
-        }
-        return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
     return app
 

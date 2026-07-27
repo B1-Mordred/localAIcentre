@@ -80,6 +80,13 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(catalog_models["b1-modelhub-inference-only-policy-probe"]["downloadable"])
         self.assertEqual(catalog_models["b1-modelhub-inference-only-policy-probe"]["execution_modes"], ["hosted-inference"])
         self.assertEqual(catalog_models["b1-modelhub-inference-only-policy-probe"]["license"]["redistribution"], "inference-only")
+        self.assertEqual(aliases["tts-quality"]["status"], "installed")
+        self.assertEqual(aliases["tts-quality"]["preferred_runtime"], "voicebox")
+        self.assertEqual(aliases["tts-quality"]["resolved_model"]["id"], "b1-resembleai-chatterbox-voicebox")
+        self.assertEqual(catalog_models["b1-resembleai-chatterbox-voicebox"]["status"], "installed")
+        self.assertFalse(catalog_models["b1-resembleai-chatterbox-voicebox"]["downloadable"])
+        self.assertEqual(catalog_models["b1-resembleai-chatterbox-voicebox"]["execution_modes"], ["hosted-inference"])
+        self.assertEqual(catalog_models["b1-resembleai-chatterbox-voicebox"]["license"]["redistribution"], "inference-only")
         profiles = {profile["id"]: profile for profile in self.catalog.to_catalog()["profiles"]}
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["aliases"], ["chat-default", "chat-fast"])
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["resource_label"], "recommended")
@@ -90,6 +97,7 @@ class CatalogTests(unittest.TestCase):
             ["b1-sd15-pruned-emaonly-comfyui-video-sequence"],
         )
         self.assertEqual(profiles["fast-cpu-tts"]["candidate_manifest_ids"], ["b1-piper-en-us-amy-low"])
+        self.assertEqual(profiles["quality-voicebox-tts"]["candidate_manifest_ids"], ["b1-resembleai-chatterbox-voicebox"])
 
     def test_cpu_residency_policy_controls_alias_projection(self) -> None:
         catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy(cpu_residency_enabled=False))

@@ -259,6 +259,67 @@ class LocalAIManagedConfigTests(unittest.TestCase):
             self.assertIn("context_size: 4096", body)
             self.assertIn("gpu_layers: 32", body)
 
+    def test_laguna_xs_uses_reasoning_and_low_vram_quality_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-poolside-laguna-xs-2.1-gguf-q4_k_m-localai" / "1.0.0"
+            view_root.mkdir(parents=True)
+            self.write_minimal_gguf(view_root / "Laguna-XS-2.1-Q4_K_M.gguf", {"general.architecture": "laguna"})
+            manifest = {
+                "id": "b1-poolside-laguna-xs-2.1-gguf-q4_k_m-localai",
+                "version": "1.0.0",
+                "display_name": "Poolside Laguna XS 2.1 Q4_K_M GGUF",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 32768},
+                "files": [{"path": "Laguna-XS-2.1-Q4_K_M.gguf", "format": "gguf", "size_bytes": 20274300032}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+            old_values = {
+                key: os.environ.get(key)
+                for key in (
+                    "B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_LAGUNA_XS_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS",
+                    "B1_LOCALAI_MANAGED_LAGUNA_XS_CPU_MOE",
+                )
+            }
+            os.environ["B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE"] = "2048"
+            os.environ.pop("B1_LOCALAI_MANAGED_LAGUNA_XS_CONTEXT_SIZE", None)
+            os.environ.pop("B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS", None)
+            os.environ.pop("B1_LOCALAI_MANAGED_LAGUNA_XS_CPU_MOE", None)
+            try:
+                b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+            finally:
+                for key, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+            body = (
+                root
+                / "configuration"
+                / "b1-managed-b1-poolside-laguna-xs-2.1-gguf-q4_k_m-localai-1.0.0.yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("# prompt_family: laguna-xs-2.1", body)
+            self.assertIn("context_size: 32768", body)
+            self.assertIn("gpu_layers: -1", body)
+            self.assertIn("batch: 1024", body)
+            self.assertIn("temperature: 1.0", body)
+            self.assertIn("top_p: 1.0", body)
+            self.assertIn("top_k: 20", body)
+            self.assertIn("flash_attention: 'on'", body)
+            self.assertIn("cache_type_k: 'q4_0'", body)
+            self.assertIn("cache_type_v: 'q4_0'", body)
+            self.assertIn("use_jinja:true", body)
+            self.assertIn("cache_ram:1024", body)
+            self.assertIn("--ubatch-size:256", body)
+            self.assertIn("--cpu-moe", body)
+            self.assertIn("enable_thinking: true", body)
+            self.assertNotIn("disable_reasoning", body)
+
 
 if __name__ == "__main__":
     unittest.main()

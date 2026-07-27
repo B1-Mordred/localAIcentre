@@ -1,10 +1,10 @@
-FROM quay.io/go-skynet/local-ai-backends@sha256:af63c83aea1761b9ae37e2932981b9078e2a41a20f98c687216dd1bb0b59e163 AS localai_llama_cpp_backend
+FROM quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04 AS localai_llama_cpp_backend
 
 FROM localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973
 
 ARG B1_LOCALAI_UPSTREAM_VERSION=v4.7.1-gpu-nvidia-cuda-12
 ARG B1_LOCALAI_UPSTREAM_COMMIT=b224c96db6f4b87306a33a808650bfce63b12588
-ARG B1_LOCALAI_LLAMA_CPP_BACKEND_IMAGE=quay.io/go-skynet/local-ai-backends@sha256:af63c83aea1761b9ae37e2932981b9078e2a41a20f98c687216dd1bb0b59e163
+ARG B1_LOCALAI_LLAMA_CPP_BACKEND_IMAGE=quay.io/go-skynet/local-ai-backends:sha-0a8a7fb-gpu-nvidia-cuda-12-llama-cpp@sha256:01f3d24a07507d6ec5caeab3052599c1ec5a3ae45552cf17d81a845b3123ed04
 ARG B1_LOCALAI_UID=999
 ARG B1_LOCALAI_GID=999
 

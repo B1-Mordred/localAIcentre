@@ -100,7 +100,7 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
         {
             "file": "compose.production-localai.yaml",
             "service": "localai",
-            "image": "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}",
+            "image": "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-laguna-b1}",
         },
         {
             "file": "compose.production-comfyui.yaml",

@@ -26,7 +26,7 @@ import redis.asyncio as redis
 from fastapi import Body, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
@@ -252,6 +252,8 @@ app = FastAPI(
 )
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     model: str = "chat-default"
     messages: list[dict[str, Any]] = Field(default_factory=list)
     stream: bool = False
@@ -379,6 +381,7 @@ class VoiceProfileSampleArtifact(BaseModel):
     sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     mime_type: str = Field(pattern=r"^audio/[A-Za-z0-9.+-]+$")
     bytes: int = Field(ge=0)
+    reference_text: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class VoiceSampleArtifactUpload(BaseModel):
@@ -4868,7 +4871,7 @@ def validate_voice_profile_artifact_url(url: str) -> str:
 def validate_voice_profile_artifacts(artifacts: list[VoiceProfileSampleArtifact]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for artifact in artifacts:
-        item = artifact.model_dump()
+        item = artifact.model_dump(exclude_none=True)
         item["url"] = validate_voice_profile_artifact_url(item["url"])
         item["sha256"] = item["sha256"].lower()
         normalized.append(item)

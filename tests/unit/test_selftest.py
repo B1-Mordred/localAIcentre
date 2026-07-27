@@ -477,7 +477,7 @@ class SelfTestTests(unittest.TestCase):
                             },
                             {
                                 "name": "b1-ai-hub-localai-1",
-                                "image": "b1-ai-hub/localai:v4.7.1-b1",
+                                "image": "b1-ai-hub/localai:v4.7.1-laguna-b1",
                                 "state": "running",
                                 "labels": {"b1.ai-hub.placeholder": "false"},
                             },
@@ -509,7 +509,7 @@ class SelfTestTests(unittest.TestCase):
                         "containers": [
                             {
                                 "name": "b1-ai-hub-localai-1",
-                                "image": "b1-ai-hub/localai:v4.7.1-b1",
+                                "image": "b1-ai-hub/localai:v4.7.1-laguna-b1",
                                 "state": "running",
                                 "labels": {"b1.ai-hub.placeholder": "false"},
                             }

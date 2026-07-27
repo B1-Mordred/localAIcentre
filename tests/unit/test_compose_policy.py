@@ -636,7 +636,7 @@ class ComposePolicyTests(unittest.TestCase):
         device = service["deploy"]["resources"]["reservations"]["devices"][0]
 
         self.assertEqual(service["build"]["context"], "./deploy/localai")
-        self.assertEqual(service["image"], "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-b1}")
+        self.assertEqual(service["image"], "${B1_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-laguna-b1}")
         self.assertEqual(service["labels"]["b1.ai-hub.runtime"], "localai")
         self.assertEqual(service["labels"]["b1.ai-hub.runtime.kind"], "localai")
         self.assertEqual(service["labels"]["b1.ai-hub.placeholder"], "false")
@@ -863,13 +863,21 @@ class ComposePolicyTests(unittest.TestCase):
     def test_production_voicebox_build_uses_resolved_constraints(self) -> None:
         dockerfile = (ROOT / "deploy" / "voicebox" / "Dockerfile").read_text(encoding="utf-8")
         constraints = (ROOT / "deploy" / "voicebox" / "constraints.txt").read_text(encoding="utf-8")
+        readme = (ROOT / "deploy" / "voicebox" / "README.md").read_text(encoding="utf-8")
+        docs = (ROOT / "docs" / "voicebox.md").read_text(encoding="utf-8")
 
         self.assertIn("COPY constraints.txt /tmp/voicebox-constraints.txt", dockerfile)
         self.assertIn("-c /tmp/voicebox-constraints.txt", dockerfile)
         self.assertIn("qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS.git@", dockerfile)
         self.assertIn("#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85", dockerfile)
+        self.assertIn("build-essential", dockerfile)
+        self.assertIn('direct_cangjie_file = Path(model_dir) / "Cangjie5_TC.json"', dockerfile)
         self.assertIn("torch==2.13.0", constraints)
         self.assertIn("chatterbox-tts==0.1.7", constraints)
+        for text in (readme, docs):
+            self.assertIn("spacy_ontonotes", text)
+            self.assertIn("$B1_DATA_ROOT/models/runtime-views/voicebox/models--ResembleAI--chatterbox/", text)
+            self.assertIn("Cangjie", text)
 
     def test_production_voicebox_build_includes_b1_runtime_proxy(self) -> None:
         dockerfile = (ROOT / "deploy" / "voicebox" / "Dockerfile").read_text(encoding="utf-8")
