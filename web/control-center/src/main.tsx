@@ -2179,6 +2179,7 @@ function Models() {
   const [hfGgufUrl, setHfGgufUrl] = useState("");
   const [hfGgufAlias, setHfGgufAlias] = useState("chat-default");
   const [draftManifest, setDraftManifest] = useState<ModelManifestDraft | null>(null);
+  const [acceptModelLicense, setAcceptModelLicense] = useState(false);
   const [allowResourceOverride, setAllowResourceOverride] = useState(false);
   const [allowDownloadOverride, setAllowDownloadOverride] = useState(false);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
@@ -2338,7 +2339,7 @@ function Models() {
     apiFetch(`/admin/models/install-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride })
+      body: JSON.stringify({ ...body, accept_license: acceptModelLicense, allow_resource_override: allowResourceOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2360,7 +2361,7 @@ function Models() {
     apiFetch(`/admin/models/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, confirm: true, accept_license: Boolean(plan?.requires_license_acceptance), allow_resource_override: allowResourceOverride })
+      body: JSON.stringify({ ...body, confirm: true, accept_license: acceptModelLicense, allow_resource_override: allowResourceOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2383,7 +2384,7 @@ function Models() {
     apiFetch(`/admin/models/download-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride, allow_download_override: allowDownloadOverride })
+      body: JSON.stringify({ ...body, accept_license: acceptModelLicense, allow_resource_override: allowResourceOverride, allow_download_override: allowDownloadOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2408,7 +2409,7 @@ function Models() {
       body: JSON.stringify({
         ...body,
         confirm: true,
-        accept_license: Boolean(downloadPlan?.requires_license_acceptance),
+        accept_license: acceptModelLicense,
         allow_resource_override: allowResourceOverride,
         allow_download_override: allowDownloadOverride,
         credential_secret_name: downloadCredentialSecretName.trim() || null
@@ -2627,6 +2628,10 @@ function Models() {
         </label>
         <button title="Draft manifest from Hugging Face GGUF URL" onClick={draftHuggingFaceGgufManifest} disabled={busy || !hfGgufUrl.trim()}><ScrollText size={16} /></button>
         <button title="Clear drafted manifest" onClick={() => setDraftManifest(null)} disabled={busy || !draftManifest}><RotateCcw size={16} /></button>
+        <label className="inline-check" title="Confirm you reviewed and accept the manifest licence terms before download or install">
+          <input type="checkbox" checked={acceptModelLicense} onChange={(event) => setAcceptModelLicense(event.target.checked)} />
+          <span>Accept licence</span>
+        </label>
         <label className="inline-check" title="Allow an explicit admin override for resource/profile envelope exceptions">
           <input type="checkbox" checked={allowResourceOverride} onChange={(event) => setAllowResourceOverride(event.target.checked)} />
           <span>Resource override</span>
