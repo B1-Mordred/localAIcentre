@@ -337,6 +337,7 @@ class ModelAdminApiTests(unittest.TestCase):
             "admin_model_alias_policy_update",
             "admin_model_alias_policy_delete",
             "admin_model_install_plan",
+            "admin_model_huggingface_gguf_manifest_draft",
             "admin_model_download_plan",
             "admin_model_downloads",
             "admin_model_download_get",
@@ -1475,6 +1476,101 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["url"], "https://manifests.example.org/chat-small.manifest.json")
         self.assertIn("application/json", FakeAsyncClient.calls[0]["headers"]["Accept"])
         self.assertEqual(result["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
+
+    def test_huggingface_gguf_manifest_draft_pins_metadata(self) -> None:
+        digest = "a" * 64
+        commit = "0123456789abcdef0123456789abcdef01234567"
+
+        class FakeResponse:
+            def __init__(self, status_code: int, headers: dict[str, str], url: str) -> None:
+                self.status_code = status_code
+                self.headers = headers
+                self.url = url
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+            responses = [
+                FakeResponse(
+                    302,
+                    {
+                        "location": "https://cdn-lfs.huggingface.co/repos/qwen/model.gguf",
+                        "x-linked-etag": f'"{digest}"',
+                        "x-linked-size": "491400032",
+                        "x-repo-commit": commit,
+                    },
+                    "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "content-length": "491400032",
+                    },
+                    "https://cdn-lfs.huggingface.co/repos/qwen/model.gguf",
+                ),
+            ]
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            async def request(self, method: str, url: str, headers: dict[str, str]) -> FakeResponse:
+                self.calls.append({"method": method, "url": url, "headers": dict(headers)})
+                return self.responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+            original_client = main.httpx.AsyncClient
+            original_resolver = security.resolve_hostname_addresses
+            FakeAsyncClient.calls = []
+            FakeAsyncClient.responses = list(FakeAsyncClient.responses)
+            main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+            security.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
+            self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+            self.addCleanup(lambda: setattr(security, "resolve_hostname_addresses", original_resolver))
+
+            result = asyncio.run(
+                main.admin_model_huggingface_gguf_manifest_draft(
+                    main.HuggingFaceGgufManifestDraftRequest(
+                        url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                        aliases=["chat-default"],
+                    )
+                )
+            )
+
+        manifest = result["manifest"]
+        self.assertEqual(result["object"], "model_manifest_draft")
+        self.assertEqual(manifest["source"]["type"], "huggingface")
+        self.assertEqual(manifest["source"]["url"], "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+        self.assertEqual(manifest["source"]["revision"], commit)
+        self.assertEqual(manifest["files"][0]["sha256"], digest)
+        self.assertEqual(manifest["files"][0]["size_bytes"], 491400032)
+        self.assertEqual(manifest["aliases"], ["chat-default"])
+        self.assertEqual(manifest["preferred_runtime"], "localai")
+        self.assertIn("Q4_K_M", manifest["files"][0]["quantization"])
+        self.assertIn("resolved floating revision main", "; ".join(result["warnings"]))
+        self.assertEqual(FakeAsyncClient.calls[0]["method"], "HEAD")
+        self.assertEqual(FakeAsyncClient.calls[1]["url"], "https://cdn-lfs.huggingface.co/repos/qwen/model.gguf")
+
+    def test_huggingface_gguf_manifest_draft_rejects_non_gguf_file_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_huggingface_gguf_manifest_draft(
+                        main.HuggingFaceGgufManifestDraftRequest(
+                            url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/main/model.safetensors"
+                        )
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn(".gguf", str(raised.exception.detail))
 
     def test_remote_manifest_fetch_revalidates_url_before_streaming(self) -> None:
         class FakeStreamContext:

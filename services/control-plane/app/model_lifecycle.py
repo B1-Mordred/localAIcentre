@@ -84,6 +84,7 @@ HUGGINGFACE_CDN_HOSTS = {
 }
 HUGGINGFACE_CDN_SUFFIXES = (".cdn.hf.co", ".hf.co", ".xethub.hf.co")
 HUGGINGFACE_REPO_MARKERS = {"tree", "blob", "resolve"}
+HUGGINGFACE_FILE_MARKERS = {"blob", "resolve"}
 HUGGINGFACE_REPO_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 HUGGINGFACE_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PROFILE_RESOURCE_TOLERANCE = 1.15
@@ -1370,6 +1371,72 @@ def huggingface_repo_source(source_url: str, revision: str) -> dict[str, str]:
             raise ModelLifecycleError("huggingface source URL revision conflicts with source.revision")
     repo_path = "/".join([*prefix, *repo_parts])
     return {"host": hostname, "repo_type": repo_type, "repo_id": "/".join(repo_parts), "repo_path": repo_path, "revision": validated_revision}
+
+
+def _decode_huggingface_segment(value: str, context: str) -> str:
+    if BAD_PERCENT_ESCAPE_RE.search(value):
+        raise ModelLifecycleError(f"{context} uses an unsafe encoded segment")
+    try:
+        decoded = unquote(value, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ModelLifecycleError(f"{context} uses an unsafe encoded segment") from exc
+    if not decoded or decoded in {".", ".."}:
+        raise ModelLifecycleError(f"{context} uses an unsafe segment")
+    if any(ord(character) < 32 or ord(character) == 127 for character in decoded):
+        raise ModelLifecycleError(f"{context} uses an unsafe segment")
+    return decoded
+
+
+def huggingface_file_source(source_url: str) -> dict[str, str]:
+    parsed = urlparse(source_url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or hostname not in HUGGINGFACE_HOSTS:
+        raise ModelLifecycleError("Hugging Face file URL must use https://huggingface.co")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ModelLifecycleError("Hugging Face file URL must not contain credentials, query, or fragment")
+    raw_segments = [part for part in parsed.path.split("/") if part]
+    segments = [_decode_huggingface_segment(part, f"Hugging Face URL segment {index + 1}") for index, part in enumerate(raw_segments)]
+    if not segments:
+        raise ModelLifecycleError("Hugging Face file URL must include a repository and file")
+    if segments[0] in {"datasets", "spaces"}:
+        raise ModelLifecycleError("Hugging Face GGUF draft helper supports only model repositories")
+    if segments[0] == "models":
+        segments = segments[1:]
+
+    marker_index = next((index for index, segment in enumerate(segments) if segment in HUGGINGFACE_FILE_MARKERS), -1)
+    if marker_index < 1:
+        raise ModelLifecycleError("Hugging Face file URL must include /resolve/{revision}/ or /blob/{revision}/")
+    repo_parts = segments[:marker_index]
+    if len(repo_parts) > 2:
+        raise ModelLifecycleError("Hugging Face file URL must identify a model repository")
+    for index, part in enumerate(repo_parts):
+        _validate_huggingface_component(part, f"huggingface repository component {index + 1}")
+    marker = segments[marker_index]
+    tail = segments[marker_index + 1 :]
+    if len(tail) < 2:
+        raise ModelLifecycleError("Hugging Face file URL must include a revision and file path")
+    revision = _validate_huggingface_revision(tail[0])
+    file_path = "/".join(safe_relative_parts("/".join(tail[1:]), "Hugging Face file path"))
+    if not file_path.lower().endswith(".gguf"):
+        raise ModelLifecycleError("Hugging Face GGUF draft helper accepts only .gguf files")
+    repo_id = "/".join(repo_parts)
+    repo_path = repo_id
+    repo_url = f"https://huggingface.co/{repo_path}"
+    encoded_file_path = "/".join(quote(part, safe="") for part in safe_relative_parts(file_path, f"Hugging Face source file path: {file_path}"))
+    encoded_revision = quote(revision, safe="")
+    resolve_url = f"https://huggingface.co/{repo_path}/resolve/{encoded_revision}/{encoded_file_path}"
+    return {
+        "host": hostname,
+        "repo_type": "model",
+        "repo_id": repo_id,
+        "repo_path": repo_path,
+        "repo_url": repo_url,
+        "revision": revision,
+        "file_path": file_path,
+        "filename": PurePosixPath(file_path).name,
+        "url_kind": marker,
+        "resolve_url": resolve_url,
+    }
 
 
 def huggingface_download_source_url(manifest: ModelManifest, file: Any) -> str:

@@ -16,7 +16,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import monotonic
 from typing import Any, Callable, Literal
 from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
@@ -436,6 +436,20 @@ class ModelInstallPlanRequest(BaseModel):
     manifest_url: str | None = Field(default=None, max_length=2048)
     accept_license: bool = False
     allow_resource_override: bool = False
+
+
+class HuggingFaceGgufManifestDraftRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    aliases: list[str] = Field(default_factory=lambda: ["chat-default"], min_length=1, max_length=4)
+    model_id: str | None = Field(default=None, max_length=128)
+    display_name: str | None = Field(default=None, max_length=256)
+    license_name: str = Field(default="review-required", min_length=1, max_length=128)
+    license_url: str | None = Field(default=None, max_length=2048)
+    attribution: str | None = Field(default=None, max_length=512)
+    acceptance_required: bool = True
+    context_tokens: int = Field(default=4096, ge=512, le=16384)
+    sha256: str | None = Field(default=None, max_length=64)
+    size_bytes: int | None = Field(default=None, ge=1)
 
 
 class ModelInstallRequest(ModelInstallPlanRequest):
@@ -5360,6 +5374,232 @@ REMOTE_MANIFEST_CONTENT_TYPES = {
     "text/json",
     "text/plain",
 }
+FLOATING_HUGGINGFACE_REVISIONS = {"main", "master", "dev", "develop", "latest"}
+HUGGINGFACE_METADATA_MAX_REDIRECTS = 5
+GGUF_QUANTIZATION_RE = re.compile(r"(?i)(?:^|[._-])((?:IQ|Q)?[2-8](?:_[A-Z0-9]+)+|Q[2-8]_K_[A-Z]+|BF16|F16|F32)(?=[._-]|$)")
+
+
+def _strip_http_etag(value: str | None) -> str:
+    candidate = (value or "").strip()
+    if candidate.startswith("W/"):
+        candidate = candidate[2:].strip()
+    return candidate.strip('"').lower()
+
+
+def _header_sha256(headers: Any) -> str | None:
+    for name in ("x-linked-etag", "etag", "x-b1-sha256"):
+        candidate = _strip_http_etag(headers.get(name))
+        if model_lifecycle.SHA256_RE.match(candidate):
+            return candidate
+    return None
+
+
+def _header_size_bytes(headers: Any) -> int | None:
+    for name in ("x-linked-size", "content-length"):
+        value = headers.get(name)
+        if value:
+            with suppress(ValueError):
+                parsed = int(value)
+                if parsed > 0:
+                    return parsed
+    content_range = headers.get("content-range", "")
+    match = re.search(r"/(\d+)\s*$", content_range)
+    if match:
+        with suppress(ValueError):
+            parsed = int(match.group(1))
+            if parsed > 0:
+                return parsed
+    return None
+
+
+def _header_repo_commit(headers: Any) -> str | None:
+    candidate = (headers.get("x-repo-commit") or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F]{7,64}", candidate):
+        return candidate.lower()
+    return None
+
+
+async def fetch_huggingface_gguf_metadata(resolve_url: str) -> dict[str, Any]:
+    source_url = resolve_url
+    request_url = resolve_url
+    redirect_count = 0
+    sha256: str | None = None
+    size_bytes: int | None = None
+    repo_commit: str | None = None
+    final_url = resolve_url
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+        while True:
+            try:
+                request_url = model_lifecycle.download_request_url_allowed(source_url, request_url, source_type="huggingface")
+            except model_lifecycle.ModelLifecycleError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            response = await client.request("HEAD", request_url, headers={"Accept": "application/octet-stream"})
+            sha256 = sha256 or _header_sha256(response.headers)
+            size_bytes = size_bytes or _header_size_bytes(response.headers)
+            repo_commit = repo_commit or _header_repo_commit(response.headers)
+            if response.status_code in model_lifecycle.DOWNLOAD_REDIRECT_STATUS_CODES:
+                redirect_count += 1
+                if redirect_count > HUGGINGFACE_METADATA_MAX_REDIRECTS:
+                    raise HTTPException(status_code=422, detail="Hugging Face file URL exceeded maximum redirect count")
+                try:
+                    request_url = model_lifecycle.redirect_url_allowed(
+                        source_url,
+                        request_url,
+                        response.headers.get("location", ""),
+                        source_type="huggingface",
+                    )
+                except model_lifecycle.ModelLifecycleError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                continue
+            if response.status_code == 405:
+                response = await client.request("GET", request_url, headers={"Accept": "application/octet-stream", "Range": "bytes=0-0"})
+                sha256 = sha256 or _header_sha256(response.headers)
+                size_bytes = size_bytes or _header_size_bytes(response.headers)
+                repo_commit = repo_commit or _header_repo_commit(response.headers)
+            if response.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Hugging Face file URL returned HTTP {response.status_code}")
+            final_url = str(response.url)
+            break
+    return {"sha256": sha256, "size_bytes": size_bytes, "repo_commit": repo_commit, "final_url": final_url}
+
+
+def _slug_identifier(value: str, *, prefix: str = "", max_length: int = 128) -> str:
+    slug = re.sub(r"[^a-z0-9._+-]+", "-", value.lower()).strip("-._+")
+    slug = re.sub(r"[-_]{2,}", "-", slug)
+    if not slug or not slug[0].isalnum():
+        slug = f"model-{slug}".strip("-")
+    if prefix and not slug.startswith(prefix):
+        slug = f"{prefix}{slug}"
+    slug = slug[:max_length].rstrip("-._+")
+    if len(slug) < 2:
+        slug = f"{slug or 'm'}1"
+    return slug
+
+
+def _infer_gguf_quantization(file_path: str) -> str | None:
+    match = GGUF_QUANTIZATION_RE.search(PurePosixPath(file_path).name)
+    return match.group(1).upper() if match else None
+
+
+def _estimate_llm_resources(size_bytes: int, context_tokens: int) -> dict[str, Any]:
+    size_gib = size_bytes / (1024**3)
+    context_factor = max(1.0, context_tokens / 4096)
+    vram_gib = max(1.0, (size_gib * 1.25) + (0.35 * context_factor))
+    ram_gib = max(2.0, size_gib + 2.0)
+    return {
+        "vram_gib": round(vram_gib, 2),
+        "ram_gib": round(ram_gib, 2),
+        "disk_gib": round(max(0.01, size_gib), 2),
+        "context_tokens": context_tokens,
+    }
+
+
+def _validate_llm_aliases_for_manifest_draft(aliases: list[str]) -> list[str]:
+    catalog = catalog_snapshot()
+    normalized: list[str] = []
+    for alias in aliases:
+        candidate = alias.strip()
+        if not candidate:
+            continue
+        try:
+            catalog_alias = catalog.require_alias(candidate)
+        except CatalogError as exc:
+            raise HTTPException(status_code=422, detail=f"unknown model alias for LLM draft: {candidate}") from exc
+        if catalog_alias.alias.modality != "llm":
+            raise HTTPException(status_code=422, detail=f"alias {candidate} is {catalog_alias.alias.modality}, not llm")
+        if candidate not in normalized:
+            normalized.append(candidate)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="at least one LLM alias is required")
+    return normalized
+
+
+def build_huggingface_gguf_manifest_draft(
+    payload: HuggingFaceGgufManifestDraftRequest,
+    source: dict[str, str],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    aliases = _validate_llm_aliases_for_manifest_draft(payload.aliases)
+    sha256 = (payload.sha256 or metadata.get("sha256") or "").lower()
+    if not model_lifecycle.SHA256_RE.match(sha256):
+        raise HTTPException(status_code=422, detail="Hugging Face metadata did not expose a SHA-256 ETag; provide sha256 explicitly")
+    size_bytes = payload.size_bytes or metadata.get("size_bytes")
+    if not isinstance(size_bytes, int) or size_bytes <= 0:
+        raise HTTPException(status_code=422, detail="Hugging Face metadata did not expose a positive file size; provide size_bytes explicitly")
+    revision = str(metadata.get("repo_commit") or source["revision"])
+    warnings: list[str] = []
+    if source["revision"] in FLOATING_HUGGINGFACE_REVISIONS:
+        if metadata.get("repo_commit"):
+            warnings.append(f"resolved floating revision {source['revision']} to immutable commit {revision}")
+        else:
+            raise HTTPException(status_code=422, detail="Hugging Face file URL uses a floating revision and no x-repo-commit header was available")
+    quantization = _infer_gguf_quantization(source["file_path"])
+    stem = PurePosixPath(source["file_path"]).name.removesuffix(".gguf")
+    model_id = _slug_identifier(payload.model_id or f"b1-{source['repo_id']}-{stem}-localai", max_length=128)
+    display_name = payload.display_name or stem.replace("_", " ").replace("-", " ")
+    license_url = payload.license_url or source["repo_url"]
+    attribution = payload.attribution or f"{source['repo_id']} / {source['file_path']}"
+    if payload.license_name == "review-required":
+        warnings.append("license name is a review placeholder; verify the model card before installation")
+    warnings.append("resource estimate is derived from file size; run model smoke after install to persist measured RAM/VRAM")
+    manifest = {
+        "id": model_id,
+        "version": revision,
+        "display_name": display_name,
+        "description": f"Generated LocalAI GGUF LLM manifest draft from {source['repo_url']}. Review licence, aliases, and resource estimate before installation.",
+        "modality": "llm",
+        "operations": ["chat"],
+        "source": {"type": "huggingface", "url": source["repo_url"], "revision": revision},
+        "files": [
+            {
+                "path": source["file_path"],
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "format": "gguf",
+                **({"quantization": quantization} if quantization else {}),
+            }
+        ],
+        "runtimes": ["localai"],
+        "preferred_runtime": "localai",
+        "resource_estimate": _estimate_llm_resources(size_bytes, payload.context_tokens),
+        "license": {
+            "name": payload.license_name,
+            "url": license_url,
+            "redistribution": "downloadable",
+            "attribution": attribution,
+            "acceptance_required": payload.acceptance_required,
+        },
+        "execution_modes": ["hosted-inference", "downloadable"],
+        "aliases": aliases,
+        "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+        "runtime_adapter_versions": {"localai": "b1-runtime-adapter/v1alpha1"},
+        "runtime_smoke": {
+            "schema": "b1-ai-hub-runtime-smoke/v1",
+            "description": "Tiny non-streaming LocalAI chat completion through the generated LocalAI GGUF config.",
+            "localai": {
+                "request": {"path": "/v1/chat/completions", "method": "POST"},
+                "timeout_seconds": 300,
+            },
+        },
+    }
+    try:
+        parsed = model_lifecycle.parse_uploaded_manifest(manifest)
+    except (CatalogError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"generated manifest is invalid: {exc}") from exc
+    return {
+        "object": "model_manifest_draft",
+        "source": source,
+        "metadata": {
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "repo_commit": metadata.get("repo_commit"),
+            "final_url": metadata.get("final_url"),
+            "quantization": quantization,
+        },
+        "manifest": parsed.to_dict(),
+        "warnings": warnings,
+    }
 
 
 def validate_remote_manifest_url(manifest_url: str | None) -> str:
@@ -10237,6 +10477,22 @@ async def admin_model_install_plan(payload: ModelInstallPlanRequest, authorizati
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
     return install_plan_for_manifest(manifest, payload)
+
+
+@app.post("/admin/models/manifest-draft/huggingface-gguf")
+async def admin_model_huggingface_gguf_manifest_draft(
+    payload: HuggingFaceGgufManifestDraftRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:read")
+    require_model_admin(auth)
+    try:
+        source = model_lifecycle.huggingface_file_source(payload.url)
+    except model_lifecycle.ModelLifecycleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    metadata = await fetch_huggingface_gguf_metadata(source["resolve_url"])
+    return build_huggingface_gguf_manifest_draft(payload, source, metadata)
 
 
 @app.post("/admin/models/download-plan")

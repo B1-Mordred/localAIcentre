@@ -424,8 +424,15 @@ class ControlCenterSourceTests(unittest.TestCase):
 
     def test_models_tab_supports_remote_manifest_url(self) -> None:
         self.assertIn('const [manifestUrl, setManifestUrl] = useState("");', self.source)
-        self.assertIn("return url ? { manifest_url: url } : null;", self.source)
+        self.assertIn('const [hfGgufUrl, setHfGgufUrl] = useState("");', self.source)
+        self.assertIn("type ModelManifestDraft", self.source)
+        self.assertIn("return draftManifest?.manifest ? { manifest: draftManifest.manifest } : null;", self.source)
+        self.assertIn("/admin/models/manifest-draft/huggingface-gguf", self.source)
         self.assertIn("Manifest URL", self.source)
+        self.assertIn("Hugging Face GGUF URL", self.source)
+        self.assertIn("Draft manifest from Hugging Face GGUF URL", self.source)
+        self.assertIn("Draft Manifest JSON", self.source)
+        self.assertIn("remoteSourceReady", self.source)
         self.assertIn("Plan remote manifest install", self.source)
         self.assertIn("Queue remote manifest download", self.source)
         self.assertIn("accept_license: Boolean(downloadPlan?.requires_license_acceptance)", self.source)

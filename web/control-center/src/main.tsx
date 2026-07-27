@@ -1369,6 +1369,35 @@ type ModelDownloadPlan = {
   files: { path: string; source_url: string; status?: string; target_size_bytes: number; existing_partial_bytes: number; already_available: boolean; blockers: string[] }[];
 };
 
+type ModelManifestDraft = {
+  object: string;
+  source: {
+    repo_id: string;
+    repo_url: string;
+    revision: string;
+    file_path: string;
+    resolve_url: string;
+  };
+  metadata: {
+    sha256?: string;
+    size_bytes?: number;
+    repo_commit?: string | null;
+    final_url?: string | null;
+    quantization?: string | null;
+  };
+  manifest: RuntimeSmokeCarrier & {
+    id: string;
+    version: string;
+    display_name: string;
+    aliases?: string[];
+    source: { url: string; revision: string };
+    license: { name: string; redistribution: string; acceptance_required?: boolean };
+    resource_estimate?: Record<string, unknown>;
+    files?: { path: string; sha256: string; size_bytes: number; quantization?: string }[];
+  };
+  warnings: string[];
+};
+
 type ModelDownloadRecord = {
   id: string;
   model_id: string;
@@ -2145,6 +2174,9 @@ function Models() {
   const [downloadSecrets, setDownloadSecrets] = useState<EncryptedSecret[]>([]);
   const [downloadCredentialSecretName, setDownloadCredentialSecretName] = useState("");
   const [manifestUrl, setManifestUrl] = useState("");
+  const [hfGgufUrl, setHfGgufUrl] = useState("");
+  const [hfGgufAlias, setHfGgufAlias] = useState("chat-default");
+  const [draftManifest, setDraftManifest] = useState<ModelManifestDraft | null>(null);
   const [allowResourceOverride, setAllowResourceOverride] = useState(false);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
@@ -2262,13 +2294,40 @@ function Models() {
   const modelRequestBody = (model?: string) => {
     if (model) return { model };
     const url = manifestUrl.trim();
-    return url ? { manifest_url: url } : null;
+    if (url) return { manifest_url: url };
+    return draftManifest?.manifest ? { manifest: draftManifest.manifest } : null;
+  };
+
+  const draftHuggingFaceGgufManifest = () => {
+    const url = hfGgufUrl.trim();
+    if (!url) {
+      setMessage("Hugging Face GGUF URL required");
+      return;
+    }
+    const alias = hfGgufAlias.trim() || "chat-default";
+    setBusy(true);
+    setMessage("drafting manifest");
+    apiFetch(`/admin/models/manifest-draft/huggingface-gguf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, aliases: [alias] })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload: ModelManifestDraft) => {
+        setDraftManifest(payload);
+        setManifestUrl("");
+        setPlan(null);
+        setDownloadPlan(null);
+        setMessage(`drafted ${payload.manifest.id}@${payload.manifest.version}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
   };
 
   const planInstall = (model?: string) => {
     const body = modelRequestBody(model);
     if (!body) {
-      setMessage("manifest URL required");
+      setMessage("manifest URL or drafted manifest required");
       return;
     }
     setBusy(true);
@@ -2290,7 +2349,7 @@ function Models() {
   const installModel = (model?: string) => {
     const body = modelRequestBody(model);
     if (!body) {
-      setMessage("manifest URL required");
+      setMessage("manifest URL or drafted manifest required");
       return;
     }
     setBusy(true);
@@ -2313,7 +2372,7 @@ function Models() {
   const planDownload = (model?: string) => {
     const body = modelRequestBody(model);
     if (!body) {
-      setMessage("manifest URL required");
+      setMessage("manifest URL or drafted manifest required");
       return;
     }
     setBusy(true);
@@ -2335,7 +2394,7 @@ function Models() {
   const queueDownload = (model?: string) => {
     const body = modelRequestBody(model);
     if (!body) {
-      setMessage("manifest URL required");
+      setMessage("manifest URL or drafted manifest required");
       return;
     }
     setBusy(true);
@@ -2521,6 +2580,8 @@ function Models() {
   const acceptanceBlockerSummary = acceptanceCoverage?.blocker_summary ?? acceptanceHandoffPlan?.blocker_summary ?? [];
   const readyAliasCount = acceptanceCoverage?.ready_count ?? acceptanceHandoffPlan?.ready_count ?? 0;
   const blockedAliasCount = acceptanceCoverage?.blocked_count ?? acceptanceHandoffPlan?.blocked_count ?? acceptanceCoverage?.missing_aliases.length ?? 0;
+  const llmAliasOptions = aliases.filter((alias) => alias.modality === "llm");
+  const remoteSourceReady = Boolean(manifestUrl.trim() || draftManifest);
 
   return (
     <section className="panel wide">
@@ -2540,18 +2601,51 @@ function Models() {
         </label>
         <label>
           Manifest URL
-          <input value={manifestUrl} onChange={(event) => setManifestUrl(event.target.value)} maxLength={2048} placeholder="https://..." />
+          <input
+            value={manifestUrl}
+            onChange={(event) => {
+              setManifestUrl(event.target.value);
+              setDraftManifest(null);
+            }}
+            maxLength={2048}
+            placeholder="https://..."
+          />
         </label>
+        <label>
+          Hugging Face GGUF URL
+          <input value={hfGgufUrl} onChange={(event) => setHfGgufUrl(event.target.value)} maxLength={2048} placeholder="https://huggingface.co/.../resolve/.../*.gguf" />
+        </label>
+        <label>
+          LLM alias
+          <select value={hfGgufAlias} onChange={(event) => setHfGgufAlias(event.target.value)}>
+            {llmAliasOptions.length ? llmAliasOptions.map((alias) => <option key={alias.id} value={alias.id}>{alias.id}</option>) : <option value="chat-default">chat-default</option>}
+          </select>
+        </label>
+        <button title="Draft manifest from Hugging Face GGUF URL" onClick={draftHuggingFaceGgufManifest} disabled={busy || !hfGgufUrl.trim()}><ScrollText size={16} /></button>
+        <button title="Clear drafted manifest" onClick={() => setDraftManifest(null)} disabled={busy || !draftManifest}><RotateCcw size={16} /></button>
         <label className="inline-check" title="Allow an explicit admin override for resource/profile envelope exceptions">
           <input type="checkbox" checked={allowResourceOverride} onChange={(event) => setAllowResourceOverride(event.target.checked)} />
           <span>Resource override</span>
         </label>
-        <button title="Plan remote manifest install" onClick={() => planInstall()} disabled={busy || !manifestUrl.trim()}><ListChecks size={16} /></button>
-        <button title="Install remote manifest" onClick={() => installModel()} disabled={busy || !manifestUrl.trim()}><Archive size={16} /></button>
-        <button title="Plan remote manifest download" onClick={() => planDownload()} disabled={busy || !manifestUrl.trim()}><Download size={16} /></button>
-        <button title="Queue remote manifest download" onClick={() => queueDownload()} disabled={busy || !manifestUrl.trim()}><Download size={16} /></button>
+        <button title="Plan remote manifest install" onClick={() => planInstall()} disabled={busy || !remoteSourceReady}><ListChecks size={16} /></button>
+        <button title="Install remote manifest" onClick={() => installModel()} disabled={busy || !remoteSourceReady}><Archive size={16} /></button>
+        <button title="Plan remote manifest download" onClick={() => planDownload()} disabled={busy || !remoteSourceReady}><Download size={16} /></button>
+        <button title="Queue remote manifest download" onClick={() => queueDownload()} disabled={busy || !remoteSourceReady}><Download size={16} /></button>
         <span className="toolbar-status">{message}</span>
       </div>
+      {draftManifest && (
+        <div className="one-time-key">
+          <strong>{draftManifest.manifest.id}@{draftManifest.manifest.version}</strong>
+          <span>{draftManifest.manifest.display_name} / {draftManifest.source.repo_id} / {formatBytes(draftManifest.metadata.size_bytes ?? 0)}</span>
+          <small>Source: {draftManifest.source.file_path}</small>
+          <small>SHA-256: {draftManifest.metadata.sha256}</small>
+          {draftManifest.warnings.length > 0 && <small>{draftManifest.warnings.join("; ")}</small>}
+          <details className="manifest-raw">
+            <summary>Draft Manifest JSON</summary>
+            <pre>{JSON.stringify(draftManifest.manifest, null, 2)}</pre>
+          </details>
+        </div>
+      )}
       {plan && (
         <div className="one-time-key">
           <strong>{plan.model_ref} {plan.status}</strong>

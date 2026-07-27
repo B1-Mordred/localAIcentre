@@ -713,6 +713,121 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HuggingFaceGgufManifestDraftRequest": {
+        "properties": {
+          "acceptance_required": {
+            "default": true,
+            "title": "Acceptance Required",
+            "type": "boolean"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Aliases",
+            "type": "array"
+          },
+          "attribution": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attribution"
+          },
+          "context_tokens": {
+            "default": 4096,
+            "maximum": 16384.0,
+            "minimum": 512.0,
+            "title": "Context Tokens",
+            "type": "integer"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "license_name": {
+            "default": "review-required",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "License Name",
+            "type": "string"
+          },
+          "license_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License Url"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "HuggingFaceGgufManifestDraftRequest",
+        "type": "object"
+      },
       "JobMutationRequest": {
         "properties": {
           "reason": {
@@ -5820,6 +5935,64 @@
           }
         },
         "summary": "Admin Model Install Plan"
+      }
+    },
+    "/admin/models/manifest-draft/huggingface-gguf": {
+      "post": {
+        "operationId": "admin_model_huggingface_gguf_manifest_draft_admin_models_manifest_draft_huggingface_gguf_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HuggingFaceGgufManifestDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Huggingface Gguf Manifest Draft Admin Models Manifest Draft Huggingface Gguf Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Huggingface Gguf Manifest Draft"
       }
     },
     "/admin/models/quarantine/cleanup": {

@@ -550,6 +550,37 @@ class ModelLifecycleTests(unittest.TestCase):
             )
             self.assertEqual(plan["files"][1]["path"], "runtime/onnx/model_q4.onnx")
 
+    def test_huggingface_file_source_accepts_blob_and_resolve_gguf_urls(self) -> None:
+        blob_source = model_lifecycle.huggingface_file_source(
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        )
+        resolve_source = model_lifecycle.huggingface_file_source(
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/abc1234/nested/model-q4_k_m.gguf"
+        )
+
+        self.assertEqual(blob_source["repo_id"], "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+        self.assertEqual(blob_source["revision"], "main")
+        self.assertEqual(blob_source["file_path"], "qwen2.5-0.5b-instruct-q4_k_m.gguf")
+        self.assertEqual(
+            blob_source["resolve_url"],
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        )
+        self.assertEqual(resolve_source["revision"], "abc1234")
+        self.assertEqual(resolve_source["file_path"], "nested/model-q4_k_m.gguf")
+
+    def test_huggingface_file_source_rejects_unsafe_or_unsupported_urls(self) -> None:
+        for url in [
+            "http://huggingface.co/Qwen/model/blob/main/model.gguf",
+            "https://huggingface.co/datasets/Qwen/model/blob/main/model.gguf",
+            "https://huggingface.co/Qwen/model/tree/main/model.gguf",
+            "https://huggingface.co/Qwen/model/blob/main/model.safetensors",
+            "https://huggingface.co/Qwen/model/blob/main/../model.gguf",
+            "https://huggingface.co/Qwen/model/blob/main/model.gguf?download=true",
+        ]:
+            with self.subTest(url=url):
+                with self.assertRaises(model_lifecycle.ModelLifecycleError):
+                    model_lifecycle.huggingface_file_source(url)
+
     def test_seed_piper_download_plan_is_stageable(self) -> None:
         catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
         manifest = catalog.get_manifest("b1-piper-en-us-amy-low")
