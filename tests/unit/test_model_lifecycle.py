@@ -144,6 +144,41 @@ class ModelLifecycleTests(unittest.TestCase):
             staging_root = root / "models" / "runtime-views" / ".staging"
             self.assertFalse(staging_root.exists() and any(staging_root.rglob("*")))
 
+    def test_runtime_view_creation_reuses_verified_existing_view(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+
+            first_views = model_lifecycle.create_runtime_views(manifest, root)
+            second_views = model_lifecycle.create_runtime_views(manifest, root)
+
+            self.assertEqual(second_views[0]["runtime"], "localai")
+            self.assertEqual(second_views[0]["host_path"], first_views[0]["host_path"])
+            self.assertEqual(second_views[0]["files"][0]["path"], "chat-small.gguf")
+            view_root = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0"
+            self.assertEqual((view_root / "chat-small.gguf").read_bytes(), data)
+
+    def test_runtime_view_creation_refuses_existing_view_with_bad_marker(self) -> None:
+        data = b"runtime view model"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_dir = root / "models" / "blobs"
+            blob_dir.mkdir(parents=True)
+            (blob_dir / digest).write_bytes(data)
+            view_root = root / "models" / "runtime-views" / "localai" / "chat-small" / "1.0.0"
+            view_root.mkdir(parents=True)
+            (view_root / "manifest.b1.json").write_text("{}", encoding="utf-8")
+            manifest = parse_manifest_payload(manifest_payload(digest, len(data)))
+
+            with self.assertRaisesRegex(model_lifecycle.ModelLifecycleError, "marker does not match requested model"):
+                model_lifecycle.create_runtime_views(manifest, root)
+
     def test_safe_zip_archive_rejects_traversal(self) -> None:
         for member_name in (
             "../escape.gguf",
@@ -361,7 +396,7 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertEqual(overridden["profile_compatibility"][0]["status"], "compatible")
             self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
 
-    def test_install_plan_blocks_missing_blobs_unknown_aliases_and_unsafe_urls(self) -> None:
+    def test_install_plan_warns_for_custom_aliases_and_blocks_missing_blobs_and_unsafe_urls(self) -> None:
         manifest = parse_manifest_payload(manifest_payload("2" * 64, 12, source_url="https://127.0.0.1/model.bin"))
         with tempfile.TemporaryDirectory() as tmp:
             plan = model_lifecycle.build_install_plan(
@@ -374,7 +409,7 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertFalse(plan["can_install"])
             self.assertIn("source URL is not allowed by import policy", plan["blockers"])
             self.assertIn("one or more content-addressed blobs are missing or failed verification", plan["blockers"])
-            self.assertTrue(any("manifest aliases are not defined" in item for item in plan["blockers"]))
+            self.assertTrue(any("manifest will create custom aliases" in item for item in plan["warnings"]))
             with self.assertRaises(model_lifecycle.ModelLifecycleError):
                 model_lifecycle.require_installable(plan, confirmed=True)
 

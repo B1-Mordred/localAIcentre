@@ -443,7 +443,7 @@ class ModelInstallPlanRequest(BaseModel):
 
 class HuggingFaceGgufManifestDraftRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
-    aliases: list[str] = Field(default_factory=lambda: ["chat-default"], min_length=1, max_length=4)
+    aliases: list[str] | None = Field(default=None, max_length=4)
     model_id: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=256)
     license_name: str = Field(default="review-required", min_length=1, max_length=128)
@@ -5532,8 +5532,16 @@ def _validate_llm_aliases_for_manifest_draft(aliases: list[str]) -> list[str]:
         try:
             catalog_alias = catalog.require_alias(candidate)
         except CatalogError as exc:
-            raise HTTPException(status_code=422, detail=f"unknown model alias for LLM draft: {candidate}") from exc
-        if catalog_alias.alias.modality != "llm":
+            if not ID_PATTERN.fullmatch(candidate):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"invalid custom model alias for LLM draft: {candidate}; "
+                        "aliases must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, underscores, and hyphens"
+                    ),
+                ) from exc
+            catalog_alias = None
+        if catalog_alias is not None and catalog_alias.alias.modality != "llm":
             raise HTTPException(status_code=422, detail=f"alias {candidate} is {catalog_alias.alias.modality}, not llm")
         if candidate not in normalized:
             normalized.append(candidate)
@@ -5547,7 +5555,6 @@ def build_huggingface_gguf_manifest_draft(
     source: dict[str, str],
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    aliases = _validate_llm_aliases_for_manifest_draft(payload.aliases)
     sha256 = (payload.sha256 or metadata.get("sha256") or "").lower()
     if not model_lifecycle.SHA256_RE.match(sha256):
         raise HTTPException(status_code=422, detail="Hugging Face metadata did not expose a SHA-256 ETag; provide sha256 explicitly")
@@ -5563,6 +5570,7 @@ def build_huggingface_gguf_manifest_draft(
             raise HTTPException(status_code=422, detail="Hugging Face file URL uses a floating revision and no x-repo-commit header was available")
     quantization = _infer_gguf_quantization(source["file_path"])
     stem = PurePosixPath(source["file_path"]).name.removesuffix(".gguf")
+    aliases = _validate_llm_aliases_for_manifest_draft(payload.aliases or [_slug_identifier(stem)])
     model_id = _slug_identifier(payload.model_id or f"b1-{source['repo_id']}-{stem}-localai", max_length=128)
     display_name = payload.display_name or stem.replace("_", " ").replace("-", " ")
     license_url = payload.license_url or source["repo_url"]
@@ -6144,6 +6152,25 @@ async def smoke_test_model_record(row: dict[str, Any], auth: AuthContext, *, per
     return {"smoke_test": run, "model_record": updated_row, "measurement": measurement_info, "persisted": bool(persist and run.get("status") == "ok")}
 
 
+async def installed_model_alias_conflicts(manifest: Any) -> list[dict[str, str]]:
+    conflicts: list[dict[str, str]] = []
+    requested_aliases = set(manifest.aliases)
+    if not requested_aliases:
+        return conflicts
+    requested_ref = f"{manifest.id}@{manifest.version}"
+    for row in await database.list_model_records(status="installed"):
+        installed_ref = f"{row['id']}@{row['version']}"
+        if installed_ref == requested_ref:
+            continue
+        row_manifest = row.get("manifest") or {}
+        installed_aliases = row_manifest.get("aliases") if isinstance(row_manifest, dict) else []
+        if not isinstance(installed_aliases, list):
+            continue
+        for alias in sorted(requested_aliases.intersection(str(item) for item in installed_aliases)):
+            conflicts.append({"alias": alias, "installed_model_ref": installed_ref})
+    return conflicts
+
+
 async def install_model_manifest(
     *,
     manifest: Any,
@@ -6153,6 +6180,17 @@ async def install_model_manifest(
 ) -> dict[str, Any]:
     require_manifest_role_action(manifest, auth, "install")
     plan = install_plan_for_manifest(manifest, payload)
+    alias_conflicts = await installed_model_alias_conflicts(manifest)
+    if alias_conflicts:
+        conflict_text = ", ".join(f"{item['alias']} -> {item['installed_model_ref']}" for item in alias_conflicts)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"model aliases are already assigned to installed models: {conflict_text}",
+                "alias_conflicts": alias_conflicts,
+                "plan": plan,
+            },
+        )
     try:
         model_lifecycle.require_installable(plan, confirmed=payload.confirm)
         runtime_views = model_lifecycle.create_runtime_views(manifest, data_root_path())

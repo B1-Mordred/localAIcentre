@@ -694,6 +694,40 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(public["alias_policy_source"], "database-custom")
             self.assertEqual(public["preferred_runtime_override"], "localai")
 
+    def test_installed_manifest_custom_alias_is_projected_without_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            seed.mkdir()
+            (seed / "aliases.json").write_text(
+                json.dumps({"aliases": [{"alias": "chat-default", "modality": "llm", "preferred_runtime": "localai", "status": "uninstalled"}]}),
+                encoding="utf-8",
+            )
+            manifest = {
+                "id": "gemma-4-12b-it-qat-ud-q4_k_xl",
+                "version": "1.0.0",
+                "display_name": "Gemma 4 12B IT QAT UD Q4_K_XL",
+                "modality": "llm",
+                "operations": ["chat"],
+                "source": {"type": "huggingface", "url": "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF", "revision": "abc123"},
+                "files": [{"path": "gemma.gguf", "sha256": "1" * 64, "size_bytes": 12}],
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"vram_gib": 4, "ram_gib": 4, "disk_gib": 1},
+                "license": {"name": "review-required", "redistribution": "downloadable", "acceptance_required": True},
+                "execution_modes": ["hosted-inference", "downloadable"],
+                "aliases": ["gemma-4-12b-it-qat-ud-q4_k_xl"],
+            }
+
+            catalog = load_catalog(root, self.policy, extra_manifests=[manifest])
+            alias = catalog.require_alias("gemma-4-12b-it-qat-ud-q4_k_xl")
+            public = alias.to_openai_model()
+
+            self.assertEqual(alias.status, "installed")
+            self.assertEqual(alias.manifest.id, "gemma-4-12b-it-qat-ud-q4_k_xl")
+            self.assertEqual(public["alias_policy_source"], "installed-manifest")
+            self.assertEqual(public["preferred_runtime"], "localai")
+
     def test_available_manifest_does_not_activate_alias_until_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

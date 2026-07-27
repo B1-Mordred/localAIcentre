@@ -1460,6 +1460,23 @@ def load_catalog(
             and not (manifest.installation_status == "installed" and set(manifest.aliases) & installed_aliases)
         ]
         manifests.extend(installed_manifests)
+        known_aliases = {alias.alias for alias in aliases}
+        custom_installed_aliases: list[AliasDefinition] = []
+        for manifest in installed_manifests:
+            for alias in manifest.aliases:
+                if alias in known_aliases:
+                    continue
+                known_aliases.add(alias)
+                custom_installed_aliases.append(
+                    AliasDefinition(
+                        alias=alias,
+                        modality=manifest.modality,
+                        preferred_runtime=manifest.preferred_runtime,
+                        status="installed",
+                        policy_source="installed-manifest",
+                    )
+                )
+        aliases.extend(custom_installed_aliases)
         profiles_path = seed_dir / "model-profiles.json"
         profiles = (
             _parse_model_profiles(_read_json(profiles_path), str(profiles_path), aliases_by_id={alias.alias: alias for alias in aliases}, manifests=manifests)

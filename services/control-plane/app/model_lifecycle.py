@@ -803,6 +803,85 @@ def _remove_published_runtime_view(path: Path, runtime_views_root: Path) -> None
     shutil.rmtree(path)
 
 
+def _validate_existing_runtime_view(
+    manifest: ModelManifest,
+    data_root: Path,
+    runtime: str,
+    final_view_root: Path,
+    file_status_by_sha: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    root = runtime_view_root(data_root)
+    try:
+        final_view_root.resolve(strict=False).relative_to(root.resolve(strict=True))
+    except ValueError as exc:
+        raise ModelLifecycleError(f"existing runtime view path escapes root: {final_view_root}") from exc
+    if final_view_root.is_symlink() or not final_view_root.is_dir():
+        raise ModelLifecycleError(f"existing runtime view root is unsafe: {final_view_root}")
+    marker_path = final_view_root / "manifest.b1.json"
+    if marker_path.is_symlink() or not marker_path.is_file():
+        raise ModelLifecycleError(f"existing runtime view root has no trusted marker: {final_view_root}")
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ModelLifecycleError(f"existing runtime view marker is unreadable: {final_view_root}") from exc
+    model_ref = f"{manifest.id}@{manifest.version}"
+    if marker.get("format") != "b1-ai-hub-runtime-view/v1" or marker.get("runtime") != runtime or marker.get("model_ref") != model_ref:
+        raise ModelLifecycleError(f"existing runtime view marker does not match requested model: {final_view_root}")
+    marker_manifest = marker.get("manifest")
+    if not isinstance(marker_manifest, dict) or marker_manifest.get("id") != manifest.id or marker_manifest.get("version") != manifest.version:
+        raise ModelLifecycleError(f"existing runtime view marker manifest does not match requested model: {final_view_root}")
+    records = marker.get("files")
+    if not isinstance(records, list):
+        raise ModelLifecycleError(f"existing runtime view marker has invalid files list: {final_view_root}")
+    records_by_path = {record.get("path"): record for record in records if isinstance(record, dict)}
+    view_root_resolved = final_view_root.resolve(strict=True)
+    for file in manifest.files:
+        file_record = file.to_dict()
+        record = records_by_path.get(file.path)
+        if not isinstance(record, dict):
+            raise ModelLifecycleError(f"existing runtime view is missing file marker for {file.path}")
+        if is_internal_placeholder_file(file_record, manifest.source.type):
+            if record.get("link_type") != "internal-placeholder":
+                raise ModelLifecycleError(f"existing runtime view placeholder marker does not match {file.path}")
+            continue
+        status = file_status_by_sha[file.sha256]
+        blob_path = status.get("blob_path")
+        if not blob_path or str(record.get("blob_path")) != str(blob_path):
+            raise ModelLifecycleError(f"existing runtime view blob marker does not match {file.path}")
+        archive_format = file_record_archive_format(file)
+        if archive_format:
+            view_path = Path(str(record.get("view_path") or ""))
+            try:
+                view_path.resolve(strict=False).relative_to(view_root_resolved)
+            except ValueError as exc:
+                raise ModelLifecycleError(f"existing runtime view archive marker escapes root for {file.path}") from exc
+            if not view_path.exists() or view_path.is_symlink():
+                raise ModelLifecycleError(f"existing runtime view archive output is missing or unsafe for {file.path}")
+            extracted_files = record.get("extracted_files") or []
+            if not isinstance(extracted_files, list):
+                raise ModelLifecycleError(f"existing runtime view archive marker has invalid extracted file list for {file.path}")
+            for extracted in extracted_files:
+                if not isinstance(extracted, dict):
+                    raise ModelLifecycleError(f"existing runtime view archive marker has invalid extracted file record for {file.path}")
+                destination = Path(str(extracted.get("destination") or ""))
+                try:
+                    destination.resolve(strict=False).relative_to(view_root_resolved)
+                except ValueError as exc:
+                    raise ModelLifecycleError(f"existing runtime view archive destination escapes root for {file.path}") from exc
+                if destination.is_symlink() or not destination.exists():
+                    raise ModelLifecycleError(f"existing runtime view archive destination is missing or unsafe for {file.path}")
+            continue
+        view_path = safe_view_file_path(final_view_root, file.path)
+        marker_view_path = Path(str(record.get("view_path") or ""))
+        if marker_view_path.resolve(strict=False) != view_path.resolve(strict=False):
+            raise ModelLifecycleError(f"existing runtime view file marker does not match {file.path}")
+        if view_path.is_symlink() or not view_path.is_file():
+            raise ModelLifecycleError(f"existing runtime view file is missing or unsafe: {view_path}")
+        if view_path.stat().st_size != file.size_bytes or sha256_file(view_path) != file.sha256.lower():
+            raise ModelLifecycleError(f"existing runtime view file does not verify: {view_path}")
+    return records
+
+
 def _build_runtime_view_in_directory(
     manifest: ModelManifest,
     data_root: Path,
@@ -869,13 +948,23 @@ def create_runtime_views(manifest: ModelManifest, data_root: Path) -> list[dict[
     verified_by_sha = {item["sha256"]: item for item in file_status}
     root = runtime_view_root(data_root)
     token = uuid.uuid4().hex
+    existing: list[dict[str, Any]] = []
     view_specs: list[dict[str, Any]] = []
     for runtime in manifest.runtimes:
         final_view_root = runtime_manifest_view_root(data_root, runtime, manifest)
         if final_view_root.is_symlink():
             raise ModelLifecycleError(f"runtime view root is a symlink: {final_view_root}")
         if final_view_root.exists():
-            raise ModelLifecycleError(f"runtime view root already exists: {final_view_root}")
+            files = _validate_existing_runtime_view(manifest, data_root, runtime, final_view_root, verified_by_sha)
+            existing.append(
+                {
+                    "runtime": runtime,
+                    "host_path": str(final_view_root),
+                    "container_path": runtime_manifest_container_path(runtime, manifest),
+                    "files": files,
+                }
+            )
+            continue
         ensure_directory_inside(final_view_root.parent, root)
         staging_view_root = runtime_manifest_staging_view_root(data_root, runtime, manifest, token)
         view_specs.append({"runtime": runtime, "final": final_view_root, "staging": staging_view_root})
@@ -897,7 +986,7 @@ def create_runtime_views(manifest: ModelManifest, data_root: Path) -> list[dict[
             )
             staged.append({**spec, "files": files})
 
-        created: list[dict[str, Any]] = []
+        created: list[dict[str, Any]] = list(existing)
         for spec in staged:
             final_view_root = spec["final"]
             staging_view_root = spec["staging"]
@@ -1557,11 +1646,7 @@ def build_download_plan(
     if not source_allowed:
         blockers.append("source URL is not allowed by import policy")
     if unknown_aliases:
-        message = f"manifest aliases are not defined in the public alias seed: {', '.join(unknown_aliases)}"
-        if allow_download_override:
-            warnings.append(message)
-        else:
-            blockers.append(message)
+        warnings.append(f"manifest will create custom aliases: {', '.join(unknown_aliases)}")
     if profile_blockers:
         if allow_download_override:
             warnings.extend(profile_blockers)
@@ -1755,13 +1840,13 @@ def build_install_plan(
         allow_resource_override=allow_resource_override,
     )
     profile_blockers = profile_blockers_for_reports(profile_compatibility)
+    profile_warnings = profile_warnings_for_reports(profile_compatibility)
     requires_license_acceptance = bool(manifest.license.acceptance_required)
     files_verified = all(item["verified"] for item in file_status)
     resource_allowed = bool(decision.accepted or allow_resource_override)
     archives_safe = not archive_blockers
     can_install = (
         source_allowed
-        and not unknown_aliases
         and files_verified
         and archives_safe
         and resource_allowed
@@ -1769,10 +1854,11 @@ def build_install_plan(
         and (not requires_license_acceptance or accept_license)
     )
     blockers: list[str] = []
+    warnings: list[str] = list(profile_warnings)
     if not source_allowed:
         blockers.append("source URL is not allowed by import policy")
     if unknown_aliases:
-        blockers.append(f"manifest aliases are not defined in the public alias seed: {', '.join(unknown_aliases)}")
+        warnings.append(f"manifest will create custom aliases: {', '.join(unknown_aliases)}")
     if not files_verified:
         blockers.append("one or more content-addressed blobs are missing or failed verification")
     blockers.extend(archive_blockers)
@@ -1787,6 +1873,7 @@ def build_install_plan(
         "status": "installable" if can_install else "blocked",
         "can_install": can_install,
         "blockers": blockers,
+        "warnings": warnings,
         "source_allowed": source_allowed,
         "requires_confirmation": True,
         "requires_license_acceptance": requires_license_acceptance,

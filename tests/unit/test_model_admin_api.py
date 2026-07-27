@@ -1652,6 +1652,25 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["method"], "HEAD")
         self.assertEqual(FakeAsyncClient.calls[1]["url"], "https://cdn-lfs.huggingface.co/repos/qwen/model.gguf")
 
+    def test_huggingface_gguf_manifest_draft_defaults_alias_to_file_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+
+            result = main.build_huggingface_gguf_manifest_draft(
+                main.HuggingFaceGgufManifestDraftRequest(
+                    url="https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/blob/main/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
+                ),
+                {
+                    "repo_id": "unsloth/gemma-4-12B-it-qat-GGUF",
+                    "repo_url": "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF",
+                    "revision": "main",
+                    "file_path": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+                },
+                {"sha256": "b" * 64, "size_bytes": 6716356800, "repo_commit": "0123456789abcdef0123456789abcdef01234567"},
+            )
+
+        self.assertEqual(result["manifest"]["aliases"], ["gemma-4-12b-it-qat-ud-q4_k_xl"])
+
     def test_huggingface_gguf_manifest_draft_rejects_non_gguf_file_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
