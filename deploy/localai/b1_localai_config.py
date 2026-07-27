@@ -190,12 +190,33 @@ def localai_gguf_file(manifest: dict[str, Any], view_root: Path) -> str | None:
     return None
 
 
-def manifest_context_size(manifest: dict[str, Any]) -> int:
+def model_hint_text(manifest: dict[str, Any], relative_file: str) -> str:
+    return " ".join(
+        str(value).lower()
+        for value in (
+            manifest.get("id"),
+            manifest.get("display_name"),
+            relative_file,
+        )
+        if isinstance(value, str)
+    )
+
+
+def is_gemma4_e4b(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
+    if prompt_family != "gemma4":
+        return False
+    hint = model_hint_text(manifest, relative_file)
+    return "gemma-4-e4b" in hint or "gemma4-e4b" in hint or "e4b" in hint
+
+
+def manifest_context_size(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> int:
     estimate = manifest.get("resource_estimate") if isinstance(manifest.get("resource_estimate"), dict) else {}
     declared = estimate.get("context_tokens")
     if not isinstance(declared, int) or declared <= 0:
         declared = env_int("B1_LOCALAI_MANAGED_DEFAULT_CONTEXT_SIZE", 2048)
     maximum = max(512, env_int("B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE", 4096))
+    if is_gemma4_e4b(manifest, relative_file, prompt_family):
+        maximum = max(512, env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE", 4096))
     return max(512, min(declared, maximum))
 
 
@@ -214,10 +235,12 @@ def manifest_file_size_gib(manifest: dict[str, Any], view_root: Path, relative_f
         return 0.0
 
 
-def managed_gpu_layers(manifest: dict[str, Any], view_root: Path, relative_file: str) -> int:
+def managed_gpu_layers(manifest: dict[str, Any], view_root: Path, relative_file: str, prompt_family: str | None) -> int:
     forced = os.getenv("B1_LOCALAI_MANAGED_GPU_LAYERS")
     if forced is not None:
         return max(0, env_int("B1_LOCALAI_MANAGED_GPU_LAYERS", 0))
+    if is_gemma4_e4b(manifest, relative_file, prompt_family):
+        return max(0, env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS", 32))
     size_gib = manifest_file_size_gib(manifest, view_root, relative_file)
     medium_threshold = max(0.1, env_float("B1_LOCALAI_MANAGED_MEDIUM_MODEL_SIZE_GIB", 2.0))
     large_threshold = max(medium_threshold, env_float("B1_LOCALAI_MANAGED_LARGE_MODEL_SIZE_GIB", 5.0))
@@ -234,15 +257,7 @@ def localai_prompt_family(manifest: dict[str, Any], view_root: Path, relative_fi
     architecture = str(metadata.get("general.architecture") or "").strip().lower()
     if architecture == "gemma4":
         return "gemma4"
-    model_hint = " ".join(
-        str(value).lower()
-        for value in (
-            manifest.get("id"),
-            manifest.get("display_name"),
-            relative_file,
-        )
-        if isinstance(value, str)
-    )
+    model_hint = model_hint_text(manifest, relative_file)
     if "gemma-4" in model_hint or "gemma4" in model_hint:
         return "gemma4"
     return None
@@ -300,13 +315,13 @@ def managed_config_for_manifest(manifest: dict[str, Any], view_root: Path, model
     batch = max(32, env_int("B1_LOCALAI_MANAGED_BATCH", 128))
     fit_target = max(256, env_int("B1_LOCALAI_MANAGED_FIT_TARGET_MIB", 1024))
     fit_ctx = max(512, env_int("B1_LOCALAI_MANAGED_FIT_MIN_CONTEXT", 1024))
-    context_size = manifest_context_size(manifest)
-    gpu_layers = managed_gpu_layers(manifest, view_root, relative_file)
+    prompt_family = localai_prompt_family(manifest, view_root, relative_file)
+    context_size = manifest_context_size(manifest, relative_file, prompt_family)
+    gpu_layers = managed_gpu_layers(manifest, view_root, relative_file, prompt_family)
     mmap = env_bool("B1_LOCALAI_MANAGED_MMAP", True)
     mmlock = env_bool("B1_LOCALAI_MANAGED_MMLOCK", False)
     low_vram = env_bool("B1_LOCALAI_MANAGED_LOW_VRAM", True)
     f16 = env_bool("B1_LOCALAI_MANAGED_F16", gpu_layers > 0)
-    prompt_family = localai_prompt_family(manifest, view_root, relative_file)
     parameter_defaults = localai_parameter_defaults(prompt_family)
     use_jinja = "false" if prompt_family else "true"
     parameter_lines = [f"  model: {yaml_scalar(model_path)}"]

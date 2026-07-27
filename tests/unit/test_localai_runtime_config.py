@@ -213,6 +213,52 @@ class LocalAIManagedConfigTests(unittest.TestCase):
             self.assertIn("disable_reasoning: true", body)
             self.assertIn("stopwords:", body)
 
+    def test_gemma4_e4b_uses_quality_profile_without_raising_global_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-unsloth-gemma-4-e4b-it-gguf-q6_k-localai" / "1.0.0"
+            view_root.mkdir(parents=True)
+            self.write_minimal_gguf(view_root / "gemma-4-E4B-it-Q6_K.gguf", {"general.architecture": "gemma4"})
+            manifest = {
+                "id": "b1-unsloth-gemma-4-e4b-it-gguf-q6_k-localai",
+                "version": "1.0.0",
+                "display_name": "Unsloth Gemma 4 E4B IT Q6_K GGUF",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 8192},
+                "files": [{"path": "gemma-4-E4B-it-Q6_K.gguf", "format": "gguf", "size_bytes": 7 * 1024**3}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+            old_values = {
+                key: os.environ.get(key)
+                for key in (
+                    "B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS",
+                )
+            }
+            os.environ["B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE"] = "2048"
+            os.environ.pop("B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE", None)
+            os.environ.pop("B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS", None)
+            try:
+                b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+            finally:
+                for key, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+            body = (
+                root
+                / "configuration"
+                / "b1-managed-b1-unsloth-gemma-4-e4b-it-gguf-q6_k-localai-1.0.0.yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("# prompt_family: gemma4", body)
+            self.assertIn("context_size: 4096", body)
+            self.assertIn("gpu_layers: 32", body)
+
 
 if __name__ == "__main__":
     unittest.main()
