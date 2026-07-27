@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,22 @@ SPEC.loader.exec_module(b1_localai_config)
 
 
 class LocalAIManagedConfigTests(unittest.TestCase):
+    def write_minimal_gguf(self, path: Path, metadata: dict[str, str]) -> None:
+        payload = bytearray()
+        payload.extend(b"GGUF")
+        payload.extend(struct.pack("<I", 3))
+        payload.extend(struct.pack("<Q", 0))
+        payload.extend(struct.pack("<Q", len(metadata)))
+        for key, value in metadata.items():
+            key_bytes = key.encode("utf-8")
+            value_bytes = value.encode("utf-8")
+            payload.extend(struct.pack("<Q", len(key_bytes)))
+            payload.extend(key_bytes)
+            payload.extend(struct.pack("<I", 8))
+            payload.extend(struct.pack("<Q", len(value_bytes)))
+            payload.extend(value_bytes)
+        path.write_bytes(bytes(payload))
+
     def write_runtime_view(self, root: Path, *, model_id: str = "b1-chat", version: str = "1.0.0") -> Path:
         view_root = root / "models" / model_id / version
         view_root.mkdir(parents=True)
@@ -46,11 +63,18 @@ class LocalAIManagedConfigTests(unittest.TestCase):
             body = config.read_text(encoding="utf-8")
             combined = (config_dir / "b1-managed-models.yaml").read_text(encoding="utf-8")
             self.assertIn("# b1-ai-hub managed localai model config", body)
+            self.assertIn("# prompt_family: tokenizer-template", body)
             self.assertIn("name: 'b1-chat'", body)
             self.assertIn("backend: 'llama'", body)
             self.assertIn("model: 'b1-chat/1.0.0/model.gguf'", body)
             self.assertIn("context_size: 4096", body)
             self.assertIn("parallel:1", body)
+            self.assertIn("batch: 128", body)
+            self.assertIn("gpu_layers: 99999999", body)
+            self.assertIn("mmap: true", body)
+            self.assertIn("mmlock: false", body)
+            self.assertIn("low_vram: true", body)
+            self.assertIn("f16: true", body)
             self.assertIn("- name: 'b1-chat'", combined)
             self.assertIn("  parameters:", combined)
             self.assertIn("    model: 'b1-chat/1.0.0/model.gguf'", combined)
@@ -112,6 +136,82 @@ class LocalAIManagedConfigTests(unittest.TestCase):
                     os.environ["B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE"] = old
             body = (root / "configuration" / "b1-managed-b1-chat-1.0.0.yaml").read_text(encoding="utf-8")
             self.assertIn("context_size: 2048", body)
+
+    def test_large_gguf_uses_conservative_gpu_layer_and_context_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-large-chat" / "1.0.0"
+            view_root.mkdir(parents=True)
+            (view_root / "model.gguf").write_bytes(b"gguf")
+            manifest = {
+                "id": "b1-large-chat",
+                "version": "1.0.0",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 8192},
+                "files": [{"path": "model.gguf", "format": "gguf", "size_bytes": 7 * 1024**3}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+            old_values = {
+                key: os.environ.get(key)
+                for key in (
+                    "B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS",
+                    "B1_LOCALAI_MANAGED_BATCH",
+                    "B1_LOCALAI_MANAGED_LOW_VRAM",
+                )
+            }
+            os.environ["B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE"] = "2048"
+            os.environ["B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS"] = "18"
+            os.environ["B1_LOCALAI_MANAGED_BATCH"] = "96"
+            os.environ["B1_LOCALAI_MANAGED_LOW_VRAM"] = "true"
+            try:
+                b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+            finally:
+                for key, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            body = (root / "configuration" / "b1-managed-b1-large-chat-1.0.0.yaml").read_text(encoding="utf-8")
+            self.assertIn("context_size: 2048", body)
+            self.assertIn("gpu_layers: 18", body)
+            self.assertIn("batch: 96", body)
+            self.assertIn("low_vram: true", body)
+
+    def test_gemma4_gguf_uses_localai_prompt_template_and_card_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-gemma4-chat" / "1.0.0"
+            view_root.mkdir(parents=True)
+            self.write_minimal_gguf(view_root / "model.gguf", {"general.architecture": "gemma4"})
+            manifest = {
+                "id": "b1-gemma4-chat",
+                "version": "1.0.0",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 2048},
+                "files": [{"path": "model.gguf", "format": "gguf", "size_bytes": 7 * 1024**3}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+
+            b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+
+            body = (root / "configuration" / "b1-managed-b1-gemma4-chat-1.0.0.yaml").read_text(encoding="utf-8")
+            self.assertIn("# prompt_family: gemma4", body)
+            self.assertIn("temperature: 1.0", body)
+            self.assertIn("top_p: 0.95", body)
+            self.assertIn("top_k: 64", body)
+            self.assertIn("use_jinja:false", body)
+            self.assertIn("template:", body)
+            self.assertIn("<|turn>user", body)
+            self.assertIn("<|turn>model", body)
+            self.assertIn("join_chat_messages_by_character: ''", body)
+            self.assertIn("enable_thinking: false", body)
+            self.assertIn("disable_reasoning: true", body)
+            self.assertIn("stopwords:", body)
 
 
 if __name__ == "__main__":
