@@ -44,7 +44,7 @@ from . import compose_override as compose_override_policy
 from . import open_webui_migration
 from . import rollback_rehearsal
 from .job_events import format_sse_comment, format_sse_event, job_event_id, should_emit_job_snapshot
-from .job_states import TERMINAL_JOB_STATES
+from .job_states import ACTIVE_JOB_STATES, TERMINAL_JOB_STATES
 from .job_redaction import redact_request
 from . import media_artifacts
 from . import model_lifecycle
@@ -6179,6 +6179,158 @@ async def installed_model_alias_conflicts(manifest: Any) -> list[dict[str, str]]
     return conflicts
 
 
+def runtime_views_include(runtime_views: list[dict[str, Any]], runtime: str) -> bool:
+    return any(str(view.get("runtime") or "") == runtime for view in runtime_views)
+
+
+LOCALAI_RELOAD_SAFE_RUNTIME_STAGES = {"idle", "idle_unloaded", "idle_unload_unconfirmed"}
+LOCALAI_RELOAD_SAFE_RUNTIME_STATUSES = {"idle", "unload_ok"}
+LOCALAI_RELOAD_BUSY_RUNTIME_STAGES = {
+    JobState.UNLOADING.value,
+    JobState.VERIFYING_VRAM.value,
+    JobState.LOADING.value,
+    JobState.WARMING.value,
+    JobState.RUNNING.value,
+    JobState.SAVING.value,
+    JobState.CANCELLING.value,
+    "smoke",
+}
+LOCALAI_RELOAD_BUSY_RUNTIME_STATUSES = set(ACTIVE_JOB_STATES) | {"loaded", "ready"}
+
+
+def compact_localai_reload_runtime_state(state: dict[str, Any]) -> dict[str, Any]:
+    updated_at = state.get("updated_at")
+    if isinstance(updated_at, datetime):
+        encoded_updated_at: str | None = updated_at.isoformat()
+    elif isinstance(updated_at, str):
+        encoded_updated_at = updated_at
+    else:
+        encoded_updated_at = None
+    return {
+        "runtime": str(state.get("runtime") or ""),
+        "status": str(state.get("status") or ""),
+        "stage": str(state.get("stage") or ""),
+        "active_model": str(state.get("active_model") or ""),
+        "model_alias": str(state.get("model_alias") or ""),
+        "resolved_model_version": str(state.get("resolved_model_version") or ""),
+        "job_id": str(state.get("job_id") or ""),
+        "updated_at": encoded_updated_at,
+    }
+
+
+def compact_localai_reload_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(job.get("id") or ""),
+        "state": str(job.get("state") or ""),
+        "stage": str(job.get("stage") or ""),
+        "model_alias": str(job.get("model_alias") or ""),
+        "resolved_model_version": str(job.get("resolved_model_version") or ""),
+    }
+
+
+async def active_localai_jobs_for_config_reload() -> list[dict[str, Any]]:
+    list_jobs = getattr(database, "list_jobs", None)
+    if list_jobs is None:
+        return []
+    active_jobs: list[dict[str, Any]] = []
+    for state in sorted(ACTIVE_JOB_STATES):
+        rows = await list_jobs(limit=20, runtime="localai", state=state)
+        active_jobs.extend(row for row in rows if isinstance(row, dict) and str(row.get("state") or "") in ACTIVE_JOB_STATES)
+    return active_jobs
+
+
+async def localai_config_reload_blocker() -> dict[str, Any] | None:
+    active_jobs = await active_localai_jobs_for_config_reload()
+    if active_jobs:
+        return {
+            "reason": "localai_jobs_active",
+            "active_jobs": [compact_localai_reload_job(job) for job in active_jobs[:5]],
+            "active_job_count": len(active_jobs),
+        }
+    state = await current_runtime_state("localai")
+    if state is None:
+        return None
+    status = str(state.get("status") or "").strip().lower()
+    stage = str(state.get("stage") or "").strip().lower()
+    if status in LOCALAI_RELOAD_SAFE_RUNTIME_STATUSES or stage in LOCALAI_RELOAD_SAFE_RUNTIME_STAGES:
+        return None
+    if status in LOCALAI_RELOAD_BUSY_RUNTIME_STATUSES or stage in LOCALAI_RELOAD_BUSY_RUNTIME_STAGES:
+        return {
+            "reason": "localai_runtime_active",
+            "runtime_state": compact_localai_reload_runtime_state(state),
+        }
+    return None
+
+
+async def wait_for_localai_ready_after_restart(timeout_seconds: float = 60.0) -> dict[str, Any]:
+    url = f"{settings.localai_url.rstrip('/')}/readyz"
+    deadline = monotonic() + max(1.0, timeout_seconds)
+    attempts = 0
+    last_error = "timeout"
+    while monotonic() < deadline:
+        attempts += 1
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(url)
+            if response.status_code < 400:
+                return {"status": "ok", "url": url, "attempts": attempts, "http_status": response.status_code}
+            last_error = f"HTTP {response.status_code}"
+        except httpx.HTTPError as exc:
+            last_error = exc.__class__.__name__
+        await asyncio.sleep(1.0)
+    return {"status": "failed", "url": url, "attempts": attempts, "error": last_error}
+
+
+async def reload_localai_model_config_after_install(model_ref: str, runtime_views: list[dict[str, Any]]) -> dict[str, Any]:
+    if not runtime_views_include(runtime_views, "localai"):
+        return {"status": "not_required", "service": "localai", "action": "restart", "reason": "model_has_no_localai_runtime_view"}
+    if not settings.runtime_agent_token:
+        return {"status": "skipped", "service": "localai", "action": "restart", "reason": "runtime_agent_token_missing"}
+    blocker = await localai_config_reload_blocker()
+    if blocker is not None:
+        return {
+            "status": "deferred",
+            "service": "localai",
+            "action": "restart",
+            "strategy": "restart_service",
+            "model_ref": model_ref,
+            **blocker,
+        }
+    result, error = await runtime_agent_post(
+        "/v1/services/localai/restart",
+        {
+            "reason": operational_reason_label("reload LocalAI model configuration after model install", None),
+            "timeout_seconds": 30,
+        },
+        timeout_seconds=45.0,
+    )
+    if error is not None:
+        return {
+            "status": "failed",
+            "service": "localai",
+            "action": "restart",
+            "strategy": "restart_service",
+            "model_ref": model_ref,
+            "error": error[:500],
+        }
+    status = runtime_action_status(result)
+    payload = {
+        "status": status,
+        "service": "localai",
+        "action": "restart",
+        "strategy": "restart_service",
+        "model_ref": model_ref,
+        "runtime_agent": compact_runtime_action_result(result),
+    }
+    if status != "ok":
+        return payload
+    readiness = await wait_for_localai_ready_after_restart()
+    payload["readiness"] = readiness
+    if readiness.get("status") != "ok":
+        payload["status"] = "degraded"
+    return payload
+
+
 async def install_model_manifest(
     *,
     manifest: Any,
@@ -6219,6 +6371,7 @@ async def install_model_manifest(
     )
     await refresh_catalog_cache()
     workflows = await refresh_workflow_dependency_statuses()
+    localai_config_reload = await reload_localai_model_config_after_install(plan["model_ref"], runtime_views)
     smoke_result: dict[str, Any] | None = None
     if payload.smoke_test:
         smoke_result = await smoke_test_model_record(row, auth, persist=True)
@@ -6230,6 +6383,7 @@ async def install_model_manifest(
         "total_size_bytes": plan["total_size_bytes"],
         "workflow_dependencies_refreshed": workflows["count"],
         "runtime_views": [{"runtime": view["runtime"], "host_path": view["host_path"], "container_path": view["container_path"]} for view in runtime_views],
+        "localai_config_reload": localai_config_reload,
         "smoke_test": smoke_result["smoke_test"] if smoke_result else None,
     }
     if source_download is not None:
@@ -6243,7 +6397,14 @@ async def install_model_manifest(
         summary=f"Installed model {plan['model_ref']}",
         metadata=metadata,
     )
-    return {"model": public_model_record(row), "plan": plan, "runtime_views": runtime_views, "workflow_refresh": workflows, "smoke_test": smoke_result}
+    return {
+        "model": public_model_record(row),
+        "plan": plan,
+        "runtime_views": runtime_views,
+        "workflow_refresh": workflows,
+        "localai_config_reload": localai_config_reload,
+        "smoke_test": smoke_result,
+    }
 
 
 async def dependent_workflows_for_model(model_id: str, aliases: list[str]) -> list[dict[str, str]]:

@@ -135,6 +135,7 @@ class FakeDatabase:
         self.leases: list[dict[str, Any]] = []
         self.releases: list[str] = []
         self.runtime_states: list[dict[str, Any]] = []
+        self.jobs: list[dict[str, Any]] = []
 
     async def get_model_record(self, model_id: str, version: str) -> dict[str, Any] | None:
         if self.row["id"] == model_id and self.row["version"] == version:
@@ -293,6 +294,32 @@ class FakeDatabase:
         row = {"updated_at": datetime.now(tz=UTC), **payload}
         self.runtime_states.append(row)
         return dict(row)
+
+    async def list_runtime_states(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.runtime_states]
+
+    async def list_jobs(
+        self,
+        limit: int = 50,
+        *,
+        owner_id: str | None = None,
+        state: str | None = None,
+        runtime: str | None = None,
+        modality: str | None = None,
+        native_prompt_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [dict(job) for job in self.jobs]
+        if owner_id:
+            rows = [job for job in rows if job.get("owner_id") == owner_id]
+        if state:
+            rows = [job for job in rows if job.get("state") == state]
+        if runtime:
+            rows = [job for job in rows if job.get("runtime") == runtime]
+        if modality:
+            rows = [job for job in rows if job.get("modality") == modality]
+        if native_prompt_id:
+            rows = [job for job in rows if job.get("native_prompt_id") == native_prompt_id]
+        return rows[:limit]
 
 
 @unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
@@ -1464,6 +1491,95 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertEqual(audit_events[0]["event_type"], "model.installed")
         self.assertEqual(audit_events[0]["metadata"]["source_download_id"], "modeldl_completed")
         self.assertTrue(audit_events[0]["metadata"]["download_authenticated"])
+
+    def test_localai_model_install_restarts_localai_to_reload_generated_config(self) -> None:
+        data = b"localai reload model"
+        digest = hashlib.sha256(data).hexdigest()
+        payload = manifest_payload(digest, len(data))
+        audit_events: list[dict[str, Any]] = []
+        runtime_agent_calls: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_path = root / "models" / "blobs" / digest
+            blob_path.parent.mkdir(parents=True)
+            blob_path.write_bytes(data)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(root, fake_database, audit_events)
+            self.patch_attr("settings", replace(main.settings, runtime_agent_token="x" * 40, localai_url="http://localai:8080"))
+
+            async def fake_runtime_agent_post(
+                path: str,
+                body: dict[str, Any],
+                timeout_seconds: float = 30.0,
+            ) -> tuple[dict[str, Any], None]:
+                runtime_agent_calls.append({"path": path, "body": body, "timeout_seconds": timeout_seconds})
+                return {"status": "ok", "service": "localai", "action": "restart"}, None
+
+            async def fake_wait_for_localai_ready_after_restart(timeout_seconds: float = 60.0) -> dict[str, Any]:
+                runtime_agent_calls.append({"ready_timeout_seconds": timeout_seconds})
+                return {"status": "ok", "url": "http://localai:8080/readyz", "attempts": 1, "http_status": 200}
+
+            self.patch_attr("runtime_agent_post", fake_runtime_agent_post)
+            self.patch_attr("wait_for_localai_ready_after_restart", fake_wait_for_localai_ready_after_restart)
+
+            result = asyncio.run(main.admin_model_install(main.ModelInstallRequest(manifest=payload, confirm=True, accept_license=True)))
+
+        self.assertEqual(result["model"]["status"], "installed")
+        self.assertEqual(result["localai_config_reload"]["status"], "ok")
+        self.assertEqual(result["localai_config_reload"]["readiness"]["status"], "ok")
+        self.assertEqual(runtime_agent_calls[0]["path"], "/v1/services/localai/restart")
+        self.assertEqual(runtime_agent_calls[0]["body"]["timeout_seconds"], 30)
+        self.assertIn("reload LocalAI model configuration", runtime_agent_calls[0]["body"]["reason"])
+        self.assertEqual(runtime_agent_calls[0]["timeout_seconds"], 45.0)
+        self.assertEqual(runtime_agent_calls[1]["ready_timeout_seconds"], 60.0)
+        self.assertEqual(audit_events[0]["metadata"]["localai_config_reload"]["status"], "ok")
+
+    def test_localai_model_install_defers_config_reload_when_localai_is_active(self) -> None:
+        data = b"localai active reload model"
+        digest = hashlib.sha256(data).hexdigest()
+        payload = manifest_payload(digest, len(data))
+        audit_events: list[dict[str, Any]] = []
+        runtime_agent_calls: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob_path = root / "models" / "blobs" / digest
+            blob_path.parent.mkdir(parents=True)
+            blob_path.write_bytes(data)
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            fake_database.runtime_states.append(
+                {
+                    "runtime": "localai",
+                    "status": "ready",
+                    "stage": "warming",
+                    "active_model": "chat-existing",
+                    "model_alias": "chat-default",
+                    "resolved_model_version": "chat-existing@1.0.0",
+                    "job_id": "sync_chat_abc",
+                    "details": {},
+                    "updated_at": datetime.now(tz=UTC),
+                }
+            )
+            self.patch_common(root, fake_database, audit_events)
+            self.patch_attr("settings", replace(main.settings, runtime_agent_token="x" * 40, localai_url="http://localai:8080"))
+
+            async def fake_runtime_agent_post(
+                path: str,
+                body: dict[str, Any],
+                timeout_seconds: float = 30.0,
+            ) -> tuple[dict[str, Any], None]:
+                runtime_agent_calls.append({"path": path, "body": body, "timeout_seconds": timeout_seconds})
+                return {"status": "ok", "service": "localai", "action": "restart"}, None
+
+            self.patch_attr("runtime_agent_post", fake_runtime_agent_post)
+
+            result = asyncio.run(main.admin_model_install(main.ModelInstallRequest(manifest=payload, confirm=True, accept_license=True)))
+
+        self.assertEqual(result["model"]["status"], "installed")
+        self.assertEqual(result["localai_config_reload"]["status"], "deferred")
+        self.assertEqual(result["localai_config_reload"]["reason"], "localai_runtime_active")
+        self.assertEqual(result["localai_config_reload"]["runtime_state"]["job_id"], "sync_chat_abc")
+        self.assertEqual(runtime_agent_calls, [])
+        self.assertEqual(audit_events[0]["metadata"]["localai_config_reload"]["status"], "deferred")
 
     def test_model_download_install_blocks_incomplete_or_missing_downloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
