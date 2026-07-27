@@ -1420,6 +1420,34 @@ type ModelDownloadRecord = {
 
 const ACTIVE_DOWNLOAD_REFRESH_STATES = new Set(["queued", "running", "pausing", "cancelling"]);
 
+function slugModelAlias(value: string): string {
+  const withoutExtension = value.replace(/\.(gguf|safetensors|bin|onnx)$/i, "");
+  const slug = withoutExtension
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/[-_]{2,}/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
+    .slice(0, 128)
+    .replace(/[-._]+$/g, "");
+  if (!slug) return "";
+  return slug.length === 1 ? `${slug}1` : slug;
+}
+
+function defaultAliasFromHfGgufUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const parts = decodeURIComponent(parsed.pathname).split("/").filter(Boolean);
+    const fileName = parts[parts.length - 1] ?? "";
+    const fileAlias = slugModelAlias(fileName);
+    if (fileAlias) return fileAlias;
+    if (parts.length >= 2) return slugModelAlias(parts[1]);
+  } catch {
+    const fileName = value.split(/[/?#]/).filter(Boolean).pop() ?? "";
+    return slugModelAlias(fileName);
+  }
+  return "";
+}
+
 type ModelBlobQuarantinePlan = {
   model_ref: string;
   model_status: string;
@@ -1999,6 +2027,7 @@ const UPDATE_IMAGE_REFS_TEMPLATE = JSON.stringify(
 
 const SERVICE_LOG_OPTIONS = ["control-plane", "localai", "comfyui", "voicebox", "audio-cpu", "artifact-server", "open-webui", "gateway"];
 const RUNTIME_OPTIONS = ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"];
+const MODALITY_OPTIONS = ["llm", "vlm", "embedding", "tts", "stt", "image", "video", "workflow"];
 const ROLE_OPTIONS = ["admin", "operator", "creator", "user", "service"];
 const DEFAULT_CPU_RESIDENT_ALIASES = ["embedding-default", "tts-fast", "stt-default"];
 
@@ -2179,7 +2208,11 @@ function Models() {
   const [downloadCredentialSecretName, setDownloadCredentialSecretName] = useState("");
   const [manifestUrl, setManifestUrl] = useState("");
   const [hfGgufUrl, setHfGgufUrl] = useState("");
-  const [hfGgufAlias, setHfGgufAlias] = useState("chat-default");
+  const [hfGgufAlias, setHfGgufAlias] = useState("");
+  const [hfGgufAliasTouched, setHfGgufAliasTouched] = useState(false);
+  const [newAliasId, setNewAliasId] = useState("");
+  const [newAliasModality, setNewAliasModality] = useState("llm");
+  const [newAliasRuntime, setNewAliasRuntime] = useState("localai");
   const [draftManifest, setDraftManifest] = useState<ModelManifestDraft | null>(null);
   const [acceptModelLicense, setAcceptModelLicense] = useState(false);
   const [allowResourceOverride, setAllowResourceOverride] = useState(false);
@@ -2205,7 +2238,7 @@ function Models() {
   }, [profiles]);
   const aliasFormFromAlias = (alias: ModelAlias): ModelAliasPolicyForm => ({
     enabled: alias.enabled ?? alias.status !== "disabled",
-    preferred_runtime: alias.preferred_runtime_override ?? "",
+    preferred_runtime: alias.preferred_runtime_override ?? (alias.alias_policy_source === "database-custom" ? alias.preferred_runtime : ""),
     idle_timeout_seconds: alias.idle_timeout_seconds ? String(alias.idle_timeout_seconds) : "",
     visibility_roles: alias.visibility_roles ?? [],
     notes: alias.notes ?? ""
@@ -2272,6 +2305,7 @@ function Models() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        modality: alias.modality,
         enabled: form.enabled,
         preferred_runtime: form.preferred_runtime || null,
         idle_timeout_seconds: form.idle_timeout_seconds ? Number(form.idle_timeout_seconds) : null,
@@ -2295,12 +2329,75 @@ function Models() {
     apiFetch(`/admin/models/aliases/${encodeURIComponent(alias.id)}/policy`, { method: "DELETE" })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
-        setAliases((current) => current.map((item) => item.id === alias.id ? payload.alias : item));
-        setAliasForms((current) => ({ ...current, [alias.id]: aliasFormFromAlias(payload.alias) }));
+        setAliases((current) => payload.alias ? current.map((item) => item.id === alias.id ? payload.alias : item) : current.filter((item) => item.id !== alias.id));
+        setAliasForms((current) => {
+          const next = { ...current };
+          if (payload.alias) next[alias.id] = aliasFormFromAlias(payload.alias);
+          else delete next[alias.id];
+          return next;
+        });
         setMessage(`reset ${alias.id}`);
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
+  };
+
+  const createAliasPolicy = () => {
+    const aliasId = slugModelAlias(newAliasId.trim());
+    if (!aliasId) {
+      setMessage("alias id required");
+      return;
+    }
+    setBusy(true);
+    setMessage(`creating alias ${aliasId}`);
+    apiFetch(`/admin/models/aliases/${encodeURIComponent(aliasId)}/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        modality: newAliasModality,
+        enabled: true,
+        preferred_runtime: newAliasRuntime,
+        status: "uninstalled",
+        visibility_roles: [],
+        notes: "Created in Control Center"
+      })
+    })
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
+      .then((payload) => {
+        setNewAliasId("");
+        setAliases((current) => {
+          const replaced = current.some((item) => item.id === payload.alias.id);
+          const next = replaced ? current.map((item) => item.id === payload.alias.id ? payload.alias : item) : [...current, payload.alias];
+          return next.sort((a, b) => a.id.localeCompare(b.id));
+        });
+        setAliasForms((current) => ({ ...current, [payload.alias.id]: aliasFormFromAlias(payload.alias) }));
+        setMessage(`created ${payload.alias.id}`);
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const ensureLlmAliases = async (aliasIds: string[]) => {
+    const known = new Set(aliases.filter((alias) => alias.modality === "llm").map((alias) => alias.id));
+    const missing = aliasIds.filter((aliasId) => !known.has(aliasId));
+    for (const aliasId of missing) {
+      const response = await apiFetch(`/admin/models/aliases/${encodeURIComponent(aliasId)}/policy`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          modality: "llm",
+          enabled: true,
+          preferred_runtime: "localai",
+          status: "uninstalled",
+          visibility_roles: [],
+          notes: "Created from Hugging Face GGUF draft"
+        })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail?.message ?? body.detail ?? `${response.status}`);
+      }
+    }
   };
 
   const modelRequestBody = (model?: string) => {
@@ -2310,30 +2407,44 @@ function Models() {
     return draftManifest?.manifest ? { manifest: draftManifest.manifest } : null;
   };
 
-  const draftHuggingFaceGgufManifest = () => {
+  const draftHuggingFaceGgufManifest = async () => {
     const url = hfGgufUrl.trim();
     if (!url) {
       setMessage("Hugging Face GGUF URL required");
       return;
     }
-    const alias = hfGgufAlias.trim() || "chat-default";
+    const fallbackAlias = defaultAliasFromHfGgufUrl(url) || "chat-default";
+    const aliasIds = Array.from(new Set(parseCsv(hfGgufAlias, [fallbackAlias]).map((alias) => slugModelAlias(alias)).filter(Boolean))).slice(0, 4);
+    if (!aliasIds.length) {
+      setMessage("at least one LLM alias is required");
+      return;
+    }
     setBusy(true);
-    setMessage("drafting manifest");
-    apiFetch(`/admin/models/manifest-draft/huggingface-gguf`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, aliases: [alias] })
-    })
-      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
-      .then((payload: ModelManifestDraft) => {
-        setDraftManifest(payload);
-        setManifestUrl("");
-        setPlan(null);
-        setDownloadPlan(null);
-        setMessage(`drafted ${payload.manifest.id}@${payload.manifest.version}`);
-      })
-      .catch((err: Error) => setMessage(err.message))
-      .finally(() => setBusy(false));
+    try {
+      setMessage("checking aliases");
+      await ensureLlmAliases(aliasIds);
+      setMessage("drafting manifest");
+      const response = await apiFetch(`/admin/models/manifest-draft/huggingface-gguf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, aliases: aliasIds })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail?.message ?? body.detail ?? `${response.status}`);
+      }
+      const payload: ModelManifestDraft = await response.json();
+      setDraftManifest(payload);
+      setManifestUrl("");
+      setPlan(null);
+      setDownloadPlan(null);
+      setMessage(`drafted ${payload.manifest.id}@${payload.manifest.version}`);
+      loadModels(true);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const planInstall = (model?: string) => {
@@ -2626,13 +2737,33 @@ function Models() {
         </label>
         <label>
           Hugging Face GGUF URL
-          <input value={hfGgufUrl} onChange={(event) => setHfGgufUrl(event.target.value)} maxLength={2048} placeholder="https://huggingface.co/.../resolve/.../*.gguf" />
+          <input
+            value={hfGgufUrl}
+            onChange={(event) => {
+              const value = event.target.value;
+              setHfGgufUrl(value);
+              if (!hfGgufAliasTouched) setHfGgufAlias(defaultAliasFromHfGgufUrl(value));
+            }}
+            maxLength={2048}
+            placeholder="https://huggingface.co/.../resolve/.../*.gguf"
+          />
         </label>
         <label>
-          LLM alias
-          <select value={hfGgufAlias} onChange={(event) => setHfGgufAlias(event.target.value)}>
-            {llmAliasOptions.length ? llmAliasOptions.map((alias) => <option key={alias.id} value={alias.id}>{alias.id}</option>) : <option value="chat-default">chat-default</option>}
-          </select>
+          LLM aliases
+          <input
+            value={hfGgufAlias}
+            onChange={(event) => {
+              setHfGgufAliasTouched(true);
+              setHfGgufAlias(event.target.value);
+            }}
+            list="llm-alias-options"
+            maxLength={512}
+            placeholder={defaultAliasFromHfGgufUrl(hfGgufUrl) || "chat-default"}
+          />
+          <datalist id="llm-alias-options">
+            {llmAliasOptions.map((alias) => <option key={alias.id} value={alias.id} />)}
+          </datalist>
+          <small>comma-separated; unknown aliases are created as LocalAI LLM aliases</small>
         </label>
         <button title="Draft manifest from Hugging Face GGUF URL" onClick={draftHuggingFaceGgufManifest} disabled={busy || !hfGgufUrl.trim()}><ScrollText size={16} /></button>
         <button title="Clear drafted manifest" onClick={() => setDraftManifest(null)} disabled={busy || !draftManifest}><RotateCcw size={16} /></button>
@@ -2797,6 +2928,34 @@ function Models() {
           </table>
         </>
       )}
+      <div className="subsection-title">
+        <Boxes size={16} />
+        <h3>Aliases</h3>
+      </div>
+      <div className="toolbar compact">
+        <label>
+          New alias
+          <input
+            value={newAliasId}
+            onChange={(event) => setNewAliasId(event.target.value)}
+            maxLength={128}
+            placeholder="model-original-name"
+          />
+        </label>
+        <label>
+          Modality
+          <select value={newAliasModality} onChange={(event) => setNewAliasModality(event.target.value)}>
+            {MODALITY_OPTIONS.map((modality) => <option key={modality} value={modality}>{modality}</option>)}
+          </select>
+        </label>
+        <label>
+          Runtime
+          <select value={newAliasRuntime} onChange={(event) => setNewAliasRuntime(event.target.value)}>
+            {RUNTIME_OPTIONS.map((runtime) => <option key={runtime} value={runtime}>{runtime}</option>)}
+          </select>
+        </label>
+        <button title="Create model alias" onClick={createAliasPolicy} disabled={busy || !newAliasId.trim()}><CheckCircle2 size={16} /></button>
+      </div>
       <table>
         <thead><tr><th>Alias</th><th>Status</th><th>Runtime</th><th>Policy</th><th>Actions</th></tr></thead>
         <tbody>
@@ -2863,7 +3022,7 @@ function Models() {
                 <td>
                   <div className="table-actions">
                     <button title={`Save alias policy for ${alias.id}`} onClick={() => saveAliasPolicy(alias)} disabled={busy}><CheckCircle2 size={16} /></button>
-                    <button title={`Reset alias policy for ${alias.id}`} onClick={() => resetAliasPolicy(alias)} disabled={busy || alias.alias_policy_source !== "database"}><RotateCcw size={16} /></button>
+                    <button title={`Reset alias policy for ${alias.id}`} onClick={() => resetAliasPolicy(alias)} disabled={busy || !alias.alias_policy_source?.startsWith("database")}><RotateCcw size={16} /></button>
                     <button title={`Plan install for ${alias.id}`} onClick={() => planInstall(alias.id)} disabled={busy || !alias.resolved_model}><ListChecks size={16} /></button>
                     <button title={`Install ${alias.id}`} onClick={() => installModel(alias.id)} disabled={busy || !alias.resolved_model}><Archive size={16} /></button>
                     <button title={`Plan download for ${alias.id}`} onClick={() => planDownload(alias.id)} disabled={busy || !alias.resolved_model}><Download size={16} /></button>

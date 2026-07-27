@@ -957,6 +957,18 @@
             ],
             "title": "Idle Timeout Seconds"
           },
+          "modality": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modality"
+          },
           "notes": {
             "default": "",
             "maxLength": 2000,
@@ -974,6 +986,18 @@
               }
             ],
             "title": "Preferred Runtime"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
           },
           "visibility_roles": {
             "items": {

@@ -188,6 +188,14 @@ class FakeDatabase:
         now = datetime.now(tz=UTC)
         existing = self.alias_policies.get(payload["alias"])
         row = {
+            "modality": None,
+            "enabled": True,
+            "preferred_runtime": None,
+            "status": None,
+            "idle_timeout_seconds": None,
+            "visibility_roles": [],
+            "notes": "",
+            "updated_by": None,
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
             **payload,
@@ -781,6 +789,50 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(fake_database.alias_policies["chat-default"]["updated_by"], "test-admin")
             self.assertEqual(audit_events[0]["event_type"], "model_alias_policy.updated")
 
+    def test_alias_policy_update_creates_custom_alias(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(Path(tmp), fake_database, audit_events)
+
+            result = asyncio.run(
+                main.admin_model_alias_policy_update(
+                    "gemma-4-12b-it-qat-ud-q4_k_xl",
+                    main.ModelAliasPolicyRequest(
+                        modality="llm",
+                        enabled=True,
+                        preferred_runtime="localai",
+                        status="uninstalled",
+                        notes="custom alias",
+                    ),
+                )
+            )
+
+        self.assertEqual(result["alias"]["id"], "gemma-4-12b-it-qat-ud-q4_k_xl")
+        self.assertEqual(result["alias"]["modality"], "llm")
+        self.assertEqual(result["alias"]["preferred_runtime"], "localai")
+        self.assertEqual(result["alias"]["preferred_runtime_override"], "localai")
+        self.assertEqual(result["alias"]["alias_policy_source"], "database-custom")
+        self.assertEqual(result["policy"]["modality"], "llm")
+        self.assertEqual(result["policy"]["status"], "uninstalled")
+        self.assertEqual(fake_database.alias_policies["gemma-4-12b-it-qat-ud-q4_k_xl"]["updated_by"], "test-admin")
+        self.assertEqual(audit_events[0]["metadata"]["modality"], "llm")
+
+    def test_alias_policy_update_rejects_new_alias_without_runtime_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(
+                    main.admin_model_alias_policy_update(
+                        "custom-chat",
+                        main.ModelAliasPolicyRequest(enabled=True),
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn("modality", str(raised.exception.detail))
+
     def test_alias_policy_disable_blocks_active_runtime_reservation_dependency(self) -> None:
         reservation = {
             "id": "reservation_alias",
@@ -987,6 +1039,35 @@ class ModelAdminApiTests(unittest.TestCase):
             self.assertEqual(result["alias"]["status"], "uninstalled")
             self.assertNotIn("chat-default", fake_database.alias_policies)
             self.assertEqual(audit_events[0]["event_type"], "model_alias_policy.reset")
+
+    def test_alias_policy_delete_removes_custom_alias(self) -> None:
+        audit_events: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            now = datetime.now(tz=UTC)
+            fake_database.alias_policies["custom-chat"] = {
+                "alias": "custom-chat",
+                "modality": "llm",
+                "enabled": True,
+                "preferred_runtime": "localai",
+                "status": "uninstalled",
+                "idle_timeout_seconds": None,
+                "visibility_roles": [],
+                "notes": "remove me",
+                "updated_by": "test-admin",
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.patch_common(Path(tmp), fake_database, audit_events)
+            asyncio.run(main.refresh_catalog_cache())
+
+            result = asyncio.run(main.admin_model_alias_policy_delete("custom-chat"))
+
+        self.assertTrue(result["deleted"])
+        self.assertIsNone(result["alias"])
+        self.assertEqual(result["previous_policy"]["alias"], "custom-chat")
+        self.assertNotIn("custom-chat", fake_database.alias_policies)
+        self.assertEqual(audit_events[0]["event_type"], "model_alias_policy.reset")
 
     def test_model_download_create_accepts_model_download_secret_name(self) -> None:
         digest = hashlib.sha256(b"private model").hexdigest()

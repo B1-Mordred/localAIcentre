@@ -61,7 +61,9 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertIn("b1_runtime_configurations", snapshot)
         self.assertIn("api_key_secret_name", snapshot["b1_runtime_configurations"])
         self.assertIn("b1_model_alias_policies", snapshot)
+        self.assertIn("modality", snapshot["b1_model_alias_policies"])
         self.assertIn("preferred_runtime", snapshot["b1_model_alias_policies"])
+        self.assertIn("status", snapshot["b1_model_alias_policies"])
         self.assertIn("visibility_roles", snapshot["b1_model_alias_policies"])
         self.assertIn("credential_secret_name", snapshot["b1_model_downloads"])
         self.assertIn("license_accepted", snapshot["b1_model_downloads"])
@@ -82,6 +84,8 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertTrue(any("ALTER TABLE b1_update_plans ADD COLUMN IF NOT EXISTS promotion_result" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_runtime_configurations" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_model_alias_policies" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
+        self.assertTrue(any("ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS modality" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
+        self.assertTrue(any("ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS status" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_network_policies" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE UNIQUE INDEX IF NOT EXISTS b1_jobs_owner_idempotency_key_uq" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS cidr_allowlist" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
@@ -113,7 +117,7 @@ class AlembicConfigTests(unittest.TestCase):
         self.assertEqual(config.get_main_option("sqlalchemy.url"), "postgresql+asyncpg://user:pass@postgres:5432/b1_ai_hub")
         self.assertEqual(Path(config.get_main_option("script_location")), APP_ROOT / "alembic")
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_current_head(), "202607230012")
+        self.assertEqual(scripts.get_current_head(), "202607230013")
 
 
 if __name__ == "__main__":

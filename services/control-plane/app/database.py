@@ -102,8 +102,10 @@ model_alias_policies = Table(
     "b1_model_alias_policies",
     metadata,
     Column("alias", String(128), primary_key=True),
+    Column("modality", String(64), nullable=True),
     Column("enabled", Boolean, nullable=False, default=True),
     Column("preferred_runtime", String(64), nullable=True),
+    Column("status", String(64), nullable=True),
     Column("idle_timeout_seconds", Integer, nullable=True),
     Column("visibility_roles", JSONB, nullable=False, default=list),
     Column("notes", Text, nullable=False, default=""),
@@ -547,8 +549,10 @@ SCHEMA_COMPATIBILITY_SQL = [
     (
         "CREATE TABLE IF NOT EXISTS b1_model_alias_policies ("
         "alias varchar(128) PRIMARY KEY, "
+        "modality varchar(64), "
         "enabled boolean NOT NULL DEFAULT true, "
         "preferred_runtime varchar(64), "
+        "status varchar(64), "
         "idle_timeout_seconds integer, "
         "visibility_roles jsonb NOT NULL DEFAULT '[]'::jsonb, "
         "notes text NOT NULL DEFAULT '', "
@@ -557,6 +561,8 @@ SCHEMA_COMPATIBILITY_SQL = [
         "updated_at timestamp with time zone NOT NULL"
         ")"
     ),
+    "ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS modality varchar(64)",
+    "ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS status varchar(64)",
     "CREATE INDEX IF NOT EXISTS b1_model_alias_policies_enabled_idx ON b1_model_alias_policies (enabled)",
     "ALTER TABLE b1_runtime_reservations ADD COLUMN IF NOT EXISTS idempotency_key varchar(256)",
     "CREATE INDEX IF NOT EXISTS b1_runtime_reservations_status_idx ON b1_runtime_reservations (status)",
@@ -862,8 +868,10 @@ async def upsert_model_alias_policy(payload: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
     existing = await get_model_alias_policy(payload["alias"])
     row = {
+        "modality": None,
         "enabled": True,
         "preferred_runtime": None,
+        "status": None,
         "idle_timeout_seconds": None,
         "visibility_roles": [],
         "notes": "",
@@ -876,8 +884,10 @@ async def upsert_model_alias_policy(payload: dict[str, Any]) -> dict[str, Any]:
     stmt = stmt.on_conflict_do_update(
         index_elements=[model_alias_policies.c.alias],
         set_={
+            "modality": stmt.excluded.modality,
             "enabled": stmt.excluded.enabled,
             "preferred_runtime": stmt.excluded.preferred_runtime,
+            "status": stmt.excluded.status,
             "idle_timeout_seconds": stmt.excluded.idle_timeout_seconds,
             "visibility_roles": stmt.excluded.visibility_roles,
             "notes": stmt.excluded.notes,

@@ -70,7 +70,7 @@ from .auth import (
     verify_api_key,
     verify_password,
 )
-from .catalog import RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, load_catalog, runtime_smoke_summary_for_manifest
+from .catalog import ID_PATTERN, MODALITIES, RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, load_catalog, runtime_smoke_summary_for_manifest
 from .executor import (
     GPU_RUNTIMES,
     GPU_STATE_STEPS,
@@ -314,8 +314,10 @@ class RuntimeExternalConfigRequest(BaseModel):
 
 
 class ModelAliasPolicyRequest(BaseModel):
+    modality: str | None = Field(default=None, max_length=64)
     enabled: bool = True
     preferred_runtime: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=64)
     idle_timeout_seconds: int | None = Field(default=None, ge=30, le=86400)
     visibility_roles: list[Role] = Field(default_factory=list)
     notes: str = Field(default="", max_length=2000)
@@ -5330,8 +5332,10 @@ def public_model_alias_policy(row: dict[str, Any]) -> dict[str, Any]:
     return jsonable_encoder(
         {
             "alias": row["alias"],
+            "modality": row.get("modality"),
             "enabled": bool(row.get("enabled", True)),
             "preferred_runtime": row.get("preferred_runtime"),
+            "status": row.get("status"),
             "idle_timeout_seconds": row.get("idle_timeout_seconds"),
             "visibility_roles": row.get("visibility_roles") or [],
             "notes": row.get("notes") or "",
@@ -5343,22 +5347,44 @@ def public_model_alias_policy(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_model_alias_policy_payload(alias_id: str, payload: ModelAliasPolicyRequest) -> dict[str, Any]:
-    try:
-        alias = catalog_snapshot().require_alias(alias_id)
-    except CatalogError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    alias_id = alias_id.strip()
+    if not ID_PATTERN.fullmatch(alias_id):
+        raise HTTPException(status_code=422, detail="alias must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, underscores, and hyphens")
+    alias = catalog_snapshot().get_alias(alias_id)
+    requested_modality = (payload.modality or "").strip() or None
+    if requested_modality is not None and requested_modality not in MODALITIES:
+        raise HTTPException(status_code=422, detail=f"unsupported alias modality: {requested_modality}")
     preferred_runtime = (payload.preferred_runtime or "").strip() or None
     if preferred_runtime is not None and preferred_runtime not in RUNTIME_NAMES:
         raise HTTPException(status_code=422, detail=f"unsupported preferred runtime: {preferred_runtime}")
-    if preferred_runtime is not None and alias.manifest is not None and preferred_runtime not in alias.runtimes:
+    requested_status = (payload.status or "").strip() or None
+    if requested_status is not None and not ID_PATTERN.fullmatch(requested_status):
+        raise HTTPException(status_code=422, detail="alias status must use lowercase identifier characters")
+    if alias is None:
+        if requested_modality is None:
+            raise HTTPException(status_code=422, detail="new aliases require a modality")
+        if preferred_runtime is None:
+            raise HTTPException(status_code=422, detail="new aliases require a preferred runtime")
+        modality = requested_modality
+        status = requested_status or "uninstalled"
+    else:
+        if requested_modality is not None and requested_modality != alias.alias.modality:
+            raise HTTPException(status_code=422, detail=f"alias {alias_id} is {alias.alias.modality}, not {requested_modality}")
+        modality = requested_modality or alias.alias.modality
+        status = requested_status or alias.alias.status
+        if preferred_runtime is None and alias.alias.policy_source == "database-custom":
+            preferred_runtime = alias.alias.preferred_runtime
+    if preferred_runtime is not None and alias is not None and alias.manifest is not None and preferred_runtime not in alias.runtimes:
         raise HTTPException(
             status_code=422,
             detail=f"runtime {preferred_runtime} is not listed by installed model {alias.manifest.id}@{alias.manifest.version}",
         )
     return {
         "alias": alias_id,
+        "modality": modality,
         "enabled": payload.enabled,
         "preferred_runtime": preferred_runtime,
+        "status": status,
         "idle_timeout_seconds": payload.idle_timeout_seconds,
         "visibility_roles": [role.value for role in payload.visibility_roles],
         "notes": payload.notes.strip(),
@@ -10396,7 +10422,8 @@ async def admin_model_alias_policy_update(
     require_scope(auth, "models:write")
     require_model_admin(auth)
     policy = validate_model_alias_policy_payload(alias_id, payload)
-    current_alias = catalog_snapshot().require_alias(alias_id)
+    alias_id = policy["alias"]
+    current_alias = catalog_snapshot().get_alias(alias_id)
     if not policy["enabled"]:
         active_jobs = await database.count_active_jobs_for_model(f"alias-policy:{alias_id}", [alias_id])
         active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
@@ -10420,7 +10447,7 @@ async def admin_model_alias_policy_update(
             )
     else:
         active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
-        if active_runtime_reservations:
+        if current_alias is not None and active_runtime_reservations:
             resolution_changes = alias_resolution_policy_changes(
                 alias_resolution_policy_snapshot(current_alias),
                 alias_resolution_snapshot_from_policy(current_alias, policy),
@@ -10438,7 +10465,9 @@ async def admin_model_alias_policy_update(
         summary=f"Updated model alias policy {alias_id}",
         metadata={
             "enabled": row["enabled"],
+            "modality": row.get("modality"),
             "preferred_runtime": row.get("preferred_runtime"),
+            "status": row.get("status"),
             "idle_timeout_seconds": row.get("idle_timeout_seconds"),
             "visibility_roles": row.get("visibility_roles") or [],
         },
@@ -10452,12 +10481,16 @@ async def admin_model_alias_policy_delete(alias_id: str, authorization: str | No
     auth = await authenticate(authorization)
     require_scope(auth, "models:write")
     require_model_admin(auth)
-    try:
-        current_alias = catalog_snapshot().require_alias(alias_id)
-    except CatalogError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    alias_id = alias_id.strip()
+    if not ID_PATTERN.fullmatch(alias_id):
+        raise HTTPException(status_code=422, detail="alias must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, underscores, and hyphens")
+    current_alias = catalog_snapshot().get_alias(alias_id)
+    if current_alias is None:
+        row = await database.get_model_alias_policy(alias_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"unknown model alias: {alias_id}")
     active_runtime_reservations = await active_runtime_reservations_for_alias(alias_id)
-    if active_runtime_reservations:
+    if current_alias is not None and active_runtime_reservations:
         resolution_changes = alias_resolution_policy_changes(
             alias_resolution_policy_snapshot(current_alias),
             alias_resolution_reset_snapshot(current_alias),
@@ -10475,8 +10508,12 @@ async def admin_model_alias_policy_delete(alias_id: str, authorization: str | No
         summary=f"Reset model alias policy {alias_id}",
         metadata={"had_policy": row is not None},
     )
-    alias = catalog_snapshot().require_alias(alias_id)
-    return {"deleted": row is not None, "alias": alias.to_openai_model(), "previous_policy": public_model_alias_policy(row) if row is not None else None}
+    alias = catalog_snapshot().get_alias(alias_id)
+    return {
+        "deleted": row is not None,
+        "alias": alias.to_openai_model() if alias is not None else None,
+        "previous_policy": public_model_alias_policy(row) if row is not None else None,
+    }
 
 
 @app.post("/admin/models/install-plan")

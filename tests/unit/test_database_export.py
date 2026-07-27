@@ -192,8 +192,10 @@ class DatabaseExportTests(unittest.TestCase):
                 "b1_model_alias_policies": [
                     {
                         "alias": "chat-default",
+                        "modality": "llm",
                         "enabled": False,
                         "preferred_runtime": "localai",
+                        "status": "uninstalled",
                         "idle_timeout_seconds": 600,
                         "visibility_roles": ["admin", "operator"],
                         "notes": "maintenance",
@@ -270,7 +272,9 @@ class DatabaseExportTests(unittest.TestCase):
         self.assertEqual(update_plans["rows"][0]["staged_at"], created.isoformat())
         self.assertEqual(update_plans["rows"][0]["promotion_requested_at"], created.isoformat())
         alias_policies = next(table for table in payload["tables"] if table["schema"]["name"] == "b1_model_alias_policies")
+        self.assertEqual(alias_policies["rows"][0]["modality"], "llm")
         self.assertFalse(alias_policies["rows"][0]["enabled"])
+        self.assertEqual(alias_policies["rows"][0]["status"], "uninstalled")
         self.assertEqual(alias_policies["rows"][0]["visibility_roles"], ["admin", "operator"])
 
     def test_import_plan_reports_upserts_for_all_export_tables(self) -> None:

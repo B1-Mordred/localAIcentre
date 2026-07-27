@@ -1322,8 +1322,10 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
         data,
         {
             "alias",
+            "modality",
             "enabled",
             "preferred_runtime",
+            "status",
             "idle_timeout_seconds",
             "visibility_roles",
             "notes",
@@ -1337,6 +1339,12 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
     enabled = data.get("enabled", True)
     if not isinstance(enabled, bool):
         raise CatalogError(f"{context}.enabled must be a boolean")
+    modality = data.get("modality")
+    if modality in {"", None}:
+        modality = None
+    if modality is not None:
+        if not isinstance(modality, str) or modality not in MODALITIES:
+            raise CatalogError(f"{context}.modality is unsupported: {modality}")
     preferred_runtime = data.get("preferred_runtime")
     if preferred_runtime in {"", None}:
         preferred_runtime = None
@@ -1351,10 +1359,17 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
     notes = data.get("notes", "")
     if not isinstance(notes, str):
         raise CatalogError(f"{context}.notes must be a string")
+    status = data.get("status")
+    if status in {"", None}:
+        status = None
+    if status is not None and (not isinstance(status, str) or not status.strip()):
+        raise CatalogError(f"{context}.status must be a non-empty string")
     return {
         "alias": alias,
+        "modality": modality,
         "enabled": enabled,
         "preferred_runtime": preferred_runtime,
+        "status": status.strip() if isinstance(status, str) else None,
         "idle_timeout_seconds": idle_timeout_seconds,
         "visibility_roles": tuple(visibility_roles),
         "notes": notes,
@@ -1370,21 +1385,41 @@ def _apply_alias_policies(aliases: list[AliasDefinition], alias_policies: list[d
         policies[parsed["alias"]] = parsed
     overridden: list[AliasDefinition] = []
     for alias in aliases:
-        policy = policies.get(alias.alias)
+        policy = policies.pop(alias.alias, None)
         if policy is None:
             overridden.append(alias)
             continue
+        if policy["modality"] is not None and policy["modality"] != alias.modality:
+            raise CatalogError(f"alias policy {alias.alias} modality {policy['modality']} does not match seed modality {alias.modality}")
         overridden.append(
             AliasDefinition(
                 alias=alias.alias,
                 modality=alias.modality,
                 preferred_runtime=alias.preferred_runtime,
-                status=alias.status,
+                status=policy["status"] or alias.status,
                 enabled=policy["enabled"],
                 preferred_runtime_override=policy["preferred_runtime"],
                 idle_timeout_seconds=policy["idle_timeout_seconds"],
                 visibility_roles=policy["visibility_roles"],
                 policy_source="database",
+                notes=policy["notes"],
+            )
+        )
+    for alias_id in sorted(policies):
+        policy = policies[alias_id]
+        if policy["modality"] is None or policy["preferred_runtime"] is None:
+            continue
+        overridden.append(
+            AliasDefinition(
+                alias=alias_id,
+                modality=policy["modality"],
+                preferred_runtime=policy["preferred_runtime"],
+                status=policy["status"] or "uninstalled",
+                enabled=policy["enabled"],
+                preferred_runtime_override=policy["preferred_runtime"],
+                idle_timeout_seconds=policy["idle_timeout_seconds"],
+                visibility_roles=policy["visibility_roles"],
+                policy_source="database-custom",
                 notes=policy["notes"],
             )
         )
