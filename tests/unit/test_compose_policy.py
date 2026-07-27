@@ -307,10 +307,23 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_SESSION_TTL_SECONDS"], "${B1_SESSION_TTL_SECONDS:-28800}")
         self.assertIn("B1_CORS_ALLOW_ORIGINS", environment)
 
-    def test_frontends_receive_configured_api_host_at_build_time(self) -> None:
+    def test_frontends_default_to_same_origin_api_with_public_api_snippets(self) -> None:
         expected = "https://${B1_HOST_API:-api.ai.b1.germering}"
-        self.assertEqual(self.compose["services"]["control-center"]["build"]["args"]["VITE_B1_API_BASE"], expected)
-        self.assertEqual(self.compose["services"]["media-studio"]["build"]["args"]["VITE_B1_API_BASE"], expected)
+        self.assertEqual(self.compose["services"]["control-center"]["build"]["network"], "host")
+        self.assertEqual(self.compose["services"]["media-studio"]["build"]["network"], "host")
+        self.assertEqual(self.compose["services"]["control-center"]["build"]["args"]["VITE_B1_API_BASE"], "")
+        self.assertEqual(self.compose["services"]["media-studio"]["build"]["args"]["VITE_B1_API_BASE"], "")
+        self.assertEqual(self.compose["services"]["control-center"]["build"]["args"]["VITE_B1_PUBLIC_API_BASE"], expected)
+        self.assertEqual(self.compose["services"]["media-studio"]["build"]["args"]["VITE_B1_PUBLIC_API_BASE"], expected)
+
+    def test_browser_ui_hosts_proxy_same_origin_api_routes(self) -> None:
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        control_block = caddyfile[caddyfile.index("{$B1_HOST_CONTROL"):caddyfile.index("{$B1_HOST_MEDIA")]
+        media_block = caddyfile[caddyfile.index("{$B1_HOST_MEDIA"):caddyfile.index("{$B1_HOST_API")]
+        for block, app_backend in ((control_block, "control-center:8080"), (media_block, "media-studio:8080")):
+            self.assertIn("/auth/* /admin/* /v1/* /modelhub/* /workflows/* /healthz /openapi.json", block)
+            self.assertIn("reverse_proxy control-plane:8000", block)
+            self.assertIn(f"reverse_proxy {app_backend}", block)
 
     def test_gateway_tls_can_use_internal_ca_or_supplied_certificates(self) -> None:
         gateway = self.compose["services"]["gateway"]

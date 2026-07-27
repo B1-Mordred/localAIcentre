@@ -51,8 +51,16 @@
 	import b1_tls
 	import security_headers
 	import request_limits
-	reverse_proxy control-center:8080 {
-		header_up -X-B1-Compatibility
+	@control_api path /auth/* /admin/* /v1/* /modelhub/* /workflows/* /healthz /openapi.json
+	handle @control_api {
+		reverse_proxy control-plane:8000 {
+			header_up -X-B1-Compatibility
+		}
+	}
+	handle {
+		reverse_proxy control-center:8080 {
+			header_up -X-B1-Compatibility
+		}
 	}
 }
 
@@ -60,8 +68,16 @@
 	import b1_tls
 	import media_capture_security_headers
 	import request_limits
-	reverse_proxy media-studio:8080 {
-		header_up -X-B1-Compatibility
+	@media_api path /auth/* /admin/* /v1/* /modelhub/* /workflows/* /healthz /openapi.json
+	handle @media_api {
+		reverse_proxy control-plane:8000 {
+			header_up -X-B1-Compatibility
+		}
+	}
+	handle {
+		reverse_proxy media-studio:8080 {
+			header_up -X-B1-Compatibility
+		}
 	}
 }
 

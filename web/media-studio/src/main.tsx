@@ -181,7 +181,7 @@ type AuthStatus = {
   csrf_token?: string | null;
 };
 
-const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
+const API_BASE = (import.meta.env.VITE_B1_API_BASE || window.location.origin).replace(/\/+$/, "");
 const API_TOKEN = import.meta.env.VITE_B1_API_TOKEN ?? "";
 const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
 const TERMINAL_STATES = new Set(["completed", "cancelled", "failed", "expired", "recovery_required"]);

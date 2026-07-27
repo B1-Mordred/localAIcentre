@@ -27,6 +27,8 @@ Operators can see queue depth, active jobs, oldest wait, recent run-time p95, co
 
 Control Center and Media Studio authenticate through the control-plane `/auth/*` endpoints. First boot creates the initial administrator from the web UI after the operator enters the generated bootstrap key. Later sessions use username/password login, an HttpOnly session cookie, and the CSRF token returned by `/auth/status` or `/auth/login`. The UIs automatically include `X-B1-CSRF` on mutating requests. Service clients should use scoped bearer tokens instead of browser sessions.
 
+The browser UIs call the control-plane through same-origin gateway routes on `control.ai.b1.germering` and `media.ai.b1.germering` for `/auth/*`, `/admin/*`, `/v1/*`, `/modelhub/*`, and `/workflows/*`. This avoids browser-only failures when an operator has opened the Control Center but has not separately trusted the internal CA certificate for `api.ai.b1.germering`. External clients and snippets still use `https://api.ai.b1.germering/`.
+
 ## API Clients
 
 Administrators create scoped API clients from Control Center or the `/admin/api-clients` API. API client and Model Hub sync-client management is administrator-only because these routes issue or mutate credentials. The full key is shown once and only a salted hash is stored.

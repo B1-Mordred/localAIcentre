@@ -1655,7 +1655,8 @@ type WorkflowTestResult = {
   execution_summary?: WorkflowExecutionSummary;
 };
 
-const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";
+const API_BASE = (import.meta.env.VITE_B1_API_BASE || window.location.origin).replace(/\/+$/, "");
+const PUBLIC_API_BASE = (import.meta.env.VITE_B1_PUBLIC_API_BASE || "https://api.ai.b1.germering").replace(/\/+$/, "");
 const CSRF_STORAGE_KEY = "b1_ai_hub_csrf";
 const apiClient = new B1ApiClient({
   baseUrl: API_BASE,
@@ -1668,7 +1669,7 @@ function apiUrl(path: string): string {
 }
 
 function accessSnippets(): AccessSnippet[] {
-  const unifiedBase = `${API_BASE}/v1`;
+  const unifiedBase = `${PUBLIC_API_BASE}/v1`;
   return [
     {
       id: "curl",
@@ -1691,7 +1692,7 @@ Default model: chat-default`
       code: `mkdir -p ~/.config/b1-ai-hub
 install -m 600 /dev/null ~/.config/b1-ai-hub/comfyui-remote-nodes.key
 # paste the scoped API key into ~/.config/b1-ai-hub/comfyui-remote-nodes.key
-export B1_AI_HUB_API_BASE=${API_BASE}
+export B1_AI_HUB_API_BASE=${PUBLIC_API_BASE}
 export B1_AI_HUB_API_KEY_FILE=~/.config/b1-ai-hub/comfyui-remote-nodes.key
 export B1_AI_HUB_DOWNLOAD_DIR=~/ComfyUI/output/b1-ai-hub
 # optional when Caddy's internal CA is not trusted globally:

@@ -99,6 +99,13 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertNotIn("export B1_API_BASE=", self.source)
         self.assertNotIn("export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>", self.source)
 
+    def test_browser_fetches_use_same_origin_api_base(self) -> None:
+        self.assertIn("window.location.origin", self.source)
+        self.assertIn("const PUBLIC_API_BASE", self.source)
+        self.assertIn("VITE_B1_PUBLIC_API_BASE", self.source)
+        self.assertIn("const unifiedBase = `${PUBLIC_API_BASE}/v1`;", self.source)
+        self.assertNotIn('const API_BASE = import.meta.env.VITE_B1_API_BASE ?? "https://api.ai.b1.germering";', self.source)
+
     def test_remote_node_docs_prefer_key_file_credentials(self) -> None:
         for name, text in self.external_consumer_docs.items():
             with self.subTest(name=name):

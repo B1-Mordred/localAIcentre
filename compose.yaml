@@ -355,8 +355,10 @@ services:
   control-center:
     build:
       context: ./web/control-center
+      network: host
       args:
-        VITE_B1_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
+        VITE_B1_API_BASE: ""
+        VITE_B1_PUBLIC_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
     <<: *service-defaults
     read_only: true
     depends_on:
@@ -374,8 +376,10 @@ services:
   media-studio:
     build:
       context: ./web/media-studio
+      network: host
       args:
-        VITE_B1_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
+        VITE_B1_API_BASE: ""
+        VITE_B1_PUBLIC_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
     <<: *service-defaults
     read_only: true
     depends_on:
