@@ -1355,12 +1355,14 @@ type ModelDownloadPlan = {
   can_download: boolean;
   already_available: boolean;
   blockers: string[];
+  warnings: string[];
   requires_license_acceptance: boolean;
   license_accepted: boolean;
   model: RuntimeSmokeCarrier & { display_name: string; source: { url: string; revision: string }; license: { name: string; redistribution: string } };
   source_url: string;
   resource_decision: { label: string; reason: string };
   resource_override?: boolean;
+  download_override?: boolean;
   profile_compatibility?: ProfileCompatibilityReport[];
   target_sha256: string;
   target_size_bytes: number;
@@ -2178,6 +2180,7 @@ function Models() {
   const [hfGgufAlias, setHfGgufAlias] = useState("chat-default");
   const [draftManifest, setDraftManifest] = useState<ModelManifestDraft | null>(null);
   const [allowResourceOverride, setAllowResourceOverride] = useState(false);
+  const [allowDownloadOverride, setAllowDownloadOverride] = useState(false);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [removalPlan, setRemovalPlan] = useState<ModelRemovalPlan | null>(null);
@@ -2380,7 +2383,7 @@ function Models() {
     apiFetch(`/admin/models/download-plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride })
+      body: JSON.stringify({ ...body, allow_resource_override: allowResourceOverride, allow_download_override: allowDownloadOverride })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail?.message ?? body.detail ?? `${response.status}`))))
       .then((payload) => {
@@ -2407,6 +2410,7 @@ function Models() {
         confirm: true,
         accept_license: Boolean(downloadPlan?.requires_license_acceptance),
         allow_resource_override: allowResourceOverride,
+        allow_download_override: allowDownloadOverride,
         credential_secret_name: downloadCredentialSecretName.trim() || null
       })
     })
@@ -2627,6 +2631,10 @@ function Models() {
           <input type="checkbox" checked={allowResourceOverride} onChange={(event) => setAllowResourceOverride(event.target.checked)} />
           <span>Resource override</span>
         </label>
+        <label className="inline-check" title="Queue a model download despite alias, profile, runtime, operation, or resource warnings; safety and licence blockers still apply">
+          <input type="checkbox" checked={allowDownloadOverride} onChange={(event) => setAllowDownloadOverride(event.target.checked)} />
+          <span>Download override</span>
+        </label>
         <button title="Plan remote manifest install" onClick={() => planInstall()} disabled={busy || !remoteSourceReady}><ListChecks size={16} /></button>
         <button title="Install remote manifest" onClick={() => installModel()} disabled={busy || !remoteSourceReady}><Archive size={16} /></button>
         <button title="Plan remote manifest download" onClick={() => planDownload()} disabled={busy || !remoteSourceReady}><Download size={16} /></button>
@@ -2666,6 +2674,8 @@ function Models() {
           <small>Profiles: {formatProfileCompatibility(downloadPlan.profile_compatibility)}</small>
           <small>{downloadPlan.model.license.name} / {downloadPlan.model.license.redistribution}{downloadPlan.requires_license_acceptance ? ` / licence ${downloadPlan.license_accepted ? "accepted" : "acceptance required"}` : ""}</small>
           <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
+          {downloadPlan.download_override && <small>Download override requested</small>}
+          {downloadPlan.warnings?.length > 0 && <small>Warnings: {downloadPlan.warnings.join("; ")}</small>}
           {runtimeSmokeSummaryFromCarrier(downloadPlan.model)?.configured && <small>Smoke: {runtimeSmokeLine(downloadPlan.model)}</small>}
           {downloadPlan.files.length > 1 && <small>{downloadPlan.files.map((file) => file.path).join(" / ")}</small>}
           {downloadPlan.blockers.length > 0 && <small>{downloadPlan.blockers.join("; ")}</small>}

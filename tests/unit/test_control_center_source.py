@@ -437,8 +437,12 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Queue remote manifest download", self.source)
         self.assertIn("accept_license: Boolean(downloadPlan?.requires_license_acceptance)", self.source)
         self.assertIn("const [allowResourceOverride, setAllowResourceOverride]", self.source)
+        self.assertIn("const [allowDownloadOverride, setAllowDownloadOverride]", self.source)
         self.assertIn("allow_resource_override: allowResourceOverride", self.source)
+        self.assertIn("allow_download_override: allowDownloadOverride", self.source)
         self.assertIn("Resource override", self.source)
+        self.assertIn("Download override", self.source)
+        self.assertIn("downloadPlan.warnings", self.source)
         self.assertIn("acceptance required", self.source)
 
     def test_models_tab_runs_installed_model_smoke_tests(self) -> None:

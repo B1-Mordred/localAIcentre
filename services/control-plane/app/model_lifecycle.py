@@ -1533,6 +1533,7 @@ def build_download_plan(
     known_aliases: set[str] | None = None,
     model_profiles: list[ModelProfile] | None = None,
     allow_resource_override: bool = False,
+    allow_download_override: bool = False,
 ) -> dict[str, Any]:
     files = downloadable_manifest_files(manifest)
     effective_policy = policy or ResourcePolicy()
@@ -1546,18 +1547,30 @@ def build_download_plan(
         manifest,
         model_profiles or [],
         effective_policy,
-        allow_resource_override=allow_resource_override,
+        allow_resource_override=allow_resource_override or allow_download_override,
     )
     profile_blockers = profile_blockers_for_reports(profile_compatibility)
-    resource_allowed = bool(decision.accepted or allow_resource_override)
+    profile_warnings = profile_warnings_for_reports(profile_compatibility)
+    resource_allowed = bool(decision.accepted or allow_resource_override or allow_download_override)
     blockers: list[str] = []
+    warnings: list[str] = list(profile_warnings)
     if not source_allowed:
         blockers.append("source URL is not allowed by import policy")
     if unknown_aliases:
-        blockers.append(f"manifest aliases are not defined in the public alias seed: {', '.join(unknown_aliases)}")
-    blockers.extend(profile_blockers)
+        message = f"manifest aliases are not defined in the public alias seed: {', '.join(unknown_aliases)}"
+        if allow_download_override:
+            warnings.append(message)
+        else:
+            blockers.append(message)
+    if profile_blockers:
+        if allow_download_override:
+            warnings.extend(profile_blockers)
+        else:
+            blockers.extend(profile_blockers)
     if policy is not None and not resource_allowed:
         blockers.append(decision.reason)
+    elif policy is not None and allow_download_override and not decision.accepted:
+        warnings.append(decision.reason)
     if requires_license_acceptance and not accept_license:
         blockers.append("licence acceptance is required")
     duplicate_hashes = sorted({file.sha256 for file in files if sum(1 for item in files if item.sha256 == file.sha256) > 1})
@@ -1586,11 +1599,13 @@ def build_download_plan(
         "can_download": can_download,
         "already_available": already_available,
         "blockers": blockers,
+        "warnings": warnings,
         "requires_license_acceptance": requires_license_acceptance,
         "license_accepted": accept_license,
         "source_url": manifest.source.url,
         "resource_decision": asdict(decision),
         "resource_override": allow_resource_override,
+        "download_override": allow_download_override,
         "profile_compatibility": profile_compatibility,
         "target_sha256": first_file["target_sha256"] if first_file else None,
         "target_size_bytes": total_size_bytes,
@@ -1706,6 +1721,14 @@ def profile_blockers_for_reports(reports: list[dict[str, Any]]) -> list[str]:
         f"profile {report['profile_id']}: {blocker}"
         for report in reports
         for blocker in report["blockers"]
+    ]
+
+
+def profile_warnings_for_reports(reports: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"profile {report['profile_id']}: {warning}"
+        for report in reports
+        for warning in report["warnings"]
     ]
 
 

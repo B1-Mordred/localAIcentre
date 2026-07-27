@@ -1004,6 +1004,11 @@
             "title": "Accept License",
             "type": "boolean"
           },
+          "allow_download_override": {
+            "default": false,
+            "title": "Allow Download Override",
+            "type": "boolean"
+          },
           "allow_resource_override": {
             "default": false,
             "title": "Allow Resource Override",
@@ -1175,6 +1180,11 @@
             "title": "Accept License",
             "type": "boolean"
           },
+          "allow_download_override": {
+            "default": false,
+            "title": "Allow Download Override",
+            "type": "boolean"
+          },
           "allow_resource_override": {
             "default": false,
             "title": "Allow Resource Override",
@@ -1225,6 +1235,11 @@
           "accept_license": {
             "default": false,
             "title": "Accept License",
+            "type": "boolean"
+          },
+          "allow_download_override": {
+            "default": false,
+            "title": "Allow Download Override",
             "type": "boolean"
           },
           "allow_resource_override": {

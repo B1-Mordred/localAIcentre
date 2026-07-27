@@ -463,6 +463,57 @@ class ModelLifecycleTests(unittest.TestCase):
             self.assertTrue(overridden["resource_override"])
             self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
 
+    def test_download_override_allows_governance_warnings_but_not_safety_blockers(self) -> None:
+        digest = hashlib.sha256(b"download governance override").hexdigest()
+        catalog = load_catalog(ROOT / "model-catalog", ResourcePolicy())
+        payload = manifest_payload(
+            digest,
+            16,
+            source_url="https://downloads.example.org/model.gguf",
+            source_type="direct-url",
+        )
+        payload["runtimes"] = ["comfyui"]
+        payload["preferred_runtime"] = "comfyui"
+        payload["resource_estimate"] = {"vram_gib": 15.0, "ram_gib": 20.0, "disk_gib": 24.0, "context_tokens": 8192}
+        manifest = parse_manifest_payload(payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blocked = model_lifecycle.build_download_plan(
+                manifest,
+                root,
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+            )
+            overridden = model_lifecycle.build_download_plan(
+                manifest,
+                root,
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+                allow_download_override=True,
+            )
+            unsafe_payload = dict(payload)
+            unsafe_payload["source"] = {"type": "direct-url", "url": "https://127.0.0.1/model.gguf", "revision": "1.0.0"}
+            unsafe = model_lifecycle.build_download_plan(
+                parse_manifest_payload(unsafe_payload),
+                root,
+                policy=ResourcePolicy(),
+                known_aliases={"chat-default"},
+                model_profiles=catalog.list_profiles(),
+                allow_download_override=True,
+            )
+
+        self.assertFalse(blocked["can_download"])
+        self.assertTrue(any("preferred runtime comfyui" in item for item in blocked["blockers"]))
+        self.assertTrue(overridden["can_download"])
+        self.assertTrue(overridden["download_override"])
+        self.assertEqual(overridden["blockers"], [])
+        self.assertTrue(any("preferred runtime comfyui" in item for item in overridden["warnings"]))
+        self.assertTrue(any("exceeds profile envelope" in item for item in overridden["warnings"]))
+        self.assertFalse(unsafe["can_download"])
+        self.assertIn("source URL is not allowed by import policy", unsafe["blockers"])
+
     def test_download_plan_supports_multi_file_base_url(self) -> None:
         first = b"first-model-file"
         second_partial = b"token"

@@ -1123,11 +1123,19 @@ class ModelAdminApiTests(unittest.TestCase):
         payload = manifest_payload(digest, len(b"profile download"))
         payload["source"] = {"type": "direct-url", "url": "https://downloads.example.org/model.gguf", "revision": "1.0.0"}
         payload["resource_estimate"] = {"vram_gib": 9.0, "ram_gib": 12.0, "disk_gib": 12.0, "context_tokens": 8192}
+        audit_events: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as tmp:
-            self.patch_common(Path(tmp), FakeDatabase({}, [], active_jobs=0))
+            fake_database = FakeDatabase({}, [], active_jobs=0)
+            self.patch_common(Path(tmp), fake_database, audit_events)
 
             blocked = asyncio.run(main.admin_model_download_plan(main.ModelInstallPlanRequest(manifest=payload)))
             overridden = asyncio.run(main.admin_model_download_plan(main.ModelInstallPlanRequest(manifest=payload, allow_resource_override=True)))
+            download_override = asyncio.run(main.admin_model_download_plan(main.ModelInstallPlanRequest(manifest=payload, allow_download_override=True)))
+            queued = asyncio.run(
+                main.admin_model_download_create(
+                    main.ModelDownloadCreate(manifest=payload, confirm=True, allow_download_override=True)
+                )
+            )
 
         self.assertFalse(blocked["can_download"])
         self.assertEqual(blocked["profile_compatibility"][0]["profile_id"], "everyday-llm-7-9b-q4")
@@ -1135,6 +1143,13 @@ class ModelAdminApiTests(unittest.TestCase):
         self.assertTrue(overridden["can_download"])
         self.assertTrue(overridden["resource_override"])
         self.assertGreaterEqual(len(overridden["profile_compatibility"][0]["warnings"]), 1)
+        self.assertTrue(download_override["can_download"])
+        self.assertTrue(download_override["download_override"])
+        self.assertEqual(download_override["blockers"], [])
+        self.assertGreaterEqual(len(download_override["warnings"]), 1)
+        self.assertEqual(queued["download"]["status"], "queued")
+        self.assertTrue(queued["plan"]["download_override"])
+        self.assertTrue(audit_events[0]["metadata"]["download_override"])
 
     def test_manifest_install_permissions_block_operator_download_and_install_mutations(self) -> None:
         data = b"admin-only model"

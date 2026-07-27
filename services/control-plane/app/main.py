@@ -436,6 +436,7 @@ class ModelInstallPlanRequest(BaseModel):
     manifest_url: str | None = Field(default=None, max_length=2048)
     accept_license: bool = False
     allow_resource_override: bool = False
+    allow_download_override: bool = False
 
 
 class HuggingFaceGgufManifestDraftRequest(BaseModel):
@@ -5708,7 +5709,13 @@ def install_plan_for_manifest(manifest: Any, payload: ModelInstallPlanRequest) -
     )
 
 
-def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False, allow_resource_override: bool = False) -> dict[str, Any]:
+def download_plan_for_manifest(
+    manifest: Any,
+    *,
+    accept_license: bool = False,
+    allow_resource_override: bool = False,
+    allow_download_override: bool = False,
+) -> dict[str, Any]:
     catalog = catalog_snapshot()
     try:
         return model_lifecycle.build_download_plan(
@@ -5719,6 +5726,7 @@ def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False, a
             known_aliases=set(catalog.aliases_by_id),
             model_profiles=catalog.list_profiles(),
             allow_resource_override=allow_resource_override,
+            allow_download_override=allow_download_override,
         )
     except model_lifecycle.ModelLifecycleError as exc:
         total_size_bytes = sum(file.size_bytes for file in manifest.files)
@@ -5731,11 +5739,13 @@ def download_plan_for_manifest(manifest: Any, *, accept_license: bool = False, a
             "can_download": False,
             "already_available": False,
             "blockers": [str(exc)],
+            "warnings": [],
             "requires_license_acceptance": bool(manifest.license.acceptance_required),
             "license_accepted": accept_license,
             "source_url": manifest.source.url,
             "resource_decision": asdict(decision),
             "resource_override": allow_resource_override,
+            "download_override": allow_download_override,
             "profile_compatibility": [],
             "target_sha256": manifest.files[0].sha256 if manifest.files else None,
             "target_size_bytes": total_size_bytes,
@@ -10502,7 +10512,12 @@ async def admin_model_download_plan(payload: ModelInstallPlanRequest, authorizat
     require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
-    return download_plan_for_manifest(manifest, accept_license=payload.accept_license, allow_resource_override=payload.allow_resource_override)
+    return download_plan_for_manifest(
+        manifest,
+        accept_license=payload.accept_license,
+        allow_resource_override=payload.allow_resource_override,
+        allow_download_override=payload.allow_download_override,
+    )
 
 
 @app.get("/admin/models/downloads")
@@ -10531,7 +10546,12 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
     require_model_admin(auth)
     manifest = await manifest_for_install_request(payload)
     require_manifest_role_action(manifest, auth, "install")
-    plan = download_plan_for_manifest(manifest, accept_license=payload.accept_license, allow_resource_override=payload.allow_resource_override)
+    plan = download_plan_for_manifest(
+        manifest,
+        accept_license=payload.accept_license,
+        allow_resource_override=payload.allow_resource_override,
+        allow_download_override=payload.allow_download_override,
+    )
     credential_secret_name = await validate_model_download_secret_name(payload.credential_secret_name)
     if not payload.confirm:
         raise HTTPException(status_code=409, detail={"message": "download requires explicit confirmation", "plan": plan})
@@ -10569,6 +10589,9 @@ async def admin_model_download_create(payload: ModelDownloadCreate, authorizatio
             "target_size_bytes": plan["target_size_bytes"],
             "already_available": plan.get("already_available", False),
             "authenticated": bool(credential_secret_name),
+            "resource_override": bool(plan.get("resource_override")),
+            "download_override": bool(plan.get("download_override")),
+            "warning_count": len(plan.get("warnings") or []),
         },
     )
     return {"download": public_model_download(row), "plan": plan}
