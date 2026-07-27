@@ -1418,6 +1418,8 @@ type ModelDownloadRecord = {
   error_message?: string | null;
 };
 
+const ACTIVE_DOWNLOAD_REFRESH_STATES = new Set(["queued", "running", "pausing", "cancelling"]);
+
 type ModelBlobQuarantinePlan = {
   model_ref: string;
   model_status: string;
@@ -2209,8 +2211,8 @@ function Models() {
     notes: alias.notes ?? ""
   });
 
-  const loadModels = () => {
-    setMessage("loading");
+  const loadModels = (quiet = false) => {
+    if (!quiet) setMessage("loading");
     Promise.all([
       apiFetch(`/admin/models`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`models ${response.status}`))),
       apiFetch(`/admin/models/downloads?limit=20`).then((response) => response.ok ? response.json() : Promise.reject(new Error(`downloads ${response.status}`))),
@@ -2230,12 +2232,18 @@ function Models() {
         setAcceptanceCoverage(modelPayload.acceptance_model_measurements ?? null);
         setDownloads(downloadPayload.data ?? []);
         setDownloadSecrets(secretPayload.data ?? []);
-        setMessage("ready");
+        if (!quiet) setMessage("ready");
       })
       .catch((err: Error) => setMessage(err.message));
   };
 
   useEffect(loadModels, []);
+
+  useEffect(() => {
+    if (!downloads.some((download) => ACTIVE_DOWNLOAD_REFRESH_STATES.has(download.status))) return;
+    const timer = window.setInterval(() => loadModels(true), 5000);
+    return () => window.clearInterval(timer);
+  }, [downloads]);
 
   const updateAliasForm = <K extends keyof ModelAliasPolicyForm>(aliasId: string, key: K, value: ModelAliasPolicyForm[K]) => {
     setAliasForms((current) => ({
@@ -2592,7 +2600,7 @@ function Models() {
     <section className="panel wide">
       <SectionTitle icon={<Boxes size={18} />} title="Models" />
       <div className="toolbar">
-        <button title="Refresh catalog" onClick={loadModels} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <button title="Refresh catalog" onClick={() => loadModels()} disabled={busy}><RefreshCw size={16} />Refresh</button>
         <label>
           Download token
           {downloadSecrets.length ? (
@@ -2679,6 +2687,7 @@ function Models() {
           <small>Profiles: {formatProfileCompatibility(downloadPlan.profile_compatibility)}</small>
           <small>{downloadPlan.model.license.name} / {downloadPlan.model.license.redistribution}{downloadPlan.requires_license_acceptance ? ` / licence ${downloadPlan.license_accepted ? "accepted" : "acceptance required"}` : ""}</small>
           <small>{downloadPlan.file_count} file{downloadPlan.file_count === 1 ? "" : "s"} from {downloadPlan.source_url}</small>
+          {downloadPlan.can_download && <small>Live progress appears in the Downloads table below after queueing.</small>}
           {downloadPlan.download_override && <small>Download override requested</small>}
           {downloadPlan.warnings?.length > 0 && <small>Warnings: {downloadPlan.warnings.join("; ")}</small>}
           {runtimeSmokeSummaryFromCarrier(downloadPlan.model)?.configured && <small>Smoke: {runtimeSmokeLine(downloadPlan.model)}</small>}

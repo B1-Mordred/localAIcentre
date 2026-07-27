@@ -445,6 +445,9 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("Resource override", self.source)
         self.assertIn("Download override", self.source)
         self.assertIn("downloadPlan.warnings", self.source)
+        self.assertIn("ACTIVE_DOWNLOAD_REFRESH_STATES", self.source)
+        self.assertIn("window.setInterval(() => loadModels(true), 5000)", self.source)
+        self.assertIn("Live progress appears in the Downloads table below after queueing.", self.source)
         self.assertIn("acceptance required", self.source)
 
     def test_models_tab_runs_installed_model_smoke_tests(self) -> None:
