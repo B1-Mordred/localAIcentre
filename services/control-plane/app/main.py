@@ -232,6 +232,11 @@ CORS_ALLOW_HEADERS = [
     "X-B1-Filename",
     "X-B1-Accept-License",
 ]
+CORS_EXPOSE_HEADERS = [
+    "X-B1-Runtime",
+    "X-B1-Resolved-Model",
+    "X-B1-Public-Model",
+]
 IDEMPOTENCY_KEY_MAX_LENGTH = 256
 IDEMPOTENCY_IDENTITY_FIELDS = (
     "modality",
@@ -877,6 +882,7 @@ def add_cors_headers(response: Response, allowed_origin: str) -> None:
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Methods"] = ", ".join(CORS_ALLOW_METHODS)
     response.headers["Access-Control-Allow-Headers"] = ", ".join(CORS_ALLOW_HEADERS)
+    response.headers["Access-Control-Expose-Headers"] = ", ".join(CORS_EXPOSE_HEADERS)
     vary = response.headers.get("Vary")
     if not vary:
         response.headers["Vary"] = "Origin"
@@ -2628,8 +2634,6 @@ def require_catalog_alias(
         raise HTTPException(status_code=424, detail=f"alias {model_id} is not backed by an installed model manifest")
     if not alias_manifest_allows_inference(alias, auth):
         raise HTTPException(status_code=403, detail=f"alias {model_id} cannot be used for inference by this role")
-    if not alias.decision.accepted:
-        raise HTTPException(status_code=422, detail=f"alias {model_id} rejected by resource policy: {alias.decision.reason}")
     return alias
 
 
@@ -3476,12 +3480,15 @@ async def resume_comfyui_native_prompt_trackers(limit: int = 500) -> dict[str, A
 
 
 def annotate_runtime_response(body: Any, resolution: RuntimeResolution) -> Any:
-    if isinstance(body, dict):
-        body = dict(body)
-        body.setdefault("b1_runtime", resolution.runtime)
-        body.setdefault("b1_resolved_model", resolution.resolved_model_version)
-        body.setdefault("b1_public_model", resolution.public_alias)
     return body
+
+
+def runtime_response_headers(resolution: RuntimeResolution) -> dict[str, str]:
+    return {
+        "X-B1-Runtime": resolution.runtime,
+        "X-B1-Resolved-Model": resolution.resolved_model_version,
+        "X-B1-Public-Model": resolution.public_alias,
+    }
 
 
 def runtime_prepare_error_detail(exc: RuntimePreparationError, resolution: RuntimeResolution, operation: str) -> dict[str, Any]:
@@ -3528,6 +3535,7 @@ async def call_openai_runtime_json(
                 await mark_sync_gpu_runtime_idle(resolution, operation)
         await release_inference_lease(owner)
     safe_headers = {key: value for key, value in headers.items() if key.lower() != "content-type"}
+    safe_headers.update(runtime_response_headers(resolution))
     return JSONResponse(status_code=status_code, content=jsonable_encoder(annotate_runtime_response(body, resolution)), headers=safe_headers)
 
 

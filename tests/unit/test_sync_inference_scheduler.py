@@ -106,10 +106,10 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body), {
             "id": "chatcmpl_test",
             "model": "localai-chat",
-            "b1_runtime": "localai",
-            "b1_resolved_model": "localai-chat@1.0.0",
-            "b1_public_model": "chat-default",
         })
+        self.assertEqual(response.headers["x-b1-runtime"], "localai")
+        self.assertEqual(response.headers["x-b1-resolved-model"], "localai-chat@1.0.0")
+        self.assertEqual(response.headers["x-b1-public-model"], "chat-default")
         self.assertEqual(
             calls,
             [
