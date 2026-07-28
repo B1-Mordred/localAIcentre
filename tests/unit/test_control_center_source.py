@@ -99,6 +99,21 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertNotIn("export B1_API_BASE=", self.source)
         self.assertNotIn("export B1_MODELHUB_TOKEN=<B1_MODELHUB_KEY>", self.source)
 
+    def test_external_access_can_prove_model_tool_chat_loop(self) -> None:
+        self.assertIn("type ModelToolChatProofResult", self.source)
+        self.assertIn("const [modelToolChatModel, setModelToolChatModel]", self.source)
+        self.assertIn("const [modelToolChatTools, setModelToolChatTools]", self.source)
+        self.assertIn("const [modelToolChatResult, setModelToolChatResult]", self.source)
+        self.assertIn("const runModelToolChatProof = (event: React.FormEvent)", self.source)
+        self.assertIn('apiFetch(`/v1/chat/completions`', self.source)
+        self.assertIn("b1_tools: tools", self.source)
+        self.assertIn("b1_tool_max_iterations: maxIterations", self.source)
+        self.assertIn('key.toLowerCase().startsWith("x-b1-tool")', self.source)
+        self.assertIn("<h4>Chat Proof</h4>", self.source)
+        self.assertIn("Run Chat Proof", self.source)
+        self.assertIn("<h4>Final Answer</h4>", self.source)
+        self.assertIn("<h4>Tool Headers</h4>", self.source)
+
     def test_browser_fetches_use_same_origin_api_base(self) -> None:
         self.assertIn("window.location.origin", self.source)
         self.assertIn("const PUBLIC_API_BASE", self.source)

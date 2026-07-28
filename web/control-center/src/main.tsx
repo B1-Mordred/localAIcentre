@@ -903,6 +903,15 @@ type ModelToolDefinitionForm = {
   notes: string;
 };
 
+type ModelToolChatProofResult = {
+  status: number;
+  headers: Record<string, string>;
+  content?: string | null;
+  synthesized?: boolean;
+  stop_reason?: string | null;
+  body: unknown;
+};
+
 type ModelAlias = {
   id: string;
   modality: string;
@@ -4844,6 +4853,11 @@ function ExternalAccess() {
   const [modelToolTestName, setModelToolTestName] = useState("web_fetch");
   const [modelToolTestArguments, setModelToolTestArguments] = useState(prettyJson({ url: "https://example.com" }));
   const [modelToolTestResult, setModelToolTestResult] = useState<Record<string, unknown> | null>(null);
+  const [modelToolChatModel, setModelToolChatModel] = useState("chat-default");
+  const [modelToolChatTools, setModelToolChatTools] = useState("web_search, web_fetch");
+  const [modelToolChatMaxIterations, setModelToolChatMaxIterations] = useState("4");
+  const [modelToolChatPrompt, setModelToolChatPrompt] = useState("Search the web for example domain and return the top two result titles with URLs.");
+  const [modelToolChatResult, setModelToolChatResult] = useState<ModelToolChatProofResult | null>(null);
 
   const adminOnlyClientPayload = { data: [], admin_only: true };
   const secretsAdminOnly = secretMasterKey?.error === "administrator only";
@@ -5190,6 +5204,58 @@ function ExternalAccess() {
       .finally(() => setBusy(false));
   };
 
+  const runModelToolChatProof = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (modelToolsAdminOnly) {
+      setMessage("model tool chat proof requires administrator or operator role");
+      return;
+    }
+    const tools = parseCsv(modelToolChatTools);
+    if (!tools.length) {
+      setMessage("select at least one model tool for chat proof");
+      return;
+    }
+    const maxIterations = Number(modelToolChatMaxIterations || modelTools?.default_max_iterations || 4);
+    setBusy(true);
+    setMessage("running model tool chat proof");
+    apiFetch(`/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelToolChatModel.trim() || "chat-default",
+        messages: [{ role: "user", content: modelToolChatPrompt }],
+        stream: false,
+        b1_tools: tools,
+        b1_tool_max_iterations: maxIterations
+      })
+    })
+      .then(async (response) => {
+        const text = await response.text();
+        let body: any = text;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = text;
+        }
+        if (!response.ok) throw new Error(errorMessageFromBody(body, response));
+        const headers = Object.fromEntries(
+          Array.from(response.headers.entries()).filter(([key]) => key.toLowerCase().startsWith("x-b1-tool") || key.toLowerCase() === "x-b1-tools")
+        );
+        const content = body?.choices?.[0]?.message?.content ?? null;
+        setModelToolChatResult({
+          status: response.status,
+          headers,
+          content,
+          synthesized: Boolean(body?.b1_tool_answer_synthesized),
+          stop_reason: body?.b1_tool_stop_reason ?? null,
+          body
+        });
+        setMessage("model tool chat proof completed");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const deleteModelTool = (tool: ModelToolDefinitionPayload) => {
     if (modelToolsAdminOnly) {
       setMessage("model tool management requires administrator role");
@@ -5338,6 +5404,31 @@ function ExternalAccess() {
               <button title="Execute selected model tool" type="submit" disabled={busy || !modelToolTestName.trim()}><TerminalSquare size={16} />Run Tool</button>
             </div>
             {modelToolTestResult && <pre>{prettyJson(modelToolTestResult)}</pre>}
+          </form>
+          <form className="stack" onSubmit={runModelToolChatProof}>
+            <h4>Chat Proof</h4>
+            <div className="policy-grid">
+              <label>Model<input value={modelToolChatModel} onChange={(event) => setModelToolChatModel(event.target.value)} disabled={busy} /></label>
+              <label>Tools<input value={modelToolChatTools} onChange={(event) => setModelToolChatTools(event.target.value)} disabled={busy} /></label>
+              <label>Max iterations<input type="number" min={1} max={8} value={modelToolChatMaxIterations} onChange={(event) => setModelToolChatMaxIterations(event.target.value)} disabled={busy} /></label>
+              <label>Result status<input value={modelToolChatResult ? `${modelToolChatResult.status}${modelToolChatResult.synthesized ? " / synthesized" : ""}` : "not run"} readOnly /></label>
+            </div>
+            <label>Prompt<textarea value={modelToolChatPrompt} onChange={(event) => setModelToolChatPrompt(event.target.value)} disabled={busy} /></label>
+            <div className="table-actions">
+              <button title="Run model tool chat proof" type="submit" disabled={busy || !modelToolChatPrompt.trim() || !modelToolChatTools.trim()}><PlayCircle size={16} />Run Chat Proof</button>
+            </div>
+            {modelToolChatResult && (
+              <div className="split">
+                <section className="stack">
+                  <h4>Final Answer</h4>
+                  <pre>{modelToolChatResult.content ?? ""}</pre>
+                </section>
+                <section className="stack">
+                  <h4>Tool Headers</h4>
+                  <pre>{prettyJson({ headers: modelToolChatResult.headers, stop_reason: modelToolChatResult.stop_reason, synthesized: modelToolChatResult.synthesized })}</pre>
+                </section>
+              </div>
+            )}
           </form>
           <div className="split">
             <form className="stack" onSubmit={saveModelTool}>
