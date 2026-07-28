@@ -3768,6 +3768,27 @@ def validate_model_tool_definition_payload(name: str, payload: ModelToolDefiniti
         raise HTTPException(status_code=422, detail="http-json tool method must be GET or POST")
     config["url"] = url
     config["method"] = method
+    if "max_result_chars" in config:
+        try:
+            max_result_chars = int(config["max_result_chars"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="max_result_chars must be an integer") from exc
+        if max_result_chars < 256 or max_result_chars > 200000:
+            raise HTTPException(status_code=422, detail="max_result_chars must be between 256 and 200000")
+        config["max_result_chars"] = max_result_chars
+    if "json_result_path" in config:
+        try:
+            json_result_path = model_tools.validate_json_result_path(str(config.get("json_result_path") or ""))
+        except model_tools.ModelToolError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if json_result_path:
+            config["json_result_path"] = json_result_path
+        else:
+            config.pop("json_result_path", None)
+    if "include_raw_json" in config and not isinstance(config["include_raw_json"], bool):
+        raise HTTPException(status_code=422, detail="include_raw_json must be a boolean")
+    if config.get("include_raw_json") is False and not config.get("json_result_path"):
+        raise HTTPException(status_code=422, detail="include_raw_json=false requires json_result_path")
     if "headers" in config:
         raise HTTPException(status_code=422, detail="custom model tools do not accept arbitrary headers; use auth.type bearer or header with an encrypted integration secret")
     normalize_model_tool_auth_config(config)

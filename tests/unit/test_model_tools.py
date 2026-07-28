@@ -108,6 +108,99 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(result["json"]["echo"], {"id": "T-1"})
         self.assertEqual(requests[0].url, "https://example.com/ticket")
 
+    def test_custom_http_json_tool_extracts_bounded_json_path(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "items": [
+                            {
+                                "title": "Current result",
+                                "body": "x" * 2000,
+                            }
+                        ]
+                    },
+                    "ignored": "y" * 2000,
+                },
+            )
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object"},
+            config={
+                "url": "https://example.com/ticket",
+                "method": "POST",
+                "json_result_path": "data.items.0.title",
+                "include_raw_json": False,
+                "max_result_chars": 256,
+            },
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",), max_result_chars=512),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["extracted_path"], "data.items.0.title")
+        self.assertEqual(result["extracted"], "Current result")
+        self.assertNotIn("json", result)
+
+    def test_custom_http_json_tool_bounds_large_raw_json(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": {"body": "x" * 2000}})
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object"},
+            config={"url": "https://example.com/ticket", "method": "POST", "max_result_chars": 300},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",), max_result_chars=512),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {}))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["json_truncated"])
+        self.assertLessEqual(len(result["json_text"]), 300)
+        self.assertNotIn("json", result)
+
+    def test_custom_http_json_tool_reports_missing_extraction_path(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": {}})
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object"},
+            config={"url": "https://example.com/ticket", "method": "POST", "json_result_path": "data.items.0.title"},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {}))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["extracted_path"], "data.items.0.title")
+        self.assertIn("json_result_path", result["error"])
+
     def test_custom_http_json_tool_sends_headers_from_provider(self) -> None:
         requests: list[httpx.Request] = []
 
@@ -187,8 +280,45 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["name"], "ticket-lookup")
         self.assertEqual(normalized["config"]["method"], "POST")
         self.assertEqual(normalized["config"]["url"], "https://example.com/tool")
+        self.assertEqual(normalized["config"]["max_result_chars"], 2048)
         self.assertEqual(normalized["parameters_schema"]["type"], "object")
         self.assertEqual(normalized["visibility_roles"], ["admin", "creator"])
+
+    def test_model_tool_definition_validation_normalizes_json_extraction(self) -> None:
+        payload = main.ModelToolDefinitionRequest(
+            kind="http-json",
+            display_name="Ticket lookup",
+            description="Lookup a ticket.",
+            config={
+                "url": "https://example.com/tool",
+                "method": "post",
+                "json_result_path": "data.items.0.title",
+                "include_raw_json": False,
+            },
+        )
+        normalized = main.validate_model_tool_definition_payload("ticket-lookup", payload)
+        self.assertEqual(normalized["config"]["json_result_path"], "data.items.0.title")
+        self.assertFalse(normalized["config"]["include_raw_json"])
+
+    def test_model_tool_definition_validation_rejects_bad_json_extraction(self) -> None:
+        for config in (
+            {"url": "https://example.com/tool", "method": "post", "json_result_path": "../secret"},
+            {"url": "https://example.com/tool", "method": "post", "json_result_path": "__proto__.polluted"},
+            {"url": "https://example.com/tool", "method": "post", "include_raw_json": "false"},
+            {"url": "https://example.com/tool", "method": "post", "include_raw_json": False},
+            {"url": "https://example.com/tool", "method": "post", "max_result_chars": 10},
+        ):
+            with self.subTest(config=config):
+                with self.assertRaises(Exception):
+                    main.validate_model_tool_definition_payload(
+                        "ticket-lookup",
+                        main.ModelToolDefinitionRequest(
+                            kind="http-json",
+                            display_name="Ticket lookup",
+                            description="Lookup a ticket.",
+                            config=config,
+                        ),
+                    )
 
     def test_model_tool_definition_validation_normalizes_bearer_auth(self) -> None:
         payload = main.ModelToolDefinitionRequest(

@@ -897,6 +897,8 @@ type ModelToolDefinitionForm = {
   auth_type: ModelToolAuthType;
   auth_secret_name: string;
   auth_header_name: string;
+  json_result_path: string;
+  include_raw_json: boolean;
   max_result_chars: string;
   parameters_schema: string;
   visibility_roles: string;
@@ -4774,6 +4776,8 @@ function defaultModelToolDefinitionForm(): ModelToolDefinitionForm {
     auth_type: "none",
     auth_secret_name: "",
     auth_header_name: "",
+    json_result_path: "",
+    include_raw_json: true,
     max_result_chars: "",
     parameters_schema: prettyJson(DEFAULT_MODEL_TOOL_SCHEMA),
     visibility_roles: "",
@@ -4810,6 +4814,8 @@ function modelToolDefinitionFormFromPayload(tool: ModelToolDefinitionPayload): M
     auth_type: authType,
     auth_secret_name: typeof auth.secret_name === "string" ? auth.secret_name : "",
     auth_header_name: typeof auth.header_name === "string" ? auth.header_name : "",
+    json_result_path: typeof tool.config?.json_result_path === "string" ? tool.config.json_result_path : "",
+    include_raw_json: tool.config?.include_raw_json !== false,
     max_result_chars: tool.config?.max_result_chars ? String(tool.config.max_result_chars) : "",
     parameters_schema: prettyJson(tool.parameters_schema),
     visibility_roles: (tool.visibility_roles ?? []).join(", "),
@@ -5137,6 +5143,10 @@ function ExternalAccess() {
     if (modelToolForm.max_result_chars.trim()) {
       config.max_result_chars = Number(modelToolForm.max_result_chars);
     }
+    if (modelToolForm.json_result_path.trim()) {
+      config.json_result_path = modelToolForm.json_result_path.trim();
+    }
+    config.include_raw_json = modelToolForm.include_raw_json;
     if (modelToolForm.auth_type !== "none") {
       const auth: Record<string, string> = {
         type: modelToolForm.auth_type,
@@ -5453,6 +5463,8 @@ function ExternalAccess() {
               </label>
               {modelToolForm.auth_type !== "none" && <label>Secret name<input value={modelToolForm.auth_secret_name} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_secret_name: event.target.value }))} required disabled={busy} placeholder="integration:ticket-api" /></label>}
               {modelToolForm.auth_type === "header" && <label>Header name<input value={modelToolForm.auth_header_name} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_header_name: event.target.value }))} required disabled={busy} placeholder="X-API-Key" /></label>}
+              <label>JSON result path<input value={modelToolForm.json_result_path} onChange={(event) => setModelToolForm((current) => ({ ...current, json_result_path: event.target.value }))} disabled={busy} placeholder="data.items.0.title" /></label>
+              <label className="inline-check"><input type="checkbox" checked={modelToolForm.include_raw_json} onChange={(event) => setModelToolForm((current) => ({ ...current, include_raw_json: event.target.checked }))} disabled={busy} />Include raw JSON</label>
               <label>Text cap override<input type="number" min={256} max={200000} value={modelToolForm.max_result_chars} onChange={(event) => setModelToolForm((current) => ({ ...current, max_result_chars: event.target.value }))} disabled={busy} /></label>
               <label>Visibility roles<input value={modelToolForm.visibility_roles} onChange={(event) => setModelToolForm((current) => ({ ...current, visibility_roles: event.target.value }))} disabled={busy} placeholder="admin, creator" /></label>
               <label>Parameters schema<textarea value={modelToolForm.parameters_schema} onChange={(event) => setModelToolForm((current) => ({ ...current, parameters_schema: event.target.value }))} disabled={busy} /></label>

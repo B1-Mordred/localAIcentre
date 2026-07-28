@@ -114,6 +114,14 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("<h4>Final Answer</h4>", self.source)
         self.assertIn("<h4>Tool Headers</h4>", self.source)
 
+    def test_external_access_configures_custom_model_tool_extraction(self) -> None:
+        self.assertIn("json_result_path: string", self.source)
+        self.assertIn("include_raw_json: boolean", self.source)
+        self.assertIn("config.json_result_path = modelToolForm.json_result_path.trim()", self.source)
+        self.assertIn("config.include_raw_json = modelToolForm.include_raw_json", self.source)
+        self.assertIn("JSON result path", self.source)
+        self.assertIn("Include raw JSON", self.source)
+
     def test_browser_fetches_use_same_origin_api_base(self) -> None:
         self.assertIn("window.location.origin", self.source)
         self.assertIn("const PUBLIC_API_BASE", self.source)

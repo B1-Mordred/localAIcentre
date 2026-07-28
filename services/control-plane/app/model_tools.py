@@ -235,6 +235,8 @@ class ModelToolDefinition:
 
 BUILTIN_TOOL_NAMES = {"web_search", "web_fetch"}
 MODEL_TOOL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
+MODEL_TOOL_JSON_PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+UNSAFE_JSON_PATH_SEGMENTS = {"__proto__", "prototype", "constructor"}
 
 
 def builtin_tool_definition(name: str, settings: ModelToolSettings) -> dict[str, Any] | None:
@@ -302,6 +304,45 @@ def tool_definition_from_row(row: dict[str, Any]) -> ModelToolDefinition:
         visibility_roles=tuple(str(item) for item in row.get("visibility_roles") or [] if str(item).strip()),
         notes=str(row.get("notes") or ""),
     )
+
+
+def validate_json_result_path(value: str) -> str:
+    path = value.strip()
+    if not path:
+        return ""
+    if len(path) > 256:
+        raise ModelToolError("json_result_path is too long")
+    if not MODEL_TOOL_JSON_PATH_RE.fullmatch(path):
+        raise ModelToolError("json_result_path must be a dot-separated path of JSON object keys or array indexes")
+    segments = path.split(".")
+    if any(segment in UNSAFE_JSON_PATH_SEGMENTS for segment in segments):
+        raise ModelToolError("json_result_path contains an unsafe segment")
+    return path
+
+
+def resolve_json_result_path(value: Any, path: str) -> Any:
+    current = value
+    for segment in validate_json_result_path(path).split("."):
+        if isinstance(current, dict):
+            if segment not in current:
+                raise ModelToolError(f"json_result_path segment not found: {segment}")
+            current = current[segment]
+            continue
+        if isinstance(current, list) and segment.isdecimal():
+            index = int(segment)
+            if index >= len(current):
+                raise ModelToolError(f"json_result_path index out of range: {segment}")
+            current = current[index]
+            continue
+        raise ModelToolError(f"json_result_path segment cannot be applied: {segment}")
+    return current
+
+
+def bounded_json_payload(key: str, value: Any, *, max_chars: int) -> dict[str, Any]:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded) <= max_chars:
+        return {key: value, f"{key}_truncated": False}
+    return {f"{key}_text": encoded[:max_chars], f"{key}_truncated": True}
 
 
 class ModelToolRegistry:
@@ -468,17 +509,38 @@ class ModelToolRegistry:
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
         payload: dict[str, Any]
+        ok = True
         if "json" in content_type.lower():
             try:
                 parsed = response.json()
             except ValueError:
                 parsed = None
-            payload = {"json": parsed} if parsed is not None else {"text": response.text[:max_chars]}
+            if parsed is None:
+                payload = {"text": response.text[:max_chars]}
+            else:
+                payload = {}
+                json_result_path = validate_json_result_path(str(definition.config.get("json_result_path") or ""))
+                include_raw_json = definition.config.get("include_raw_json", True)
+                if json_result_path:
+                    try:
+                        extracted = resolve_json_result_path(parsed, json_result_path)
+                        payload.update(
+                            {
+                                "extracted_path": json_result_path,
+                                **bounded_json_payload("extracted", extracted, max_chars=max_chars),
+                            }
+                        )
+                    except ModelToolError as exc:
+                        ok = False
+                        payload["error"] = str(exc)
+                        payload["extracted_path"] = json_result_path
+                if include_raw_json is not False:
+                    payload.update(bounded_json_payload("json", parsed, max_chars=max_chars))
         else:
             text = html_to_text(response.text, max_chars=max_chars) if "html" in content_type.lower() else WHITESPACE_RE.sub(" ", response.text).strip()[:max_chars]
             payload = {"text": text}
         return {
-            "ok": True,
+            "ok": ok,
             "tool": definition.name,
             "url": str(response.url),
             "status_code": response.status_code,
