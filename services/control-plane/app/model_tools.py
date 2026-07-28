@@ -9,7 +9,7 @@ import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable
-from urllib.parse import quote_plus, unquote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -196,6 +196,16 @@ def html_title(value: str) -> str:
     parser = HtmlMetadataParser()
     parser.feed(value[:250000])
     return parser.title
+
+
+def unwrap_search_result_url(value: str) -> str:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if hostname.endswith("duckduckgo.com") and parsed.path == "/l/":
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target.startswith(("http://", "https://")):
+            return target
+    return value
 
 
 @dataclass(frozen=True)
@@ -406,7 +416,7 @@ class ModelToolRegistry:
         deduped: list[dict[str, str]] = []
         seen: set[str] = set()
         for result in parser.results:
-            result_url = result["url"]
+            result_url = unwrap_search_result_url(result["url"])
             try:
                 safe_url = validate_tool_url(
                     result_url,

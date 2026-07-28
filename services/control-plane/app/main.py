@@ -3997,6 +3997,39 @@ def b1_tool_result_excerpt(value: Any, *, max_chars: int = 1600) -> str:
     return text[:max_chars]
 
 
+def find_json_scalar_key(value: Any, key_name: str, *, max_depth: int = 6) -> str | None:
+    if max_depth < 0:
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() == key_name.lower() and isinstance(item, (str, int, float, bool)):
+                return str(item)
+        for item in value.values():
+            found = find_json_scalar_key(item, key_name, max_depth=max_depth - 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value[:20]:
+            found = find_json_scalar_key(item, key_name, max_depth=max_depth - 1)
+            if found is not None:
+                return found
+    return None
+
+
+def synthesize_custom_json_answer(user_text: str, result: dict[str, Any]) -> str | None:
+    normalized = user_text.lower()
+    if "message" in normalized or "echo" in normalized:
+        for container_key in ("json", "data"):
+            container = result.get(container_key)
+            found = find_json_scalar_key(container, "message")
+            if found:
+                return b1_tool_result_excerpt(found, max_chars=1000)
+        found = find_json_scalar_key(result, "message")
+        if found:
+            return b1_tool_result_excerpt(found, max_chars=1000)
+    return None
+
+
 def synthesize_b1_tool_answer_content(payload: ChatCompletionRequest, executed_results: list[dict[str, Any]]) -> str | None:
     if not executed_results:
         return None
@@ -4038,6 +4071,9 @@ def synthesize_b1_tool_answer_content(payload: ChatCompletionRequest, executed_r
             if lines:
                 return "\n".join(lines)
         return "No search results were returned."
+    custom_json = synthesize_custom_json_answer(user_text, result)
+    if custom_json is not None:
+        return custom_json
     if "text" in result:
         return b1_tool_result_excerpt(result["text"])
     if "json" in result:

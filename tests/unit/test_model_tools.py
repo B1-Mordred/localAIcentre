@@ -55,6 +55,12 @@ class ModelToolPolicyTests(unittest.TestCase):
             ],
         )
 
+    def test_unwrap_search_result_url_removes_duckduckgo_redirect(self) -> None:
+        self.assertEqual(
+            model_tools.unwrap_search_result_url("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs&rut=abc"),
+            "https://example.com/docs",
+        )
+
     def test_registry_definitions_only_include_enabled_requested_tools(self) -> None:
         registry = model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
         definitions = registry.definitions(["web_search", "web_fetch"])
@@ -602,6 +608,67 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body.decode("utf-8"))
         self.assertIn("1. First result - https://example.com/one", body["choices"][0]["message"]["content"])
         self.assertEqual(response.headers["x-b1-tool-stop-reason"], "max_iterations")
+        self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
+
+    async def test_chat_tool_loop_synthesizes_custom_json_message(self) -> None:
+        calls: list[dict[str, object]] = []
+        tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "b1-live-echo", "arguments": json.dumps({"message": "b1-custom-tool-proof"})},
+        }
+
+        async def fake_runtime_json(path, payload, resolution, operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) <= 2:
+                return JSONResponse({"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [tool_call]}}]})
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "unused"}}]})
+
+        async def fake_execute(_registry, _tool_call):
+            return {
+                "ok": True,
+                "tool": "b1-live-echo",
+                "json": {"message": "b1-custom-tool-proof"},
+                "url": "https://postman-echo.com/post",
+            }
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Call the echo tool and return the echoed message only."}],
+            b1_tools=["b1-live-echo"],
+            b1_tool_max_iterations=4,
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["b1-live-echo"],
+            model_tools.ModelToolRegistry(
+                model_tools.ModelToolSettings(allowed_tools=("b1-live-echo",)),
+                definitions=[
+                    model_tools.ModelToolDefinition(
+                        name="b1-live-echo",
+                        enabled=True,
+                        kind="http-json",
+                        display_name="B1 live echo",
+                        description="Echo a message",
+                        parameters_schema={"type": "object"},
+                        config={"url": "https://postman-echo.com/post", "method": "POST"},
+                    )
+                ],
+            ),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "b1-custom-tool-proof")
         self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
 
 
