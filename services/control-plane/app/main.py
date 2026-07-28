@@ -6334,6 +6334,46 @@ async def reload_localai_model_config_after_install(model_ref: str, runtime_view
     return payload
 
 
+async def sync_comfyui_model_view_after_install(model_ref: str, runtime_views: list[dict[str, Any]]) -> dict[str, Any]:
+    if not runtime_views_include(runtime_views, "comfyui"):
+        return {"status": "not_required", "service": "comfyui", "action": "model-view-sync", "reason": "model_has_no_comfyui_runtime_view"}
+    url = f"{settings.comfyui_url.rstrip('/')}/b1/runtime/status"
+    try:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+            response = await client.post(url, json={"reason": "model_install", "model_ref": model_ref}, headers=runtime_control_headers())
+    except httpx.HTTPError as exc:
+        return {
+            "status": "failed",
+            "service": "comfyui",
+            "action": "model-view-sync",
+            "model_ref": model_ref,
+            "reason": "runtime_control_unreachable",
+            "error": exc.__class__.__name__,
+        }
+    if response.status_code >= 400:
+        return {
+            "status": "failed",
+            "service": "comfyui",
+            "action": "model-view-sync",
+            "model_ref": model_ref,
+            "reason": f"http_{response.status_code}",
+        }
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    model_folders = body.get("model_folders") if isinstance(body, dict) else {}
+    runtime_view_sync = model_folders.get("runtime_view_sync") if isinstance(model_folders, dict) else {}
+    return {
+        "status": "ok" if isinstance(runtime_view_sync, dict) and runtime_view_sync.get("status") == "ok" else "unconfirmed",
+        "service": "comfyui",
+        "action": "model-view-sync",
+        "model_ref": model_ref,
+        "runtime_view_sync": runtime_view_sync if isinstance(runtime_view_sync, dict) else {},
+        "model_file_count": model_folders.get("file_count") if isinstance(model_folders, dict) else None,
+    }
+
+
 async def install_model_manifest(
     *,
     manifest: Any,
@@ -6375,6 +6415,7 @@ async def install_model_manifest(
     await refresh_catalog_cache()
     workflows = await refresh_workflow_dependency_statuses()
     localai_config_reload = await reload_localai_model_config_after_install(plan["model_ref"], runtime_views)
+    comfyui_model_view_sync = await sync_comfyui_model_view_after_install(plan["model_ref"], runtime_views)
     smoke_result: dict[str, Any] | None = None
     if payload.smoke_test:
         smoke_result = await smoke_test_model_record(row, auth, persist=True)
@@ -6387,6 +6428,7 @@ async def install_model_manifest(
         "workflow_dependencies_refreshed": workflows["count"],
         "runtime_views": [{"runtime": view["runtime"], "host_path": view["host_path"], "container_path": view["container_path"]} for view in runtime_views],
         "localai_config_reload": localai_config_reload,
+        "comfyui_model_view_sync": comfyui_model_view_sync,
         "smoke_test": smoke_result["smoke_test"] if smoke_result else None,
     }
     if source_download is not None:
@@ -6406,6 +6448,7 @@ async def install_model_manifest(
         "runtime_views": runtime_views,
         "workflow_refresh": workflows,
         "localai_config_reload": localai_config_reload,
+        "comfyui_model_view_sync": comfyui_model_view_sync,
         "smoke_test": smoke_result,
     }
 
