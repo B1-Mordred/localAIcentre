@@ -1421,6 +1421,66 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             "sample_count": 3,
             "sample_labels": ["localai-stream-chat", "active-gpu-runtime-states", "localai-unload"],
         },
+        "model_tools": {
+            "available": True,
+            "format": "b1-ai-hub-model-tools-acceptance/v1",
+            "source_path": "/srv/b1-ai-hub/backups/acceptance/model-tools.json",
+            "generated_at": "2026-07-24T12:31:30+00:00",
+            "base_url": "https://api.ai.b1.germering",
+            "status": "ok",
+            "required_checks": [
+                "tool_registry_advertises_builtins",
+                "web_fetch_chat_completed",
+                "web_search_chat_completed",
+                "custom_http_json_tool_completed",
+            ],
+            "missing_checks": [],
+            "checks": {
+                "tool_registry_advertises_builtins": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:05+00:00",
+                    "allowed_tools": ["b1-live-echo-abcdef1234", "web_fetch", "web_search"],
+                    "definition_count": 3,
+                    "request_field": "b1_tools",
+                    "streaming_supported": False,
+                },
+                "web_fetch_chat_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:10+00:00",
+                    "model": "chat-default",
+                    "response_excerpt": "Example Domain is a page reserved for illustrative examples.",
+                    "tool_header": "web_fetch",
+                    "tool_headers": {"x-b1-tools": "web_fetch"},
+                    "synthesized": True,
+                },
+                "web_search_chat_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:15+00:00",
+                    "model": "chat-default",
+                    "response_excerpt": "Example Domain - https://example.com/",
+                    "tool_header": "web_search",
+                    "tool_headers": {"x-b1-tools": "web_search"},
+                    "synthesized": True,
+                },
+                "custom_http_json_tool_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:20+00:00",
+                    "model": "chat-default",
+                    "tool_name": "b1-live-echo-abcdef1234",
+                    "manual_status_code": 200,
+                    "response_excerpt": "b1-custom-tool-proof",
+                    "tool_header": "b1-live-echo-abcdef1234",
+                    "tool_headers": {"x-b1-tools": "b1-live-echo-abcdef1234"},
+                    "synthesized": True,
+                },
+            },
+            "model_tool_model": "chat-default",
+            "model_tool_custom_tool_name": "b1-live-echo-abcdef1234",
+            "model_tool_allowed_tools": ["b1-live-echo-abcdef1234", "web_fetch", "web_search"],
+            "missing_model_tool_evidence": [],
+            "sample_count": 4,
+            "sample_labels": ["model-tools-registry", "web-fetch-chat", "web-search-chat", "custom-http-json-chat"],
+        },
         "installed_workflows": {
             "available": True,
             "format": "b1-ai-hub-installed-workflows-acceptance/v1",
@@ -6658,6 +6718,10 @@ class AcceptanceReportTests(unittest.TestCase):
             localai_payload = sample_live_evidence()["localai_runtime"]
             localai_payload["samples"] = [{"label": label} for label in localai_payload["sample_labels"]]
             localai.write_text(json.dumps(localai_payload), encoding="utf-8")
+            model_tools = evidence_root / "model-tools.json"
+            model_tools_payload = sample_live_evidence()["model_tools"]
+            model_tools_payload["samples"] = [{"label": label} for label in model_tools_payload["sample_labels"]]
+            model_tools.write_text(json.dumps(model_tools_payload), encoding="utf-8")
             installed = evidence_root / "installed-workflows.json"
             installed_payload = sample_live_evidence()["installed_workflows"]
             installed_payload["samples"] = [{"label": label} for label in installed_payload["sample_labels"]]
@@ -6986,6 +7050,15 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(localai_snapshot["model_measurements"]["chat-default"]["runtime"], "localai")
         self.assertEqual(localai_snapshot["localai_unload_stage"], "idle_unloaded")
         self.assertEqual(localai_snapshot["sample_count"], 3)
+        model_tools_snapshot = snapshot["model_tools"]
+        self.assertTrue(model_tools_snapshot["available"])
+        self.assertEqual(model_tools_snapshot["source_path"], str(model_tools.resolve()))
+        self.assertEqual(model_tools_snapshot["status"], "ok")
+        self.assertEqual(model_tools_snapshot["missing_checks"], [])
+        self.assertEqual(model_tools_snapshot["missing_model_tool_evidence"], [])
+        self.assertEqual(model_tools_snapshot["model_tool_model"], "chat-default")
+        self.assertEqual(model_tools_snapshot["model_tool_custom_tool_name"], "b1-live-echo-abcdef1234")
+        self.assertEqual(model_tools_snapshot["sample_count"], 4)
         workflows = snapshot["installed_workflows"]
         self.assertTrue(workflows["available"])
         self.assertEqual(workflows["source_path"], str(installed.resolve()))

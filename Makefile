@@ -18,6 +18,7 @@ B1_PREFLIGHT_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/operator-preflight.json
 B1_SMOKE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/live-smoke.json
 B1_WORKFLOWS_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/installed-workflows.json
 B1_LOCALAI_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/localai-runtime.json
+B1_MODEL_TOOLS_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/model-tools.json
 B1_GPU_ACCEPTANCE_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/cross-runtime-gpu.json
 B1_RESTART_RECONCILIATION_EVIDENCE ?= $(B1_BACKUP_ROOT)/acceptance/restart-reconciliation.json
 B1_RESTART_RECONCILIATION_AUTO_DRILL ?= 1
@@ -46,7 +47,7 @@ B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
-.PHONY: prepare-production-env verify-system-hostname apply-system-hostname network-dhcp-plan bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
+.PHONY: prepare-production-env verify-system-hostname apply-system-hostname network-dhcp-plan bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance model-tools-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
 
 prepare-production-env:
 	python3 deploy/scripts/prepare_env.py --template .env.production.example --output .env --docker-socket /var/run/docker.sock --appliance-hostname "$(B1_APPLIANCE_HOSTNAME)" --update-existing --stamp-source --source-root "$(CURDIR)"
@@ -162,6 +163,9 @@ installed-workflows-acceptance:
 localai-acceptance:
 	B1_LOCALAI_ACCEPTANCE_LIVE_TEST=1 B1_LOCALAI_ACCEPTANCE_EVIDENCE="$(B1_LOCALAI_ACCEPTANCE_EVIDENCE)" python3 -m unittest tests.integration.test_live_localai_runtime -v
 
+model-tools-acceptance:
+	B1_MODEL_TOOLS_LIVE_TEST=1 B1_MODEL_TOOLS_EVIDENCE="$(B1_MODEL_TOOLS_EVIDENCE)" python3 -m unittest tests.integration.test_live_model_tools -v
+
 gpu-acceptance:
 	B1_GPU_ACCEPTANCE_LIVE_TEST=1 B1_GPU_ACCEPTANCE_EVIDENCE="$(B1_GPU_ACCEPTANCE_EVIDENCE)" python3 -m unittest tests.integration.test_live_cross_runtime_gpu -v
 
@@ -198,6 +202,7 @@ operator-live-acceptance:
 	$(MAKE) live-smoke-acceptance
 	$(MAKE) installed-workflows-acceptance
 	$(MAKE) localai-acceptance
+	$(MAKE) model-tools-acceptance
 	$(MAKE) gpu-acceptance
 	$(MAKE) external-compatibility-acceptance
 	$(MAKE) security-acceptance

@@ -53,6 +53,21 @@ make localai-acceptance
 
 The API key must include chat/inference access plus `models:read`, `runtimes:read`, and `runtimes:write`. Before sending chat, the harness verifies that the selected chat alias is installed and has a successful persisted model-smoke measurement for the immutable model version, including an `ok` runtime hook correlated to the same alias/runtime/model version. The unload check is intentional: it exercises the same guarded admin route operators use to clear LocalAI residency. Keep `B1_LOCALAI_ACCEPTANCE_REQUIRE_PRODUCTION=true` for handoff evidence; disable it only for a labelled temporary-hostname dry run.
 
+## Model Tool Acceptance
+
+Run this suite after at least one non-Comfy chat alias is installed and the model-tool policy allows the built-in web tools:
+
+```bash
+export B1_MODEL_TOOLS_API_BASE=https://api.ai.b1.germering
+export B1_MODEL_TOOLS_API_KEY=...
+export B1_MODEL_TOOLS_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
+export B1_MODEL_TOOLS_CHAT_MODEL=chat-default
+export B1_MODEL_TOOLS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/model-tools.json
+make model-tools-acceptance
+```
+
+The suite verifies `/v1/tools`, proves live chat use of `web_fetch` and `web_search`, then temporarily creates a unique admin-managed `http-json` tool, executes it manually, uses it through `/v1/chat/completions`, restores the original policy, and deletes the temporary tool. Evidence uses `b1-ai-hub-model-tools-acceptance/v1`, records only bounded excerpts and B1 tool response headers, and is ingested by the operator handoff report. Set `B1_MODEL_TOOLS_CUSTOM_URL` only when the default `https://postman-echo.com/post` endpoint is unsuitable for the acceptance network.
+
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
 Run the GPU acceptance suite only on the target host, or during an equivalent maintenance window with the real LocalAI, ComfyUI, and Voicebox runtime overlays enabled. It sends live inference work and handoff evidence requires a bounded predefined runtime recovery probe.

@@ -325,6 +325,13 @@ SMOKE_REQUIRED_CHECKS = (
 )
 LOCALAI_EVIDENCE_FORMAT = "b1-ai-hub-localai-runtime-acceptance/v1"
 LOCALAI_REQUIRED_CHECKS = ("streaming_chat_completed", "single_backend_enforced", "graceful_unload_verified")
+MODEL_TOOLS_EVIDENCE_FORMAT = "b1-ai-hub-model-tools-acceptance/v1"
+MODEL_TOOLS_REQUIRED_CHECKS = (
+    "tool_registry_advertises_builtins",
+    "web_fetch_chat_completed",
+    "web_search_chat_completed",
+    "custom_http_json_tool_completed",
+)
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
 INSTALLED_WORKFLOWS_REQUIRED_CHECKS = (
     "chat_completed",
@@ -484,6 +491,7 @@ PRESERVED_ROLLBACK_RESOURCE_KEYS = (
 )
 REQUIRED_OPERATOR_EVIDENCE: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "Live stack smoke tests passed through the gateway"),
+    ("model_tools", "B1 model tools proved live web search, web fetch, and configurable HTTP JSON tool execution"),
     ("rtx3060_acceptance", "RTX GPU cross-runtime acceptance completed with measured selected-profile reserves"),
     ("chat_tts_image_video", "Chat, TTS/STT, image/edit, and short video workflows completed with installed models"),
     ("native_comfyui_compatibility", "Native ComfyUI REST and WebSocket compatibility was validated externally"),
@@ -503,6 +511,7 @@ LIVE_EVIDENCE_LABELS: tuple[tuple[str, str], ...] = (
     ("live_stack_smoke", "live stack smoke"),
     ("gpu_acceptance", "RTX 3060 GPU acceptance"),
     ("localai_runtime", "LocalAI runtime acceptance"),
+    ("model_tools", "model-tool acceptance"),
     ("installed_workflows", "installed workflow acceptance"),
     ("native_comfyui_compatibility", "native ComfyUI compatibility"),
     ("legacy_comfyui_listener", "optional legacy ComfyUI listener"),
@@ -1917,6 +1926,53 @@ def _localai_acceptance_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "localai_stream_bytes": byte_count,
         "localai_unload_stage": _nonempty_text(unload.get("state_stage")),
         "missing_localai_evidence": missing,
+    }
+
+
+def _model_tools_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
+    missing: list[str] = []
+
+    registry = _check_record(checks, "tool_registry_advertises_builtins")
+    allowed_tools = set(_as_string_list(registry.get("allowed_tools")))
+    if not {"web_fetch", "web_search"}.issubset(allowed_tools):
+        missing.append("tool_registry_advertises_builtins.allowed_tools")
+    if _nonempty_text(registry.get("request_field")) != "b1_tools":
+        missing.append("tool_registry_advertises_builtins.request_field")
+    if registry.get("streaming_supported") is not False:
+        missing.append("tool_registry_advertises_builtins.streaming_supported_false")
+    if _positive_int(registry.get("definition_count")) < 2:
+        missing.append("tool_registry_advertises_builtins.definition_count")
+
+    fetch = _check_record(checks, "web_fetch_chat_completed")
+    fetch_response = _nonempty_text(fetch.get("response_excerpt")).lower()
+    if "example" not in fetch_response or "domain" not in fetch_response:
+        missing.append("web_fetch_chat_completed.response_excerpt")
+    if "web_fetch" not in _nonempty_text(fetch.get("tool_header")):
+        missing.append("web_fetch_chat_completed.tool_header")
+
+    search = _check_record(checks, "web_search_chat_completed")
+    search_response = _nonempty_text(search.get("response_excerpt")).lower()
+    if "example" not in search_response or "http" not in search_response:
+        missing.append("web_search_chat_completed.response_excerpt")
+    if "web_search" not in _nonempty_text(search.get("tool_header")):
+        missing.append("web_search_chat_completed.tool_header")
+
+    custom = _check_record(checks, "custom_http_json_tool_completed")
+    custom_response = _nonempty_text(custom.get("response_excerpt"))
+    custom_tool = _nonempty_text(custom.get("tool_name"))
+    if "b1-custom-tool-proof" not in custom_response:
+        missing.append("custom_http_json_tool_completed.response_excerpt")
+    if not custom_tool or custom_tool not in _nonempty_text(custom.get("tool_header")):
+        missing.append("custom_http_json_tool_completed.tool_header")
+    if not _successful_http_status(custom.get("manual_status_code")):
+        missing.append("custom_http_json_tool_completed.manual_status_code")
+
+    return {
+        "missing_model_tool_evidence": missing,
+        "model_tool_model": str(payload.get("model") or payload.get("model_tool_model") or ""),
+        "model_tool_custom_tool_name": custom_tool,
+        "model_tool_allowed_tools": sorted(allowed_tools),
     }
 
 
@@ -3577,6 +3633,17 @@ def localai_evidence_snapshot(payload: dict[str, Any], source_path: Path | None 
     )
 
 
+def model_tools_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
+    return _live_evidence_snapshot(
+        payload,
+        source_path,
+        expected_format=MODEL_TOOLS_EVIDENCE_FORMAT,
+        unsupported_reason="unsupported model-tool acceptance evidence format",
+        required_checks=MODEL_TOOLS_REQUIRED_CHECKS,
+        extra_fields=_model_tools_summary(payload),
+    )
+
+
 def installed_workflows_evidence_snapshot(payload: dict[str, Any], source_path: Path | None = None) -> dict[str, Any]:
     extra_fields = _model_measurement_summary(payload)
     extra_fields.update(_installed_workflows_summary(payload))
@@ -3696,6 +3763,7 @@ def _unavailable_live_evidence(reason: str, root: Path) -> dict[str, Any]:
         "live_stack_smoke": {"available": False, "reason": reason, "root": str(root)},
         "gpu_acceptance": {"available": False, "reason": reason, "root": str(root)},
         "localai_runtime": {"available": False, "reason": reason, "root": str(root)},
+        "model_tools": {"available": False, "reason": reason, "root": str(root)},
         "installed_workflows": {"available": False, "reason": reason, "root": str(root)},
         "native_comfyui_compatibility": {"available": False, "reason": reason, "root": str(root)},
         "legacy_comfyui_listener": {"available": False, "reason": reason, "root": str(root)},
@@ -3754,6 +3822,9 @@ def latest_live_evidence_snapshot(backup_root: Path) -> dict[str, Any]:
         elif payload.get("format") == LOCALAI_EVIDENCE_FORMAT and "localai_runtime" not in found:
             snapshots["localai_runtime"] = localai_evidence_snapshot(payload, path.resolve())
             found.add("localai_runtime")
+        elif payload.get("format") == MODEL_TOOLS_EVIDENCE_FORMAT and "model_tools" not in found:
+            snapshots["model_tools"] = model_tools_evidence_snapshot(payload, path.resolve())
+            found.add("model_tools")
         elif payload.get("format") == INSTALLED_WORKFLOWS_EVIDENCE_FORMAT and "installed_workflows" not in found:
             snapshots["installed_workflows"] = installed_workflows_evidence_snapshot(payload, path.resolve())
             found.add("installed_workflows")
@@ -4598,6 +4669,20 @@ def _acceptance_blockers(report: dict[str, Any]) -> list[str]:
             blockers.append("LocalAI runtime acceptance evidence lacks detailed LocalAI summary")
         elif missing_detail:
             blockers.append("LocalAI runtime acceptance evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
+    model_tools_evidence = live_evidence.get("model_tools") if isinstance(live_evidence.get("model_tools"), dict) else {}
+    if model_tools_evidence.get("available") is not True:
+        blockers.append("model-tool acceptance evidence is unavailable")
+    else:
+        if model_tools_evidence.get("status") != "ok":
+            blockers.append(f"model-tool acceptance evidence status is {model_tools_evidence.get('status', 'unknown')}")
+        missing_checks = model_tools_evidence.get("missing_checks")
+        if isinstance(missing_checks, list) and missing_checks:
+            blockers.append("model-tool acceptance evidence is missing required checks: " + ", ".join(str(item) for item in missing_checks))
+        missing_detail = model_tools_evidence.get("missing_model_tool_evidence")
+        if not isinstance(missing_detail, list):
+            blockers.append("model-tool acceptance evidence lacks detailed tool summary")
+        elif missing_detail:
+            blockers.append("model-tool acceptance evidence is missing detailed proof: " + ", ".join(str(item) for item in missing_detail))
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     if installed_workflows_evidence.get("available") is not True:
         blockers.append("installed workflow evidence is unavailable")
@@ -5260,6 +5345,9 @@ def _live_evidence_markdown(label: str, evidence: dict[str, Any], no_checks_mess
     missing_localai = evidence.get("missing_localai_evidence")
     if isinstance(missing_localai, list) and missing_localai:
         summary_rows.append(["missing_localai_evidence", ", ".join(str(item) for item in missing_localai)])
+    missing_model_tools = evidence.get("missing_model_tool_evidence")
+    if isinstance(missing_model_tools, list) and missing_model_tools:
+        summary_rows.append(["missing_model_tool_evidence", ", ".join(str(item) for item in missing_model_tools)])
     missing_installed = evidence.get("missing_installed_workflow_evidence")
     if isinstance(missing_installed, list) and missing_installed:
         summary_rows.append(["missing_installed_workflow_evidence", ", ".join(str(item) for item in missing_installed)])
@@ -5564,6 +5652,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
+    model_tools_evidence = live_evidence.get("model_tools") if isinstance(live_evidence.get("model_tools"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
@@ -5807,6 +5896,8 @@ def markdown_report(report: dict[str, Any]) -> str:
             + "\n\n"
             + _live_evidence_markdown("LocalAI runtime acceptance", localai_evidence, "No LocalAI runtime acceptance checks recorded.")
             + "\n\n"
+            + _live_evidence_markdown("Model-tool acceptance", model_tools_evidence, "No model-tool acceptance checks recorded.")
+            + "\n\n"
             + _live_evidence_markdown(
                 "Installed workflow acceptance",
                 installed_workflows_evidence,
@@ -5967,6 +6058,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
     smoke_evidence = live_evidence.get("live_stack_smoke") if isinstance(live_evidence.get("live_stack_smoke"), dict) else {}
     gpu_evidence = live_evidence.get("gpu_acceptance") if isinstance(live_evidence.get("gpu_acceptance"), dict) else {}
     localai_evidence = live_evidence.get("localai_runtime") if isinstance(live_evidence.get("localai_runtime"), dict) else {}
+    model_tools_evidence = live_evidence.get("model_tools") if isinstance(live_evidence.get("model_tools"), dict) else {}
     installed_workflows_evidence = live_evidence.get("installed_workflows") if isinstance(live_evidence.get("installed_workflows"), dict) else {}
     native_comfyui_evidence = (
         live_evidence.get("native_comfyui_compatibility") if isinstance(live_evidence.get("native_comfyui_compatibility"), dict) else {}
@@ -6038,6 +6130,14 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         and localai_evidence.get("missing_localai_evidence") == []
         and "localai_runtime" not in freshness_failures
         and "localai_runtime" not in source_failures
+    )
+    model_tools_evidence_ready = (
+        model_tools_evidence.get("available") is True
+        and model_tools_evidence.get("status") == "ok"
+        and not model_tools_evidence.get("missing_checks")
+        and model_tools_evidence.get("missing_model_tool_evidence") == []
+        and "model_tools" not in freshness_failures
+        and "model_tools" not in source_failures
     )
     installed_workflows_evidence_ready = (
         installed_workflows_evidence.get("available") is True
@@ -6155,6 +6255,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
         "smoke_evidence_ready": smoke_evidence_ready,
         "gpu_evidence_ready": gpu_evidence_ready,
         "localai_evidence_ready": localai_evidence_ready,
+        "model_tools_evidence_ready": model_tools_evidence_ready,
         "installed_workflows_evidence_ready": installed_workflows_evidence_ready,
         "native_comfyui_evidence_ready": native_comfyui_evidence_ready,
         "legacy_comfyui_evidence_ready": legacy_comfyui_evidence_ready,
@@ -6174,6 +6275,7 @@ def public_report_summary(report: dict[str, Any], report_dir: Path | None = None
             and smoke_evidence_ready
             and gpu_evidence_ready
             and localai_evidence_ready
+            and model_tools_evidence_ready
             and installed_workflows_evidence_ready
             and native_comfyui_evidence_ready
             and legacy_comfyui_evidence_ready

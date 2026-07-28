@@ -18,6 +18,7 @@ LIVE_EVIDENCE_HARNESSES = (
     "tests/integration/test_live_installed_workflows.py",
     "tests/integration/test_live_cross_runtime_gpu.py",
     "tests/integration/test_live_restart_reconciliation.py",
+    "tests/integration/test_live_model_tools.py",
     "tests/compatibility/test_native_comfyui_compatibility.py",
     "tests/compatibility/test_legacy_comfyui_listener.py",
     "tests/compatibility/test_modelhub_client_sync.py",
