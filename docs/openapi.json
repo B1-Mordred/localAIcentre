@@ -86,6 +86,14 @@
             "title": "Cidr Allowlist",
             "type": "array"
           },
+          "default_b1_tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Default B1 Tools",
+            "type": "array"
+          },
           "display_name": {
             "maxLength": 256,
             "minLength": 1,
@@ -115,6 +123,20 @@
           "display_name"
         ],
         "title": "ApiClientCreate",
+        "type": "object"
+      },
+      "ApiClientDefaultB1ToolsUpdateRequest": {
+        "properties": {
+          "default_b1_tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Default B1 Tools",
+            "type": "array"
+          }
+        },
+        "title": "ApiClientDefaultB1ToolsUpdateRequest",
         "type": "object"
       },
       "ArtifactRetentionRequest": {
@@ -3304,6 +3326,73 @@
           }
         },
         "summary": "Admin Api Client Cidr Update"
+      }
+    },
+    "/admin/api-clients/{client_id}/default-b1-tools": {
+      "put": {
+        "operationId": "admin_api_client_default_b1_tools_update_admin_api_clients__client_id__default_b1_tools_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiClientDefaultB1ToolsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Api Client Default B1 Tools Update Admin Api Clients  Client Id  Default B1 Tools Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Api Client Default B1 Tools Update"
       }
     },
     "/admin/artifacts/cleanup": {

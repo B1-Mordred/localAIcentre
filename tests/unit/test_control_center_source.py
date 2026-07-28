@@ -101,6 +101,11 @@ class ControlCenterSourceTests(unittest.TestCase):
 
     def test_external_access_can_prove_model_tool_chat_loop(self) -> None:
         self.assertIn("type ModelToolChatProofResult", self.source)
+        self.assertIn("default_b1_tools: string[]", self.source)
+        self.assertIn("apiDefaultB1Tools", self.source)
+        self.assertIn("apiClientDefaultB1Tools", self.source)
+        self.assertIn("/default-b1-tools", self.source)
+        self.assertIn("Default B1 tools", self.source)
         self.assertIn("const [modelToolChatModel, setModelToolChatModel]", self.source)
         self.assertIn("const [modelToolChatTools, setModelToolChatTools]", self.source)
         self.assertIn("const [modelToolChatResult, setModelToolChatResult]", self.source)

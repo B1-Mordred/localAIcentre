@@ -204,6 +204,7 @@ api_clients = Table(
     Column("key_salt", String(128), nullable=False),
     Column("key_hash", String(256), nullable=False),
     Column("cidr_allowlist", JSONB, nullable=False, default=list),
+    Column("default_b1_tools", JSONB, nullable=False, default=list),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("last_used_at", DateTime(timezone=True), nullable=True),
@@ -575,6 +576,7 @@ SCHEMA_COMPATIBILITY_SQL = [
     ),
     "CREATE INDEX IF NOT EXISTS b1_jobs_native_prompt_id_idx ON b1_jobs (native_prompt_id)",
     "ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS cidr_allowlist jsonb NOT NULL DEFAULT '[]'::jsonb",
+    "ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS default_b1_tools jsonb NOT NULL DEFAULT '[]'::jsonb",
     "CREATE UNIQUE INDEX IF NOT EXISTS b1_api_clients_key_prefix_uq ON b1_api_clients (key_prefix)",
     "CREATE UNIQUE INDEX IF NOT EXISTS b1_users_username_normalized_uq ON b1_users (username_normalized)",
     "CREATE INDEX IF NOT EXISTS b1_users_role_idx ON b1_users (role)",
@@ -2835,6 +2837,7 @@ async def insert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
         "last_used_at": None,
         "revoked_at": None,
         "cidr_allowlist": [],
+        "default_b1_tools": [],
         **payload,
     }
     async with engine.begin() as conn:
@@ -2852,6 +2855,7 @@ async def upsert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
         "last_used_at": None,
         "revoked_at": None,
         "cidr_allowlist": [],
+        "default_b1_tools": [],
         **payload,
     }
     stmt = pg_insert(api_clients).values(**row)
@@ -2865,6 +2869,7 @@ async def upsert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
             "key_salt": stmt.excluded.key_salt,
             "key_hash": stmt.excluded.key_hash,
             "cidr_allowlist": stmt.excluded.cidr_allowlist,
+            "default_b1_tools": stmt.excluded.default_b1_tools,
             "updated_at": now,
             "revoked_at": None,
         },
@@ -2940,6 +2945,25 @@ async def update_api_client_cidr_allowlist(client_id: str, cidr_allowlist: list[
             update(api_clients)
             .where(api_clients.c.id == client_id)
             .values(cidr_allowlist=cidr_allowlist, updated_at=now)
+        )
+    return await get_api_client(client_id)
+
+
+async def update_api_client_default_b1_tools(client_id: str, default_b1_tools: list[str]) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(api_clients).where(api_clients.c.id == client_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        if row["revoked_at"] is not None:
+            return dict(row)
+        await conn.execute(
+            update(api_clients)
+            .where(api_clients.c.id == client_id)
+            .values(default_b1_tools=default_b1_tools, updated_at=now)
         )
     return await get_api_client(client_id)
 

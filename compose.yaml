@@ -232,6 +232,7 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       B1_ADMIN_BOOTSTRAP_KEY_FILE: /run/secrets/admin_bootstrap_key
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
+      B1_OPEN_WEBUI_DEFAULT_B1_TOOLS: ${B1_OPEN_WEBUI_DEFAULT_B1_TOOLS:-}
       B1_MASTER_KEY_FILE: /run/secrets/master_encryption_key
       B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
       B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token

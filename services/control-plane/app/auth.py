@@ -73,6 +73,7 @@ class AuthContext:
     key_prefix: str | None = None
     session_id: str | None = None
     csrf_token: str | None = None
+    default_b1_tools: tuple[str, ...] = ()
 
     def has_scope(self, required_scope: str) -> bool:
         return "*" in self.scopes or required_scope in self.scopes

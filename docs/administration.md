@@ -33,7 +33,7 @@ The browser UIs call the control-plane through same-origin gateway routes on `co
 
 Administrators create scoped API clients from Control Center or the `/admin/api-clients` API. API client and Model Hub sync-client management is administrator-only because these routes issue or mutate credentials. The full key is shown once and only a salted hash is stored.
 
-`client_open_webui_internal` is system-managed. It is provisioned from `$B1_DATA_ROOT/secrets/open_webui_api_key` during control-plane startup and is the only key Open WebUI should use for the unified API. If this key must be rotated, update the generated secret and restart Open WebUI plus the control plane so the container environment and stored hash agree.
+`client_open_webui_internal` is system-managed. It is provisioned from `$B1_DATA_ROOT/secrets/open_webui_api_key` during control-plane startup and is the only key Open WebUI should use for the unified API. Its `default_b1_tools` field can be set with `B1_OPEN_WEBUI_DEFAULT_B1_TOOLS` at bootstrap or edited later from External Access when Open WebUI should browse/search through the B1 tool harness. If this key must be rotated, update the generated secret and restart Open WebUI plus the control plane so the container environment and stored hash agree.
 
 Roles:
 

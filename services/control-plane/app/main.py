@@ -349,10 +349,15 @@ class ApiClientCreate(BaseModel):
     role: Role = Role.SERVICE
     scopes: list[str] | None = None
     cidr_allowlist: list[str] = Field(default_factory=list)
+    default_b1_tools: list[str] = Field(default_factory=list, max_length=16)
 
 
 class CidrAllowlistUpdateRequest(BaseModel):
     cidr_allowlist: list[str] = Field(default_factory=list)
+
+
+class ApiClientDefaultB1ToolsUpdateRequest(BaseModel):
+    default_b1_tools: list[str] = Field(default_factory=list, max_length=16)
 
 
 class NetworkPolicyUpdateRequest(BaseModel):
@@ -1032,6 +1037,7 @@ async def authenticate_bearer_token(token: str) -> AuthContext:
         role=role,
         scopes=frozenset(client["scopes"]),
         key_prefix=client["key_prefix"],
+        default_b1_tools=tuple(str(tool) for tool in client.get("default_b1_tools") or [] if str(tool).strip()),
     )
 
 
@@ -3836,8 +3842,20 @@ async def public_model_tool_registry(auth: AuthContext | None = None, *, include
     }
 
 
+def chat_request_has_explicit_b1_tools(payload: ChatCompletionRequest) -> bool:
+    return "b1_tools" in payload.model_fields_set
+
+
+def chat_request_explicit_b1_tool_names(payload: ChatCompletionRequest) -> list[str]:
+    if not chat_request_has_explicit_b1_tools(payload):
+        return []
+    return list(payload.b1_tools or [])
+
+
 async def requested_b1_model_tools(payload: ChatCompletionRequest, auth: AuthContext | None = None) -> tuple[list[str], model_tools.ModelToolRegistry]:
     requested = list(payload.b1_tools or [])
+    if not chat_request_has_explicit_b1_tools(payload) and not requested and auth is not None:
+        requested = list(auth.default_b1_tools)
     if not requested:
         return [], model_tools.ModelToolRegistry(model_tools.ModelToolSettings(enabled=False, allowed_tools=()))
     registry = await model_tool_registry_for_auth(auth)
@@ -5507,6 +5525,7 @@ def public_api_client(row: dict[str, Any]) -> dict[str, Any]:
     redacted.pop("key_hash", None)
     redacted.pop("key_salt", None)
     redacted.setdefault("cidr_allowlist", [])
+    redacted.setdefault("default_b1_tools", [])
     return jsonable_encoder(redacted)
 
 
@@ -5754,6 +5773,11 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
     if not key_prefix:
         log_event("open_webui_api_key_invalid")
         return None
+    try:
+        default_b1_tools = normalize_model_tool_names(list(settings.open_webui_default_b1_tools))
+    except HTTPException as exc:
+        log_event("open_webui_default_b1_tools_invalid", detail=str(exc.detail))
+        default_b1_tools = []
     salt, key_hash = hash_api_key(api_key)
     row = await database.upsert_api_client(
         {
@@ -5764,9 +5788,10 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
             "key_prefix": key_prefix,
             "key_salt": salt,
             "key_hash": key_hash,
+            "default_b1_tools": default_b1_tools,
         }
     )
-    log_event("open_webui_api_client_ready", client_id=row["id"], key_prefix=key_prefix, scopes=row["scopes"])
+    log_event("open_webui_api_client_ready", client_id=row["id"], key_prefix=key_prefix, scopes=row["scopes"], default_b1_tools=row.get("default_b1_tools") or [])
     return row
 
 
@@ -8176,6 +8201,7 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     cidr_allowlist = validate_modelhub_cidr_allowlist(payload.cidr_allowlist)
+    default_b1_tools = normalize_model_tool_names(payload.default_b1_tools)
     key_prefix, api_key = generate_api_key()
     key_salt, key_digest = hash_api_key(api_key)
     row = await database.insert_api_client(
@@ -8188,6 +8214,7 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
             "key_salt": key_salt,
             "key_hash": key_digest,
             "cidr_allowlist": cidr_allowlist,
+            "default_b1_tools": default_b1_tools,
         }
     )
     log_event("api_client_created", client_id=row["id"], role=payload.role.value, key_prefix=key_prefix)
@@ -8203,6 +8230,7 @@ async def admin_api_client_create(payload: ApiClientCreate, authorization: str |
             "scopes": sorted(scopes),
             "key_prefix": key_prefix,
             "cidr_allowlist": cidr_allowlist,
+            "default_b1_tools": default_b1_tools,
         },
     )
     return {**public_api_client(row), "api_key": api_key, "one_time_display": True}
@@ -8235,6 +8263,38 @@ async def admin_api_client_cidr_update(
             "role": row["role"],
             "key_prefix": row["key_prefix"],
             "cidr_allowlist": cidr_allowlist,
+        },
+    )
+    return public_api_client(row)
+
+
+@app.put("/admin/api-clients/{client_id}/default-b1-tools")
+async def admin_api_client_default_b1_tools_update(
+    client_id: str,
+    payload: ApiClientDefaultB1ToolsUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_credential_admin(auth)
+    default_b1_tools = normalize_model_tool_names(payload.default_b1_tools)
+    row = await database.update_api_client_default_b1_tools(client_id, default_b1_tools)
+    if row is None:
+        raise HTTPException(status_code=404, detail="API client not found")
+    if row.get("revoked_at") is not None:
+        raise HTTPException(status_code=409, detail="revoked API clients cannot be modified")
+    log_event("api_client_default_b1_tools_updated", client_id=client_id, tool_count=len(default_b1_tools))
+    await record_audit_event(
+        auth,
+        "api_client.default_b1_tools_updated",
+        target_type="api_client",
+        target_id=client_id,
+        summary=f"Updated default B1 tools for API client {row['display_name']}",
+        metadata={
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "key_prefix": row["key_prefix"],
+            "default_b1_tools": default_b1_tools,
         },
     )
     return public_api_client(row)
@@ -12397,9 +12457,9 @@ async def chat_completions(payload: ChatCompletionRequest, authorization: str | 
     require_openai_forwarding(resolution, "chat")
     runtime_payload = strip_b1_chat_fields(payload.model_dump(exclude_none=True))
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
-    if payload.b1_tools and not requested_tools:
+    if chat_request_explicit_b1_tool_names(payload) and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
-    if payload.b1_tools and payload.stream:
+    if requested_tools and payload.stream:
         raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming chat completions")
     if requested_tools:
         return await call_chat_with_b1_tools(payload, runtime_payload, resolution, requested_tools, tool_registry, owner_id=auth.subject_id)
@@ -12422,12 +12482,23 @@ async def responses(payload: dict[str, Any], authorization: str | None = Header(
     model = payload.get("model", "chat-default")
     resolution = resolve_catalog_alias_for_modalities_auth(model, {"llm", "vlm"}, auth, payload.get("runtime_policy", "any"), operation="responses")
     require_openai_forwarding(resolution, "responses")
-    if payload.get("b1_tools"):
+    if payload.get("b1_tools") or ("b1_tools" not in payload and auth.default_b1_tools):
         chat_payload = responses_payload_to_chat_request_payload({"model": model, **payload})
         chat_request = ChatCompletionRequest(**chat_payload)
         requested_tools, tool_registry = await requested_b1_model_tools(chat_request, auth)
-        if not requested_tools:
+        if chat_request_explicit_b1_tool_names(chat_request) and not requested_tools:
             raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
+        if not requested_tools:
+            proxied = await call_openai_runtime_json(
+                "/v1/responses",
+                strip_b1_response_fields({"model": model, **payload}),
+                resolution,
+                "responses",
+                owner_id=auth.subject_id,
+            )
+            if proxied is not None:
+                return proxied
+            raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied responses response")
         if chat_request.stream:
             raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming responses")
         chat_response = await call_chat_with_b1_tools(

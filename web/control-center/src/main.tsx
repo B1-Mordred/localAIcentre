@@ -782,6 +782,7 @@ type ApiClient = {
   scopes: string[];
   key_prefix: string;
   cidr_allowlist: string[];
+  default_b1_tools: string[];
   created_at: string;
   last_used_at?: string | null;
   revoked_at?: string | null;
@@ -4838,11 +4839,13 @@ function ExternalAccess() {
   const [apiRole, setApiRole] = useState("service");
   const [apiScopes, setApiScopes] = useState("jobs:read,jobs:write,models:read,inference:write");
   const [apiCidrs, setApiCidrs] = useState("");
+  const [apiDefaultB1Tools, setApiDefaultB1Tools] = useState("");
   const [hubDisplayName, setHubDisplayName] = useState("");
   const [hubAllowedModels, setHubAllowedModels] = useState("chat-default");
   const [hubCidrs, setHubCidrs] = useState("192.168.2.0/24");
   const [hubAllowDownloads, setHubAllowDownloads] = useState(true);
   const [apiClientCidrs, setApiClientCidrs] = useState<Record<string, string>>({});
+  const [apiClientDefaultB1Tools, setApiClientDefaultB1Tools] = useState<Record<string, string>>({});
   const [modelHubClientCidrs, setModelHubClientCidrs] = useState<Record<string, string>>({});
   const [modelHubClientAllowedModels, setModelHubClientAllowedModels] = useState<Record<string, string>>({});
   const [modelHubClientDownloads, setModelHubClientDownloads] = useState<Record<string, boolean>>({});
@@ -4901,6 +4904,7 @@ function ExternalAccess() {
         setApiClients(apiData);
         setModelHubClients(hubData);
         setApiClientCidrs(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
+        setApiClientDefaultB1Tools(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.default_b1_tools ?? []).join(", ")])));
         setModelHubClientCidrs(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
         setModelHubClientAllowedModels(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, (client.allowed_models ?? []).join(", ")])));
         setModelHubClientDownloads(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, Boolean(client.allow_downloads)])));
@@ -4932,7 +4936,8 @@ function ExternalAccess() {
         display_name: apiDisplayName,
         role: apiRole,
         scopes: apiScopes.trim() ? parseCsv(apiScopes) : null,
-        cidr_allowlist: parseCsv(apiCidrs)
+        cidr_allowlist: parseCsv(apiCidrs),
+        default_b1_tools: parseCsv(apiDefaultB1Tools)
       })
     })
       .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.detail ?? `${response.status}`))))
@@ -4940,6 +4945,7 @@ function ExternalAccess() {
         setOneTimeKey({ label: payload.display_name, value: payload.api_key });
         setApiDisplayName("");
         setApiCidrs("");
+        setApiDefaultB1Tools("");
         loadClients();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -4990,6 +4996,26 @@ function ExternalAccess() {
     })
       .then(() => {
         setMessage("CIDR allowlist updated");
+        loadClients();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const updateApiClientDefaultB1Tools = (id: string) => {
+    if (apiClientsAdminOnly) {
+      setMessage("API client management requires administrator role");
+      return;
+    }
+    setBusy(true);
+    setMessage("updating default B1 tools");
+    apiJson(`/admin/api-clients/${id}/default-b1-tools`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ default_b1_tools: parseCsv(apiClientDefaultB1Tools[id] ?? "") })
+    })
+      .then(() => {
+        setMessage("default B1 tools updated");
         loadClients();
       })
       .catch((err: Error) => setMessage(err.message))
@@ -5344,6 +5370,7 @@ function ExternalAccess() {
           </label>
           <label>Scopes<input value={apiScopes} onChange={(event) => setApiScopes(event.target.value)} disabled={apiClientsAdminOnly} /></label>
           <label>CIDR allowlist<input value={apiCidrs} onChange={(event) => setApiCidrs(event.target.value)} placeholder="192.168.2.0/24" disabled={apiClientsAdminOnly} /></label>
+          <label>Default B1 tools<input value={apiDefaultB1Tools} onChange={(event) => setApiDefaultB1Tools(event.target.value)} placeholder="web_search, web_fetch" disabled={apiClientsAdminOnly} /></label>
           <button title="Create API client" disabled={busy || apiClientsAdminOnly || !apiDisplayName.trim()}><KeyRound size={16} />Create</button>
         </form>
         <form className="stack" onSubmit={createModelHubClient}>
@@ -5579,7 +5606,7 @@ function ExternalAccess() {
         <h3>API Clients</h3>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Role</th><th>Scopes</th><th>CIDR</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Role</th><th>Scopes</th><th>CIDR</th><th>Default B1 tools</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
           {apiClients.map((client) => (
             <tr key={client.id}>
@@ -5596,11 +5623,22 @@ function ExternalAccess() {
                   <button title={`Save CIDR allowlist for ${client.display_name}`} onClick={() => updateClientCidrs("api", client.id)} disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
                 </div>
               </td>
+              <td>
+                <div className="inline-form">
+                  <input
+                    value={apiClientDefaultB1Tools[client.id] ?? ""}
+                    onChange={(event) => setApiClientDefaultB1Tools((current) => ({ ...current, [client.id]: event.target.value }))}
+                    placeholder="web_search, web_fetch"
+                    disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}
+                  />
+                  <button title={`Save default B1 tools for ${client.display_name}`} onClick={() => updateApiClientDefaultB1Tools(client.id)} disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}><CheckCircle2 size={16} /></button>
+                </div>
+              </td>
               <td>{client.revoked_at ? "revoked" : "active"}<small>{client.last_used_at ? `last ${new Date(client.last_used_at).toLocaleString()}` : ""}</small></td>
               <td><div className="table-actions"><button title={`Revoke ${client.display_name}`} onClick={() => revoke("api", client.id)} disabled={busy || apiClientsAdminOnly || Boolean(client.revoked_at)}><Trash2 size={16} /></button></div></td>
             </tr>
           ))}
-          {!apiClients.length && <tr><td colSpan={6}>{apiClientsAdminOnly ? "Administrator role required to view API clients" : "No API clients recorded"}</td></tr>}
+          {!apiClients.length && <tr><td colSpan={7}>{apiClientsAdminOnly ? "Administrator role required to view API clients" : "No API clients recorded"}</td></tr>}
         </tbody>
       </table>
       <div className="subsection-title">

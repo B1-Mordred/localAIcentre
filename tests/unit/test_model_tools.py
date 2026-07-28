@@ -884,6 +884,124 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_payload["max_tokens"], 64)
         self.assertEqual(first_payload["messages"][1], {"role": "system", "content": "Be terse."})
 
+    async def test_chat_completions_uses_api_client_default_tools_when_omitted(self) -> None:
+        auth = main.AuthContext(
+            subject_id="client_1",
+            role=main.Role.SERVICE,
+            scopes=frozenset({"inference:write"}),
+            default_b1_tools=("web_fetch",),
+        )
+        resolution = SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default")
+        calls: list[dict[str, object]] = []
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        def fake_resolve(*_args, **_kwargs):
+            return resolution
+
+        async def fake_registry(_auth):
+            return model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
+
+        async def fake_runtime_json(path, payload, selected, operation, owner_id=None):
+            calls.append({"path": path, "payload": payload, "operation": operation, "owner_id": owner_id})
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "web_fetch", "arguments": json.dumps({"url": "https://example.com"})},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Example Domain"}}]})
+
+        async def fake_execute(_registry, _tool_call):
+            return {"ok": True, "tool": "web_fetch", "url": "https://example.com", "title": "Example Domain", "text": "Example Domain"}
+
+        original_authenticate = main.authenticate
+        original_resolve = main.resolve_catalog_alias_for_modalities_auth
+        original_registry = main.model_tool_registry_for_auth
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.authenticate = fake_authenticate
+        main.resolve_catalog_alias_for_modalities_auth = fake_resolve
+        main.model_tool_registry_for_auth = fake_registry
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "resolve_catalog_alias_for_modalities_auth", original_resolve))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+        self.addAsyncCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addAsyncCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        request = main.ChatCompletionRequest(model="chat-default", messages=[{"role": "user", "content": "Fetch example.com"}])
+        self.assertNotIn("b1_tools", request.model_fields_set)
+        response = await main.chat_completions(request, authorization="Bearer test")
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "Example Domain")
+        self.assertEqual(response.headers["x-b1-tools"], "web_fetch")
+        self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions", "/v1/chat/completions"])
+        self.assertEqual(calls[0]["payload"]["tools"][0]["function"]["name"], "web_fetch")
+
+    async def test_explicit_empty_b1_tools_disables_api_client_defaults(self) -> None:
+        auth = main.AuthContext(
+            subject_id="client_1",
+            role=main.Role.SERVICE,
+            scopes=frozenset({"inference:write"}),
+            default_b1_tools=("web_fetch",),
+        )
+        resolution = SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default")
+        calls: list[dict[str, object]] = []
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        def fake_resolve(*_args, **_kwargs):
+            return resolution
+
+        async def fake_registry(_auth):
+            raise AssertionError("default tool registry should not load when b1_tools is explicitly empty")
+
+        async def fake_runtime_json(path, payload, _selected, operation, owner_id=None):
+            calls.append({"path": path, "payload": payload, "operation": operation, "owner_id": owner_id})
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "plain"}}]})
+
+        original_authenticate = main.authenticate
+        original_resolve = main.resolve_catalog_alias_for_modalities_auth
+        original_registry = main.model_tool_registry_for_auth
+        original_runtime_json = main.call_openai_runtime_json
+        main.authenticate = fake_authenticate
+        main.resolve_catalog_alias_for_modalities_auth = fake_resolve
+        main.model_tool_registry_for_auth = fake_registry
+        main.call_openai_runtime_json = fake_runtime_json
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "resolve_catalog_alias_for_modalities_auth", original_resolve))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+        self.addAsyncCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+
+        request = main.ChatCompletionRequest(model="chat-default", messages=[{"role": "user", "content": "No tools"}], b1_tools=[])
+        self.assertIn("b1_tools", request.model_fields_set)
+        response = await main.chat_completions(request, authorization="Bearer test")
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "plain")
+        self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions"])
+        self.assertNotIn("tools", calls[0]["payload"])
+        self.assertNotIn("b1_tools", calls[0]["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()

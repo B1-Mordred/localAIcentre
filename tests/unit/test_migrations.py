@@ -69,6 +69,7 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertIn("license_accepted", snapshot["b1_model_downloads"])
         self.assertIn("idempotency_key", snapshot["b1_runtime_reservations"])
         self.assertIn("cidr_allowlist", snapshot["b1_api_clients"])
+        self.assertIn("default_b1_tools", snapshot["b1_api_clients"])
         self.assertIn("b1_network_policies", snapshot)
         self.assertIn("cors_allow_origins", snapshot["b1_network_policies"])
         self.assertIn("trusted_proxy_cidrs", snapshot["b1_network_policies"])
@@ -89,6 +90,7 @@ class MigrationSchemaTests(unittest.TestCase):
         self.assertTrue(any("CREATE TABLE IF NOT EXISTS b1_network_policies" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("CREATE UNIQUE INDEX IF NOT EXISTS b1_jobs_owner_idempotency_key_uq" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS cidr_allowlist" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
+        self.assertTrue(any("ALTER TABLE b1_api_clients ADD COLUMN IF NOT EXISTS default_b1_tools" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_resource_policies ADD COLUMN IF NOT EXISTS cpu_residency_enabled" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_model_downloads ADD COLUMN IF NOT EXISTS license_accepted" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
         self.assertTrue(any("ALTER TABLE b1_runtime_reservations ADD COLUMN IF NOT EXISTS idempotency_key" in sql for sql in database.SCHEMA_COMPATIBILITY_SQL))
@@ -117,7 +119,7 @@ class AlembicConfigTests(unittest.TestCase):
         self.assertEqual(config.get_main_option("sqlalchemy.url"), "postgresql+asyncpg://user:pass@postgres:5432/b1_ai_hub")
         self.assertEqual(Path(config.get_main_option("script_location")), APP_ROOT / "alembic")
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_current_head(), "202607230013")
+        self.assertEqual(scripts.get_current_head(), "202607230015")
 
 
 if __name__ == "__main__":
