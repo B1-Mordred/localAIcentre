@@ -39,7 +39,7 @@
   },
   "execution_modes": ["hosted-inference", "downloadable"],
   "installation_status": "available",
-  "aliases": ["video-text"],
+  "aliases": ["sd15-video-sequence"],
   "visibility_roles": ["admin", "operator", "creator"],
   "runtime_adapter_versions": {
     "comfyui": "b1-runtime-adapter/v1alpha1"
@@ -137,7 +137,7 @@
         "type": "catalog-metadata",
         "status": "ok",
         "runtime": "comfyui",
-        "model_alias": "video-text",
+        "model_alias": "sd15-video-sequence",
         "resolved_model_version": "b1-sd15-pruned-emaonly-comfyui-video-sequence@451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
         "peak_vram_mib": 5018,
         "peak_ram_mib": 8192,

@@ -86,7 +86,7 @@
   },
   "execution_modes": ["hosted-inference", "downloadable"],
   "installation_status": "available",
-  "aliases": ["hunyuanvideo_1.5_repackaged", "hunyuanvideo-1.5-480p-fp8"],
+  "aliases": ["video-text", "video-image", "hunyuanvideo_1.5_repackaged", "hunyuanvideo-1.5-480p-fp8"],
   "visibility_roles": ["admin", "operator", "creator"],
   "runtime_adapter_versions": {
     "comfyui": "b1-runtime-adapter/v1alpha1"

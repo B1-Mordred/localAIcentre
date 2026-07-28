@@ -134,19 +134,19 @@
       "default_limits": { "maximum_resolution": "1024x1024", "maximum_batch_size": 1, "maximum_steps": 30 }
     },
     {
-      "id": "short-video-6gb-sequence-workflow",
-      "display_name": "Short Video Workflow",
+      "id": "hunyuanvideo-1.5-native-comfyui-workflow",
+      "display_name": "HunyuanVideo 1.5 Native ComfyUI Workflow",
       "aliases": ["video-text", "video-image"],
       "modality": "video",
       "operations": ["video-generation", "image-to-video"],
       "preferred_runtimes": ["comfyui"],
-      "target_class": "experimental 6 GB animated-sequence starter, then a future small or quantized temporal video workflow",
-      "selection_guidance": "Use the SD 1.5 animated-sequence starter only to prove local scheduling, artifacts, and UI/API flow on 6 GB VRAM. Install a pinned temporal video model with fresh smoke measurements before treating video aliases as quality generation.",
-      "resource_estimate": { "vram_gib": 4.9, "ram_gib": 8.0, "disk_gib": 4.0, "max_frames": 4 },
-      "target_resource_label": "experimental",
+      "target_class": "native ComfyUI HunyuanVideo-1.5 480p FP8 distilled workflow",
+      "selection_guidance": "Use the Comfy-Org HunyuanVideo-1.5 480p FP8 repackaged weights with native ComfyUI core nodes. This model is installed for native compatibility and upgrade readiness, but it exceeds the current 6 GB VRAM host and should be run only with explicit operator acceptance of offload/experimental behavior until measured successfully on upgraded hardware.",
+      "resource_estimate": { "vram_gib": 24.0, "ram_gib": 32.0, "disk_gib": 28.14, "max_resolution": "480p", "max_frames": 129 },
+      "target_resource_label": "offload-required",
       "runtime_policy": "comfyui-workflow",
-      "default_limits": { "maximum_batch_size": 1, "maximum_frames": 4, "maximum_duration_seconds": 1, "maximum_steps": 6 },
-      "candidate_manifest_ids": ["b1-sd15-pruned-emaonly-comfyui-video-sequence"]
+      "default_limits": { "maximum_resolution": "480p", "maximum_batch_size": 1, "maximum_frames": 129, "maximum_duration_seconds": 5, "maximum_steps": 6 },
+      "candidate_manifest_ids": ["b1-comfy-org-hunyuanvideo-1.5-480p-fp8-comfyui"]
     }
   ]
 }
