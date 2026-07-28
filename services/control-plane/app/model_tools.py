@@ -179,15 +179,109 @@ class ModelToolSettings:
     search_endpoint_template: str = "https://duckduckgo.com/html/?q={query}"
 
 
+@dataclass(frozen=True)
+class ModelToolDefinition:
+    name: str
+    enabled: bool
+    kind: str
+    display_name: str
+    description: str
+    parameters_schema: dict[str, Any]
+    config: dict[str, Any]
+    visibility_roles: tuple[str, ...] = ()
+    notes: str = ""
+
+
+BUILTIN_TOOL_NAMES = {"web_search", "web_fetch"}
+MODEL_TOOL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
+
+
+def builtin_tool_definition(name: str, settings: ModelToolSettings) -> dict[str, Any] | None:
+    if name == "web_search":
+        return {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the public web for current information. Use this before answering time-sensitive factual questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": settings.max_search_results},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    if name == "web_fetch":
+        return {
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": "Fetch and extract readable text from a public HTTP or HTTPS URL.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Public URL to retrieve."},
+                        "max_chars": {"type": "integer", "minimum": 256, "maximum": settings.max_result_chars},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    return None
+
+
+def safe_parameters_schema(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"type": "object", "properties": {}, "additionalProperties": True}
+    schema = dict(value)
+    if schema.get("type") != "object":
+        schema["type"] = "object"
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        schema["properties"] = {}
+    additional = schema.get("additionalProperties")
+    if additional not in {True, False} and not isinstance(additional, dict):
+        schema["additionalProperties"] = True
+    return schema
+
+
+def tool_definition_from_row(row: dict[str, Any]) -> ModelToolDefinition:
+    return ModelToolDefinition(
+        name=str(row.get("name") or ""),
+        enabled=bool(row.get("enabled", True)),
+        kind=str(row.get("kind") or ""),
+        display_name=str(row.get("display_name") or row.get("name") or ""),
+        description=str(row.get("description") or ""),
+        parameters_schema=safe_parameters_schema(row.get("parameters_schema") if isinstance(row.get("parameters_schema"), dict) else {}),
+        config=row.get("config") if isinstance(row.get("config"), dict) else {},
+        visibility_roles=tuple(str(item) for item in row.get("visibility_roles") or [] if str(item).strip()),
+        notes=str(row.get("notes") or ""),
+    )
+
+
 class ModelToolRegistry:
-    def __init__(self, settings: ModelToolSettings, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        settings: ModelToolSettings,
+        *,
+        definitions: list[ModelToolDefinition] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        resolver: HostnameResolver | None = None,
+    ) -> None:
         self.settings = settings
+        self.custom_definitions = {definition.name: definition for definition in definitions or [] if definition.enabled}
         self.transport = transport
+        self.resolver = resolver
 
     def tool_names(self) -> set[str]:
         if not self.settings.enabled:
             return set()
-        return set(self.settings.allowed_tools)
+        allowed = set(self.settings.allowed_tools)
+        return {name for name in allowed if name in BUILTIN_TOOL_NAMES or name in self.custom_definitions}
 
     def definitions(self, requested: list[str]) -> list[dict[str, Any]]:
         enabled = self.tool_names()
@@ -195,41 +289,19 @@ class ModelToolRegistry:
         for name in requested:
             if name not in enabled:
                 continue
-            if name == "web_search":
+            builtin = builtin_tool_definition(name, self.settings)
+            if builtin is not None:
+                definitions.append(builtin)
+                continue
+            custom = self.custom_definitions.get(name)
+            if custom is not None:
                 definitions.append(
                     {
                         "type": "function",
                         "function": {
-                            "name": "web_search",
-                            "description": "Search the public web for current information. Use this before answering time-sensitive factual questions.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {"type": "string", "description": "Search query."},
-                                    "max_results": {"type": "integer", "minimum": 1, "maximum": self.settings.max_search_results},
-                                },
-                                "required": ["query"],
-                                "additionalProperties": False,
-                            },
-                        },
-                    }
-                )
-            elif name == "web_fetch":
-                definitions.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_fetch",
-                            "description": "Fetch and extract readable text from a public HTTP or HTTPS URL.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "url": {"type": "string", "description": "Public URL to retrieve."},
-                                    "max_chars": {"type": "integer", "minimum": 256, "maximum": self.settings.max_result_chars},
-                                },
-                                "required": ["url"],
-                                "additionalProperties": False,
-                            },
+                            "name": custom.name,
+                            "description": custom.description or custom.display_name,
+                            "parameters": custom.parameters_schema,
                         },
                     }
                 )
@@ -242,6 +314,9 @@ class ModelToolRegistry:
             return await self.web_search(arguments)
         if name == "web_fetch":
             return await self.web_fetch(arguments)
+        definition = self.custom_definitions.get(name)
+        if definition is not None and definition.kind == "http-json":
+            return await self.http_json_tool(definition, arguments)
         return {"ok": False, "error": f"unknown tool: {name}"}
 
     async def web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -249,6 +324,7 @@ class ModelToolRegistry:
             str(arguments.get("url") or ""),
             allow_private_network=self.settings.allow_private_network,
             allowed_hosts=set(self.settings.allowed_hosts),
+            resolver=self.resolver,
         )
         max_chars = int(arguments.get("max_chars") or self.settings.max_result_chars)
         max_chars = max(256, min(max_chars, self.settings.max_result_chars))
@@ -281,6 +357,7 @@ class ModelToolRegistry:
             endpoint,
             allow_private_network=self.settings.allow_private_network,
             allowed_hosts=set(self.settings.allowed_hosts),
+            resolver=self.resolver,
         )
         async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
             response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
@@ -296,6 +373,7 @@ class ModelToolRegistry:
                     result_url,
                     allow_private_network=self.settings.allow_private_network,
                     allowed_hosts=set(self.settings.allowed_hosts),
+                    resolver=self.resolver,
                 )
             except ModelToolError:
                 continue
@@ -311,6 +389,45 @@ class ModelToolRegistry:
             "results": deduped,
             "result_count": len(deduped),
             "source": str(response.url),
+        }
+
+    async def http_json_tool(self, definition: ModelToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
+        raw_url = str(definition.config.get("url") or "").strip()
+        method = str(definition.config.get("method") or "POST").strip().upper()
+        if method not in {"GET", "POST"}:
+            return {"ok": False, "tool": definition.name, "error": "http-json tools support only GET or POST"}
+        url = validate_tool_url(
+            raw_url,
+            allow_private_network=self.settings.allow_private_network,
+            allowed_hosts=set(self.settings.allowed_hosts),
+            resolver=self.resolver,
+        )
+        max_chars = int(definition.config.get("max_result_chars") or self.settings.max_result_chars)
+        max_chars = max(256, min(max_chars, self.settings.max_result_chars))
+        async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+            if method == "GET":
+                response = await client.get(url, params=arguments, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+            else:
+                response = await client.post(url, json=arguments, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        payload: dict[str, Any]
+        if "json" in content_type.lower():
+            try:
+                parsed = response.json()
+            except ValueError:
+                parsed = None
+            payload = {"json": parsed} if parsed is not None else {"text": response.text[:max_chars]}
+        else:
+            text = html_to_text(response.text, max_chars=max_chars) if "html" in content_type.lower() else WHITESPACE_RE.sub(" ", response.text).strip()[:max_chars]
+            payload = {"text": text}
+        return {
+            "ok": True,
+            "tool": definition.name,
+            "url": str(response.url),
+            "status_code": response.status_code,
+            "content_type": content_type,
+            **payload,
         }
 
 

@@ -5,6 +5,7 @@ import base64
 import contextvars
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -488,6 +489,29 @@ class ModelDownloadInstallRequest(BaseModel):
 class ModelSmokeTestRequest(BaseModel):
     persist: bool = True
     model_alias: str | None = Field(default=None, max_length=128)
+
+
+class ModelToolPolicyRequest(BaseModel):
+    enabled: bool = True
+    allowed_tools: list[str] = Field(default_factory=lambda: ["web_search", "web_fetch"], max_length=64)
+    allow_private_network: bool = False
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=128)
+    max_result_chars: int = Field(default=12000, ge=256, le=200000)
+    max_search_results: int = Field(default=5, ge=1, le=25)
+    timeout_seconds: float = Field(default=12.0, ge=1.0, le=120.0)
+    search_endpoint_template: str = Field(default="https://duckduckgo.com/html/?q={query}", min_length=1, max_length=2048)
+    notes: str = Field(default="", max_length=2048)
+
+
+class ModelToolDefinitionRequest(BaseModel):
+    enabled: bool = True
+    kind: Literal["http-json"] = "http-json"
+    display_name: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=2048)
+    parameters_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}, "additionalProperties": True})
+    config: dict[str, Any] = Field(default_factory=dict)
+    visibility_roles: list[str] = Field(default_factory=list, max_length=8)
+    notes: str = Field(default="", max_length=2048)
 
 
 class ModelRemoveRequest(BaseModel):
@@ -3499,7 +3523,18 @@ def runtime_response_headers(resolution: RuntimeResolution) -> dict[str, str]:
     }
 
 
-def model_tool_settings() -> model_tools.ModelToolSettings:
+def model_tool_settings(policy_row: dict[str, Any] | None = None) -> model_tools.ModelToolSettings:
+    if policy_row is not None:
+        return model_tools.ModelToolSettings(
+            enabled=bool(policy_row.get("enabled", True)),
+            allowed_tools=tuple(str(item) for item in policy_row.get("allowed_tools") or [] if str(item).strip()),
+            allow_private_network=bool(policy_row.get("allow_private_network", False)),
+            allowed_hosts=tuple(str(item) for item in policy_row.get("allowed_hosts") or [] if str(item).strip()),
+            max_result_chars=max(256, int(policy_row.get("max_result_chars") or 12000)),
+            max_search_results=max(1, int(policy_row.get("max_search_results") or 5)),
+            timeout_seconds=max(1.0, float(policy_row.get("timeout_seconds") or 12.0)),
+            search_endpoint_template=str(policy_row.get("search_endpoint_template") or "https://duckduckgo.com/html/?q={query}"),
+        )
     return model_tools.ModelToolSettings(
         enabled=settings.model_tools_enabled,
         allowed_tools=settings.model_tools_allowed,
@@ -3512,22 +3547,207 @@ def model_tool_settings() -> model_tools.ModelToolSettings:
     )
 
 
-def public_model_tool_registry() -> dict[str, Any]:
-    registry = model_tools.ModelToolRegistry(model_tool_settings())
+def model_tool_visible_to_auth(definition: model_tools.ModelToolDefinition, auth: AuthContext | None) -> bool:
+    if not definition.visibility_roles:
+        return True
+    if auth is None:
+        return False
+    return auth.role.value in set(definition.visibility_roles)
+
+
+async def effective_model_tool_policy_row() -> dict[str, Any] | None:
+    return await database.get_model_tool_policy()
+
+
+async def effective_model_tool_definitions(auth: AuthContext | None = None, *, include_disabled: bool = False) -> list[model_tools.ModelToolDefinition]:
+    rows = await database.list_model_tool_definitions()
+    definitions = [model_tools.tool_definition_from_row(row) for row in rows]
+    return [definition for definition in definitions if (include_disabled or definition.enabled) and model_tool_visible_to_auth(definition, auth)]
+
+
+async def model_tool_registry_for_auth(auth: AuthContext | None = None) -> model_tools.ModelToolRegistry:
+    policy = await effective_model_tool_policy_row()
+    return model_tools.ModelToolRegistry(model_tool_settings(policy), definitions=await effective_model_tool_definitions(auth))
+
+
+def public_model_tool_policy(policy_row: dict[str, Any] | None) -> dict[str, Any]:
+    source = "database" if policy_row is not None else "environment"
+    tool_settings = model_tool_settings(policy_row)
+    return {
+        "source": source,
+        "enabled": tool_settings.enabled,
+        "allowed_tools": list(tool_settings.allowed_tools),
+        "allow_private_network": tool_settings.allow_private_network,
+        "allowed_hosts": list(tool_settings.allowed_hosts),
+        "max_result_chars": tool_settings.max_result_chars,
+        "max_search_results": tool_settings.max_search_results,
+        "timeout_seconds": tool_settings.timeout_seconds,
+        "search_endpoint_template": tool_settings.search_endpoint_template,
+        "notes": str(policy_row.get("notes") or "") if policy_row else "",
+        "updated_by": policy_row.get("updated_by") if policy_row else None,
+        "created_at": policy_row.get("created_at") if policy_row else None,
+        "updated_at": policy_row.get("updated_at") if policy_row else None,
+    }
+
+
+def public_model_tool_definition(definition: model_tools.ModelToolDefinition | dict[str, Any]) -> dict[str, Any]:
+    row = definition if isinstance(definition, dict) else {}
+    item = model_tools.tool_definition_from_row(definition) if isinstance(definition, dict) else definition
+    payload = {
+        "name": item.name,
+        "enabled": item.enabled,
+        "kind": item.kind,
+        "display_name": item.display_name,
+        "description": item.description,
+        "parameters_schema": item.parameters_schema,
+        "config": {key: value for key, value in item.config.items() if "token" not in key.lower() and "secret" not in key.lower()},
+        "visibility_roles": list(item.visibility_roles),
+        "notes": item.notes,
+    }
+    if row:
+        payload.update({"updated_by": row.get("updated_by"), "created_at": row.get("created_at"), "updated_at": row.get("updated_at")})
+    return jsonable_encoder(payload)
+
+
+def normalize_model_tool_name(name: str) -> str:
+    value = name.strip().lower()
+    if not model_tools.MODEL_TOOL_NAME_RE.fullmatch(value):
+        raise HTTPException(status_code=422, detail="tool name must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, underscores, and hyphens")
+    if value in model_tools.BUILTIN_TOOL_NAMES:
+        raise HTTPException(status_code=422, detail="built-in model tools cannot be redefined")
+    return value
+
+
+def normalize_model_tool_names(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in values:
+        value = str(item).strip().lower()
+        if not model_tools.MODEL_TOOL_NAME_RE.fullmatch(value):
+            raise HTTPException(status_code=422, detail=f"invalid tool name: {item}")
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def normalize_model_tool_hosts(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in values:
+        host = str(item).strip().lower().rstrip(".")
+        if not host:
+            continue
+        if "/" in host or "\\" in host or "@" in host:
+            raise HTTPException(status_code=422, detail=f"invalid model-tool host allowlist entry: {item}")
+        if host == "localhost" or host.endswith(".localhost"):
+            raise HTTPException(status_code=422, detail="model-tool host allowlist must not include localhost")
+        if host not in normalized:
+            normalized.append(host)
+    return normalized
+
+
+def validate_static_model_tool_url(value: str, *, allow_private_network: bool = False) -> str:
+    raw = value.strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"https", "http"}:
+        raise HTTPException(status_code=422, detail="model-tool URL must use http or https")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=422, detail="model-tool URL must not contain credentials")
+    if parsed.fragment:
+        raise HTTPException(status_code=422, detail="model-tool URL must not contain a fragment")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="model-tool URL has an invalid port") from exc
+    hostname = parsed.hostname.lower().rstrip(".") if parsed.hostname else ""
+    if not hostname:
+        raise HTTPException(status_code=422, detail="model-tool URL must include a hostname")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise HTTPException(status_code=422, detail="model-tool URL must not target localhost")
+    if model_tools.BAD_PERCENT_ESCAPE_RE.search(parsed.path):
+        raise HTTPException(status_code=422, detail="model-tool URL path contains an invalid percent escape")
+    try:
+        decoded_path = unquote(parsed.path, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="model-tool URL path is not valid UTF-8") from exc
+    if any(part in {".", ".."} for part in decoded_path.split("/") if part):
+        raise HTTPException(status_code=422, detail="model-tool URL path must not contain relative path segments")
+    with suppress(ValueError):
+        ip = ipaddress.ip_address(hostname)
+        if not model_tools.tool_ip_is_public(ip, allow_private_network=allow_private_network):
+            raise HTTPException(status_code=422, detail="model-tool URL targets a blocked network range")
+    return raw
+
+
+def validate_model_tool_policy_payload(payload: ModelToolPolicyRequest) -> dict[str, Any]:
+    allowed_tools = normalize_model_tool_names(payload.allowed_tools)
+    allowed_hosts = normalize_model_tool_hosts(payload.allowed_hosts)
+    if "{query}" not in payload.search_endpoint_template:
+        raise HTTPException(status_code=422, detail="search_endpoint_template must include {query}")
+    validate_static_model_tool_url(payload.search_endpoint_template.replace("{query}", "test"), allow_private_network=payload.allow_private_network)
+    return {
+        "enabled": payload.enabled,
+        "allowed_tools": allowed_tools,
+        "allow_private_network": payload.allow_private_network,
+        "allowed_hosts": allowed_hosts,
+        "max_result_chars": payload.max_result_chars,
+        "max_search_results": payload.max_search_results,
+        "timeout_seconds": payload.timeout_seconds,
+        "search_endpoint_template": payload.search_endpoint_template.strip(),
+        "notes": payload.notes.strip(),
+    }
+
+
+def validate_model_tool_definition_payload(name: str, payload: ModelToolDefinitionRequest) -> dict[str, Any]:
+    tool_name = normalize_model_tool_name(name)
+    roles = []
+    for role in payload.visibility_roles:
+        value = str(role).strip().lower()
+        if value not in {item.value for item in Role}:
+            raise HTTPException(status_code=422, detail=f"unsupported visibility role: {role}")
+        if value not in roles:
+            roles.append(value)
+    config = dict(payload.config)
+    url = validate_static_model_tool_url(str(config.get("url") or ""))
+    method = str(config.get("method") or "POST").strip().upper()
+    if method not in {"GET", "POST"}:
+        raise HTTPException(status_code=422, detail="http-json tool method must be GET or POST")
+    config["url"] = url
+    config["method"] = method
+    if "headers" in config:
+        raise HTTPException(status_code=422, detail="custom model tools do not accept arbitrary headers; use a dedicated future secret-backed tool type")
+    return {
+        "name": tool_name,
+        "enabled": payload.enabled,
+        "kind": payload.kind,
+        "display_name": payload.display_name.strip(),
+        "description": payload.description.strip(),
+        "parameters_schema": model_tools.safe_parameters_schema(payload.parameters_schema),
+        "config": config,
+        "visibility_roles": roles,
+        "notes": payload.notes.strip(),
+    }
+
+
+async def public_model_tool_registry(auth: AuthContext | None = None, *, include_disabled_custom: bool = False) -> dict[str, Any]:
+    policy = await effective_model_tool_policy_row()
+    definitions = await effective_model_tool_definitions(auth, include_disabled=include_disabled_custom)
+    enabled_definitions = [definition for definition in definitions if definition.enabled]
+    registry = model_tools.ModelToolRegistry(model_tool_settings(policy), definitions=enabled_definitions)
     tool_names = sorted(registry.tool_names())
     return {
         "object": "b1.model_tools",
-        "enabled": settings.model_tools_enabled,
+        "enabled": registry.settings.enabled,
         "allowed_tools": tool_names,
         "request_field": "b1_tools",
         "max_iterations_field": "b1_tool_max_iterations",
         "default_max_iterations": 4,
         "streaming_supported": False,
-        "allow_private_network": settings.model_tools_allow_private_network,
-        "allowed_hosts": list(settings.model_tools_allowed_hosts),
-        "max_result_chars": max(256, settings.model_tools_max_result_chars),
-        "max_search_results": max(1, settings.model_tools_max_search_results),
-        "search_endpoint_configured": bool(settings.model_tools_search_endpoint_template),
+        "allow_private_network": registry.settings.allow_private_network,
+        "allowed_hosts": list(registry.settings.allowed_hosts),
+        "max_result_chars": registry.settings.max_result_chars,
+        "max_search_results": registry.settings.max_search_results,
+        "search_endpoint_configured": bool(registry.settings.search_endpoint_template),
+        "policy": public_model_tool_policy(policy),
+        "custom_tools": [public_model_tool_definition(definition) for definition in definitions],
         "definitions": registry.definitions(tool_names),
         "security": {
             "explicit_request_required": True,
@@ -3538,14 +3758,14 @@ def public_model_tool_registry() -> dict[str, Any]:
     }
 
 
-def requested_b1_model_tools(payload: ChatCompletionRequest) -> list[str]:
+async def requested_b1_model_tools(payload: ChatCompletionRequest, auth: AuthContext | None = None) -> tuple[list[str], model_tools.ModelToolRegistry]:
     requested = list(payload.b1_tools or [])
+    registry = await model_tool_registry_for_auth(auth)
     if not requested:
-        return []
-    registry = model_tools.ModelToolRegistry(model_tool_settings())
+        return [], registry
     if "*" in requested:
-        return sorted(registry.tool_names())
-    return [tool for tool in requested if tool in registry.tool_names()]
+        return sorted(registry.tool_names()), registry
+    return [tool for tool in requested if tool in registry.tool_names()], registry
 
 
 def strip_b1_chat_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3620,12 +3840,12 @@ async def call_chat_with_b1_tools(
     payload: ChatCompletionRequest,
     runtime_payload: dict[str, Any],
     resolution: RuntimeResolution,
+    requested_tools: list[str],
+    registry: model_tools.ModelToolRegistry,
     owner_id: str | None,
 ) -> JSONResponse:
-    requested_tools = requested_b1_model_tools(payload)
     if payload.b1_tools and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
-    registry = model_tools.ModelToolRegistry(model_tool_settings())
     tool_definitions = registry.definitions(requested_tools)
     loop_payload = merge_openai_tool_definitions(strip_b1_chat_fields(runtime_payload), tool_definitions)
     loop_payload["messages"] = list(loop_payload.get("messages") or [])
@@ -11445,7 +11665,7 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
 async def list_model_tools(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
-    return public_model_tool_registry()
+    return await public_model_tool_registry(auth)
 
 
 @app.get("/admin/model-tools")
@@ -11453,7 +11673,78 @@ async def admin_model_tools(authorization: str | None = Header(default=None)) ->
     auth = await authenticate(authorization)
     require_scope(auth, "models:read")
     require_model_admin(auth)
-    return public_model_tool_registry()
+    return await public_model_tool_registry(auth, include_disabled_custom=True)
+
+
+@app.put("/admin/model-tools/policy")
+async def admin_model_tool_policy_update(payload: ModelToolPolicyRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_administrator(auth, "model tool policy changes require administrator role")
+    normalized = validate_model_tool_policy_payload(payload)
+    row = await database.upsert_model_tool_policy({**normalized, "updated_by": auth.subject_id})
+    public = await public_model_tool_registry(auth, include_disabled_custom=True)
+    await record_audit_event(
+        auth,
+        "model_tool_policy.updated",
+        target_type="model_tool_policy",
+        target_id="default",
+        summary="Updated model tool policy",
+        metadata={
+            "enabled": bool(row.get("enabled")),
+            "allowed_tools": row.get("allowed_tools") or [],
+            "allow_private_network": bool(row.get("allow_private_network")),
+            "allowed_host_count": len(row.get("allowed_hosts") or []),
+            "max_result_chars": row.get("max_result_chars"),
+            "max_search_results": row.get("max_search_results"),
+        },
+    )
+    return public
+
+
+@app.put("/admin/model-tools/{name}")
+async def admin_model_tool_definition_update(name: str, payload: ModelToolDefinitionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_administrator(auth, "model tool definition changes require administrator role")
+    normalized = validate_model_tool_definition_payload(name, payload)
+    row = await database.upsert_model_tool_definition({**normalized, "updated_by": auth.subject_id})
+    await record_audit_event(
+        auth,
+        "model_tool_definition.upserted",
+        target_type="model_tool",
+        target_id=row["name"],
+        summary=f"Updated model tool definition {row['name']}",
+        metadata={
+            "name": row["name"],
+            "enabled": bool(row.get("enabled")),
+            "kind": row.get("kind"),
+            "visibility_roles": row.get("visibility_roles") or [],
+            "method": (row.get("config") or {}).get("method"),
+            "url_configured": bool((row.get("config") or {}).get("url")),
+        },
+    )
+    return {"tool": public_model_tool_definition(row), "registry": await public_model_tool_registry(auth, include_disabled_custom=True)}
+
+
+@app.delete("/admin/model-tools/{name}")
+async def admin_model_tool_definition_delete(name: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_administrator(auth, "model tool definition changes require administrator role")
+    tool_name = normalize_model_tool_name(name)
+    row = await database.delete_model_tool_definition(tool_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="model tool definition not found")
+    await record_audit_event(
+        auth,
+        "model_tool_definition.deleted",
+        target_type="model_tool",
+        target_id=tool_name,
+        summary=f"Deleted model tool definition {tool_name}",
+        metadata={"name": tool_name, "kind": row.get("kind"), "enabled": bool(row.get("enabled"))},
+    )
+    return {"deleted": public_model_tool_definition(row), "registry": await public_model_tool_registry(auth, include_disabled_custom=True)}
 
 
 @app.post("/v1/chat/completions")
@@ -11464,13 +11755,13 @@ async def chat_completions(payload: ChatCompletionRequest, authorization: str | 
     resolution = resolve_catalog_alias_for_modalities_auth(payload.model, {"llm", "vlm"}, auth, payload.runtime_policy, operation="chat")
     require_openai_forwarding(resolution, "chat")
     runtime_payload = strip_b1_chat_fields(payload.model_dump(exclude_none=True))
-    requested_tools = requested_b1_model_tools(payload)
+    requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
     if payload.b1_tools and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
     if payload.b1_tools and payload.stream:
         raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming chat completions")
     if requested_tools:
-        return await call_chat_with_b1_tools(payload, runtime_payload, resolution, owner_id=auth.subject_id)
+        return await call_chat_with_b1_tools(payload, runtime_payload, resolution, requested_tools, tool_registry, owner_id=auth.subject_id)
     if payload.stream:
         proxied_stream = await call_openai_runtime_stream("/v1/chat/completions", runtime_payload, resolution, "chat", owner_id=auth.subject_id)
         if proxied_stream is not None:

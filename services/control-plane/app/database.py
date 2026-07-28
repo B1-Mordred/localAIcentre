@@ -326,6 +326,41 @@ runtime_configurations = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+model_tool_policy = Table(
+    "b1_model_tool_policy",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("allowed_tools", JSONB, nullable=False, default=list),
+    Column("allow_private_network", Boolean, nullable=False, default=False),
+    Column("allowed_hosts", JSONB, nullable=False, default=list),
+    Column("max_result_chars", Integer, nullable=False, default=12000),
+    Column("max_search_results", Integer, nullable=False, default=5),
+    Column("timeout_seconds", Float, nullable=False, default=12.0),
+    Column("search_endpoint_template", Text, nullable=False, default="https://duckduckgo.com/html/?q={query}"),
+    Column("notes", Text, nullable=False, default=""),
+    Column("updated_by", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+model_tool_definitions = Table(
+    "b1_model_tool_definitions",
+    metadata,
+    Column("name", String(128), primary_key=True),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("kind", String(64), nullable=False),
+    Column("display_name", String(256), nullable=False),
+    Column("description", Text, nullable=False, default=""),
+    Column("parameters_schema", JSONB, nullable=False, default=dict),
+    Column("config", JSONB, nullable=False, default=dict),
+    Column("visibility_roles", JSONB, nullable=False, default=list),
+    Column("notes", Text, nullable=False, default=""),
+    Column("updated_by", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 resource_policies = Table(
     "b1_resource_policies",
     metadata,
@@ -487,6 +522,8 @@ Index("b1_comfyui_node_pins_status_idx", comfyui_node_pins.c.status)
 Index("b1_encrypted_secrets_category_idx", encrypted_secrets.c.category)
 Index("b1_encrypted_secrets_deleted_at_idx", encrypted_secrets.c.deleted_at)
 Index("b1_runtime_configurations_enabled_idx", runtime_configurations.c.enabled)
+Index("b1_model_tool_definitions_enabled_idx", model_tool_definitions.c.enabled)
+Index("b1_model_tool_definitions_kind_idx", model_tool_definitions.c.kind)
 Index("b1_backup_schedules_next_run_idx", backup_schedules.c.enabled, backup_schedules.c.next_run_at)
 Index("b1_maintenance_state_enabled_idx", maintenance_state.c.enabled)
 Index("b1_update_plans_status_idx", update_plans.c.status)
@@ -511,6 +548,8 @@ EXPORT_TABLES = [
     comfyui_node_pins,
     encrypted_secrets,
     runtime_configurations,
+    model_tool_policy,
+    model_tool_definitions,
     resource_policies,
     admission_policies,
     network_policies,
@@ -613,6 +652,41 @@ SCHEMA_COMPATIBILITY_SQL = [
         ")"
     ),
     "CREATE INDEX IF NOT EXISTS b1_runtime_configurations_enabled_idx ON b1_runtime_configurations (enabled)",
+    (
+        "CREATE TABLE IF NOT EXISTS b1_model_tool_policy ("
+        "id varchar(64) PRIMARY KEY, "
+        "enabled boolean NOT NULL DEFAULT true, "
+        "allowed_tools jsonb NOT NULL DEFAULT '[\"web_search\", \"web_fetch\"]'::jsonb, "
+        "allow_private_network boolean NOT NULL DEFAULT false, "
+        "allowed_hosts jsonb NOT NULL DEFAULT '[]'::jsonb, "
+        "max_result_chars integer NOT NULL DEFAULT 12000, "
+        "max_search_results integer NOT NULL DEFAULT 5, "
+        "timeout_seconds double precision NOT NULL DEFAULT 12.0, "
+        "search_endpoint_template text NOT NULL DEFAULT 'https://duckduckgo.com/html/?q={query}', "
+        "notes text NOT NULL DEFAULT '', "
+        "updated_by varchar(128), "
+        "created_at timestamp with time zone NOT NULL, "
+        "updated_at timestamp with time zone NOT NULL"
+        ")"
+    ),
+    (
+        "CREATE TABLE IF NOT EXISTS b1_model_tool_definitions ("
+        "name varchar(128) PRIMARY KEY, "
+        "enabled boolean NOT NULL DEFAULT true, "
+        "kind varchar(64) NOT NULL, "
+        "display_name varchar(256) NOT NULL, "
+        "description text NOT NULL DEFAULT '', "
+        "parameters_schema jsonb NOT NULL DEFAULT '{}'::jsonb, "
+        "config jsonb NOT NULL DEFAULT '{}'::jsonb, "
+        "visibility_roles jsonb NOT NULL DEFAULT '[]'::jsonb, "
+        "notes text NOT NULL DEFAULT '', "
+        "updated_by varchar(128), "
+        "created_at timestamp with time zone NOT NULL, "
+        "updated_at timestamp with time zone NOT NULL"
+        ")"
+    ),
+    "CREATE INDEX IF NOT EXISTS b1_model_tool_definitions_enabled_idx ON b1_model_tool_definitions (enabled)",
+    "CREATE INDEX IF NOT EXISTS b1_model_tool_definitions_kind_idx ON b1_model_tool_definitions (kind)",
     (
         "CREATE TABLE IF NOT EXISTS b1_admission_policies ("
         "id varchar(64) PRIMARY KEY, "
@@ -1072,6 +1146,127 @@ async def list_runtime_configurations() -> list[dict[str, Any]]:
         result = await conn.execute(select(runtime_configurations).order_by(runtime_configurations.c.runtime.asc()))
         rows = result.mappings().all()
     return [dict(row) for row in rows]
+
+
+async def upsert_model_tool_policy(payload: dict[str, Any], policy_id: str = "default") -> dict[str, Any]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    existing = await get_model_tool_policy(policy_id)
+    row = {
+        "id": policy_id,
+        "enabled": True,
+        "allowed_tools": ["web_search", "web_fetch"],
+        "allow_private_network": False,
+        "allowed_hosts": [],
+        "max_result_chars": 12000,
+        "max_search_results": 5,
+        "timeout_seconds": 12.0,
+        "search_endpoint_template": "https://duckduckgo.com/html/?q={query}",
+        "notes": "",
+        "updated_by": None,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+        **payload,
+    }
+    stmt = pg_insert(model_tool_policy).values(**row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[model_tool_policy.c.id],
+        set_={
+            "enabled": stmt.excluded.enabled,
+            "allowed_tools": stmt.excluded.allowed_tools,
+            "allow_private_network": stmt.excluded.allow_private_network,
+            "allowed_hosts": stmt.excluded.allowed_hosts,
+            "max_result_chars": stmt.excluded.max_result_chars,
+            "max_search_results": stmt.excluded.max_search_results,
+            "timeout_seconds": stmt.excluded.timeout_seconds,
+            "search_endpoint_template": stmt.excluded.search_endpoint_template,
+            "notes": stmt.excluded.notes,
+            "updated_by": stmt.excluded.updated_by,
+            "updated_at": now,
+        },
+    )
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return await get_model_tool_policy(policy_id) or row
+
+
+async def get_model_tool_policy(policy_id: str = "default") -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(model_tool_policy).where(model_tool_policy.c.id == policy_id))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def upsert_model_tool_definition(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    existing = await get_model_tool_definition(payload["name"])
+    row = {
+        "enabled": True,
+        "kind": "http-json",
+        "display_name": payload["name"],
+        "description": "",
+        "parameters_schema": {},
+        "config": {},
+        "visibility_roles": [],
+        "notes": "",
+        "updated_by": None,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+        **payload,
+    }
+    stmt = pg_insert(model_tool_definitions).values(**row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[model_tool_definitions.c.name],
+        set_={
+            "enabled": stmt.excluded.enabled,
+            "kind": stmt.excluded.kind,
+            "display_name": stmt.excluded.display_name,
+            "description": stmt.excluded.description,
+            "parameters_schema": stmt.excluded.parameters_schema,
+            "config": stmt.excluded.config,
+            "visibility_roles": stmt.excluded.visibility_roles,
+            "notes": stmt.excluded.notes,
+            "updated_by": stmt.excluded.updated_by,
+            "updated_at": now,
+        },
+    )
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return await get_model_tool_definition(row["name"]) or row
+
+
+async def get_model_tool_definition(name: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(model_tool_definitions).where(model_tool_definitions.c.name == name))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def list_model_tool_definitions() -> list[dict[str, Any]]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(model_tool_definitions).order_by(model_tool_definitions.c.name.asc()))
+        rows = result.mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def delete_model_tool_definition(name: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    existing = await get_model_tool_definition(name)
+    if existing is None:
+        return None
+    async with engine.begin() as conn:
+        await conn.execute(model_tool_definitions.delete().where(model_tool_definitions.c.name == name))
+    return existing
 
 
 async def get_resource_policy_record(policy_id: str = "default") -> dict[str, Any] | None:

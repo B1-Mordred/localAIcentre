@@ -823,6 +823,37 @@ type ModelHubClient = {
   revoked_at?: string | null;
 };
 
+type ModelToolPolicyPayload = {
+  source: string;
+  enabled: boolean;
+  allowed_tools: string[];
+  allow_private_network: boolean;
+  allowed_hosts: string[];
+  max_result_chars: number;
+  max_search_results: number;
+  timeout_seconds: number;
+  search_endpoint_template: string;
+  notes?: string;
+  updated_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type ModelToolDefinitionPayload = {
+  name: string;
+  enabled: boolean;
+  kind: "http-json";
+  display_name: string;
+  description: string;
+  parameters_schema: Record<string, unknown>;
+  config: Record<string, unknown>;
+  visibility_roles: string[];
+  notes?: string;
+  updated_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 type ModelToolRegistryPayload = {
   object: string;
   enabled: boolean;
@@ -836,8 +867,35 @@ type ModelToolRegistryPayload = {
   max_result_chars: number;
   max_search_results: number;
   search_endpoint_configured: boolean;
+  policy?: ModelToolPolicyPayload;
+  custom_tools?: ModelToolDefinitionPayload[];
   definitions: { function?: { name?: string; description?: string } }[];
   security: Record<string, boolean>;
+};
+
+type ModelToolPolicyForm = {
+  enabled: boolean;
+  allowed_tools: string;
+  allow_private_network: boolean;
+  allowed_hosts: string;
+  max_result_chars: string;
+  max_search_results: string;
+  timeout_seconds: string;
+  search_endpoint_template: string;
+  notes: string;
+};
+
+type ModelToolDefinitionForm = {
+  name: string;
+  enabled: boolean;
+  display_name: string;
+  description: string;
+  method: "GET" | "POST";
+  url: string;
+  max_result_chars: string;
+  parameters_schema: string;
+  visibility_roles: string;
+  notes: string;
 };
 
 type ModelAlias = {
@@ -4667,6 +4725,76 @@ function parseCsv(value: string, fallback: string[] = []) {
   return items.length ? items : fallback;
 }
 
+function prettyJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+const DEFAULT_MODEL_TOOL_SCHEMA = {
+  type: "object",
+  properties: {},
+  additionalProperties: true
+};
+
+function defaultModelToolPolicyForm(): ModelToolPolicyForm {
+  return {
+    enabled: true,
+    allowed_tools: "web_search, web_fetch",
+    allow_private_network: false,
+    allowed_hosts: "",
+    max_result_chars: "12000",
+    max_search_results: "5",
+    timeout_seconds: "12",
+    search_endpoint_template: "https://duckduckgo.com/html/?q={query}",
+    notes: ""
+  };
+}
+
+function defaultModelToolDefinitionForm(): ModelToolDefinitionForm {
+  return {
+    name: "",
+    enabled: true,
+    display_name: "",
+    description: "",
+    method: "POST",
+    url: "",
+    max_result_chars: "",
+    parameters_schema: prettyJson(DEFAULT_MODEL_TOOL_SCHEMA),
+    visibility_roles: "",
+    notes: ""
+  };
+}
+
+function modelToolPolicyFormFromPayload(payload: ModelToolRegistryPayload): ModelToolPolicyForm {
+  const policy = payload.policy;
+  return {
+    enabled: policy?.enabled ?? payload.enabled,
+    allowed_tools: (policy?.allowed_tools ?? payload.allowed_tools ?? []).join(", "),
+    allow_private_network: policy?.allow_private_network ?? payload.allow_private_network,
+    allowed_hosts: (policy?.allowed_hosts ?? payload.allowed_hosts ?? []).join(", "),
+    max_result_chars: String(policy?.max_result_chars ?? payload.max_result_chars ?? 12000),
+    max_search_results: String(policy?.max_search_results ?? payload.max_search_results ?? 5),
+    timeout_seconds: String(policy?.timeout_seconds ?? 12),
+    search_endpoint_template: policy?.search_endpoint_template ?? "https://duckduckgo.com/html/?q={query}",
+    notes: policy?.notes ?? ""
+  };
+}
+
+function modelToolDefinitionFormFromPayload(tool: ModelToolDefinitionPayload): ModelToolDefinitionForm {
+  const method = String(tool.config?.method ?? "POST").toUpperCase() === "GET" ? "GET" : "POST";
+  return {
+    name: tool.name,
+    enabled: tool.enabled,
+    display_name: tool.display_name,
+    description: tool.description,
+    method,
+    url: String(tool.config?.url ?? ""),
+    max_result_chars: tool.config?.max_result_chars ? String(tool.config.max_result_chars) : "",
+    parameters_schema: prettyJson(tool.parameters_schema),
+    visibility_roles: (tool.visibility_roles ?? []).join(", "),
+    notes: tool.notes ?? ""
+  };
+}
+
 function ExternalAccess() {
   const [apiClients, setApiClients] = useState<ApiClient[]>([]);
   const [modelHubClients, setModelHubClients] = useState<ModelHubClient[]>([]);
@@ -4697,6 +4825,9 @@ function ExternalAccess() {
   const [secretValue, setSecretValue] = useState("");
   const [oneTimeKey, setOneTimeKey] = useState<{ label: string; value: string } | null>(null);
   const [copiedSnippet, setCopiedSnippet] = useState("");
+  const [modelToolPolicyForm, setModelToolPolicyForm] = useState<ModelToolPolicyForm>(defaultModelToolPolicyForm());
+  const [modelToolForm, setModelToolForm] = useState<ModelToolDefinitionForm>(defaultModelToolDefinitionForm());
+  const [editingModelToolName, setEditingModelToolName] = useState("");
 
   const adminOnlyClientPayload = { data: [], admin_only: true };
   const secretsAdminOnly = secretMasterKey?.error === "administrator only";
@@ -4740,6 +4871,9 @@ function ExternalAccess() {
         setEncryptedSecrets(secretPayload.data ?? []);
         setSecretMasterKey(secretPayload.master_key ?? null);
         setModelTools(toolPayload.admin_only ? null : toolPayload);
+        if (!toolPayload.admin_only) {
+          setModelToolPolicyForm(modelToolPolicyFormFromPayload(toolPayload));
+        }
         setMessage("ready");
       })
       .catch((err: Error) => setMessage(err.message));
@@ -4908,6 +5042,115 @@ function ExternalAccess() {
       .finally(() => setBusy(false));
   };
 
+  const saveModelToolPolicy = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (modelToolsAdminOnly) {
+      setMessage("model tool management requires administrator role");
+      return;
+    }
+    setBusy(true);
+    setMessage("saving model tool policy");
+    apiJson<ModelToolRegistryPayload>(`/admin/model-tools/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: modelToolPolicyForm.enabled,
+        allowed_tools: parseCsv(modelToolPolicyForm.allowed_tools),
+        allow_private_network: modelToolPolicyForm.allow_private_network,
+        allowed_hosts: parseCsv(modelToolPolicyForm.allowed_hosts),
+        max_result_chars: Number(modelToolPolicyForm.max_result_chars),
+        max_search_results: Number(modelToolPolicyForm.max_search_results),
+        timeout_seconds: Number(modelToolPolicyForm.timeout_seconds),
+        search_endpoint_template: modelToolPolicyForm.search_endpoint_template,
+        notes: modelToolPolicyForm.notes
+      })
+    })
+      .then((payload) => {
+        setModelTools(payload);
+        setModelToolPolicyForm(modelToolPolicyFormFromPayload(payload));
+        setMessage("model tool policy saved");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const editModelTool = (tool: ModelToolDefinitionPayload) => {
+    setEditingModelToolName(tool.name);
+    setModelToolForm(modelToolDefinitionFormFromPayload(tool));
+  };
+
+  const resetModelToolForm = () => {
+    setEditingModelToolName("");
+    setModelToolForm(defaultModelToolDefinitionForm());
+  };
+
+  const saveModelTool = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (modelToolsAdminOnly) {
+      setMessage("model tool management requires administrator role");
+      return;
+    }
+    let parametersSchema: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(modelToolForm.parameters_schema || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("parameters schema must be a JSON object");
+      parametersSchema = parsed as Record<string, unknown>;
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "parameters schema is invalid JSON");
+      return;
+    }
+    const name = (editingModelToolName || modelToolForm.name).trim();
+    const config: Record<string, unknown> = {
+      url: modelToolForm.url,
+      method: modelToolForm.method
+    };
+    if (modelToolForm.max_result_chars.trim()) {
+      config.max_result_chars = Number(modelToolForm.max_result_chars);
+    }
+    setBusy(true);
+    setMessage("saving model tool");
+    apiJson<{ tool: ModelToolDefinitionPayload; registry: ModelToolRegistryPayload }>(`/admin/model-tools/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: modelToolForm.enabled,
+        kind: "http-json",
+        display_name: modelToolForm.display_name || name,
+        description: modelToolForm.description,
+        parameters_schema: parametersSchema,
+        config,
+        visibility_roles: parseCsv(modelToolForm.visibility_roles),
+        notes: modelToolForm.notes
+      })
+    })
+      .then((payload) => {
+        setModelTools(payload.registry);
+        setModelToolPolicyForm(modelToolPolicyFormFromPayload(payload.registry));
+        resetModelToolForm();
+        setMessage("model tool saved");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  const deleteModelTool = (tool: ModelToolDefinitionPayload) => {
+    if (modelToolsAdminOnly) {
+      setMessage("model tool management requires administrator role");
+      return;
+    }
+    setBusy(true);
+    setMessage("deleting model tool");
+    apiJson<{ deleted: ModelToolDefinitionPayload; registry: ModelToolRegistryPayload }>(`/admin/model-tools/${encodeURIComponent(tool.name)}`, { method: "DELETE" })
+      .then((payload) => {
+        setModelTools(payload.registry);
+        setModelToolPolicyForm(modelToolPolicyFormFromPayload(payload.registry));
+        if (editingModelToolName === tool.name) resetModelToolForm();
+        setMessage("model tool deleted");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const revoke = (kind: "api" | "modelhub", id: string) => {
     if ((kind === "api" && apiClientsAdminOnly) || (kind === "modelhub" && modelHubClientsAdminOnly)) {
       setMessage("credential management requires administrator role");
@@ -4994,6 +5237,24 @@ function ExternalAccess() {
         </div>
       ) : modelTools ? (
         <>
+          <form className="stack" onSubmit={saveModelToolPolicy}>
+            <h4>Policy</h4>
+            <div className="policy-grid">
+              <label className="inline-check"><input type="checkbox" checked={modelToolPolicyForm.enabled} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, enabled: event.target.checked }))} disabled={busy} />Enabled</label>
+              <label className="inline-check"><input type="checkbox" checked={modelToolPolicyForm.allow_private_network} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, allow_private_network: event.target.checked }))} disabled={busy} />Private network</label>
+              <label>Allowed tools<input value={modelToolPolicyForm.allowed_tools} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, allowed_tools: event.target.value }))} disabled={busy} /></label>
+              <label>Allowed hosts<input value={modelToolPolicyForm.allowed_hosts} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, allowed_hosts: event.target.value }))} placeholder="example.com, search.example" disabled={busy} /></label>
+              <label>Text cap<input type="number" min={256} max={200000} value={modelToolPolicyForm.max_result_chars} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, max_result_chars: event.target.value }))} disabled={busy} /></label>
+              <label>Search results<input type="number" min={1} max={25} value={modelToolPolicyForm.max_search_results} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, max_search_results: event.target.value }))} disabled={busy} /></label>
+              <label>Timeout seconds<input type="number" min={1} max={120} step={0.5} value={modelToolPolicyForm.timeout_seconds} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, timeout_seconds: event.target.value }))} disabled={busy} /></label>
+              <label>Policy source<input value={modelTools.policy?.source ?? "environment"} readOnly /></label>
+            </div>
+            <label>Search endpoint template<input value={modelToolPolicyForm.search_endpoint_template} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, search_endpoint_template: event.target.value }))} disabled={busy} /></label>
+            <label>Notes<textarea value={modelToolPolicyForm.notes} onChange={(event) => setModelToolPolicyForm((current) => ({ ...current, notes: event.target.value }))} disabled={busy} /></label>
+            <div className="table-actions">
+              <button title="Save model tool policy" type="submit" disabled={busy}><CheckCircle2 size={16} />Save Policy</button>
+            </div>
+          </form>
           <table>
             <thead><tr><th>Status</th><th>Tools</th><th>Network Policy</th><th>Limits</th></tr></thead>
             <tbody>
@@ -5005,6 +5266,52 @@ function ExternalAccess() {
               </tr>
             </tbody>
           </table>
+          <div className="split">
+            <form className="stack" onSubmit={saveModelTool}>
+              <h4>{editingModelToolName ? `Edit ${editingModelToolName}` : "Custom HTTP Tool"}</h4>
+              <label className="inline-check"><input type="checkbox" checked={modelToolForm.enabled} onChange={(event) => setModelToolForm((current) => ({ ...current, enabled: event.target.checked }))} disabled={busy} />Enabled</label>
+              <label>Name<input value={modelToolForm.name} onChange={(event) => setModelToolForm((current) => ({ ...current, name: event.target.value }))} required disabled={busy || Boolean(editingModelToolName)} placeholder="ticket-lookup" /></label>
+              <label>Display name<input value={modelToolForm.display_name} onChange={(event) => setModelToolForm((current) => ({ ...current, display_name: event.target.value }))} required disabled={busy} /></label>
+              <label>Description<textarea value={modelToolForm.description} onChange={(event) => setModelToolForm((current) => ({ ...current, description: event.target.value }))} disabled={busy} /></label>
+              <label>Method
+                <select value={modelToolForm.method} onChange={(event) => setModelToolForm((current) => ({ ...current, method: event.target.value === "GET" ? "GET" : "POST" }))} disabled={busy}>
+                  <option value="POST">POST</option>
+                  <option value="GET">GET</option>
+                </select>
+              </label>
+              <label>URL<input value={modelToolForm.url} onChange={(event) => setModelToolForm((current) => ({ ...current, url: event.target.value }))} required disabled={busy} placeholder="https://example.com/api/tool" /></label>
+              <label>Text cap override<input type="number" min={256} max={200000} value={modelToolForm.max_result_chars} onChange={(event) => setModelToolForm((current) => ({ ...current, max_result_chars: event.target.value }))} disabled={busy} /></label>
+              <label>Visibility roles<input value={modelToolForm.visibility_roles} onChange={(event) => setModelToolForm((current) => ({ ...current, visibility_roles: event.target.value }))} disabled={busy} placeholder="admin, creator" /></label>
+              <label>Parameters schema<textarea value={modelToolForm.parameters_schema} onChange={(event) => setModelToolForm((current) => ({ ...current, parameters_schema: event.target.value }))} disabled={busy} /></label>
+              <label>Notes<textarea value={modelToolForm.notes} onChange={(event) => setModelToolForm((current) => ({ ...current, notes: event.target.value }))} disabled={busy} /></label>
+              <div className="table-actions">
+                <button title="Save custom model tool" type="submit" disabled={busy || !(editingModelToolName || modelToolForm.name.trim()) || !modelToolForm.url.trim()}><CheckCircle2 size={16} />Save Tool</button>
+                <button title="Reset custom model tool form" type="button" onClick={resetModelToolForm} disabled={busy}><RotateCcw size={16} />Reset</button>
+              </div>
+            </form>
+            <div className="stack">
+              <h4>Custom Tools</h4>
+              <table>
+                <thead><tr><th>Name</th><th>Endpoint</th><th>Roles</th><th></th></tr></thead>
+                <tbody>
+                  {(modelTools.custom_tools ?? []).map((tool) => (
+                    <tr key={tool.name}>
+                      <td>{tool.display_name}<small>{tool.name} / {tool.enabled ? "enabled" : "disabled"} / {tool.kind}</small></td>
+                      <td>{String(tool.config?.method ?? "POST")} {String(tool.config?.url ?? "")}</td>
+                      <td>{tool.visibility_roles?.join(", ") || "all roles"}</td>
+                      <td>
+                        <div className="table-actions">
+                          <button title={`Edit ${tool.name}`} type="button" onClick={() => editModelTool(tool)} disabled={busy}><Pencil size={16} /></button>
+                          <button title={`Delete ${tool.name}`} type="button" onClick={() => deleteModelTool(tool)} disabled={busy}><Trash2 size={16} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!(modelTools.custom_tools ?? []).length && <tr><td colSpan={4}>No custom tools defined</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div className="snippet-grid">
             <section className="snippet-card">
               <div className="snippet-title">

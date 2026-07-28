@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 try:
+    import httpx  # noqa: E402
     from fastapi.responses import JSONResponse  # noqa: E402
     from app import main, model_tools  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
@@ -52,6 +54,98 @@ class ModelToolPolicyTests(unittest.TestCase):
         registry = model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
         definitions = registry.definitions(["web_search", "web_fetch"])
         self.assertEqual([item["function"]["name"] for item in definitions], ["web_fetch"])
+
+    def test_registry_supports_custom_http_json_tool_definition(self) -> None:
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": False},
+            config={"url": "https://example.com/ticket", "method": "POST"},
+        )
+        registry = model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)), definitions=[definition])
+        definitions = registry.definitions(["lookup-ticket"])
+        self.assertEqual(definitions[0]["function"]["name"], "lookup-ticket")
+        self.assertEqual(definitions[0]["function"]["parameters"]["required"], ["id"])
+
+    def test_custom_http_json_tool_posts_arguments(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"status": "ok", "echo": json.loads(request.content.decode("utf-8"))})
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": False},
+            config={"url": "https://example.com/ticket", "method": "POST"},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {"id": "T-1"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["json"]["echo"], {"id": "T-1"})
+        self.assertEqual(requests[0].url, "https://example.com/ticket")
+
+    def test_model_tool_policy_validation_rejects_missing_search_placeholder(self) -> None:
+        with self.assertRaisesRegex(Exception, "search_endpoint_template"):
+            main.validate_model_tool_policy_payload(
+                main.ModelToolPolicyRequest(search_endpoint_template="https://duckduckgo.com/html/")
+            )
+
+    def test_model_tool_policy_validation_rejects_private_search_endpoint(self) -> None:
+        with self.assertRaisesRegex(Exception, "blocked network"):
+            main.validate_model_tool_policy_payload(
+                main.ModelToolPolicyRequest(search_endpoint_template="http://127.0.0.1/search?q={query}")
+            )
+
+    def test_model_tool_definition_validation_rejects_builtin_and_arbitrary_headers(self) -> None:
+        with self.assertRaisesRegex(Exception, "built-in"):
+            main.validate_model_tool_definition_payload(
+                "web_fetch",
+                main.ModelToolDefinitionRequest(
+                    kind="http-json",
+                    display_name="Override",
+                    description="Override built-in tool.",
+                    config={"url": "https://example.com/tool", "method": "POST"},
+                ),
+            )
+        with self.assertRaisesRegex(Exception, "headers"):
+            main.validate_model_tool_definition_payload(
+                "ticket-lookup",
+                main.ModelToolDefinitionRequest(
+                    kind="http-json",
+                    display_name="Ticket lookup",
+                    description="Lookup a ticket.",
+                    config={"url": "https://example.com/tool", "method": "POST", "headers": {"Authorization": "secret"}},
+                ),
+            )
+
+    def test_model_tool_definition_validation_normalizes_http_json(self) -> None:
+        payload = main.ModelToolDefinitionRequest(
+            kind="http-json",
+            display_name="Ticket lookup",
+            description="Lookup a ticket.",
+            parameters_schema={"properties": {"id": {"type": "string"}}},
+            config={"url": "https://example.com/tool", "method": "post", "max_result_chars": 2048},
+            visibility_roles=["admin", "creator"],
+        )
+        normalized = main.validate_model_tool_definition_payload("ticket-lookup", payload)
+        self.assertEqual(normalized["name"], "ticket-lookup")
+        self.assertEqual(normalized["config"]["method"], "POST")
+        self.assertEqual(normalized["config"]["url"], "https://example.com/tool")
+        self.assertEqual(normalized["parameters_schema"]["type"], "object")
+        self.assertEqual(normalized["visibility_roles"], ["admin", "creator"])
 
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
@@ -102,6 +196,8 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
             payload,
             main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
             SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
             owner_id="user_1",
         )
 
