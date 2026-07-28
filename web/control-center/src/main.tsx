@@ -854,6 +854,8 @@ type ModelToolDefinitionPayload = {
   updated_at?: string | null;
 };
 
+type ModelToolAuthType = "none" | "bearer" | "header";
+
 type ModelToolRegistryPayload = {
   object: string;
   enabled: boolean;
@@ -892,6 +894,9 @@ type ModelToolDefinitionForm = {
   description: string;
   method: "GET" | "POST";
   url: string;
+  auth_type: ModelToolAuthType;
+  auth_secret_name: string;
+  auth_header_name: string;
   max_result_chars: string;
   parameters_schema: string;
   visibility_roles: string;
@@ -4757,6 +4762,9 @@ function defaultModelToolDefinitionForm(): ModelToolDefinitionForm {
     description: "",
     method: "POST",
     url: "",
+    auth_type: "none",
+    auth_secret_name: "",
+    auth_header_name: "",
     max_result_chars: "",
     parameters_schema: prettyJson(DEFAULT_MODEL_TOOL_SCHEMA),
     visibility_roles: "",
@@ -4781,6 +4789,8 @@ function modelToolPolicyFormFromPayload(payload: ModelToolRegistryPayload): Mode
 
 function modelToolDefinitionFormFromPayload(tool: ModelToolDefinitionPayload): ModelToolDefinitionForm {
   const method = String(tool.config?.method ?? "POST").toUpperCase() === "GET" ? "GET" : "POST";
+  const auth = tool.config?.auth && typeof tool.config.auth === "object" && !Array.isArray(tool.config.auth) ? tool.config.auth as Record<string, unknown> : {};
+  const authType = auth.type === "bearer" || auth.type === "header" ? auth.type : "none";
   return {
     name: tool.name,
     enabled: tool.enabled,
@@ -4788,6 +4798,9 @@ function modelToolDefinitionFormFromPayload(tool: ModelToolDefinitionPayload): M
     description: tool.description,
     method,
     url: String(tool.config?.url ?? ""),
+    auth_type: authType,
+    auth_secret_name: typeof auth.secret_name === "string" ? auth.secret_name : "",
+    auth_header_name: typeof auth.header_name === "string" ? auth.header_name : "",
     max_result_chars: tool.config?.max_result_chars ? String(tool.config.max_result_chars) : "",
     parameters_schema: prettyJson(tool.parameters_schema),
     visibility_roles: (tool.visibility_roles ?? []).join(", "),
@@ -5107,6 +5120,16 @@ function ExternalAccess() {
     if (modelToolForm.max_result_chars.trim()) {
       config.max_result_chars = Number(modelToolForm.max_result_chars);
     }
+    if (modelToolForm.auth_type !== "none") {
+      const auth: Record<string, string> = {
+        type: modelToolForm.auth_type,
+        secret_name: modelToolForm.auth_secret_name.trim()
+      };
+      if (modelToolForm.auth_type === "header") {
+        auth.header_name = modelToolForm.auth_header_name.trim();
+      }
+      config.auth = auth;
+    }
     setBusy(true);
     setMessage("saving model tool");
     apiJson<{ tool: ModelToolDefinitionPayload; registry: ModelToolRegistryPayload }>(`/admin/model-tools/${encodeURIComponent(name)}`, {
@@ -5280,6 +5303,15 @@ function ExternalAccess() {
                 </select>
               </label>
               <label>URL<input value={modelToolForm.url} onChange={(event) => setModelToolForm((current) => ({ ...current, url: event.target.value }))} required disabled={busy} placeholder="https://example.com/api/tool" /></label>
+              <label>Auth
+                <select value={modelToolForm.auth_type} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_type: event.target.value === "bearer" || event.target.value === "header" ? event.target.value : "none" }))} disabled={busy}>
+                  <option value="none">None</option>
+                  <option value="bearer">Bearer token secret</option>
+                  <option value="header">Custom header secret</option>
+                </select>
+              </label>
+              {modelToolForm.auth_type !== "none" && <label>Secret name<input value={modelToolForm.auth_secret_name} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_secret_name: event.target.value }))} required disabled={busy} placeholder="integration:ticket-api" /></label>}
+              {modelToolForm.auth_type === "header" && <label>Header name<input value={modelToolForm.auth_header_name} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_header_name: event.target.value }))} required disabled={busy} placeholder="X-API-Key" /></label>}
               <label>Text cap override<input type="number" min={256} max={200000} value={modelToolForm.max_result_chars} onChange={(event) => setModelToolForm((current) => ({ ...current, max_result_chars: event.target.value }))} disabled={busy} /></label>
               <label>Visibility roles<input value={modelToolForm.visibility_roles} onChange={(event) => setModelToolForm((current) => ({ ...current, visibility_roles: event.target.value }))} disabled={busy} placeholder="admin, creator" /></label>
               <label>Parameters schema<textarea value={modelToolForm.parameters_schema} onChange={(event) => setModelToolForm((current) => ({ ...current, parameters_schema: event.target.value }))} disabled={busy} /></label>
@@ -5297,7 +5329,7 @@ function ExternalAccess() {
                   {(modelTools.custom_tools ?? []).map((tool) => (
                     <tr key={tool.name}>
                       <td>{tool.display_name}<small>{tool.name} / {tool.enabled ? "enabled" : "disabled"} / {tool.kind}</small></td>
-                      <td>{String(tool.config?.method ?? "POST")} {String(tool.config?.url ?? "")}</td>
+                      <td>{String(tool.config?.method ?? "POST")} {String(tool.config?.url ?? "")}<small>{tool.config?.auth && typeof tool.config.auth === "object" && !Array.isArray(tool.config.auth) ? `${String((tool.config.auth as Record<string, unknown>).type ?? "none")} auth${(tool.config.auth as Record<string, unknown>).header_name ? ` / ${String((tool.config.auth as Record<string, unknown>).header_name)}` : ""}` : "no auth"}</small></td>
                       <td>{tool.visibility_roles?.join(", ") || "all roles"}</td>
                       <td>
                         <div className="table-actions">

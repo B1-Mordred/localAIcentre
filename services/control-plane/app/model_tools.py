@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import html
 import ipaddress
+import inspect
 import json
 import re
 import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import quote_plus, unquote, urljoin, urlparse, urlunparse
 
 import httpx
@@ -30,6 +31,7 @@ WHITESPACE_RE = re.compile(r"\s+")
 SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1>")
 TAG_RE = re.compile(r"(?s)<[^>]+>")
 HostnameResolver = Callable[[str, int | None], list[str]]
+ToolHeaderProvider = Callable[["ModelToolDefinition"], Awaitable[dict[str, str]] | dict[str, str]]
 
 
 class ModelToolError(ValueError):
@@ -271,11 +273,13 @@ class ModelToolRegistry:
         definitions: list[ModelToolDefinition] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         resolver: HostnameResolver | None = None,
+        header_provider: ToolHeaderProvider | None = None,
     ) -> None:
         self.settings = settings
         self.custom_definitions = {definition.name: definition for definition in definitions or [] if definition.enabled}
         self.transport = transport
         self.resolver = resolver
+        self.header_provider = header_provider
 
     def tool_names(self) -> set[str]:
         if not self.settings.enabled:
@@ -404,11 +408,17 @@ class ModelToolRegistry:
         )
         max_chars = int(definition.config.get("max_result_chars") or self.settings.max_result_chars)
         max_chars = max(256, min(max_chars, self.settings.max_result_chars))
+        headers = {"User-Agent": "B1-AI-Hub-ModelTools/0.1"}
+        if self.header_provider is not None:
+            provided = self.header_provider(definition)
+            if inspect.isawaitable(provided):
+                provided = await provided
+            headers.update({str(key): str(value) for key, value in provided.items() if str(key).strip() and str(value).strip()})
         async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
             if method == "GET":
-                response = await client.get(url, params=arguments, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+                response = await client.get(url, params=arguments, headers=headers)
             else:
-                response = await client.post(url, json=arguments, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+                response = await client.post(url, json=arguments, headers=headers)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
         payload: dict[str, Any]

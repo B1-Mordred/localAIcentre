@@ -3567,7 +3567,11 @@ async def effective_model_tool_definitions(auth: AuthContext | None = None, *, i
 
 async def model_tool_registry_for_auth(auth: AuthContext | None = None) -> model_tools.ModelToolRegistry:
     policy = await effective_model_tool_policy_row()
-    return model_tools.ModelToolRegistry(model_tool_settings(policy), definitions=await effective_model_tool_definitions(auth))
+    return model_tools.ModelToolRegistry(
+        model_tool_settings(policy),
+        definitions=await effective_model_tool_definitions(auth),
+        header_provider=model_tool_secret_headers,
+    )
 
 
 def public_model_tool_policy(policy_row: dict[str, Any] | None) -> dict[str, Any]:
@@ -3590,6 +3594,47 @@ def public_model_tool_policy(policy_row: dict[str, Any] | None) -> dict[str, Any
     }
 
 
+MODEL_TOOL_HEADER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
+MODEL_TOOL_FORBIDDEN_SECRET_HEADER_NAMES = {
+    "accept",
+    "accept-encoding",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "host",
+    "origin",
+    "proxy-authorization",
+    "referer",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "user-agent",
+}
+
+
+def public_model_tool_config(config: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in config.items():
+        lowered = key.lower()
+        if key != "auth" and ("token" in lowered or "secret" in lowered):
+            continue
+        if key == "auth" and isinstance(value, dict):
+            auth_type = str(value.get("type") or "none")
+            public_auth: dict[str, Any] = {
+                "type": auth_type,
+                "secret_name": str(value.get("secret_name") or ""),
+                "secret_configured": bool(value.get("secret_name")),
+            }
+            if auth_type == "header":
+                public_auth["header_name"] = str(value.get("header_name") or "")
+            payload["auth"] = public_auth
+            continue
+        payload[key] = value
+    return payload
+
+
 def public_model_tool_definition(definition: model_tools.ModelToolDefinition | dict[str, Any]) -> dict[str, Any]:
     row = definition if isinstance(definition, dict) else {}
     item = model_tools.tool_definition_from_row(definition) if isinstance(definition, dict) else definition
@@ -3600,7 +3645,7 @@ def public_model_tool_definition(definition: model_tools.ModelToolDefinition | d
         "display_name": item.display_name,
         "description": item.description,
         "parameters_schema": item.parameters_schema,
-        "config": {key: value for key, value in item.config.items() if "token" not in key.lower() and "secret" not in key.lower()},
+        "config": public_model_tool_config(item.config),
         "visibility_roles": list(item.visibility_roles),
         "notes": item.notes,
     }
@@ -3713,7 +3758,8 @@ def validate_model_tool_definition_payload(name: str, payload: ModelToolDefiniti
     config["url"] = url
     config["method"] = method
     if "headers" in config:
-        raise HTTPException(status_code=422, detail="custom model tools do not accept arbitrary headers; use a dedicated future secret-backed tool type")
+        raise HTTPException(status_code=422, detail="custom model tools do not accept arbitrary headers; use auth.type bearer or header with an encrypted integration secret")
+    normalize_model_tool_auth_config(config)
     return {
         "name": tool_name,
         "enabled": payload.enabled,
@@ -5132,6 +5178,77 @@ async def validate_model_download_secret_name(secret_name: str | None) -> str | 
     if secret_row.get("category") != "model-download":
         raise HTTPException(status_code=422, detail="credential_secret_name must reference an encrypted secret in category model-download")
     return normalized
+
+
+def normalize_model_tool_auth_config(config: dict[str, Any]) -> None:
+    auth = config.get("auth")
+    if auth in (None, "", False):
+        config.pop("auth", None)
+        return
+    if not isinstance(auth, dict):
+        raise HTTPException(status_code=422, detail="model-tool auth must be an object")
+    auth_type = str(auth.get("type") or "none").strip().lower()
+    if auth_type == "none":
+        config.pop("auth", None)
+        return
+    if auth_type not in {"bearer", "header"}:
+        raise HTTPException(status_code=422, detail="model-tool auth type must be none, bearer, or header")
+    secret_name = normalize_secret_name_or_422(str(auth.get("secret_name") or ""))
+    if auth_type == "bearer":
+        config["auth"] = {"type": "bearer", "secret_name": secret_name}
+        return
+    header_name = str(auth.get("header_name") or "").strip()
+    header_key = header_name.lower()
+    if not MODEL_TOOL_HEADER_NAME_RE.fullmatch(header_name):
+        raise HTTPException(status_code=422, detail="model-tool auth header_name must start with a letter and contain only letters, digits, or hyphens")
+    if header_key in MODEL_TOOL_FORBIDDEN_SECRET_HEADER_NAMES or header_key.startswith("sec-"):
+        raise HTTPException(status_code=422, detail="model-tool auth header_name is not allowed")
+    config["auth"] = {"type": "header", "secret_name": secret_name, "header_name": header_name}
+
+
+async def validate_model_tool_secret_references(config: dict[str, Any]) -> None:
+    auth = config.get("auth")
+    if not isinstance(auth, dict):
+        return
+    secret_name = str(auth.get("secret_name") or "").strip()
+    if not secret_name:
+        return
+    secret_row = await database.get_encrypted_secret(secret_name)
+    if secret_row is None:
+        raise HTTPException(status_code=422, detail="model-tool auth secret_name does not reference an active encrypted secret")
+    if secret_row.get("category") != "integration":
+        raise HTTPException(status_code=422, detail="model-tool auth secret_name must reference an encrypted secret in category integration")
+
+
+async def model_tool_secret_headers(definition: model_tools.ModelToolDefinition) -> dict[str, str]:
+    auth = definition.config.get("auth")
+    if not isinstance(auth, dict):
+        return {}
+    auth_type = str(auth.get("type") or "none").strip().lower()
+    if auth_type == "none":
+        return {}
+    try:
+        secret_name = secret_store.validate_secret_name(str(auth.get("secret_name") or ""))
+    except secret_store.SecretStoreError as exc:
+        raise model_tools.ModelToolError("model-tool auth secret name is invalid") from exc
+    secret_row = await database.get_encrypted_secret(secret_name)
+    if secret_row is None or secret_row.get("category") != "integration":
+        raise model_tools.ModelToolError("model-tool auth secret is not available")
+    try:
+        secret_value = secret_store.decrypt_value(require_master_encryption_key(), secret_name, secret_row.get("secret_envelope") or {}).strip()
+    except (HTTPException, secret_store.SecretStoreError) as exc:
+        raise model_tools.ModelToolError("model-tool auth secret could not be decrypted") from exc
+    if not secret_value:
+        raise model_tools.ModelToolError("model-tool auth secret is empty")
+    if auth_type == "bearer":
+        return {"Authorization": f"Bearer {secret_value}"}
+    if auth_type == "header":
+        header_name = str(auth.get("header_name") or "").strip()
+        header_key = header_name.lower()
+        if not MODEL_TOOL_HEADER_NAME_RE.fullmatch(header_name) or header_key in MODEL_TOOL_FORBIDDEN_SECRET_HEADER_NAMES or header_key.startswith("sec-"):
+            raise model_tools.ModelToolError("model-tool auth header is not allowed")
+        return {header_name: secret_value}
+    raise model_tools.ModelToolError("model-tool auth type is unsupported")
 
 
 async def ensure_open_webui_api_client() -> dict[str, Any] | None:
@@ -11708,7 +11825,9 @@ async def admin_model_tool_definition_update(name: str, payload: ModelToolDefini
     require_scope(auth, "models:write")
     require_administrator(auth, "model tool definition changes require administrator role")
     normalized = validate_model_tool_definition_payload(name, payload)
+    await validate_model_tool_secret_references(normalized["config"])
     row = await database.upsert_model_tool_definition({**normalized, "updated_by": auth.subject_id})
+    auth_config = row.get("config", {}).get("auth") if isinstance(row.get("config"), dict) else None
     await record_audit_event(
         auth,
         "model_tool_definition.upserted",
@@ -11722,6 +11841,9 @@ async def admin_model_tool_definition_update(name: str, payload: ModelToolDefini
             "visibility_roles": row.get("visibility_roles") or [],
             "method": (row.get("config") or {}).get("method"),
             "url_configured": bool((row.get("config") or {}).get("url")),
+            "auth_type": str(auth_config.get("type") or "none") if isinstance(auth_config, dict) else "none",
+            "auth_secret_configured": bool(auth_config.get("secret_name")) if isinstance(auth_config, dict) else False,
+            "auth_header": str(auth_config.get("header_name") or "") if isinstance(auth_config, dict) and auth_config.get("type") == "header" else "",
         },
     )
     return {"tool": public_model_tool_definition(row), "registry": await public_model_tool_registry(auth, include_disabled_custom=True)}

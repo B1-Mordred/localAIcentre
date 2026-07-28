@@ -13,13 +13,14 @@ sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 try:
     import httpx  # noqa: E402
     from fastapi.responses import JSONResponse  # noqa: E402
-    from app import main, model_tools  # noqa: E402
+    from app import main, model_tools, secret_store  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
     if exc.name not in {"fastapi", "httpx", "pydantic", "redis", "sqlalchemy"}:
         raise
     JSONResponse = None  # type: ignore[assignment]
     main = None
     model_tools = None  # type: ignore[assignment]
+    secret_store = None  # type: ignore[assignment]
     MISSING_DEPENDENCY = exc.name
 else:
     MISSING_DEPENDENCY = ""
@@ -97,6 +98,38 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(result["json"]["echo"], {"id": "T-1"})
         self.assertEqual(requests[0].url, "https://example.com/ticket")
 
+    def test_custom_http_json_tool_sends_headers_from_provider(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"status": "ok"})
+
+        async def header_provider(definition: model_tools.ModelToolDefinition) -> dict[str, str]:
+            self.assertEqual(definition.name, "lookup-ticket")
+            return {"Authorization": "Bearer test-token", "X-Tool-Key": "key-1"}
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": False},
+            config={"url": "https://example.com/ticket", "method": "GET"},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+            header_provider=header_provider,
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {"id": "T-1"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(requests[0].headers["authorization"], "Bearer test-token")
+        self.assertEqual(requests[0].headers["x-tool-key"], "key-1")
+
     def test_model_tool_policy_validation_rejects_missing_search_placeholder(self) -> None:
         with self.assertRaisesRegex(Exception, "search_endpoint_template"):
             main.validate_model_tool_policy_payload(
@@ -146,6 +179,92 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["config"]["url"], "https://example.com/tool")
         self.assertEqual(normalized["parameters_schema"]["type"], "object")
         self.assertEqual(normalized["visibility_roles"], ["admin", "creator"])
+
+    def test_model_tool_definition_validation_normalizes_bearer_auth(self) -> None:
+        payload = main.ModelToolDefinitionRequest(
+            kind="http-json",
+            display_name="Ticket lookup",
+            description="Lookup a ticket.",
+            config={
+                "url": "https://example.com/tool",
+                "method": "post",
+                "auth": {"type": "bearer", "secret_name": "integration:ticket-api"},
+            },
+        )
+        normalized = main.validate_model_tool_definition_payload("ticket-lookup", payload)
+        self.assertEqual(normalized["config"]["auth"], {"type": "bearer", "secret_name": "integration:ticket-api"})
+
+    def test_model_tool_definition_validation_normalizes_header_auth(self) -> None:
+        payload = main.ModelToolDefinitionRequest(
+            kind="http-json",
+            display_name="Ticket lookup",
+            description="Lookup a ticket.",
+            config={
+                "url": "https://example.com/tool",
+                "method": "post",
+                "auth": {"type": "header", "secret_name": "integration:ticket-api", "header_name": "X-API-Key"},
+            },
+        )
+        normalized = main.validate_model_tool_definition_payload("ticket-lookup", payload)
+        self.assertEqual(normalized["config"]["auth"], {"type": "header", "secret_name": "integration:ticket-api", "header_name": "X-API-Key"})
+
+    def test_model_tool_definition_validation_rejects_unsafe_auth_headers(self) -> None:
+        for header_name in ["Cookie", "Content-Type", "Sec-Fetch-Site", "Bad Header"]:
+            with self.subTest(header_name=header_name):
+                with self.assertRaises(Exception):
+                    main.validate_model_tool_definition_payload(
+                        "ticket-lookup",
+                        main.ModelToolDefinitionRequest(
+                            kind="http-json",
+                            display_name="Ticket lookup",
+                            description="Lookup a ticket.",
+                            config={
+                                "url": "https://example.com/tool",
+                                "method": "post",
+                                "auth": {"type": "header", "secret_name": "integration:ticket-api", "header_name": header_name},
+                            },
+                        ),
+                    )
+
+    def test_model_tool_secret_reference_requires_integration_secret(self) -> None:
+        original_get = main.database.get_encrypted_secret
+
+        async def fake_get_encrypted_secret(name: str, *, include_deleted: bool = False) -> dict[str, object] | None:
+            self.assertEqual(name, "integration:ticket-api")
+            return {"name": name, "category": "runtime"}
+
+        main.database.get_encrypted_secret = fake_get_encrypted_secret
+        self.addCleanup(lambda: setattr(main.database, "get_encrypted_secret", original_get))
+        with self.assertRaisesRegex(Exception, "category integration"):
+            asyncio.run(main.validate_model_tool_secret_references({"auth": {"type": "bearer", "secret_name": "integration:ticket-api"}}))
+
+    @unittest.skipIf(secret_store is None or getattr(secret_store, "AESGCM", None) is None, "cryptography is not installed")
+    def test_model_tool_secret_headers_decrypt_integration_secret(self) -> None:
+        master_key = "m" * 40
+        secret_name = "integration:ticket-api"
+        envelope = secret_store.encrypt_value(master_key, secret_name, "secret-token")
+        original_get = main.database.get_encrypted_secret
+        original_require_key = main.require_master_encryption_key
+
+        async def fake_get_encrypted_secret(name: str, *, include_deleted: bool = False) -> dict[str, object] | None:
+            self.assertEqual(name, secret_name)
+            return {"name": name, "category": "integration", "secret_envelope": envelope}
+
+        main.database.get_encrypted_secret = fake_get_encrypted_secret
+        main.require_master_encryption_key = lambda: master_key
+        self.addCleanup(lambda: setattr(main.database, "get_encrypted_secret", original_get))
+        self.addCleanup(lambda: setattr(main, "require_master_encryption_key", original_require_key))
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object"},
+            config={"url": "https://example.com/ticket", "method": "GET", "auth": {"type": "bearer", "secret_name": secret_name}},
+        )
+        headers = asyncio.run(main.model_tool_secret_headers(definition))
+        self.assertEqual(headers, {"Authorization": "Bearer secret-token"})
 
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
