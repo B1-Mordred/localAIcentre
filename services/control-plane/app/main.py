@@ -4378,7 +4378,21 @@ async def call_chat_with_b1_tools(
     seen_tool_signatures: set[tuple[str, str]] = set()
     executed_results: list[dict[str, Any]] = []
     for iteration in range(payload.b1_tool_max_iterations):
-        response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
+        response: JSONResponse | None = None
+        # LocalAI may briefly return 502/503/504 while replacing its single
+        # backend process during a model switch. Retry only those transient
+        # statuses; never replay a successful or client-error request.
+        for attempt in range(3):
+            response = await call_openai_runtime_json(
+                "/v1/chat/completions",
+                loop_payload,
+                resolution,
+                "chat",
+                owner_id=owner_id,
+            )
+            if response is None or response.status_code not in {502, 503, 504} or attempt == 2:
+                break
+            await asyncio.sleep(0.5 * (2**attempt))
         if response is None:
             break
         if response.status_code >= 400:

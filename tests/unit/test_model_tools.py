@@ -680,6 +680,37 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
         self.assertEqual(calls[1]["messages"][-1]["role"], "system")
 
+    async def test_chat_tool_loop_retries_transient_runtime_failure(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(_path, payload, _resolution, _operation, owner_id=None):
+            calls.append({"payload": payload, "owner_id": owner_id})
+            if len(calls) == 1:
+                return JSONResponse({"error": {"message": "backend restarting"}}, status_code=503)
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Recovered"}}]})
+
+        original_runtime_json = main.call_openai_runtime_json
+        main.call_openai_runtime_json = fake_runtime_json
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Answer after a transient backend restart."}],
+            b1_tools=["web_fetch"],
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "Recovered")
+        self.assertEqual(len(calls), 2)
+
     async def test_chat_tool_loop_executes_text_protocol_tool_call(self) -> None:
         calls: list[dict[str, object]] = []
 
