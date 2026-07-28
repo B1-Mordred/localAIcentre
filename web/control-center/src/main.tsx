@@ -4841,6 +4841,9 @@ function ExternalAccess() {
   const [modelToolPolicyForm, setModelToolPolicyForm] = useState<ModelToolPolicyForm>(defaultModelToolPolicyForm());
   const [modelToolForm, setModelToolForm] = useState<ModelToolDefinitionForm>(defaultModelToolDefinitionForm());
   const [editingModelToolName, setEditingModelToolName] = useState("");
+  const [modelToolTestName, setModelToolTestName] = useState("web_fetch");
+  const [modelToolTestArguments, setModelToolTestArguments] = useState(prettyJson({ url: "https://example.com" }));
+  const [modelToolTestResult, setModelToolTestResult] = useState<Record<string, unknown> | null>(null);
 
   const adminOnlyClientPayload = { data: [], admin_only: true };
   const secretsAdminOnly = secretMasterKey?.error === "administrator only";
@@ -5156,6 +5159,37 @@ function ExternalAccess() {
       .finally(() => setBusy(false));
   };
 
+  const executeModelTool = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (modelToolsAdminOnly) {
+      setMessage("model tool execution requires administrator or operator role");
+      return;
+    }
+    let argumentsPayload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(modelToolTestArguments || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("tool arguments must be a JSON object");
+      argumentsPayload = parsed as Record<string, unknown>;
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "tool arguments are invalid JSON");
+      return;
+    }
+    const name = modelToolTestName.trim();
+    setBusy(true);
+    setMessage("executing model tool");
+    apiJson<Record<string, unknown>>(`/admin/model-tools/${encodeURIComponent(name)}/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arguments: argumentsPayload })
+    })
+      .then((payload) => {
+        setModelToolTestResult(payload);
+        setMessage("model tool executed");
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
   const deleteModelTool = (tool: ModelToolDefinitionPayload) => {
     if (modelToolsAdminOnly) {
       setMessage("model tool management requires administrator role");
@@ -5289,6 +5323,22 @@ function ExternalAccess() {
               </tr>
             </tbody>
           </table>
+          <form className="stack" onSubmit={executeModelTool}>
+            <h4>Run Tool</h4>
+            <div className="policy-grid">
+              <label>Tool
+                <select value={modelToolTestName} onChange={(event) => setModelToolTestName(event.target.value)} disabled={busy}>
+                  {modelTools.allowed_tools.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {!modelTools.allowed_tools.includes(modelToolTestName) && modelToolTestName && <option value={modelToolTestName}>{modelToolTestName}</option>}
+                </select>
+              </label>
+              <label>Arguments<textarea value={modelToolTestArguments} onChange={(event) => setModelToolTestArguments(event.target.value)} disabled={busy} /></label>
+            </div>
+            <div className="table-actions">
+              <button title="Execute selected model tool" type="submit" disabled={busy || !modelToolTestName.trim()}><TerminalSquare size={16} />Run Tool</button>
+            </div>
+            {modelToolTestResult && <pre>{prettyJson(modelToolTestResult)}</pre>}
+          </form>
           <div className="split">
             <form className="stack" onSubmit={saveModelTool}>
               <h4>{editingModelToolName ? `Edit ${editingModelToolName}` : "Custom HTTP Tool"}</h4>

@@ -514,6 +514,10 @@ class ModelToolDefinitionRequest(BaseModel):
     notes: str = Field(default="", max_length=2048)
 
 
+class ModelToolExecuteRequest(BaseModel):
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class ModelRemoveRequest(BaseModel):
     confirm: bool = False
 
@@ -3672,6 +3676,13 @@ def normalize_model_tool_names(values: list[str]) -> list[str]:
         if value not in normalized:
             normalized.append(value)
     return normalized
+
+
+def normalize_model_tool_execution_name(name: str) -> str:
+    value = str(name).strip().lower()
+    if not model_tools.MODEL_TOOL_NAME_RE.fullmatch(value):
+        raise HTTPException(status_code=422, detail=f"invalid tool name: {name}")
+    return value
 
 
 def normalize_model_tool_hosts(values: list[str]) -> list[str]:
@@ -11847,6 +11858,31 @@ async def admin_model_tool_definition_update(name: str, payload: ModelToolDefini
         },
     )
     return {"tool": public_model_tool_definition(row), "registry": await public_model_tool_registry(auth, include_disabled_custom=True)}
+
+
+@app.post("/admin/model-tools/{name}/execute")
+async def admin_model_tool_execute(name: str, payload: ModelToolExecuteRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_model_admin(auth)
+    tool_name = normalize_model_tool_execution_name(name)
+    registry = await model_tool_registry_for_auth(auth)
+    if tool_name not in registry.tool_names():
+        raise HTTPException(status_code=404, detail="model tool is not enabled or not visible to this role")
+    result = await registry.execute(tool_name, payload.arguments)
+    await record_audit_event(
+        auth,
+        "model_tool.executed",
+        target_type="model_tool",
+        target_id=tool_name,
+        summary=f"Executed model tool {tool_name}",
+        metadata={
+            "name": tool_name,
+            "ok": bool(result.get("ok")) if isinstance(result, dict) else False,
+            "argument_keys": sorted(str(key) for key in payload.arguments.keys()),
+        },
+    )
+    return {"tool": tool_name, "result": jsonable_encoder(result)}
 
 
 @app.delete("/admin/model-tools/{name}")

@@ -269,6 +269,75 @@ class ModelToolPolicyTests(unittest.TestCase):
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_model_tool_execute_runs_enabled_tool_and_audits(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, headers={"content-type": "text/html"}, text="<html><h1>Example Domain</h1></html>")
+
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("web_fetch",)),
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        auth = main.AuthContext(subject_id="operator_1", role=main.Role.OPERATOR, scopes=frozenset({"models:write"}))
+        audits: list[dict[str, object]] = []
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        async def fake_registry(_auth):
+            return registry
+
+        async def fake_audit_event(*_args, **kwargs):
+            audits.append(kwargs)
+
+        original_authenticate = main.authenticate
+        original_registry = main.model_tool_registry_for_auth
+        original_audit = main.record_audit_event
+        main.authenticate = fake_authenticate
+        main.model_tool_registry_for_auth = fake_registry
+        main.record_audit_event = fake_audit_event
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+        self.addAsyncCleanup(lambda: setattr(main, "record_audit_event", original_audit))
+
+        response = await main.admin_model_tool_execute(
+            "web_fetch",
+            main.ModelToolExecuteRequest(arguments={"url": "https://example.com"}),
+            authorization="Bearer test",
+        )
+        self.assertEqual(response["tool"], "web_fetch")
+        self.assertTrue(response["result"]["ok"])
+        self.assertIn("Example Domain", response["result"]["text"])
+        self.assertEqual(str(requests[0].url), "https://example.com/")
+        self.assertEqual(audits[0]["target_id"], "web_fetch")
+        self.assertEqual(audits[0]["metadata"]["argument_keys"], ["url"])
+
+    async def test_admin_model_tool_execute_rejects_invisible_tool(self) -> None:
+        auth = main.AuthContext(subject_id="operator_1", role=main.Role.OPERATOR, scopes=frozenset({"models:write"}))
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        async def fake_registry(_auth):
+            return model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
+
+        original_authenticate = main.authenticate
+        original_registry = main.model_tool_registry_for_auth
+        main.authenticate = fake_authenticate
+        main.model_tool_registry_for_auth = fake_registry
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+
+        with self.assertRaisesRegex(Exception, "not enabled"):
+            await main.admin_model_tool_execute(
+                "ticket-lookup",
+                main.ModelToolExecuteRequest(arguments={"id": "T-1"}),
+                authorization="Bearer test",
+            )
+
     async def test_chat_tool_loop_adds_definitions_executes_tool_and_finishes(self) -> None:
         calls: list[dict[str, object]] = []
 

@@ -1465,6 +1465,17 @@
         "title": "ModelToolDefinitionRequest",
         "type": "object"
       },
+      "ModelToolExecuteRequest": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          }
+        },
+        "title": "ModelToolExecuteRequest",
+        "type": "object"
+      },
       "ModelToolPolicyRequest": {
         "properties": {
           "allow_private_network": {
@@ -5556,6 +5567,73 @@
           }
         },
         "summary": "Admin Model Tool Definition Update"
+      }
+    },
+    "/admin/model-tools/{name}/execute": {
+      "post": {
+        "operationId": "admin_model_tool_execute_admin_model_tools__name__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelToolExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Tool Execute Admin Model Tools  Name  Execute Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Tool Execute"
       }
     },
     "/admin/models": {
