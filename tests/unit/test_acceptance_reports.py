@@ -1444,7 +1444,7 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "allowed_tools": ["b1-live-echo-abcdef1234", "web_fetch", "web_search"],
                     "definition_count": 3,
                     "request_field": "b1_tools",
-                    "streaming_supported": False,
+                    "streaming_supported": True,
                 },
                 "web_fetch_chat_completed": {
                     "status": "ok",

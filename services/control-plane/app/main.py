@@ -3848,7 +3848,10 @@ async def public_model_tool_registry(auth: AuthContext | None = None, *, include
         "request_field": "b1_tools",
         "max_iterations_field": "b1_tool_max_iterations",
         "default_max_iterations": 4,
-        "streaming_supported": False,
+        # Tool iterations are completed before the final answer is emitted,
+        # while the public chat endpoint still exposes standard OpenAI SSE.
+        "streaming_supported": True,
+        "streaming_mode": "final_answer_after_tool_execution",
         "allow_private_network": registry.settings.allow_private_network,
         "allowed_hosts": list(registry.settings.allowed_hosts),
         "max_result_chars": registry.settings.max_result_chars,
@@ -4464,6 +4467,73 @@ async def call_chat_with_b1_tools(
         response.headers["X-B1-Tool-Stop-Reason"] = "max_iterations"
         return response
     raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied chat response")
+
+
+def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
+    """Expose a completed tool-loop answer as an OpenAI chat SSE stream."""
+    if chat_response.status_code >= 400:
+        return chat_response
+    body = json_response_body(chat_response)
+    if not isinstance(body, dict):
+        return chat_response
+    choices = body.get("choices")
+    first_choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+    message = message if isinstance(message, dict) else {}
+    content = message.get("content")
+    if content is None:
+        text_content = ""
+    elif isinstance(content, str):
+        text_content = content
+    else:
+        text_content = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    response_id = str(body.get("id") or f"chatcmpl_b1_tool_{uuid.uuid4().hex}")
+    model = str(body.get("model") or "chat-default")
+    created = body.get("created")
+    if not isinstance(created, int):
+        created = int(datetime.now(tz=UTC).timestamp())
+    finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+    if not isinstance(finish_reason, str):
+        finish_reason = "stop"
+    chunks: list[dict[str, Any]] = [
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        }
+    ]
+    if text_content:
+        for offset in range(0, len(text_content), 256):
+            chunks.append(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {"content": text_content[offset : offset + 256]}, "finish_reason": None}],
+                }
+            )
+    final_chunk: dict[str, Any] = {
+        "id": response_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+    }
+    if isinstance(body.get("usage"), dict):
+        final_chunk["usage"] = body["usage"]
+    chunks.append(final_chunk)
+
+    async def events():
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    headers = {key: value for key, value in chat_response.headers.items() if key.lower().startswith("x-b1-")}
+    headers.update({"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
 
 
 def runtime_prepare_error_detail(exc: RuntimePreparationError, resolution: RuntimeResolution, operation: str) -> dict[str, Any]:
@@ -12483,10 +12553,20 @@ async def chat_completions(payload: ChatCompletionRequest, authorization: str | 
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
     if chat_request_explicit_b1_tool_names(payload) and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
-    if requested_tools and payload.stream:
-        raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming chat completions")
     if requested_tools:
-        return await call_chat_with_b1_tools(payload, runtime_payload, resolution, requested_tools, tool_registry, owner_id=auth.subject_id)
+        tool_loop_payload = dict(runtime_payload)
+        # Intermediate tool calls must be complete JSON messages. The public
+        # response is converted to SSE after the loop finishes.
+        tool_loop_payload["stream"] = False
+        tool_response = await call_chat_with_b1_tools(
+            payload,
+            tool_loop_payload,
+            resolution,
+            requested_tools,
+            tool_registry,
+            owner_id=auth.subject_id,
+        )
+        return chat_tool_response_to_stream(tool_response) if payload.stream else tool_response
     if payload.stream:
         proxied_stream = await call_openai_runtime_stream("/v1/chat/completions", runtime_payload, resolution, "chat", owner_id=auth.subject_id)
         if proxied_stream is not None:

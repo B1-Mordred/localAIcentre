@@ -232,7 +232,7 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
         self.assertIsInstance(definitions, list, payload)
         for name in ("web_fetch", "web_search"):
             self.assertIn(name, tools)
-        self.assertFalse(payload.get("streaming_supported"), payload)
+        self.assertTrue(payload.get("streaming_supported"), payload)
         self.assertEqual(payload.get("request_field"), "b1_tools")
         definition_names = sorted(
             item.get("function", {}).get("name")

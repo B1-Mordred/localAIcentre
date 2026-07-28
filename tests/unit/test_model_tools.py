@@ -521,6 +521,35 @@ class ModelToolPolicyTests(unittest.TestCase):
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_tool_response_can_be_consumed_as_openai_sse(self) -> None:
+        response = main.chat_tool_response_to_stream(
+            JSONResponse(
+                {
+                    "id": "chatcmpl-test",
+                    "model": "chat-default",
+                    "created": 123,
+                    "choices": [{"message": {"role": "assistant", "content": "Current answer"}, "finish_reason": "stop"}],
+                },
+                headers={"X-B1-Tools": "web_search", "Content-Length": "1"},
+            )
+        )
+        self.assertIsInstance(response, main.StreamingResponse)
+        event_bytes: list[bytes] = []
+        async for chunk in response.body_iterator:
+            event_bytes.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+        event_text = b"".join(event_bytes).decode("utf-8")
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in event_text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        self.assertEqual(events[0]["choices"][0]["delta"], {"role": "assistant"})
+        self.assertEqual(events[1]["choices"][0]["delta"]["content"], "Current answer")
+        self.assertEqual(events[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertIn("data: [DONE]", event_text)
+        self.assertEqual(response.headers["x-b1-tools"], "web_search")
+        self.assertNotIn("content-length", response.headers)
+
     async def test_admin_model_tool_execute_runs_enabled_tool_and_audits(self) -> None:
         requests: list[httpx.Request] = []
 

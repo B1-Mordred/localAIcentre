@@ -1941,8 +1941,8 @@ def _model_tools_summary(payload: dict[str, Any]) -> dict[str, Any]:
         missing.append("tool_registry_advertises_builtins.allowed_tools")
     if _nonempty_text(registry.get("request_field")) != "b1_tools":
         missing.append("tool_registry_advertises_builtins.request_field")
-    if registry.get("streaming_supported") is not False:
-        missing.append("tool_registry_advertises_builtins.streaming_supported_false")
+    if registry.get("streaming_supported") is not True:
+        missing.append("tool_registry_advertises_builtins.streaming_supported_true")
     if _positive_int(registry.get("definition_count")) < 2:
         missing.append("tool_registry_advertises_builtins.definition_count")
 

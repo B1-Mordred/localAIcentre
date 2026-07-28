@@ -5419,7 +5419,7 @@ function ExternalAccess() {
             <thead><tr><th>Status</th><th>Tools</th><th>Network Policy</th><th>Limits</th></tr></thead>
             <tbody>
               <tr>
-                <td>{modelTools.enabled ? "enabled" : "disabled"}<small>{modelTools.streaming_supported ? "streaming supported" : "non-streaming chat only"}</small></td>
+                <td>{modelTools.enabled ? "enabled" : "disabled"}<small>{modelTools.streaming_supported ? "streaming final answers supported" : "non-streaming chat only"}</small></td>
                 <td>{modelTools.allowed_tools.join(", ") || "none"}<small>request field {modelTools.request_field}</small></td>
                 <td>{modelTools.allow_private_network ? "private network allowed" : "public web only"}<small>{modelTools.allowed_hosts.length ? modelTools.allowed_hosts.join(", ") : "no host allowlist"}</small></td>
                 <td>{formatBytes(modelTools.max_result_chars)} text cap<small>{modelTools.max_search_results} search results / {modelTools.max_iterations_field} default {modelTools.default_max_iterations}</small></td>
