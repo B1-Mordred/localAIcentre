@@ -1432,6 +1432,8 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                 "tool_registry_advertises_builtins",
                 "web_fetch_chat_completed",
                 "web_search_chat_completed",
+                "web_fetch_responses_completed",
+                "api_client_default_tools_completed",
                 "custom_http_json_tool_completed",
             ],
             "missing_checks": [],
@@ -1462,6 +1464,27 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
                     "tool_headers": {"x-b1-tools": "web_search"},
                     "synthesized": True,
                 },
+                "web_fetch_responses_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:17+00:00",
+                    "model": "chat-default",
+                    "response_excerpt": "Example Domain is a page reserved for illustrative examples.",
+                    "tool_header": "web_fetch",
+                    "tool_headers": {"x-b1-tools": "web_fetch"},
+                    "response_object": "response",
+                    "synthesized": True,
+                },
+                "api_client_default_tools_completed": {
+                    "status": "ok",
+                    "recorded_at": "2026-07-24T12:31:18+00:00",
+                    "model": "chat-default",
+                    "client_id": "client_default_tools",
+                    "default_b1_tools": ["web_fetch"],
+                    "response_excerpt": "Example Domain is a page reserved for illustrative examples.",
+                    "tool_header": "web_fetch",
+                    "tool_headers": {"x-b1-tools": "web_fetch"},
+                    "synthesized": True,
+                },
                 "custom_http_json_tool_completed": {
                     "status": "ok",
                     "recorded_at": "2026-07-24T12:31:20+00:00",
@@ -1476,10 +1499,18 @@ def sample_live_evidence(**overrides: Any) -> dict[str, Any]:
             },
             "model_tool_model": "chat-default",
             "model_tool_custom_tool_name": "b1-live-echo-abcdef1234",
+            "model_tool_default_client_id": "client_default_tools",
             "model_tool_allowed_tools": ["b1-live-echo-abcdef1234", "web_fetch", "web_search"],
             "missing_model_tool_evidence": [],
-            "sample_count": 4,
-            "sample_labels": ["model-tools-registry", "web-fetch-chat", "web-search-chat", "custom-http-json-chat"],
+            "sample_count": 6,
+            "sample_labels": [
+                "model-tools-registry",
+                "web-fetch-chat",
+                "web-search-chat",
+                "web-fetch-responses",
+                "api-client-default-tools-chat",
+                "custom-http-json-chat",
+            ],
         },
         "installed_workflows": {
             "available": True,
@@ -7058,7 +7089,8 @@ class AcceptanceReportTests(unittest.TestCase):
         self.assertEqual(model_tools_snapshot["missing_model_tool_evidence"], [])
         self.assertEqual(model_tools_snapshot["model_tool_model"], "chat-default")
         self.assertEqual(model_tools_snapshot["model_tool_custom_tool_name"], "b1-live-echo-abcdef1234")
-        self.assertEqual(model_tools_snapshot["sample_count"], 4)
+        self.assertEqual(model_tools_snapshot["model_tool_default_client_id"], "client_default_tools")
+        self.assertEqual(model_tools_snapshot["sample_count"], 6)
         workflows = snapshot["installed_workflows"]
         self.assertTrue(workflows["available"])
         self.assertEqual(workflows["source_path"], str(installed.resolve()))

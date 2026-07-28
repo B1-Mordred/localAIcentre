@@ -24,6 +24,8 @@ REQUIRED_CHECKS = (
     "tool_registry_advertises_builtins",
     "web_fetch_chat_completed",
     "web_search_chat_completed",
+    "web_fetch_responses_completed",
+    "api_client_default_tools_completed",
     "custom_http_json_tool_completed",
 )
 
@@ -39,6 +41,28 @@ def chat_message_content(payload: Any) -> str:
         return ""
     content = message.get("content")
     return content if isinstance(content, str) else ""
+
+
+def responses_output_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+    return "\n".join(parts)
 
 
 def redacted_header_subset(headers: dict[str, str]) -> dict[str, str]:
@@ -68,6 +92,7 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
     created_tool_names: set[str] = set()
+    created_api_client_ids: set[str] = set()
     original_policy: dict[str, Any] | None = None
 
     @classmethod
@@ -75,6 +100,7 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
         cls.checks = {}
         cls.samples = []
         cls.created_tool_names = set()
+        cls.created_api_client_ids = set()
         cls.original_policy = None
         api_key = (
             os.getenv("B1_MODEL_TOOLS_API_KEY")
@@ -114,6 +140,11 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
         for name in sorted(cls.created_tool_names):
             try:
                 cls.client.request("DELETE", f"/admin/model-tools/{quote(name, safe='')}", require_auth=True)
+            except Exception:
+                pass
+        for client_id in sorted(cls.created_api_client_ids):
+            try:
+                cls.client.request("DELETE", f"/admin/api-clients/{quote(client_id, safe='')}", require_auth=True)
             except Exception:
                 pass
         evidence_path = os.getenv("B1_MODEL_TOOLS_EVIDENCE", "").strip()
@@ -165,6 +196,28 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
         )
         self.assertIsInstance(payload, dict)
         content = chat_message_content(payload)
+        self.assertTrue(content.strip(), payload)
+        self.assertNotIn("b1_tool_call", content)
+        self.assertNotIn('"tool_calls"', content)
+        return headers, payload, content
+
+    def responses_with_tools(self, tools: list[str], prompt: str, *, max_tokens: int = 256) -> tuple[dict[str, str], dict[str, Any], str]:
+        headers, payload = self.json_request(
+            "POST",
+            "/v1/responses",
+            body={
+                "model": self.model,
+                "input": prompt,
+                "temperature": 0,
+                "max_output_tokens": max_tokens,
+                "stream": False,
+                "runtime_policy": "non_comfy_only",
+                "b1_tools": tools,
+                "b1_tool_max_iterations": self.max_iterations,
+            },
+        )
+        self.assertIsInstance(payload, dict)
+        content = responses_output_text(payload)
         self.assertTrue(content.strip(), payload)
         self.assertNotIn("b1_tool_call", content)
         self.assertNotIn('"tool_calls"', content)
@@ -254,6 +307,116 @@ class LiveModelToolsAcceptanceTests(unittest.TestCase):
         self.record_check(
             "web_search_chat_completed",
             model=self.model,
+            response_excerpt=content[:500],
+            tool_headers=redacted_header_subset(headers),
+            tool_header=x_tools,
+            synthesized=response_header(headers, "x-b1-tool-answer") == "synthesized",
+        )
+
+    def test_web_fetch_responses_completed(self) -> None:
+        prompt = (
+            "Call the web_fetch tool with exactly this JSON arguments object: {\"url\":\"https://example.com/\"}. "
+            "Then answer with the page title plus one short fact from the tool result. Do not answer from memory."
+        )
+        headers, payload, content = self.responses_with_tools(["web_fetch"], prompt)
+        lowered = content.lower()
+        self.assertEqual(payload.get("object"), "response", payload)
+        self.assertNotIn("tool call failed", lowered)
+        self.assertIn("example", lowered)
+        self.assertIn("domain", lowered)
+        x_tools = response_header(headers, "x-b1-tools")
+        self.assertIn("web_fetch", x_tools)
+        self.__class__.samples.append(
+            {
+                "label": "web-fetch-responses",
+                "model": self.model,
+                "content_excerpt": content[:500],
+                "headers": redacted_header_subset(headers),
+            }
+        )
+        self.record_check(
+            "web_fetch_responses_completed",
+            model=self.model,
+            response_excerpt=content[:500],
+            tool_headers=redacted_header_subset(headers),
+            tool_header=x_tools,
+            response_object=payload.get("object"),
+            synthesized=response_header(headers, "x-b1-tool-answer") == "synthesized",
+        )
+
+    def test_api_client_default_tools_completed(self) -> None:
+        _, created = self.json_request(
+            "POST",
+            "/admin/api-clients",
+            body={
+                "display_name": "B1 model-tool live default client",
+                "role": "service",
+                "scopes": ["models:read", "inference:write"],
+                "cidr_allowlist": [],
+                "default_b1_tools": ["web_fetch"],
+            },
+            expected=200,
+        )
+        self.assertIsInstance(created, dict)
+        api_key = str(created.get("api_key") or "")
+        client_id = str(created.get("id") or "")
+        self.assertTrue(api_key.startswith("b1k_"), created)
+        self.assertTrue(client_id.startswith("client_"), created)
+        self.__class__.created_api_client_ids.add(client_id)
+        default_client = LiveApiClient(
+            self.client.base_url,
+            api_key=api_key,
+            host_header=self.client.host_header,
+            timeout_seconds=self.client.timeout_seconds,
+            tls_verify=False,
+            allow_insecure_http=self.client.allow_insecure_http,
+            resolve_hosts=self.client.resolve_hosts,
+        )
+        default_client.context = self.client.context
+        status, headers, payload = default_client.json_request(
+            "POST",
+            "/v1/chat/completions",
+            body={
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Use your available tool to fetch https://example.com/. "
+                            "Then answer with the page title and do not mention implementation details."
+                        ),
+                    }
+                ],
+                "temperature": 0,
+                "max_tokens": 256,
+                "stream": False,
+                "runtime_policy": "non_comfy_only",
+            },
+            require_auth=True,
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        content = chat_message_content(payload)
+        self.assertTrue(content.strip(), payload)
+        lowered = content.lower()
+        self.assertIn("example", lowered)
+        self.assertIn("domain", lowered)
+        x_tools = response_header(headers, "x-b1-tools")
+        self.assertIn("web_fetch", x_tools)
+        self.__class__.samples.append(
+            {
+                "label": "api-client-default-tools-chat",
+                "model": self.model,
+                "client_id": client_id,
+                "content_excerpt": content[:500],
+                "headers": redacted_header_subset(headers),
+            }
+        )
+        self.record_check(
+            "api_client_default_tools_completed",
+            model=self.model,
+            client_id=client_id,
+            default_b1_tools=created.get("default_b1_tools") or [],
             response_excerpt=content[:500],
             tool_headers=redacted_header_subset(headers),
             tool_header=x_tools,

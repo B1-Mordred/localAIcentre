@@ -330,6 +330,8 @@ MODEL_TOOLS_REQUIRED_CHECKS = (
     "tool_registry_advertises_builtins",
     "web_fetch_chat_completed",
     "web_search_chat_completed",
+    "web_fetch_responses_completed",
+    "api_client_default_tools_completed",
     "custom_http_json_tool_completed",
 )
 INSTALLED_WORKFLOWS_EVIDENCE_FORMAT = "b1-ai-hub-installed-workflows-acceptance/v1"
@@ -1958,6 +1960,24 @@ def _model_tools_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if "web_search" not in _nonempty_text(search.get("tool_header")):
         missing.append("web_search_chat_completed.tool_header")
 
+    responses = _check_record(checks, "web_fetch_responses_completed")
+    responses_text = _nonempty_text(responses.get("response_excerpt")).lower()
+    if "example" not in responses_text or "domain" not in responses_text:
+        missing.append("web_fetch_responses_completed.response_excerpt")
+    if "web_fetch" not in _nonempty_text(responses.get("tool_header")):
+        missing.append("web_fetch_responses_completed.tool_header")
+    if _nonempty_text(responses.get("response_object")) != "response":
+        missing.append("web_fetch_responses_completed.response_object")
+
+    client_defaults = _check_record(checks, "api_client_default_tools_completed")
+    default_response = _nonempty_text(client_defaults.get("response_excerpt")).lower()
+    if "example" not in default_response or "domain" not in default_response:
+        missing.append("api_client_default_tools_completed.response_excerpt")
+    if "web_fetch" not in _nonempty_text(client_defaults.get("tool_header")):
+        missing.append("api_client_default_tools_completed.tool_header")
+    if "web_fetch" not in _as_string_list(client_defaults.get("default_b1_tools")):
+        missing.append("api_client_default_tools_completed.default_b1_tools")
+
     custom = _check_record(checks, "custom_http_json_tool_completed")
     custom_response = _nonempty_text(custom.get("response_excerpt"))
     custom_tool = _nonempty_text(custom.get("tool_name"))
@@ -1973,6 +1993,7 @@ def _model_tools_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "model_tool_model": str(payload.get("model") or payload.get("model_tool_model") or ""),
         "model_tool_custom_tool_name": custom_tool,
         "model_tool_allowed_tools": sorted(allowed_tools),
+        "model_tool_default_client_id": _nonempty_text(client_defaults.get("client_id")),
     }
 
 

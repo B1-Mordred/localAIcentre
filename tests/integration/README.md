@@ -66,7 +66,7 @@ export B1_MODEL_TOOLS_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/model-tools.jso
 make model-tools-acceptance
 ```
 
-The suite verifies `/v1/tools`, proves live chat use of `web_fetch` and `web_search`, then temporarily creates a unique admin-managed `http-json` tool, executes it manually, uses it through `/v1/chat/completions`, restores the original policy, and deletes the temporary tool. Evidence uses `b1-ai-hub-model-tools-acceptance/v1`, records only bounded excerpts and B1 tool response headers, and is ingested by the operator handoff report. Set `B1_MODEL_TOOLS_CUSTOM_URL` only when the default `https://postman-echo.com/post` endpoint is unsuitable for the acceptance network.
+The suite verifies `/v1/tools`, proves live chat use of `web_fetch` and `web_search`, proves `/v1/responses` tool use, temporarily creates a scoped API client with `default_b1_tools` and proves an Open WebUI-style chat request without a `b1_tools` field still uses the B1 tool harness, then temporarily creates a unique admin-managed `http-json` tool, executes it manually, uses it through `/v1/chat/completions`, restores the original policy, revokes the temporary API client, and deletes the temporary tool. Evidence uses `b1-ai-hub-model-tools-acceptance/v1`, records only bounded excerpts and B1 tool response headers, and is ingested by the operator handoff report. Set `B1_MODEL_TOOLS_CUSTOM_URL` only when the default `https://postman-echo.com/post` endpoint is unsuitable for the acceptance network.
 
 ## RTX 3060 Cross-Runtime GPU Acceptance
 
