@@ -192,7 +192,7 @@ class BootstrapTests(unittest.TestCase):
         for body, modality, operation, model in (
             (image_job, "image", "generation", "image-default"),
             (image_edit_job, "image", "edit", "image-edit"),
-            (video_job, "video", "generation", "video-text"),
+            (video_job, "video", "text-to-video", "video-text"),
         ):
             self.assertEqual(body["modality"], modality)
             self.assertEqual(body["operation"], operation)
@@ -202,7 +202,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("comfyui_prompt", image_job["input"])
         self.assertIn("comfyui_prompt", image_edit_job["input"])
         self.assertEqual(video_job["input"]["workflow_id"], "text-to-video")
-        self.assertEqual(video_job["input"]["workflow_version"], "0.1.0")
+        self.assertEqual(video_job["input"]["workflow_version"], "0.2.0")
 
     def test_acceptance_templates_copy_once_without_overwriting_operator_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

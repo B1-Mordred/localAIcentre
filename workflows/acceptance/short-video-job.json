@@ -1,17 +1,23 @@
 {
   "modality": "video",
-  "operation": "generation",
+  "operation": "text-to-video",
   "model": "video-text",
   "priority": "video",
   "runtime_policy": "any",
   "input": {
     "workflow_id": "text-to-video",
-    "workflow_version": "0.1.0",
+    "workflow_version": "0.2.0",
     "parameters": {
-      "prompt": "B1 AI Hub short acceptance clip, simple motion, clean composition",
-      "frames": 8,
-      "steps": 12,
-      "duration_seconds": 1.0
+      "prompt": "a small ceramic robot walking across a desk, gentle camera motion, coherent motion, cinematic lighting",
+      "negative_prompt": "text, watermark, logo, subtitles, worst quality, low quality, blurry",
+      "width": 512,
+      "height": 288,
+      "frames": 9,
+      "fps": 8,
+      "steps": 4,
+      "cfg": 1,
+      "vae_tile_size": 512,
+      "seed": 20260728
     }
   }
 }
