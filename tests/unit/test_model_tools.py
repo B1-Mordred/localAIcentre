@@ -801,6 +801,89 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["choices"][0]["message"]["content"], "b1-custom-tool-proof")
         self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
 
+    async def test_responses_tool_loop_uses_chat_harness_and_wraps_output(self) -> None:
+        auth = main.AuthContext(subject_id="client_1", role=main.Role.SERVICE, scopes=frozenset({"inference:write"}))
+        resolution = SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default")
+        calls: list[dict[str, object]] = []
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        def fake_resolve(_model, _modalities, _auth, _runtime_policy="any", operation=None):
+            self.assertEqual(operation, "responses")
+            return resolution
+
+        async def fake_registry(_auth):
+            return model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
+
+        async def fake_runtime_json(path, payload, selected, operation, owner_id=None):
+            calls.append({"path": path, "payload": payload, "operation": operation, "owner_id": owner_id, "runtime": selected.runtime})
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "web_fetch", "arguments": json.dumps({"url": "https://example.com"})},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Example Domain"}}], "usage": {"total_tokens": 12}})
+
+        async def fake_execute(_registry, _tool_call):
+            return {"ok": True, "tool": "web_fetch", "url": "https://example.com", "title": "Example Domain", "text": "Example Domain"}
+
+        original_authenticate = main.authenticate
+        original_resolve = main.resolve_catalog_alias_for_modalities_auth
+        original_registry = main.model_tool_registry_for_auth
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.authenticate = fake_authenticate
+        main.resolve_catalog_alias_for_modalities_auth = fake_resolve
+        main.model_tool_registry_for_auth = fake_registry
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "resolve_catalog_alias_for_modalities_auth", original_resolve))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+        self.addAsyncCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addAsyncCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        response = await main.responses(
+            {
+                "model": "chat-default",
+                "instructions": "Be terse.",
+                "input": "Fetch https://example.com and answer with the title.",
+                "max_output_tokens": 64,
+                "b1_tools": ["web_fetch"],
+            },
+            authorization="Bearer test",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["object"], "response")
+        self.assertEqual(body["output_text"], "Example Domain")
+        self.assertEqual(body["usage"]["total_tokens"], 12)
+        self.assertEqual(response.headers["x-b1-tools"], "web_fetch")
+        self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions", "/v1/chat/completions"])
+        self.assertEqual(calls[0]["operation"], "chat")
+        self.assertEqual(calls[0]["owner_id"], "client_1")
+        first_payload = calls[0]["payload"]
+        self.assertNotIn("b1_tools", first_payload)
+        self.assertNotIn("input", first_payload)
+        self.assertEqual(first_payload["max_tokens"], 64)
+        self.assertEqual(first_payload["messages"][1], {"role": "system", "content": "Be terse."})
+
 
 if __name__ == "__main__":
     unittest.main()

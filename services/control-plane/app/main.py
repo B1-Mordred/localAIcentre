@@ -3838,15 +3838,22 @@ async def public_model_tool_registry(auth: AuthContext | None = None, *, include
 
 async def requested_b1_model_tools(payload: ChatCompletionRequest, auth: AuthContext | None = None) -> tuple[list[str], model_tools.ModelToolRegistry]:
     requested = list(payload.b1_tools or [])
-    registry = await model_tool_registry_for_auth(auth)
     if not requested:
-        return [], registry
+        return [], model_tools.ModelToolRegistry(model_tools.ModelToolSettings(enabled=False, allowed_tools=()))
+    registry = await model_tool_registry_for_auth(auth)
     if "*" in requested:
         return sorted(registry.tool_names()), registry
     return [tool for tool in requested if tool in registry.tool_names()], registry
 
 
 def strip_b1_chat_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(payload)
+    cleaned.pop("b1_tools", None)
+    cleaned.pop("b1_tool_max_iterations", None)
+    return cleaned
+
+
+def strip_b1_response_fields(payload: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(payload)
     cleaned.pop("b1_tools", None)
     cleaned.pop("b1_tool_max_iterations", None)
@@ -4167,6 +4174,127 @@ def json_response_body(response: JSONResponse) -> Any:
         return json.loads(response.body.decode("utf-8"))
     except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+
+
+def response_content_part_to_chat(part: Any) -> Any:
+    if not isinstance(part, dict):
+        return part
+    part_type = str(part.get("type") or "")
+    if part_type in {"input_text", "output_text"} and isinstance(part.get("text"), str):
+        return {"type": "text", "text": part["text"]}
+    if part_type == "input_image":
+        image_url = part.get("image_url")
+        if isinstance(image_url, str):
+            return {"type": "image_url", "image_url": {"url": image_url}}
+        if isinstance(image_url, dict):
+            return {"type": "image_url", "image_url": image_url}
+    return part
+
+
+def response_message_to_chat(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        return {"role": "user", "content": item}
+    if not isinstance(item, dict):
+        return None
+    role = str(item.get("role") or "user")
+    content = item.get("content")
+    if isinstance(content, list):
+        converted = [response_content_part_to_chat(part) for part in content]
+    else:
+        converted = content if content is not None else ""
+    return {"role": role, "content": converted}
+
+
+def responses_payload_to_chat_request_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = []
+    instructions = payload.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        messages.append({"role": "system", "content": instructions})
+    response_input = payload.get("input", "")
+    if isinstance(response_input, str):
+        messages.append({"role": "user", "content": response_input})
+    elif isinstance(response_input, dict):
+        message = response_message_to_chat(response_input)
+        if message is not None:
+            messages.append(message)
+    elif isinstance(response_input, list):
+        for item in response_input:
+            message = response_message_to_chat(item)
+            if message is not None:
+                messages.append(message)
+    if not messages:
+        raise HTTPException(status_code=422, detail="Responses tool calls require convertible text or message input")
+    chat_payload: dict[str, Any] = {
+        "model": payload.get("model", "chat-default"),
+        "messages": messages,
+        "runtime_policy": payload.get("runtime_policy", "any"),
+        "stream": bool(payload.get("stream", False)),
+    }
+    if "temperature" in payload:
+        chat_payload["temperature"] = payload["temperature"]
+    if "max_output_tokens" in payload:
+        chat_payload["max_tokens"] = payload["max_output_tokens"]
+    elif "max_tokens" in payload:
+        chat_payload["max_tokens"] = payload["max_tokens"]
+    for key in ("top_p", "frequency_penalty", "presence_penalty", "stop", "user"):
+        if key in payload:
+            chat_payload[key] = payload[key]
+    if "b1_tools" in payload:
+        chat_payload["b1_tools"] = payload.get("b1_tools")
+    if "b1_tool_max_iterations" in payload:
+        chat_payload["b1_tool_max_iterations"] = payload.get("b1_tool_max_iterations")
+    return chat_payload
+
+
+def chat_tool_response_to_responses_response(original_payload: dict[str, Any], chat_response: JSONResponse) -> Response:
+    if chat_response.status_code >= 400:
+        return chat_response
+    body = json_response_body(chat_response)
+    if not isinstance(body, dict):
+        return chat_response
+    choices = body.get("choices")
+    message: dict[str, Any] = {}
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        candidate = choices[0].get("message")
+        if isinstance(candidate, dict):
+            message = candidate
+    content = message.get("content")
+    if content is None:
+        output_text = ""
+    elif isinstance(content, str):
+        output_text = content
+    else:
+        output_text = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    created = body.get("created")
+    if not isinstance(created, int):
+        created = int(datetime.now(tz=UTC).timestamp())
+    wrapped: dict[str, Any] = {
+        "id": f"resp_b1_tool_{uuid.uuid4().hex}",
+        "object": "response",
+        "created_at": created,
+        "status": "completed",
+        "model": original_payload.get("model", body.get("model", "chat-default")),
+        "output": [
+            {
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+            }
+        ],
+        "output_text": output_text,
+    }
+    if "usage" in body:
+        wrapped["usage"] = body["usage"]
+    for key in ("b1_tool_answer_synthesized", "b1_tool_stop_reason", "b1_runtime", "b1_resolved_model", "b1_public_model"):
+        if key in body:
+            wrapped[key] = body[key]
+    return JSONResponse(
+        content=jsonable_encoder(wrapped),
+        status_code=chat_response.status_code,
+        headers={key: value for key, value in chat_response.headers.items()},
+    )
 
 
 async def execute_b1_tool_call(registry: model_tools.ModelToolRegistry, tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -12294,7 +12422,30 @@ async def responses(payload: dict[str, Any], authorization: str | None = Header(
     model = payload.get("model", "chat-default")
     resolution = resolve_catalog_alias_for_modalities_auth(model, {"llm", "vlm"}, auth, payload.get("runtime_policy", "any"), operation="responses")
     require_openai_forwarding(resolution, "responses")
-    proxied = await call_openai_runtime_json("/v1/responses", {"model": model, **payload}, resolution, "responses", owner_id=auth.subject_id)
+    if payload.get("b1_tools"):
+        chat_payload = responses_payload_to_chat_request_payload({"model": model, **payload})
+        chat_request = ChatCompletionRequest(**chat_payload)
+        requested_tools, tool_registry = await requested_b1_model_tools(chat_request, auth)
+        if not requested_tools:
+            raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
+        if chat_request.stream:
+            raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming responses")
+        chat_response = await call_chat_with_b1_tools(
+            chat_request,
+            strip_b1_chat_fields(chat_request.model_dump(exclude_none=True)),
+            resolution,
+            requested_tools,
+            tool_registry,
+            owner_id=auth.subject_id,
+        )
+        return chat_tool_response_to_responses_response(payload, chat_response)
+    proxied = await call_openai_runtime_json(
+        "/v1/responses",
+        strip_b1_response_fields({"model": model, **payload}),
+        resolution,
+        "responses",
+        owner_id=auth.subject_id,
+    )
     if proxied is not None:
         return proxied
     raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied responses response")
