@@ -39,6 +39,8 @@ $B1_DATA_ROOT/cache/comfyui:/srv/b1-ai-hub/cache
 
 The image uses `extra_model_paths.yaml` to map B1 model views into ComfyUI folder classes such as checkpoints, diffusion models, text encoders, VAE, LoRA, ControlNet, upscale models, and embeddings. The authoritative model blob library is not mounted.
 
+At startup the production entrypoint generates `/srv/b1-ai-hub/comfyui/temp/generated-extra_model_paths.yaml` from the installed B1 runtime-view tree and uses it as the ComfyUI `--extra-model-paths-config`. This preserves the versioned B1 runtime-view layout while exposing installed model files under native ComfyUI folder classes. For example, an installed ComfyUI model at `/srv/b1-ai-hub/models/<model-id>/<version>/diffusion/diffusion_models` becomes visible through ComfyUI's native `diffusion_models` registry without copying or mutating the read-only model mount.
+
 ## Startup Policy
 
 The entrypoint starts:

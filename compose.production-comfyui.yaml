@@ -42,7 +42,7 @@ services:
       B1_COMFYUI_OUTPUT_DIR: /srv/b1-ai-hub/comfyui/output
       B1_COMFYUI_TEMP_DIR: /srv/b1-ai-hub/comfyui/temp
       B1_COMFYUI_USER_DIR: /srv/b1-ai-hub/comfyui/user
-      B1_COMFYUI_EXTRA_MODEL_PATHS_CONFIG: /opt/b1/comfyui/extra_model_paths.yaml
+      B1_COMFYUI_EXTRA_MODEL_PATHS_CONFIG: ${B1_COMFYUI_EXTRA_MODEL_PATHS_CONFIG:-/srv/b1-ai-hub/comfyui/temp/generated-extra_model_paths.yaml}
       HF_HUB_DISABLE_TELEMETRY: "1"
       DO_NOT_TRACK: "1"
       XDG_CACHE_HOME: /srv/b1-ai-hub/cache/xdg

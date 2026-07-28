@@ -37,6 +37,7 @@ RUN grep -Ev '^(torch|torchvision|torchaudio)$' requirements.txt > /tmp/comfyui-
     && rm -f /tmp/comfyui-requirements.txt
 
 COPY extra_model_paths.yaml /opt/b1/comfyui/extra_model_paths.yaml
+COPY b1-generate-extra-model-paths.py /opt/b1/comfyui/b1-generate-extra-model-paths.py
 COPY b1_runtime_hooks /opt/comfyui/custom_nodes/b1_runtime_hooks
 COPY b1-comfyui-entrypoint.sh /usr/local/bin/b1-comfyui-entrypoint.sh
 
