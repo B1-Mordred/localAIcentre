@@ -5480,7 +5480,7 @@ function ExternalAccess() {
                   <option value="GET">GET</option>
                 </select>
               </label>
-              <label>URL<input value={modelToolForm.url} onChange={(event) => setModelToolForm((current) => ({ ...current, url: event.target.value }))} required disabled={busy} placeholder="https://example.com/api/tool" /></label>
+              <label>URL template<input value={modelToolForm.url} onChange={(event) => setModelToolForm((current) => ({ ...current, url: event.target.value }))} required disabled={busy} placeholder="https://example.com/api/tickets/{id}" /></label>
               <label>Auth
                 <select value={modelToolForm.auth_type} onChange={(event) => setModelToolForm((current) => ({ ...current, auth_type: event.target.value === "bearer" || event.target.value === "header" ? event.target.value : "none" }))} disabled={busy}>
                   <option value="none">None</option>
@@ -5509,7 +5509,7 @@ function ExternalAccess() {
                   {(modelTools.custom_tools ?? []).map((tool) => (
                     <tr key={tool.name}>
                       <td>{tool.display_name}<small>{tool.name} / {tool.enabled ? "enabled" : "disabled"} / {tool.kind}</small></td>
-                      <td>{String(tool.config?.method ?? "POST")} {String(tool.config?.url ?? "")}<small>{tool.config?.auth && typeof tool.config.auth === "object" && !Array.isArray(tool.config.auth) ? `${String((tool.config.auth as Record<string, unknown>).type ?? "none")} auth${(tool.config.auth as Record<string, unknown>).header_name ? ` / ${String((tool.config.auth as Record<string, unknown>).header_name)}` : ""}` : "no auth"}</small></td>
+                      <td>{String(tool.config?.method ?? "POST")} {String(tool.config?.url ?? "")}<small>{tool.config?.url_template_arguments && Array.isArray(tool.config.url_template_arguments) && tool.config.url_template_arguments.length ? `template args ${tool.config.url_template_arguments.join(", ")}` : "static URL"} / {tool.config?.auth && typeof tool.config.auth === "object" && !Array.isArray(tool.config.auth) ? `${String((tool.config.auth as Record<string, unknown>).type ?? "none")} auth${(tool.config.auth as Record<string, unknown>).header_name ? ` / ${String((tool.config.auth as Record<string, unknown>).header_name)}` : ""}` : "no auth"}</small></td>
                       <td>{tool.visibility_roles?.join(", ") || "all roles"}</td>
                       <td>
                         <div className="table-actions">

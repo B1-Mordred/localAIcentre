@@ -3739,6 +3739,26 @@ def validate_static_model_tool_url(value: str, *, allow_private_network: bool = 
     return raw
 
 
+def validate_model_tool_url_template(value: str, *, allow_private_network: bool = False) -> tuple[str, list[str]]:
+    raw = value.strip()
+    parsed = urlsplit(raw)
+    if "{" in parsed.scheme or "}" in parsed.scheme or "{" in parsed.netloc or "}" in parsed.netloc:
+        raise HTTPException(status_code=422, detail="model-tool URL templates may not modify scheme, host, port, or credentials")
+    variables = list(model_tools.url_template_variables(raw))
+    if ("{" in raw or "}" in raw) and not variables:
+        raise HTTPException(status_code=422, detail="model-tool URL template placeholders must look like {argument_name}")
+    expanded = raw
+    if variables:
+        try:
+            expanded, _ = model_tools.expand_url_template(raw, {name: "template-test" for name in variables})
+        except model_tools.ModelToolError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if "{" in expanded or "}" in expanded:
+        raise HTTPException(status_code=422, detail="model-tool URL template contains an invalid placeholder")
+    validate_static_model_tool_url(expanded, allow_private_network=allow_private_network)
+    return raw, variables
+
+
 def validate_model_tool_policy_payload(payload: ModelToolPolicyRequest) -> dict[str, Any]:
     allowed_tools = normalize_model_tool_names(payload.allowed_tools)
     allowed_hosts = normalize_model_tool_hosts(payload.allowed_hosts)
@@ -3768,12 +3788,16 @@ def validate_model_tool_definition_payload(name: str, payload: ModelToolDefiniti
         if value not in roles:
             roles.append(value)
     config = dict(payload.config)
-    url = validate_static_model_tool_url(str(config.get("url") or ""))
+    url, url_template_arguments = validate_model_tool_url_template(str(config.get("url") or ""))
     method = str(config.get("method") or "POST").strip().upper()
     if method not in {"GET", "POST"}:
         raise HTTPException(status_code=422, detail="http-json tool method must be GET or POST")
     config["url"] = url
     config["method"] = method
+    if url_template_arguments:
+        config["url_template_arguments"] = url_template_arguments
+    else:
+        config.pop("url_template_arguments", None)
     if "max_result_chars" in config:
         try:
             max_result_chars = int(config["max_result_chars"])

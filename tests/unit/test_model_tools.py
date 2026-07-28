@@ -108,6 +108,57 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(result["json"]["echo"], {"id": "T-1"})
         self.assertEqual(requests[0].url, "https://example.com/ticket")
 
+    def test_custom_http_json_tool_expands_url_template_and_strips_path_args(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"status": "ok", "path": request.url.path, "query": str(request.url.query, "utf-8")})
+
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={
+                "type": "object",
+                "properties": {"team": {"type": "string"}, "id": {"type": "string"}, "include": {"type": "string"}},
+                "required": ["team", "id"],
+                "additionalProperties": False,
+            },
+            config={"url": "https://example.com/api/{team}/tickets/{id}", "method": "GET"},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)),
+            definitions=[definition],
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {"team": "support ops", "id": "T/1", "include": "history"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(str(requests[0].url), "https://example.com/api/support%20ops/tickets/T%2F1?include=history")
+        self.assertEqual(str(requests[0].url.query, "utf-8"), "include=history")
+
+    def test_custom_http_json_tool_reports_missing_url_template_argument(self) -> None:
+        definition = model_tools.ModelToolDefinition(
+            name="lookup-ticket",
+            enabled=True,
+            kind="http-json",
+            display_name="Lookup ticket",
+            description="Lookup a ticket in an approved service.",
+            parameters_schema={"type": "object"},
+            config={"url": "https://example.com/tickets/{id}", "method": "GET"},
+        )
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("lookup-ticket",)),
+            definitions=[definition],
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.execute("lookup-ticket", {}))
+        self.assertFalse(result["ok"])
+        self.assertIn("missing", result["error"])
+
     def test_custom_http_json_tool_extracts_bounded_json_path(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -283,6 +334,36 @@ class ModelToolPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["config"]["max_result_chars"], 2048)
         self.assertEqual(normalized["parameters_schema"]["type"], "object")
         self.assertEqual(normalized["visibility_roles"], ["admin", "creator"])
+
+    def test_model_tool_definition_validation_normalizes_url_template(self) -> None:
+        payload = main.ModelToolDefinitionRequest(
+            kind="http-json",
+            display_name="Ticket lookup",
+            description="Lookup a ticket.",
+            parameters_schema={"properties": {"id": {"type": "string"}}},
+            config={"url": "https://example.com/api/tickets/{id}", "method": "get"},
+        )
+        normalized = main.validate_model_tool_definition_payload("ticket-lookup", payload)
+        self.assertEqual(normalized["config"]["url"], "https://example.com/api/tickets/{id}")
+        self.assertEqual(normalized["config"]["url_template_arguments"], ["id"])
+
+    def test_model_tool_definition_validation_rejects_unsafe_url_templates(self) -> None:
+        for url in (
+            "https://{host}/api/tickets/{id}",
+            "https://example.com/api/{bad placeholder}",
+            "https://example.com/api/{id",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(Exception, "template|placeholder"):
+                    main.validate_model_tool_definition_payload(
+                        "ticket-lookup",
+                        main.ModelToolDefinitionRequest(
+                            kind="http-json",
+                            display_name="Ticket lookup",
+                            description="Lookup a ticket.",
+                            config={"url": url, "method": "GET"},
+                        ),
+                    )
 
     def test_model_tool_definition_validation_normalizes_json_extraction(self) -> None:
         payload = main.ModelToolDefinitionRequest(

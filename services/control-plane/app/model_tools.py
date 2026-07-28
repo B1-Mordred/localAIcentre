@@ -9,7 +9,7 @@ import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -236,6 +236,7 @@ class ModelToolDefinition:
 BUILTIN_TOOL_NAMES = {"web_search", "web_fetch"}
 MODEL_TOOL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,127}$")
 MODEL_TOOL_JSON_PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+MODEL_TOOL_URL_TEMPLATE_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 UNSAFE_JSON_PATH_SEGMENTS = {"__proto__", "prototype", "constructor"}
 
 
@@ -343,6 +344,41 @@ def bounded_json_payload(key: str, value: Any, *, max_chars: int) -> dict[str, A
     if len(encoded) <= max_chars:
         return {key: value, f"{key}_truncated": False}
     return {f"{key}_text": encoded[:max_chars], f"{key}_truncated": True}
+
+
+def url_template_variables(value: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for match in MODEL_TOOL_URL_TEMPLATE_RE.finditer(value):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def expand_url_template(value: str, arguments: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    used: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in arguments:
+            raise ModelToolError(f"URL template argument is missing: {name}")
+        value = arguments[name]
+        if isinstance(value, (dict, list)):
+            raise ModelToolError(f"URL template argument must be a scalar: {name}")
+        if value is None:
+            raise ModelToolError(f"URL template argument is null: {name}")
+        if name not in used:
+            used.append(name)
+        return quote(str(value), safe="")
+
+    return MODEL_TOOL_URL_TEMPLATE_RE.sub(replace, value), tuple(used)
+
+
+def arguments_without_template_values(arguments: dict[str, Any], used_template_arguments: tuple[str, ...]) -> dict[str, Any]:
+    if not used_template_arguments:
+        return dict(arguments)
+    used = set(used_template_arguments)
+    return {key: value for key, value in arguments.items() if key not in used}
 
 
 class ModelToolRegistry:
@@ -487,12 +523,19 @@ class ModelToolRegistry:
         method = str(definition.config.get("method") or "POST").strip().upper()
         if method not in {"GET", "POST"}:
             return {"ok": False, "tool": definition.name, "error": "http-json tools support only GET or POST"}
+        try:
+            expanded_url, used_template_arguments = expand_url_template(raw_url, arguments)
+        except ModelToolError as exc:
+            return {"ok": False, "tool": definition.name, "error": str(exc)}
+        if "{" in expanded_url or "}" in expanded_url:
+            return {"ok": False, "tool": definition.name, "error": "URL template contains an invalid placeholder"}
         url = validate_tool_url(
-            raw_url,
+            expanded_url,
             allow_private_network=self.settings.allow_private_network,
             allowed_hosts=set(self.settings.allowed_hosts),
             resolver=self.resolver,
         )
+        request_arguments = arguments_without_template_values(arguments, used_template_arguments)
         max_chars = int(definition.config.get("max_result_chars") or self.settings.max_result_chars)
         max_chars = max(256, min(max_chars, self.settings.max_result_chars))
         headers = {"User-Agent": "B1-AI-Hub-ModelTools/0.1"}
@@ -503,9 +546,9 @@ class ModelToolRegistry:
             headers.update({str(key): str(value) for key, value in provided.items() if str(key).strip() and str(value).strip()})
         async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
             if method == "GET":
-                response = await client.get(url, params=arguments, headers=headers)
+                response = await client.get(url, params=request_arguments, headers=headers)
             else:
-                response = await client.post(url, json=arguments, headers=headers)
+                response = await client.post(url, json=request_arguments, headers=headers)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
         payload: dict[str, Any]

@@ -124,6 +124,10 @@ class ControlCenterSourceTests(unittest.TestCase):
         self.assertIn("include_raw_json: boolean", self.source)
         self.assertIn("config.json_result_path = modelToolForm.json_result_path.trim()", self.source)
         self.assertIn("config.include_raw_json = modelToolForm.include_raw_json", self.source)
+        self.assertIn("URL template", self.source)
+        self.assertIn("https://example.com/api/tickets/{id}", self.source)
+        self.assertIn("url_template_arguments", self.source)
+        self.assertIn("template args", self.source)
         self.assertIn("JSON result path", self.source)
         self.assertIn("Include raw JSON", self.source)
 
