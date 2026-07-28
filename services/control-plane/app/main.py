@@ -3909,19 +3909,13 @@ def merge_openai_tool_definitions(payload: dict[str, Any], definitions: list[dic
     if not definitions:
         return payload
     merged = dict(payload)
-    existing = merged.get("tools")
-    tools = list(existing) if isinstance(existing, list) else []
-    existing_names = {
-        str(item.get("function", {}).get("name"))
-        for item in tools
-        if isinstance(item, dict) and isinstance(item.get("function"), dict)
-    }
-    for definition in definitions:
-        name = str(definition.get("function", {}).get("name")) if isinstance(definition.get("function"), dict) else ""
-        if name and name not in existing_names:
-            tools.append(definition)
-            existing_names.add(name)
-    merged["tools"] = tools
+    # A B1 tool loop can execute only centrally registered B1 tools. Clients
+    # such as Open WebUI may attach their own functions (for example
+    # ``view_note``); forwarding those makes the model request a tool that the
+    # control plane must never execute on the client's behalf.
+    merged["tools"] = list(definitions)
+    merged["tool_choice"] = "auto"
+    merged.pop("parallel_tool_calls", None)
     return merged
 
 
@@ -3999,6 +3993,18 @@ def b1_text_tool_result_instruction(name: str, result: dict[str, Any]) -> dict[s
         "content": (
             f"B1 tool {name} returned this JSON result: {compact_result}\n"
             "Use the result to answer the user directly. Do not call another tool unless the result is insufficient."
+        ),
+    }
+
+
+def b1_unavailable_tool_instruction(name: str, enabled_tools: set[str]) -> dict[str, str]:
+    available = ", ".join(sorted(enabled_tools)) or "none"
+    return {
+        "role": "system",
+        "content": (
+            f"The requested tool {name!r} is unavailable and was not executed. "
+            f"The only enabled B1 tools for this request are: {available}. "
+            "Use an enabled tool if it can answer the user, otherwise answer directly."
         ),
     }
 
@@ -4419,6 +4425,22 @@ async def call_chat_with_b1_tools(
             tool_call_id = str(tool_call.get("id") or f"b1-tool-{uuid.uuid4().hex}")
             function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
             name = str(function.get("name") or "")
+            if name not in enabled_tool_set:
+                unavailable_result = {
+                    "ok": False,
+                    "tool": name,
+                    "error": f"tool is unavailable; enabled B1 tools: {', '.join(sorted(enabled_tool_set)) or 'none'}",
+                }
+                loop_payload["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": name,
+                        "content": json.dumps(unavailable_result, ensure_ascii=False, sort_keys=True),
+                    }
+                )
+                loop_payload["messages"].append(b1_unavailable_tool_instruction(name, enabled_tool_set))
+                continue
             signature = b1_tool_call_signature(tool_call)
             if signature in seen_tool_signatures:
                 duplicate_tool_requested = True

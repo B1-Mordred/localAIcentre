@@ -680,6 +680,114 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
         self.assertEqual(calls[1]["messages"][-1]["role"], "system")
 
+    async def test_chat_tool_loop_replaces_client_tools_with_b1_tool_allowlist(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(_path, payload, _resolution, _operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "web_fetch", "arguments": json.dumps({"url": "https://example.com"})},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Example Domain"}}]})
+
+        async def fake_execute(_registry, _tool_call):
+            return {"ok": True, "tool": "web_fetch", "title": "Example Domain"}
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Fetch example.com"}],
+            b1_tools=["web_fetch"],
+            tools=[{"type": "function", "function": {"name": "view_note", "parameters": {"type": "object"}}}],
+            tool_choice={"type": "function", "function": {"name": "view_note"}},
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        self.assertEqual(json.loads(response.body.decode("utf-8"))["choices"][0]["message"]["content"], "Example Domain")
+        self.assertEqual([tool["function"]["name"] for tool in calls[0]["tools"]], ["web_fetch"])
+        self.assertEqual(calls[0]["tool_choice"], "auto")
+
+    async def test_chat_tool_loop_redirects_unknown_tool_calls_without_synthesizing_error(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(_path, payload, _resolution, _operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_view_note",
+                                            "type": "function",
+                                            "function": {"name": "view_note", "arguments": "{}"},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "I can search the web."}}]})
+
+        original_runtime_json = main.call_openai_runtime_json
+        main.call_openai_runtime_json = fake_runtime_json
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Can you access the internet?"}],
+            b1_tools=["web_fetch", "web_search"],
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch", "web_search"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch", "web_search"))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "I can search the web.")
+        self.assertNotIn("requested tool call failed", body["choices"][0]["message"]["content"])
+        self.assertEqual(calls[1]["messages"][-1]["role"], "system")
+        self.assertIn("view_note", calls[1]["messages"][-1]["content"])
+
     async def test_chat_tool_loop_retries_transient_runtime_failure(self) -> None:
         calls: list[dict[str, object]] = []
 
