@@ -169,6 +169,35 @@ class SearchResultParser(HTMLParser):
         self._current_text = []
 
 
+class HtmlMetadataParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title = ""
+        self._in_title = False
+        self._title_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "title":
+            self._in_title = True
+            self._title_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self._title_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "title" or not self._in_title:
+            return
+        self._in_title = False
+        self.title = WHITESPACE_RE.sub(" ", html.unescape(" ".join(self._title_parts))).strip()[:300]
+
+
+def html_title(value: str) -> str:
+    parser = HtmlMetadataParser()
+    parser.feed(value[:250000])
+    return parser.title
+
+
 @dataclass(frozen=True)
 class ModelToolSettings:
     enabled: bool = True
@@ -337,18 +366,24 @@ class ModelToolRegistry:
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
         text = response.text
+        title = ""
         if "html" in content_type.lower() or "<html" in text[:500].lower():
+            title = html_title(text)
             text = html_to_text(text, max_chars=max_chars)
         else:
             text = WHITESPACE_RE.sub(" ", text).strip()[:max_chars]
-        return {
+        result = {
             "ok": True,
+            "tool": "web_fetch",
             "url": str(response.url),
             "content_type": content_type,
             "status_code": response.status_code,
             "text": text,
             "truncated": len(text) >= max_chars,
         }
+        if title:
+            result["title"] = title
+        return result
 
     async def web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
@@ -389,6 +424,7 @@ class ModelToolRegistry:
                 break
         return {
             "ok": True,
+            "tool": "web_search",
             "query": query,
             "results": deduped,
             "result_count": len(deduped),

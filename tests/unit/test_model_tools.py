@@ -40,6 +40,10 @@ class ModelToolPolicyTests(unittest.TestCase):
         text = model_tools.html_to_text("<html><script>secret()</script><h1>Title</h1><p>A&nbsp;B</p></html>", max_chars=100)
         self.assertEqual(text, "Title A B")
 
+    def test_html_title_extracts_document_title(self) -> None:
+        title = model_tools.html_title("<html><head><title> Example Domain </title></head><body><h1>Ignored</h1></body></html>")
+        self.assertEqual(title, "Example Domain")
+
     def test_search_result_parser_extracts_links(self) -> None:
         parser = model_tools.SearchResultParser("https://search.example/")
         parser.feed('<a href="https://example.com/a">First result</a><a href="/local">Local result</a>')
@@ -504,7 +508,7 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_execute(_registry, tool_call):
             executed.append(tool_call)
-            return {"ok": True, "url": "https://example.com", "text": "Example Domain"}
+            return {"ok": True, "tool": "web_fetch", "url": "https://example.com", "title": "Example Domain", "text": "Example Domain Example Domain This domain is for use in examples."}
 
         original_runtime_json = main.call_openai_runtime_json
         original_execute = main.execute_b1_tool_call
@@ -532,17 +536,73 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["choices"][0]["message"]["content"], "Example Domain")
         self.assertEqual(len(executed), 1)
         self.assertEqual(response.headers["x-b1-tool-stop-reason"], "duplicate_tool_call")
-        self.assertNotIn("tools", calls[2])
-        self.assertEqual(calls[2]["tool_choice"], "none")
-        self.assertEqual(calls[2]["messages"][-1], {"role": "user", "content": "Return only the final answer to my original request."})
-        self.assertFalse(
-            any(
-                isinstance(message, dict)
-                and isinstance(message.get("content"), str)
-                and message["content"].startswith("B1 AI Hub tools are available")
-                for message in calls[2]["messages"]
+        self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
+        self.assertTrue(body["b1_tool_answer_synthesized"])
+        self.assertEqual(len(calls), 2)
+
+    async def test_chat_tool_loop_synthesizes_search_results_on_max_iterations(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(path, payload, resolution, operation, owner_id=None):
+            calls.append(payload)
+            return JSONResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": f"call_{len(calls)}",
+                                        "type": "function",
+                                        "function": {"name": "web_search", "arguments": json.dumps({"query": "current example"})},
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
             )
+
+        async def fake_execute(_registry, tool_call):
+            return {
+                "ok": True,
+                "tool": "web_search",
+                "query": "current example",
+                "results": [
+                    {"title": "First result", "url": "https://example.com/one"},
+                    {"title": "Second result", "url": "https://example.com/two"},
+                ],
+                "result_count": 2,
+            }
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Search current example."}],
+            b1_tools=["web_search"],
+            b1_tool_max_iterations=1,
         )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_search"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_search",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertIn("1. First result - https://example.com/one", body["choices"][0]["message"]["content"])
+        self.assertEqual(response.headers["x-b1-tool-stop-reason"], "max_iterations")
+        self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
 
 
 if __name__ == "__main__":

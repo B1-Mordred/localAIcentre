@@ -3966,6 +3966,127 @@ def force_b1_tool_answer_payload(payload: dict[str, Any], reason: str) -> dict[s
     return forced
 
 
+def b1_last_user_text(payload: ChatCompletionRequest) -> str:
+    for message in reversed(payload.messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            if parts:
+                return "\n".join(parts)
+    return ""
+
+
+def b1_user_wants_title_only(text: str) -> bool:
+    normalized = text.lower()
+    return "title only" in normalized or "page title" in normalized or "answer with the title" in normalized
+
+
+def b1_tool_result_excerpt(value: Any, *, max_chars: int = 1600) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
+
+
+def synthesize_b1_tool_answer_content(payload: ChatCompletionRequest, executed_results: list[dict[str, Any]]) -> str | None:
+    if not executed_results:
+        return None
+    user_text = b1_last_user_text(payload)
+    latest = executed_results[-1]
+    name = str(latest.get("name") or "")
+    result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
+    if not isinstance(result, dict):
+        return None
+    if not result.get("ok"):
+        error = result.get("error") or "tool execution failed"
+        return f"The requested tool call failed: {b1_tool_result_excerpt(error, max_chars=500)}"
+    if name == "web_fetch" or result.get("tool") == "web_fetch":
+        title = str(result.get("title") or "").strip()
+        text = str(result.get("text") or "").strip()
+        url = str(result.get("url") or "").strip()
+        if b1_user_wants_title_only(user_text) and title:
+            return title
+        if b1_user_wants_title_only(user_text) and text:
+            first_words = text.split()
+            if len(first_words) >= 2 and first_words[: len(first_words) // 2] == first_words[len(first_words) // 2 :]:
+                return " ".join(first_words[: len(first_words) // 2])
+            return " ".join(first_words[:8]).strip()
+        source = f" from {url}" if url else ""
+        if title and text:
+            return f"{title}\n\nFetched{source}: {b1_tool_result_excerpt(text)}"
+        if text:
+            return f"Fetched{source}: {b1_tool_result_excerpt(text)}"
+    if name == "web_search" or result.get("tool") == "web_search":
+        results = result.get("results")
+        if isinstance(results, list) and results:
+            lines = []
+            for index, item in enumerate(results[:5], start=1):
+                if not isinstance(item, dict):
+                    continue
+                title = b1_tool_result_excerpt(item.get("title") or "Untitled", max_chars=240)
+                url = b1_tool_result_excerpt(item.get("url") or "", max_chars=500)
+                lines.append(f"{index}. {title} - {url}" if url else f"{index}. {title}")
+            if lines:
+                return "\n".join(lines)
+        return "No search results were returned."
+    if "text" in result:
+        return b1_tool_result_excerpt(result["text"])
+    if "json" in result:
+        return b1_tool_result_excerpt(result["json"])
+    return b1_tool_result_excerpt(result)
+
+
+def synthesize_b1_tool_response(
+    payload: ChatCompletionRequest,
+    resolution: RuntimeResolution,
+    executed_results: list[dict[str, Any]],
+    *,
+    iterations: int,
+    requested_tools: list[str],
+    stop_reason: str,
+) -> JSONResponse | None:
+    content = synthesize_b1_tool_answer_content(payload, executed_results)
+    if content is None:
+        return None
+    body = annotate_runtime_response(
+        {
+            "id": f"chatcmpl_b1_tool_{uuid.uuid4().hex}",
+            "object": "chat.completion",
+            "created": int(datetime.now(tz=UTC).timestamp()),
+            "model": payload.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "b1_tool_answer_synthesized": True,
+            "b1_tool_stop_reason": stop_reason,
+        },
+        resolution,
+    )
+    return JSONResponse(
+        content=jsonable_encoder(body),
+        headers={
+            **runtime_response_headers(resolution),
+            "X-B1-Tools": ",".join(requested_tools),
+            "X-B1-Tool-Iterations": str(iterations),
+            "X-B1-Tool-Stop-Reason": stop_reason,
+            "X-B1-Tool-Answer": "synthesized",
+        },
+    )
+
+
 def first_chat_message_tool_calls(body: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     if not isinstance(body, dict):
         return None, []
@@ -4025,6 +4146,7 @@ async def call_chat_with_b1_tools(
     loop_payload["messages"] = list(loop_payload.get("messages") or [])
     enabled_tool_set = set(requested_tools)
     seen_tool_signatures: set[tuple[str, str]] = set()
+    executed_results: list[dict[str, Any]] = []
     for iteration in range(payload.b1_tool_max_iterations):
         response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
         if response is None:
@@ -4059,6 +4181,7 @@ async def call_chat_with_b1_tools(
                 continue
             seen_tool_signatures.add(signature)
             result = await execute_b1_tool_call(registry, tool_call)
+            executed_results.append({"name": name, "result": result})
             loop_payload["messages"].append(
                 {
                     "role": "tool",
@@ -4069,6 +4192,16 @@ async def call_chat_with_b1_tools(
             )
             loop_payload["messages"].append(b1_text_tool_result_instruction(name, result))
         if duplicate_tool_requested:
+            synthesized = synthesize_b1_tool_response(
+                payload,
+                resolution,
+                executed_results,
+                iterations=iteration,
+                requested_tools=requested_tools,
+                stop_reason="duplicate_tool_call",
+            )
+            if synthesized is not None:
+                return synthesized
             response = await call_openai_runtime_json(
                 "/v1/chat/completions",
                 force_b1_tool_answer_payload(loop_payload, "the model repeated an identical tool call"),
@@ -4081,6 +4214,16 @@ async def call_chat_with_b1_tools(
                 response.headers["X-B1-Tools"] = ",".join(requested_tools)
                 response.headers["X-B1-Tool-Stop-Reason"] = "duplicate_tool_call"
                 return response
+    synthesized = synthesize_b1_tool_response(
+        payload,
+        resolution,
+        executed_results,
+        iterations=payload.b1_tool_max_iterations,
+        requested_tools=requested_tools,
+        stop_reason="max_iterations",
+    )
+    if synthesized is not None:
+        return synthesized
     response = await call_openai_runtime_json(
         "/v1/chat/completions",
         force_b1_tool_answer_payload(loop_payload, "the configured B1 tool iteration limit was reached"),
