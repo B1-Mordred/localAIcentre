@@ -956,6 +956,7 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["output_text"], "Example Domain")
         self.assertEqual(body["usage"]["total_tokens"], 12)
         self.assertEqual(response.headers["x-b1-tools"], "web_fetch")
+        self.assertEqual(response.headers["content-length"], str(len(response.body)))
         self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions", "/v1/chat/completions"])
         self.assertEqual(calls[0]["operation"], "chat")
         self.assertEqual(calls[0]["owner_id"], "client_1")

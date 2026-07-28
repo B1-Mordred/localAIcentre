@@ -4335,7 +4335,7 @@ def chat_tool_response_to_responses_response(original_payload: dict[str, Any], c
     return JSONResponse(
         content=jsonable_encoder(wrapped),
         status_code=chat_response.status_code,
-        headers={key: value for key, value in chat_response.headers.items()},
+        headers={key: value for key, value in chat_response.headers.items() if key.lower().startswith("x-b1-")},
     )
 
 
