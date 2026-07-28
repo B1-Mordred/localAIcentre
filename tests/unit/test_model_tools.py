@@ -266,6 +266,37 @@ class ModelToolPolicyTests(unittest.TestCase):
         headers = asyncio.run(main.model_tool_secret_headers(definition))
         self.assertEqual(headers, {"Authorization": "Bearer secret-token"})
 
+    def test_parse_b1_text_tool_call_accepts_strict_json_object(self) -> None:
+        tool_call = main.parse_b1_text_tool_call(
+            '{"b1_tool_call":{"name":"web_fetch","arguments":{"url":"https://example.com"}}}',
+            {"web_fetch"},
+        )
+        self.assertIsNotNone(tool_call)
+        assert tool_call is not None
+        self.assertEqual(tool_call["function"]["name"], "web_fetch")
+        self.assertEqual(json.loads(tool_call["function"]["arguments"]), {"url": "https://example.com"})
+
+    def test_parse_b1_text_tool_call_accepts_fenced_json_object(self) -> None:
+        tool_call = main.parse_b1_text_tool_call(
+            '```json\n{"b1_tool_call":{"name":"web_fetch","arguments":{"url":"https://example.com"}}}\n```',
+            {"web_fetch"},
+        )
+        self.assertIsNotNone(tool_call)
+
+    def test_parse_b1_text_tool_call_rejects_prose_and_unknown_tools(self) -> None:
+        self.assertIsNone(
+            main.parse_b1_text_tool_call(
+                'Please call {"b1_tool_call":{"name":"web_fetch","arguments":{"url":"https://example.com"}}}',
+                {"web_fetch"},
+            )
+        )
+        self.assertIsNone(
+            main.parse_b1_text_tool_call(
+                '{"b1_tool_call":{"name":"unsafe_tool","arguments":{}}}',
+                {"web_fetch"},
+            )
+        )
+
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -395,8 +426,123 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["x-b1-tools"], "web_fetch")
         self.assertNotIn("b1_tools", calls[0])
         self.assertEqual(calls[0]["tools"][0]["function"]["name"], "web_fetch")
-        self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
-        self.assertEqual(calls[1]["messages"][-1]["tool_call_id"], "call_1")
+        self.assertEqual(calls[1]["messages"][-2]["role"], "tool")
+        self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
+        self.assertEqual(calls[1]["messages"][-1]["role"], "system")
+
+    async def test_chat_tool_loop_executes_text_protocol_tool_call(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(path, payload, resolution, operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": '{"b1_tool_call":{"name":"web_fetch","arguments":{"url":"https://example.com"}}}',
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Example Domain"}}]})
+
+        executed: list[dict[str, object]] = []
+
+        async def fake_execute(_registry, tool_call):
+            executed.append(tool_call)
+            return {"ok": True, "url": "https://example.com", "text": "Example Domain"}
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Fetch example.com and answer with the title."}],
+            b1_tools=["web_fetch"],
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "Example Domain")
+        self.assertEqual(response.headers["x-b1-tool-iterations"], "1")
+        self.assertEqual(executed[0]["function"]["name"], "web_fetch")
+        self.assertEqual(calls[0]["messages"][0]["role"], "system")
+        self.assertIn("B1 AI Hub tools are available", calls[0]["messages"][0]["content"])
+        self.assertEqual(calls[1]["messages"][-2]["role"], "tool")
+        self.assertEqual(calls[1]["messages"][-1]["role"], "system")
+
+    async def test_chat_tool_loop_stops_repeated_identical_tool_call(self) -> None:
+        calls: list[dict[str, object]] = []
+        repeated_tool_call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "web_fetch", "arguments": json.dumps({"url": "https://example.com"})},
+        }
+
+        async def fake_runtime_json(path, payload, resolution, operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) <= 2:
+                return JSONResponse({"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [repeated_tool_call]}}]})
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Example Domain"}}]})
+
+        executed: list[dict[str, object]] = []
+
+        async def fake_execute(_registry, tool_call):
+            executed.append(tool_call)
+            return {"ok": True, "url": "https://example.com", "text": "Example Domain"}
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Fetch example.com and answer with the title."}],
+            b1_tools=["web_fetch"],
+            b1_tool_max_iterations=4,
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "Example Domain")
+        self.assertEqual(len(executed), 1)
+        self.assertEqual(response.headers["x-b1-tool-stop-reason"], "duplicate_tool_call")
+        self.assertNotIn("tools", calls[2])
+        self.assertEqual(calls[2]["tool_choice"], "none")
+        self.assertEqual(calls[2]["messages"][-1], {"role": "user", "content": "Return only the final answer to my original request."})
+        self.assertFalse(
+            any(
+                isinstance(message, dict)
+                and isinstance(message.get("content"), str)
+                and message["content"].startswith("B1 AI Hub tools are available")
+                for message in calls[2]["messages"]
+            )
+        )
 
 
 if __name__ == "__main__":

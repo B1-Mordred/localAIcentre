@@ -3852,6 +3852,120 @@ def merge_openai_tool_definitions(payload: dict[str, Any], definitions: list[dic
     return merged
 
 
+def b1_text_tool_instruction(definitions: list[dict[str, Any]]) -> dict[str, str]:
+    tool_summaries: list[dict[str, Any]] = []
+    for definition in definitions:
+        function = definition.get("function") if isinstance(definition, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        tool_summaries.append(
+            {
+                "name": name,
+                "description": str(function.get("description") or "")[:500],
+                "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {"type": "object"},
+            }
+        )
+    content = (
+        "B1 AI Hub tools are available for this request. If you need one, reply with only a JSON object in this exact shape: "
+        '{"b1_tool_call":{"name":"tool_name","arguments":{}}}. '
+        "Use only one tool call per message. Use the tool result in the next turn to answer the user. "
+        "Do not claim tools are unavailable. Available B1 tools: "
+        f"{json.dumps(tool_summaries, ensure_ascii=False, sort_keys=True)}"
+    )
+    return {"role": "system", "content": content}
+
+
+def inject_b1_text_tool_instruction(payload: dict[str, Any], definitions: list[dict[str, Any]]) -> dict[str, Any]:
+    if not definitions:
+        return payload
+    updated = dict(payload)
+    messages = list(updated.get("messages") or [])
+    messages.insert(0, b1_text_tool_instruction(definitions))
+    updated["messages"] = messages
+    return updated
+
+
+def parse_b1_text_tool_call(content: Any, enabled_tools: set[str]) -> dict[str, Any] | None:
+    if not isinstance(content, str) or not content.strip() or len(content) > 20000:
+        return None
+    candidate = content.strip()
+    fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
+    if fence_match is not None:
+        candidate = fence_match.group(1).strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tool_call = parsed.get("b1_tool_call")
+    if not isinstance(tool_call, dict):
+        return None
+    name = str(tool_call.get("name") or "").strip()
+    if name not in enabled_tools:
+        return None
+    arguments = tool_call.get("arguments")
+    if not isinstance(arguments, dict):
+        return None
+    return {
+        "id": f"b1-text-tool-{uuid.uuid4().hex}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False, sort_keys=True)},
+    }
+
+
+def b1_text_tool_result_instruction(name: str, result: dict[str, Any]) -> dict[str, str]:
+    compact_result = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    if len(compact_result) > 6000:
+        compact_result = f"{compact_result[:6000]}...[truncated]"
+    return {
+        "role": "system",
+        "content": (
+            f"B1 tool {name} returned this JSON result: {compact_result}\n"
+            "Use the result to answer the user directly. Do not call another tool unless the result is insufficient."
+        ),
+    }
+
+
+def b1_tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
+    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+    name = str(function.get("name") or "")
+    arguments = model_tools.parse_tool_arguments(function.get("arguments"))
+    return name, json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+
+
+def force_b1_tool_answer_payload(payload: dict[str, Any], reason: str) -> dict[str, Any]:
+    forced = dict(payload)
+    forced.pop("tools", None)
+    forced["tool_choice"] = "none"
+    messages = [
+        message
+        for message in list(forced.get("messages") or [])
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "system"
+            and isinstance(message.get("content"), str)
+            and message["content"].startswith("B1 AI Hub tools are available for this request.")
+        )
+    ]
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                f"B1 tool use is now closed for this response because {reason}. "
+                "Answer the original user from the existing tool result messages. "
+                "Do not include JSON, tool call objects, tool names, or raw tool-result dumps in the final answer."
+            ),
+        }
+    )
+    messages.append({"role": "user", "content": "Return only the final answer to my original request."})
+    forced["messages"] = messages
+    return forced
+
+
 def first_chat_message_tool_calls(body: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     if not isinstance(body, dict):
         return None, []
@@ -3904,8 +4018,13 @@ async def call_chat_with_b1_tools(
     if payload.b1_tools and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
     tool_definitions = registry.definitions(requested_tools)
-    loop_payload = merge_openai_tool_definitions(strip_b1_chat_fields(runtime_payload), tool_definitions)
+    loop_payload = inject_b1_text_tool_instruction(
+        merge_openai_tool_definitions(strip_b1_chat_fields(runtime_payload), tool_definitions),
+        tool_definitions,
+    )
     loop_payload["messages"] = list(loop_payload.get("messages") or [])
+    enabled_tool_set = set(requested_tools)
+    seen_tool_signatures: set[tuple[str, str]] = set()
     for iteration in range(payload.b1_tool_max_iterations):
         response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
         if response is None:
@@ -3914,16 +4033,31 @@ async def call_chat_with_b1_tools(
             return response
         body = json_response_body(response)
         assistant_message, tool_calls = first_chat_message_tool_calls(body)
+        if not tool_calls and assistant_message is not None:
+            text_tool_call = parse_b1_text_tool_call(assistant_message.get("content"), enabled_tool_set)
+            if text_tool_call is not None:
+                tool_calls = [text_tool_call]
+                assistant_message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls,
+                }
         if not tool_calls:
             response.headers["X-B1-Tool-Iterations"] = str(iteration)
             response.headers["X-B1-Tools"] = ",".join(requested_tools)
             return response
         if assistant_message is not None:
             loop_payload["messages"].append(assistant_message)
+        duplicate_tool_requested = False
         for tool_call in tool_calls:
             tool_call_id = str(tool_call.get("id") or f"b1-tool-{uuid.uuid4().hex}")
             function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
             name = str(function.get("name") or "")
+            signature = b1_tool_call_signature(tool_call)
+            if signature in seen_tool_signatures:
+                duplicate_tool_requested = True
+                continue
+            seen_tool_signatures.add(signature)
             result = await execute_b1_tool_call(registry, tool_call)
             loop_payload["messages"].append(
                 {
@@ -3933,10 +4067,31 @@ async def call_chat_with_b1_tools(
                     "content": json.dumps(result, ensure_ascii=False, sort_keys=True),
                 }
             )
-    response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
+            loop_payload["messages"].append(b1_text_tool_result_instruction(name, result))
+        if duplicate_tool_requested:
+            response = await call_openai_runtime_json(
+                "/v1/chat/completions",
+                force_b1_tool_answer_payload(loop_payload, "the model repeated an identical tool call"),
+                resolution,
+                "chat",
+                owner_id=owner_id,
+            )
+            if response is not None:
+                response.headers["X-B1-Tool-Iterations"] = str(iteration)
+                response.headers["X-B1-Tools"] = ",".join(requested_tools)
+                response.headers["X-B1-Tool-Stop-Reason"] = "duplicate_tool_call"
+                return response
+    response = await call_openai_runtime_json(
+        "/v1/chat/completions",
+        force_b1_tool_answer_payload(loop_payload, "the configured B1 tool iteration limit was reached"),
+        resolution,
+        "chat",
+        owner_id=owner_id,
+    )
     if response is not None:
         response.headers["X-B1-Tool-Iterations"] = str(payload.b1_tool_max_iterations)
         response.headers["X-B1-Tools"] = ",".join(requested_tools)
+        response.headers["X-B1-Tool-Stop-Reason"] = "max_iterations"
         return response
     raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied chat response")
 
