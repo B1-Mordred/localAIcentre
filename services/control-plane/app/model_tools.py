@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import html
+import ipaddress
+import json
+import re
+import socket
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from typing import Any, Callable
+from urllib.parse import quote_plus, unquote, urljoin, urlparse, urlunparse
+
+import httpx
+
+
+PRIVATE_TOOL_NETS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+WHITESPACE_RE = re.compile(r"\s+")
+SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1>")
+TAG_RE = re.compile(r"(?s)<[^>]+>")
+HostnameResolver = Callable[[str, int | None], list[str]]
+
+
+class ModelToolError(ValueError):
+    pass
+
+
+def resolve_hostname_addresses(hostname: str, port: int | None) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for result in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM):
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        address = str(sockaddr[0])
+        if address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return addresses
+
+
+def tool_ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private_network: bool) -> bool:
+    if allow_private_network:
+        return not ip.is_loopback and not ip.is_link_local and not ip.is_multicast and not ip.is_unspecified
+    if not ip.is_global:
+        return False
+    return not any(ip in network for network in PRIVATE_TOOL_NETS)
+
+
+def validate_tool_url(
+    value: str,
+    *,
+    allow_private_network: bool = False,
+    allowed_hosts: set[str] | None = None,
+    resolver: HostnameResolver | None = None,
+) -> str:
+    raw = value.strip()
+    if len(raw) > 2048:
+        raise ModelToolError("URL is too long")
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"https", "http"}:
+        raise ModelToolError("URL must use http or https")
+    if parsed.username or parsed.password:
+        raise ModelToolError("URL must not contain credentials")
+    if parsed.fragment:
+        parsed = parsed._replace(fragment="")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ModelToolError("URL has an invalid port") from exc
+    if not parsed.hostname:
+        raise ModelToolError("URL must include a hostname")
+    hostname = parsed.hostname.lower().rstrip(".")
+    normalized_allowed_hosts = {host.lower().rstrip(".") for host in allowed_hosts or set() if host.strip()}
+    if normalized_allowed_hosts and hostname not in normalized_allowed_hosts:
+        raise ModelToolError("URL host is not in the model-tool allowlist")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ModelToolError("URL must not target localhost")
+    if BAD_PERCENT_ESCAPE_RE.search(parsed.path):
+        raise ModelToolError("URL path contains an invalid percent escape")
+    try:
+        decoded_path = unquote(parsed.path, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ModelToolError("URL path is not valid UTF-8") from exc
+    if any(part in {".", ".."} for part in decoded_path.split("/") if part):
+        raise ModelToolError("URL path must not contain relative path segments")
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        resolver = resolver or resolve_hostname_addresses
+        try:
+            resolved_addresses = resolver(hostname, port)
+        except OSError as exc:
+            raise ModelToolError("URL hostname could not be resolved safely") from exc
+        if not resolved_addresses:
+            raise ModelToolError("URL hostname could not be resolved safely")
+        for address in resolved_addresses:
+            try:
+                resolved_ip = ipaddress.ip_address(address)
+            except ValueError as exc:
+                raise ModelToolError("URL hostname resolved to an invalid address") from exc
+            if not tool_ip_is_public(resolved_ip, allow_private_network=allow_private_network):
+                raise ModelToolError("URL hostname resolves to a blocked network range")
+    else:
+        if not tool_ip_is_public(ip, allow_private_network=allow_private_network):
+            raise ModelToolError("URL targets a blocked network range")
+    netloc = hostname
+    if ":" in hostname:
+        netloc = f"[{hostname}]"
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    path = parsed.path or "/"
+    return urlunparse((parsed.scheme.lower(), netloc, path, "", parsed.query, ""))
+
+
+def html_to_text(value: str, *, max_chars: int) -> str:
+    stripped = SCRIPT_STYLE_RE.sub(" ", value)
+    stripped = TAG_RE.sub(" ", stripped)
+    text = html.unescape(stripped)
+    text = WHITESPACE_RE.sub(" ", text).strip()
+    return text[:max_chars]
+
+
+class SearchResultParser(HTMLParser):
+    def __init__(self, base_url: str) -> None:
+        super().__init__()
+        self.base_url = base_url
+        self.results: list[dict[str, str]] = []
+        self._current_href = ""
+        self._current_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        href = ""
+        for key, value in attrs:
+            if key.lower() == "href" and value:
+                href = value
+                break
+        if href.startswith("#") or href.lower().startswith(("javascript:", "mailto:", "tel:")):
+            return
+        self._current_href = urljoin(self.base_url, href)
+        self._current_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_href:
+            self._current_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or not self._current_href:
+            return
+        title = WHITESPACE_RE.sub(" ", html.unescape(" ".join(self._current_text))).strip()
+        if title and self._current_href.startswith(("http://", "https://")):
+            self.results.append({"title": title[:240], "url": self._current_href})
+        self._current_href = ""
+        self._current_text = []
+
+
+@dataclass(frozen=True)
+class ModelToolSettings:
+    enabled: bool = True
+    allowed_tools: tuple[str, ...] = ("web_search", "web_fetch")
+    allow_private_network: bool = False
+    allowed_hosts: tuple[str, ...] = ()
+    max_result_chars: int = 12000
+    max_search_results: int = 5
+    timeout_seconds: float = 12.0
+    search_endpoint_template: str = "https://duckduckgo.com/html/?q={query}"
+
+
+class ModelToolRegistry:
+    def __init__(self, settings: ModelToolSettings, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self.settings = settings
+        self.transport = transport
+
+    def tool_names(self) -> set[str]:
+        if not self.settings.enabled:
+            return set()
+        return set(self.settings.allowed_tools)
+
+    def definitions(self, requested: list[str]) -> list[dict[str, Any]]:
+        enabled = self.tool_names()
+        definitions: list[dict[str, Any]] = []
+        for name in requested:
+            if name not in enabled:
+                continue
+            if name == "web_search":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web for current information. Use this before answering time-sensitive factual questions.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string", "description": "Search query."},
+                                    "max_results": {"type": "integer", "minimum": 1, "maximum": self.settings.max_search_results},
+                                },
+                                "required": ["query"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    }
+                )
+            elif name == "web_fetch":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            "description": "Fetch and extract readable text from a public HTTP or HTTPS URL.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "url": {"type": "string", "description": "Public URL to retrieve."},
+                                    "max_chars": {"type": "integer", "minimum": 256, "maximum": self.settings.max_result_chars},
+                                },
+                                "required": ["url"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    }
+                )
+        return definitions
+
+    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name not in self.tool_names():
+            return {"ok": False, "error": f"tool is not enabled: {name}"}
+        if name == "web_search":
+            return await self.web_search(arguments)
+        if name == "web_fetch":
+            return await self.web_fetch(arguments)
+        return {"ok": False, "error": f"unknown tool: {name}"}
+
+    async def web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        url = validate_tool_url(
+            str(arguments.get("url") or ""),
+            allow_private_network=self.settings.allow_private_network,
+            allowed_hosts=set(self.settings.allowed_hosts),
+        )
+        max_chars = int(arguments.get("max_chars") or self.settings.max_result_chars)
+        max_chars = max(256, min(max_chars, self.settings.max_result_chars))
+        async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+            response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        text = response.text
+        if "html" in content_type.lower() or "<html" in text[:500].lower():
+            text = html_to_text(text, max_chars=max_chars)
+        else:
+            text = WHITESPACE_RE.sub(" ", text).strip()[:max_chars]
+        return {
+            "ok": True,
+            "url": str(response.url),
+            "content_type": content_type,
+            "status_code": response.status_code,
+            "text": text,
+            "truncated": len(text) >= max_chars,
+        }
+
+    async def web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        max_results = int(arguments.get("max_results") or self.settings.max_search_results)
+        max_results = max(1, min(max_results, self.settings.max_search_results))
+        endpoint = self.settings.search_endpoint_template.replace("{query}", quote_plus(query))
+        url = validate_tool_url(
+            endpoint,
+            allow_private_network=self.settings.allow_private_network,
+            allowed_hosts=set(self.settings.allowed_hosts),
+        )
+        async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+            response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+        response.raise_for_status()
+        parser = SearchResultParser(str(response.url))
+        parser.feed(response.text)
+        deduped: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for result in parser.results:
+            result_url = result["url"]
+            try:
+                safe_url = validate_tool_url(
+                    result_url,
+                    allow_private_network=self.settings.allow_private_network,
+                    allowed_hosts=set(self.settings.allowed_hosts),
+                )
+            except ModelToolError:
+                continue
+            if safe_url in seen:
+                continue
+            seen.add(safe_url)
+            deduped.append({"title": result["title"], "url": safe_url})
+            if len(deduped) >= max_results:
+                break
+        return {
+            "ok": True,
+            "query": query,
+            "results": deduped,
+            "result_count": len(deduped),
+            "source": str(response.url),
+        }
+
+
+def parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

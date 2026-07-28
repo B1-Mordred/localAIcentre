@@ -385,6 +385,28 @@
       "ChatCompletionRequest": {
         "additionalProperties": true,
         "properties": {
+          "b1_tool_max_iterations": {
+            "default": 4,
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "B1 Tool Max Iterations",
+            "type": "integer"
+          },
+          "b1_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "B1 Tools"
+          },
           "max_tokens": {
             "anyOf": [
               {
@@ -5184,6 +5206,54 @@
           }
         },
         "summary": "Admin Rollback Rehearsal Create"
+      }
+    },
+    "/admin/model-tools": {
+      "get": {
+        "operationId": "admin_model_tools_admin_model_tools_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Tools Admin Model Tools Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Tools"
       }
     },
     "/admin/models": {
@@ -11329,6 +11399,54 @@
           }
         },
         "summary": "Runtime Reservation Get"
+      }
+    },
+    "/v1/tools": {
+      "get": {
+        "operationId": "list_model_tools_v1_tools_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Model Tools V1 Tools Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Model Tools"
       }
     },
     "/v1/videos/generations": {

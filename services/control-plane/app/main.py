@@ -48,6 +48,7 @@ from .job_states import ACTIVE_JOB_STATES, TERMINAL_JOB_STATES
 from .job_redaction import redact_request
 from . import media_artifacts
 from . import model_lifecycle
+from . import model_tools
 from . import modelhub as modelhub_policy
 from . import secret_store
 from . import selftest as selftest_policy
@@ -236,6 +237,8 @@ CORS_EXPOSE_HEADERS = [
     "X-B1-Runtime",
     "X-B1-Resolved-Model",
     "X-B1-Public-Model",
+    "X-B1-Tools",
+    "X-B1-Tool-Iterations",
 ]
 IDEMPOTENCY_KEY_MAX_LENGTH = 256
 IDEMPOTENCY_IDENTITY_FIELDS = (
@@ -260,6 +263,8 @@ class ChatCompletionRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     runtime_policy: str = "any"
+    b1_tools: list[str] | None = Field(default=None, max_length=16)
+    b1_tool_max_iterations: int = Field(default=4, ge=1, le=8)
 
 
 class EmbeddingRequest(BaseModel):
@@ -3492,6 +3497,171 @@ def runtime_response_headers(resolution: RuntimeResolution) -> dict[str, str]:
         "X-B1-Resolved-Model": resolution.resolved_model_version,
         "X-B1-Public-Model": resolution.public_alias,
     }
+
+
+def model_tool_settings() -> model_tools.ModelToolSettings:
+    return model_tools.ModelToolSettings(
+        enabled=settings.model_tools_enabled,
+        allowed_tools=settings.model_tools_allowed,
+        allow_private_network=settings.model_tools_allow_private_network,
+        allowed_hosts=settings.model_tools_allowed_hosts,
+        max_result_chars=max(256, settings.model_tools_max_result_chars),
+        max_search_results=max(1, settings.model_tools_max_search_results),
+        timeout_seconds=max(1.0, settings.model_tools_timeout_seconds),
+        search_endpoint_template=settings.model_tools_search_endpoint_template or "https://duckduckgo.com/html/?q={query}",
+    )
+
+
+def public_model_tool_registry() -> dict[str, Any]:
+    registry = model_tools.ModelToolRegistry(model_tool_settings())
+    tool_names = sorted(registry.tool_names())
+    return {
+        "object": "b1.model_tools",
+        "enabled": settings.model_tools_enabled,
+        "allowed_tools": tool_names,
+        "request_field": "b1_tools",
+        "max_iterations_field": "b1_tool_max_iterations",
+        "default_max_iterations": 4,
+        "streaming_supported": False,
+        "allow_private_network": settings.model_tools_allow_private_network,
+        "allowed_hosts": list(settings.model_tools_allowed_hosts),
+        "max_result_chars": max(256, settings.model_tools_max_result_chars),
+        "max_search_results": max(1, settings.model_tools_max_search_results),
+        "search_endpoint_configured": bool(settings.model_tools_search_endpoint_template),
+        "definitions": registry.definitions(tool_names),
+        "security": {
+            "explicit_request_required": True,
+            "private_network_blocked_by_default": True,
+            "credentials_in_urls_rejected": True,
+            "bounded_output": True,
+        },
+    }
+
+
+def requested_b1_model_tools(payload: ChatCompletionRequest) -> list[str]:
+    requested = list(payload.b1_tools or [])
+    if not requested:
+        return []
+    registry = model_tools.ModelToolRegistry(model_tool_settings())
+    if "*" in requested:
+        return sorted(registry.tool_names())
+    return [tool for tool in requested if tool in registry.tool_names()]
+
+
+def strip_b1_chat_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(payload)
+    cleaned.pop("b1_tools", None)
+    cleaned.pop("b1_tool_max_iterations", None)
+    return cleaned
+
+
+def merge_openai_tool_definitions(payload: dict[str, Any], definitions: list[dict[str, Any]]) -> dict[str, Any]:
+    if not definitions:
+        return payload
+    merged = dict(payload)
+    existing = merged.get("tools")
+    tools = list(existing) if isinstance(existing, list) else []
+    existing_names = {
+        str(item.get("function", {}).get("name"))
+        for item in tools
+        if isinstance(item, dict) and isinstance(item.get("function"), dict)
+    }
+    for definition in definitions:
+        name = str(definition.get("function", {}).get("name")) if isinstance(definition.get("function"), dict) else ""
+        if name and name not in existing_names:
+            tools.append(definition)
+            existing_names.add(name)
+    merged["tools"] = tools
+    return merged
+
+
+def first_chat_message_tool_calls(body: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        return None, []
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None, []
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None, []
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return None, []
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return message, []
+    return message, [item for item in tool_calls if isinstance(item, dict)]
+
+
+def json_response_body(response: JSONResponse) -> Any:
+    try:
+        return json.loads(response.body.decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+async def execute_b1_tool_call(registry: model_tools.ModelToolRegistry, tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        return {"ok": False, "error": "tool call is missing a function object"}
+    name = str(function.get("name") or "")
+    arguments = model_tools.parse_tool_arguments(function.get("arguments"))
+    try:
+        return await registry.execute(name, arguments)
+    except model_tools.ModelToolError as exc:
+        return {"ok": False, "tool": name, "error": str(exc)}
+    except httpx.HTTPStatusError as exc:
+        return {"ok": False, "tool": name, "error": f"HTTP {exc.response.status_code}"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "tool": name, "error": exc.__class__.__name__}
+
+
+async def call_chat_with_b1_tools(
+    payload: ChatCompletionRequest,
+    runtime_payload: dict[str, Any],
+    resolution: RuntimeResolution,
+    owner_id: str | None,
+) -> JSONResponse:
+    requested_tools = requested_b1_model_tools(payload)
+    if payload.b1_tools and not requested_tools:
+        raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
+    registry = model_tools.ModelToolRegistry(model_tool_settings())
+    tool_definitions = registry.definitions(requested_tools)
+    loop_payload = merge_openai_tool_definitions(strip_b1_chat_fields(runtime_payload), tool_definitions)
+    loop_payload["messages"] = list(loop_payload.get("messages") or [])
+    for iteration in range(payload.b1_tool_max_iterations):
+        response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
+        if response is None:
+            break
+        if response.status_code >= 400:
+            return response
+        body = json_response_body(response)
+        assistant_message, tool_calls = first_chat_message_tool_calls(body)
+        if not tool_calls:
+            response.headers["X-B1-Tool-Iterations"] = str(iteration)
+            response.headers["X-B1-Tools"] = ",".join(requested_tools)
+            return response
+        if assistant_message is not None:
+            loop_payload["messages"].append(assistant_message)
+        for tool_call in tool_calls:
+            tool_call_id = str(tool_call.get("id") or f"b1-tool-{uuid.uuid4().hex}")
+            function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+            name = str(function.get("name") or "")
+            result = await execute_b1_tool_call(registry, tool_call)
+            loop_payload["messages"].append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": name,
+                    "content": json.dumps(result, ensure_ascii=False, sort_keys=True),
+                }
+            )
+    response = await call_openai_runtime_json("/v1/chat/completions", loop_payload, resolution, "chat", owner_id=owner_id)
+    if response is not None:
+        response.headers["X-B1-Tool-Iterations"] = str(payload.b1_tool_max_iterations)
+        response.headers["X-B1-Tools"] = ",".join(requested_tools)
+        return response
+    raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied chat response")
 
 
 def runtime_prepare_error_detail(exc: RuntimePreparationError, resolution: RuntimeResolution, operation: str) -> dict[str, Any]:
@@ -11271,6 +11441,21 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
     }
 
 
+@app.get("/v1/tools")
+async def list_model_tools(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:read")
+    return public_model_tool_registry()
+
+
+@app.get("/admin/model-tools")
+async def admin_model_tools(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:read")
+    require_model_admin(auth)
+    return public_model_tool_registry()
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(payload: ChatCompletionRequest, authorization: str | None = Header(default=None)) -> Response:
     auth = await authenticate(authorization)
@@ -11278,7 +11463,14 @@ async def chat_completions(payload: ChatCompletionRequest, authorization: str | 
     require_not_in_maintenance("chat/completions")
     resolution = resolve_catalog_alias_for_modalities_auth(payload.model, {"llm", "vlm"}, auth, payload.runtime_policy, operation="chat")
     require_openai_forwarding(resolution, "chat")
-    runtime_payload = payload.model_dump(exclude_none=True)
+    runtime_payload = strip_b1_chat_fields(payload.model_dump(exclude_none=True))
+    requested_tools = requested_b1_model_tools(payload)
+    if payload.b1_tools and not requested_tools:
+        raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
+    if payload.b1_tools and payload.stream:
+        raise HTTPException(status_code=422, detail="B1 model tools currently require non-streaming chat completions")
+    if requested_tools:
+        return await call_chat_with_b1_tools(payload, runtime_payload, resolution, owner_id=auth.subject_id)
     if payload.stream:
         proxied_stream = await call_openai_runtime_stream("/v1/chat/completions", runtime_payload, resolution, "chat", owner_id=auth.subject_id)
         if proxied_stream is not None:

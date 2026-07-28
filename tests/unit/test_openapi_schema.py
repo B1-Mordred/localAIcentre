@@ -14,6 +14,7 @@ OPENAPI = ROOT / "docs" / "openapi.json"
 MAIN = ROOT / "services" / "control-plane" / "app" / "main.py"
 REQUIRED_PUBLIC_ROUTE_METHODS = {
     "/v1/models": {"get"},
+    "/v1/tools": {"get"},
     "/v1/chat/completions": {"post"},
     "/v1/responses": {"post"},
     "/v1/embeddings": {"post"},

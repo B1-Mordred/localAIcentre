@@ -132,6 +132,14 @@ class Settings:
     backup_scheduler_enabled: bool
     backup_scheduler_interval_seconds: int
     allow_external_providers: bool
+    model_tools_enabled: bool
+    model_tools_allowed: tuple[str, ...]
+    model_tools_allow_private_network: bool
+    model_tools_allowed_hosts: tuple[str, ...]
+    model_tools_max_result_chars: int
+    model_tools_max_search_results: int
+    model_tools_timeout_seconds: float
+    model_tools_search_endpoint_template: str
     runtime_deployment_mode: str
     runtime_production_required: tuple[str, ...]
     gpu_total_vram_gib: float
@@ -264,6 +272,14 @@ def load_settings() -> Settings:
         backup_scheduler_enabled=_bool("B1_BACKUP_SCHEDULER_ENABLED", True),
         backup_scheduler_interval_seconds=_int("B1_BACKUP_SCHEDULER_INTERVAL_SECONDS", 60),
         allow_external_providers=_bool("B1_ALLOW_EXTERNAL_PROVIDERS", False),
+        model_tools_enabled=_bool("B1_MODEL_TOOLS_ENABLED", True),
+        model_tools_allowed=_words("B1_MODEL_TOOLS_ALLOWED", "web_search web_fetch"),
+        model_tools_allow_private_network=_bool("B1_MODEL_TOOLS_ALLOW_PRIVATE_NETWORK", False),
+        model_tools_allowed_hosts=_words("B1_MODEL_TOOLS_ALLOWED_HOSTS", ""),
+        model_tools_max_result_chars=_int("B1_MODEL_TOOLS_MAX_RESULT_CHARS", 12000),
+        model_tools_max_search_results=_int("B1_MODEL_TOOLS_MAX_SEARCH_RESULTS", 5),
+        model_tools_timeout_seconds=_float("B1_MODEL_TOOLS_TIMEOUT_SECONDS", 12.0),
+        model_tools_search_endpoint_template=os.getenv("B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE", "https://duckduckgo.com/html/?q={query}").strip(),
         runtime_deployment_mode=os.getenv("B1_RUNTIME_DEPLOYMENT_MODE", "development").strip().lower(),
         runtime_production_required=_words("B1_RUNTIME_PRODUCTION_REQUIRED", "localai comfyui audio-cpu"),
         gpu_total_vram_gib=_float("B1_GPU_TOTAL_VRAM_GIB", 12.0),

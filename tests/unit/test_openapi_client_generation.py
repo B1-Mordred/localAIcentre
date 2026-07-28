@@ -16,6 +16,7 @@ MEDIA_SOURCE = ROOT / "web" / "media-studio" / "src" / "main.tsx"
 
 REQUIRED_GENERATED_ROUTES = (
     '"POST /v1/chat/completions"',
+    '"GET /v1/tools"',
     '"POST /v1/audio/speech"',
     '"POST /v1/images/edits"',
     '"GET /v1/media/jobs/{job_id}/events"',

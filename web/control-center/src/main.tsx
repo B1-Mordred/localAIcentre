@@ -11,6 +11,7 @@ import {
   Download,
   Eye,
   Gauge,
+  Globe2,
   HardDrive,
   KeyRound,
   ListChecks,
@@ -820,6 +821,23 @@ type ModelHubClient = {
   allow_downloads: boolean;
   created_at: string;
   revoked_at?: string | null;
+};
+
+type ModelToolRegistryPayload = {
+  object: string;
+  enabled: boolean;
+  allowed_tools: string[];
+  request_field: string;
+  max_iterations_field: string;
+  default_max_iterations: number;
+  streaming_supported: boolean;
+  allow_private_network: boolean;
+  allowed_hosts: string[];
+  max_result_chars: number;
+  max_search_results: number;
+  search_endpoint_configured: boolean;
+  definitions: { function?: { name?: string; description?: string } }[];
+  security: Record<string, boolean>;
 };
 
 type ModelAlias = {
@@ -4654,8 +4672,10 @@ function ExternalAccess() {
   const [modelHubClients, setModelHubClients] = useState<ModelHubClient[]>([]);
   const [encryptedSecrets, setEncryptedSecrets] = useState<EncryptedSecret[]>([]);
   const [secretMasterKey, setSecretMasterKey] = useState<SecretMasterKeyStatus | null>(null);
+  const [modelTools, setModelTools] = useState<ModelToolRegistryPayload | null>(null);
   const [apiClientsAdminOnly, setApiClientsAdminOnly] = useState(false);
   const [modelHubClientsAdminOnly, setModelHubClientsAdminOnly] = useState(false);
+  const [modelToolsAdminOnly, setModelToolsAdminOnly] = useState(false);
   const [message, setMessage] = useState("idle");
   const [busy, setBusy] = useState(false);
   const [apiDisplayName, setApiDisplayName] = useState("");
@@ -4698,13 +4718,19 @@ function ExternalAccess() {
         if (response.ok) return response.json();
         if (response.status === 403) return { data: [], master_key: { configured: false, usable: false, scheme: "", error: "administrator only" } };
         return Promise.reject(new Error(`encrypted secrets ${response.status}`));
+      }),
+      apiFetch(`/admin/model-tools`).then((response) => {
+        if (response.ok) return response.json();
+        if (response.status === 403) return { admin_only: true };
+        return Promise.reject(new Error(`model tools ${response.status}`));
       })
     ])
-      .then(([apiPayload, hubPayload, secretPayload]) => {
+      .then(([apiPayload, hubPayload, secretPayload, toolPayload]) => {
         const apiData = Array.isArray(apiPayload) ? apiPayload : apiPayload.data ?? [];
         const hubData = hubPayload.data ?? [];
         setApiClientsAdminOnly(!Array.isArray(apiPayload) && Boolean(apiPayload.admin_only));
         setModelHubClientsAdminOnly(Boolean(hubPayload.admin_only));
+        setModelToolsAdminOnly(Boolean(toolPayload.admin_only));
         setApiClients(apiData);
         setModelHubClients(hubData);
         setApiClientCidrs(Object.fromEntries(apiData.map((client: ApiClient) => [client.id, (client.cidr_allowlist ?? []).join(", ")])));
@@ -4713,6 +4739,7 @@ function ExternalAccess() {
         setModelHubClientDownloads(Object.fromEntries(hubData.map((client: ModelHubClient) => [client.id, Boolean(client.allow_downloads)])));
         setEncryptedSecrets(secretPayload.data ?? []);
         setSecretMasterKey(secretPayload.master_key ?? null);
+        setModelTools(toolPayload.admin_only ? null : toolPayload);
         setMessage("ready");
       })
       .catch((err: Error) => setMessage(err.message));
@@ -4956,6 +4983,53 @@ function ExternalAccess() {
         <TerminalSquare size={16} />
         <h3>Client Snippets</h3>
       </div>
+      <div className="subsection-title">
+        <Globe2 size={16} />
+        <h3>Model Tools</h3>
+      </div>
+      {modelToolsAdminOnly ? (
+        <div className="access-limited">
+          <ShieldCheck size={16} />
+          <span>Model tool registry visibility requires an administrator or operator role.</span>
+        </div>
+      ) : modelTools ? (
+        <>
+          <table>
+            <thead><tr><th>Status</th><th>Tools</th><th>Network Policy</th><th>Limits</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>{modelTools.enabled ? "enabled" : "disabled"}<small>{modelTools.streaming_supported ? "streaming supported" : "non-streaming chat only"}</small></td>
+                <td>{modelTools.allowed_tools.join(", ") || "none"}<small>request field {modelTools.request_field}</small></td>
+                <td>{modelTools.allow_private_network ? "private network allowed" : "public web only"}<small>{modelTools.allowed_hosts.length ? modelTools.allowed_hosts.join(", ") : "no host allowlist"}</small></td>
+                <td>{formatBytes(modelTools.max_result_chars)} text cap<small>{modelTools.max_search_results} search results / {modelTools.max_iterations_field} default {modelTools.default_max_iterations}</small></td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="snippet-grid">
+            <section className="snippet-card">
+              <div className="snippet-title">
+                <h4>Tool-enabled chat</h4>
+                <button title="Copy model tools snippet" type="button" onClick={() => copySnippet({
+                  id: "model-tools",
+                  label: "model tools",
+                  code: `curl -s ${API_BASE}/v1/chat/completions \\
+  -H "Authorization: Bearer <B1_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"chat-default","messages":[{"role":"user","content":"Search the web and summarize the current result."}],"b1_tools":["web_search","web_fetch"],"b1_tool_max_iterations":4}'`
+                })}>
+                  <Clipboard size={16} />{copiedSnippet === "model-tools" ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre>{`"b1_tools": ${JSON.stringify(modelTools.allowed_tools.length ? modelTools.allowed_tools : ["web_search", "web_fetch"])}`}</pre>
+            </section>
+          </div>
+        </>
+      ) : (
+        <div className="access-limited">
+          <ShieldCheck size={16} />
+          <span>Model tool registry unavailable.</span>
+        </div>
+      )}
       <div className="snippet-grid">
         {accessSnippets().map((snippet) => (
           <section className="snippet-card" key={snippet.id}>
