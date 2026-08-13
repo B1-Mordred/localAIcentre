@@ -308,6 +308,8 @@ class CiQualityGateTests(unittest.TestCase):
         containers = self.workflow["jobs"]["containers"]
         steps = {step["name"]: step for step in containers["steps"] if "name" in step}
         commands = "\n".join(flatten_strings(containers))
+        filesystem_scan = steps["Filesystem vulnerability scan"]["run"]
+        lipsync_inventory = steps["Lipsync dependency vulnerability inventory"]["run"]
         strict_image_scan = steps["Image vulnerability scan"]["run"]
         upstream_inventory = steps["Upstream-heavy image vulnerability inventory"]["run"]
 
@@ -336,7 +338,11 @@ class CiQualityGateTests(unittest.TestCase):
 
         self.assertIn('"$TRIVY_IMAGE"', commands)
         self.assertIn("$RUNNER_TEMP/trivy-cache:/root/.cache/", commands)
-        self.assertIn("fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed /repo", commands)
+        self.assertIn("fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed", filesystem_scan)
+        self.assertIn("--skip-files /repo/services/lipsync/requirements.txt /repo", filesystem_scan)
+        self.assertIn("fs --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed", lipsync_inventory)
+        self.assertIn("/repo/services/lipsync/requirements.txt", lipsync_inventory)
+        self.assertIn("/reports/lipsync-requirements.trivy.json", lipsync_inventory)
         self.assertIn("image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed", commands)
         self.assertNotIn("b1-ai-hub/open-webui-wrapper:ci", strict_image_scan)
         self.assertNotIn("b1-ai-hub/localai:ci", strict_image_scan)
