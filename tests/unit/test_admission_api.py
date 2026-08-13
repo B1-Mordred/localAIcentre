@@ -618,6 +618,7 @@ class AdmissionApiTests(unittest.TestCase):
 
         self.patch_attr("media_image_input_from_request", parse_body)
         self.patch_attr("resolve_catalog_alias_for_auth", resolver)
+        self.patch_attr("media_artifacts", type("FakeMediaArtifacts", (), {"read_staged_input_bytes": staticmethod(lambda *args: (b"png", "image/png", {}))})())
 
         result = asyncio.run(main.image_to_video(FakeRequest(body=b"not-read"), authorization="Bearer key"))
 
@@ -629,7 +630,7 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(inserted["model_alias"], "video-image")
         self.assertEqual(inserted["priority"], "video")
         self.assertEqual(inserted["request_params"]["runtime_policy"], "non_comfy_only")
-        self.assertEqual(inserted["request_params"]["input"]["image"]["source"], "staged_upload")
+        self.assertEqual(inserted["request_params"]["input"]["source_image"]["source"], "staged_upload")
 
     def test_image_to_video_idempotency_returns_existing_job_without_reprocessing_body(self) -> None:
         existing = job_row(

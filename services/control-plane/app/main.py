@@ -15788,6 +15788,7 @@ async def media_job_create(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:write")
+    benchmark_campaign = optional_query_value(benchmark_campaign)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key and not benchmark_campaign:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)

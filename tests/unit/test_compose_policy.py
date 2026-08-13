@@ -1021,7 +1021,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_RUNTIME_ACTION_SERVICES"], "${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu}")
         self.assertEqual(
             environment["B1_ROLLBACK_SERVICES"],
-            "${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway}",
+            "${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu,artifact-server,open-webui,gateway}",
         )
         self.assertIn("${B1_DATA_ROOT:-/srv/b1-ai-hub}:/srv/b1-ai-hub:ro", volumes)
         self.assertEqual(service["healthcheck"]["test"], ["CMD", "python", "-m", "app.healthcheck"])
