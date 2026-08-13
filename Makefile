@@ -45,6 +45,7 @@ B1_QUALITY_PYTHON_IMAGE ?= python:3.12.11-slim-bookworm@sha256:519591d6871b7bc43
 B1_QUALITY_DOCKER_RUN_ARGS ?=
 B1_PIP_DEFAULT_TIMEOUT ?= 180
 B1_PIP_RETRIES ?= 8
+B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD ?= ci-compose-validation-only
 B1_SERVICE_REQUIREMENTS := services/control-plane/requirements.txt services/runtime-agent/requirements.txt services/artifact-server/requirements.txt services/audio-cpu/requirements.txt services/mock-runtime/requirements.txt
 
 .PHONY: prepare-production-env verify-system-hostname apply-system-hostname network-dhcp-plan bootstrap acceptance-env acceptance-preflight acceptance-report-preview operator-handoff-report validate quality quality-local quality-container backend-python-quality-container repository-quality-evidence compose-config legacy-compose-config monitoring-compose-config production-localai-compose-config production-comfyui-compose-config production-voicebox-compose-config production-env-compose-config caddy-config python-check frontend frontend-control-center frontend-media-studio unit smoke live-smoke-acceptance integration installed-workflows-acceptance localai-acceptance model-tools-acceptance gpu-acceptance restart-reconciliation-acceptance compatibility native-comfyui-compatibility legacy-comfyui-compatibility remote-nodes-non-comfy-compatibility modelhub-compatibility voicebox-compatibility external-compatibility-acceptance operator-live-acceptance security security-acceptance openapi openapi-check openapi-client openapi-client-check sbom secret-scan voicebox-audit-inventory db-migrate db-current inventory old-stack-scope old-stack-backup old-stack-backup-verify open-webui-migration-plan cutover-plan rollback-rehearsal-report backup restore backup-migration-rollback-evidence up down logs
@@ -106,25 +107,25 @@ repository-quality-evidence: quality-container secret-scan
 	python3 deploy/scripts/repository_quality_evidence.py --output "$(B1_REPOSITORY_QUALITY_EVIDENCE)" --quality-passed --secret-scan-passed --force
 
 compose-config:
-	docker compose config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose config --quiet
 
 legacy-compose-config:
-	docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-comfy config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose -f compose.yaml -f compose.legacy-comfy.yaml --profile legacy-comfy config --quiet
 
 monitoring-compose-config:
-	docker compose -f compose.yaml -f compose.monitoring.yaml --profile monitoring config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose -f compose.yaml -f compose.monitoring.yaml --profile monitoring config --quiet
 
 production-localai-compose-config:
-	docker compose -f compose.yaml -f compose.production-localai.yaml config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose -f compose.yaml -f compose.production-localai.yaml config --quiet
 
 production-comfyui-compose-config:
-	docker compose -f compose.yaml -f compose.production-comfyui.yaml config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose -f compose.yaml -f compose.production-comfyui.yaml config --quiet
 
 production-voicebox-compose-config:
-	docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" docker compose -f compose.yaml -f compose.production-voicebox.yaml --profile voicebox config --quiet
 
 production-env-compose-config:
-	COMPOSE_FILE="$$(sed -n 's/^COMPOSE_FILE=//p' .env.production.example)" COMPOSE_PROFILES="$$(sed -n 's/^COMPOSE_PROFILES=//p' .env.production.example)" docker compose --env-file .env.production.example config --quiet
+	B1_FIRECRAWL_POSTGRES_PASSWORD="$(B1_COMPOSE_VALIDATION_FIRECRAWL_PASSWORD)" COMPOSE_FILE="$$(sed -n 's/^COMPOSE_FILE=//p' .env.production.example)" COMPOSE_PROFILES="$$(sed -n 's/^COMPOSE_PROFILES=//p' .env.production.example)" docker compose --env-file .env.production.example config --quiet
 
 caddy-config:
 	docker run --rm -v "$(CURDIR)/deploy/caddy:/etc/caddy:ro" "$(CADDY_IMAGE)" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
