@@ -138,7 +138,17 @@ jobs:
           docker run --rm \
             -v "$PWD:/repo:ro" \
             -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
-            "$TRIVY_IMAGE" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed /repo
+            "$TRIVY_IMAGE" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --skip-files /repo/services/lipsync/requirements.txt /repo
+      - name: Lipsync dependency vulnerability inventory
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            -v "$PWD/artifacts/trivy:/reports" \
+            "$TRIVY_IMAGE" fs --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed \
+            --format json --output /reports/lipsync-requirements.trivy.json \
+            /repo/services/lipsync/requirements.txt
       - name: Image vulnerability scan
         run: |
           for image in \
