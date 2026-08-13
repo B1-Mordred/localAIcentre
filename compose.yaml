@@ -51,6 +51,7 @@ services:
               "models/runtime-views/localai",
               "models/runtime-views/comfyui",
               "models/runtime-views/voicebox",
+              "models/runtime-views/lipsync",
               "models/runtime-views/audio-cpu",
               "workflows/acceptance",
               "artifacts/temporary",
@@ -163,6 +164,11 @@ services:
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
       B1_OPEN_WEBUI_SECRET_KEY_FILE: /run/secrets/open_webui_secret_key
       ENABLE_OPENAI_API: "true"
+      # Long-running GPU generations can outlive a browser WebSocket session.
+      # Socket.IO polling keeps completion events live across reconnects.
+      ENABLE_WEBSOCKET_SUPPORT: "false"
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_SESSION_INFO_HEADER_CHAT_ID: X-B1-OpenWebUI-Chat-Id
       ENABLE_PERSISTENT_CONFIG: "false"
       ENABLE_OAUTH_PERSISTENT_CONFIG: "false"
       ENABLE_OLLAMA_API: "false"
@@ -172,6 +178,10 @@ services:
       ENABLE_SIGNUP: "false"
       DEFAULT_MODELS: ${B1_OPEN_WEBUI_DEFAULT_MODELS:-chat-default}
       DEFAULT_PINNED_MODELS: ${B1_OPEN_WEBUI_DEFAULT_PINNED_MODELS:-chat-default}
+      # Titles, tags, follow-up suggestions, and query generation must not
+      # occupy or queue behind the parallel-one P40 worker.
+      TASK_MODEL: ${B1_OPEN_WEBUI_TASK_MODEL:-chat-fast}
+      TASK_MODEL_EXTERNAL: ${B1_OPEN_WEBUI_TASK_MODEL_EXTERNAL:-chat-fast}
       RAG_EMBEDDING_ENGINE: openai
       RAG_EMBEDDING_MODEL: ${B1_OPEN_WEBUI_RAG_EMBEDDING_MODEL:-embedding-default}
       RAG_EMBEDDING_MODEL_AUTO_UPDATE: "false"
@@ -189,13 +199,25 @@ services:
       ENABLE_IMAGE_GENERATION: "false"
       ENABLE_IMAGE_EDIT: "false"
       USER_PERMISSIONS_FEATURES_IMAGE_GENERATION: "false"
-      ENABLE_WEB_SEARCH: "false"
+      # Shared search is executed by the internal SearXNG service. Model
+      # runtimes remain isolated from direct Internet access.
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://tool-search:8080/search
+      WEB_SEARCH_RESULT_COUNT: "5"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "2"
+      WEB_LOADER_ENGINE: firecrawl
+      FIRECRAWL_API_BASE_URL: http://tool-firecrawl:3002
+      FIRECRAWL_API_KEY: ""
+      WEB_FETCH_MAX_CONTENT_LENGTH: "200000"
       ENABLE_LOCAL_WEB_FETCH: "false"
       WEB_SEARCH_TRUST_ENV: "false"
-      USER_PERMISSIONS_FEATURES_WEB_SEARCH: "false"
+      USER_PERMISSIONS_FEATURES_WEB_SEARCH: "true"
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_EVALUATION_ARENA_MODELS: "false"
       ENABLE_VERSION_UPDATE_CHECK: "false"
+      # Prevents update/model downloads; web search still uses the explicitly
+      # configured internal SearXNG endpoint above.
       OFFLINE_MODE: "true"
       ENABLE_OTEL: "false"
       ENABLE_OTEL_TRACES: "false"
@@ -210,6 +232,8 @@ services:
       bootstrap:
         condition: service_completed_successfully
       control-plane:
+        condition: service_healthy
+      tool-firecrawl:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)\nPY"]
@@ -232,14 +256,27 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       B1_ADMIN_BOOTSTRAP_KEY_FILE: /run/secrets/admin_bootstrap_key
       B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
-      B1_OPEN_WEBUI_DEFAULT_B1_TOOLS: ${B1_OPEN_WEBUI_DEFAULT_B1_TOOLS:-}
+      B1_OPEN_WEBUI_DEFAULT_B1_TOOLS: ${B1_OPEN_WEBUI_DEFAULT_B1_TOOLS:-web_search,web_fetch}
       B1_MASTER_KEY_FILE: /run/secrets/master_encryption_key
       B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
       B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_LAN_LOCALAI_WORKER_URL: ${B1_LAN_LOCALAI_WORKER_URL:-}
+      B1_LAN_LOCALAI_WORKER_HOSTNAME: ${B1_LAN_LOCALAI_WORKER_HOSTNAME:-}
+      B1_LAN_LOCALAI_WORKER_ALLOWED_CIDRS: ${B1_LAN_LOCALAI_WORKER_ALLOWED_CIDRS:-}
+      B1_LAN_LOCALAI_WORKER_TLS_CA_FILE: ${B1_LAN_LOCALAI_WORKER_TLS_CA_FILE:-}
+      B1_LAN_DEEPSEEK_WORKER_URL: ${B1_LAN_DEEPSEEK_WORKER_URL:-}
+      B1_LAN_DEEPSEEK_WORKER_HOSTNAME: ${B1_LAN_DEEPSEEK_WORKER_HOSTNAME:-}
+      B1_LAN_DEEPSEEK_WORKER_ALLOWED_CIDRS: ${B1_LAN_DEEPSEEK_WORKER_ALLOWED_CIDRS:-}
+      B1_LAN_DEEPSEEK_WORKER_TLS_CA_FILE: ${B1_LAN_DEEPSEEK_WORKER_TLS_CA_FILE:-}
+      B1_LAN_P40_MEDIA_URL: ${B1_LAN_P40_MEDIA_URL:-}
+      B1_LAN_P40_MEDIA_HOSTNAME: ${B1_LAN_P40_MEDIA_HOSTNAME:-}
+      B1_LAN_P40_MEDIA_ALLOWED_CIDRS: ${B1_LAN_P40_MEDIA_ALLOWED_CIDRS:-}
+      B1_LAN_P40_MEDIA_TLS_CA_FILE: ${B1_LAN_P40_MEDIA_TLS_CA_FILE:-}
       REDIS_URL: redis://redis:6379/0
       LOCALAI_URL: http://localai:8000
       COMFYUI_URL: http://comfyui:8000
       VOICEBOX_URL: http://voicebox:8000
+      LIPSYNC_URL: http://lipsync:8000
       AUDIO_CPU_URL: http://audio-cpu:8000
       ARTIFACT_BASE_URL: http://artifact-server:8000
       RUNTIME_AGENT_URL: ${RUNTIME_AGENT_URL:-https://runtime-agent:8443}
@@ -274,6 +311,7 @@ services:
       B1_COMFY_PROMPT_IDLE_GRACE_SECONDS: ${B1_COMFY_PROMPT_IDLE_GRACE_SECONDS:-5}
       B1_MODEL_DOWNLOAD_RUNNER_ENABLED: ${B1_MODEL_DOWNLOAD_RUNNER_ENABLED:-true}
       B1_MODEL_DOWNLOAD_RUNNER_INTERVAL_SECONDS: ${B1_MODEL_DOWNLOAD_RUNNER_INTERVAL_SECONDS:-2}
+      B1_MODEL_DOWNLOAD_REQUEST_TIMEOUT_SECONDS: ${B1_MODEL_DOWNLOAD_REQUEST_TIMEOUT_SECONDS:-900}
       B1_GPU_TOTAL_VRAM_GIB: ${B1_GPU_TOTAL_VRAM_GIB:-6}
       B1_GPU_USABLE_VRAM_GIB: ${B1_GPU_USABLE_VRAM_GIB:-5}
       B1_GPU_RESERVE_VRAM_GIB: ${B1_GPU_RESERVE_VRAM_GIB:-1}
@@ -298,7 +336,7 @@ services:
       B1_MODEL_TOOLS_MAX_RESULT_CHARS: ${B1_MODEL_TOOLS_MAX_RESULT_CHARS:-12000}
       B1_MODEL_TOOLS_MAX_SEARCH_RESULTS: ${B1_MODEL_TOOLS_MAX_SEARCH_RESULTS:-5}
       B1_MODEL_TOOLS_TIMEOUT_SECONDS: ${B1_MODEL_TOOLS_TIMEOUT_SECONDS:-12}
-      B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE: ${B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE:-https://duckduckgo.com/html/?q={query}}
+      B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE: ${B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE:-http://tool-search:8080/search?q={query}&format=json}
       B1_OPENAI_COMPATIBLE_BASE_URL: ${B1_OPENAI_COMPATIBLE_BASE_URL:-}
       B1_OPENAI_COMPATIBLE_API_KEY_FILE: ${B1_OPENAI_COMPATIBLE_API_KEY_FILE:-}
       B1_GENERIC_HTTP_BASE_URL: ${B1_GENERIC_HTTP_BASE_URL:-}
@@ -331,6 +369,7 @@ services:
       B1_SELF_TEST_TLS_GATEWAY_PORT: ${B1_SELF_TEST_TLS_GATEWAY_PORT:-443}
       B1_SELF_TEST_TINY_INFERENCE_ENABLED: ${B1_SELF_TEST_TINY_INFERENCE_ENABLED:-true}
       B1_SELF_TEST_UNLOAD_RUNTIME: ${B1_SELF_TEST_UNLOAD_RUNTIME:-localai}
+      B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER: ${B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -412,8 +451,8 @@ services:
     group_add:
       - "${B1_DOCKER_GID:-0}"
     environment:
-      B1_ALLOWED_SERVICES: control-plane,localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway
-      B1_RUNTIME_ACTION_SERVICES: ${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,audio-cpu}
+      B1_ALLOWED_SERVICES: control-plane,localai,comfyui,voicebox,lipsync,audio-cpu,artifact-server,open-webui,gateway
+      B1_RUNTIME_ACTION_SERVICES: ${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu}
       B1_ENABLE_MUTATIONS: ${B1_ENABLE_MUTATIONS:-false}
       B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE: ${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}
       B1_RUNTIME_AGENT_TOKEN_FILE: /run/secrets/runtime_agent_token
@@ -429,7 +468,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: ${B1_RUNTIME_AGENT_NVIDIA_DRIVER_CAPABILITIES:-utility}
       B1_COMPOSE_PROJECT: ${B1_PROJECT_NAME:-b1-ai-hub}
       B1_METRIC_PATHS: /srv/b1-ai-hub,/tmp
-      B1_ROLLBACK_SERVICES: ${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway}
+      B1_ROLLBACK_SERVICES: ${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu,artifact-server,open-webui,gateway}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -444,6 +483,212 @@ services:
     healthcheck:
       <<: *python-health
       test: ["CMD", "python", "-m", "app.healthcheck"]
+
+  tool-search:
+    image: searxng/searxng@sha256:5d6d903ab82afa56ee32792d477f36bc63d3e5ca04fcb6947e28a5cfd987fad3
+    <<: *service-defaults
+    read_only: true
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - app
+      - egress
+    healthcheck:
+      test: ["CMD-SHELL", "python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)\nPY"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Firecrawl is reachable only from the private application network. Its
+  # browser and HTTP fetchers have no direct default route: all external
+  # traffic is forced through tool-web-egress, whose destination ACL rejects
+  # loopback, link-local, Docker, LAN, tailnet, and other non-public ranges.
+  tool-firecrawl:
+    image: ghcr.io/firecrawl/firecrawl@sha256:1b9a8c673f4adf174f01ed377f434a09881af2e37a4f3a6fe5e1c8938c049c09
+    <<: *service-defaults
+    read_only: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3002"
+      EXTRACT_WORKER_PORT: "3004"
+      WORKER_PORT: "3005"
+      ENV: local
+      USE_DB_AUTHENTICATION: "false"
+      REDIS_URL: redis://tool-firecrawl-redis:6379
+      REDIS_RATE_LIMIT_URL: redis://tool-firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://tool-firecrawl-playwright:3000/scrape
+      POSTGRES_HOST: tool-firecrawl-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${B1_FIRECRAWL_POSTGRES_PASSWORD:?set B1_FIRECRAWL_POSTGRES_PASSWORD}
+      NUQ_RABBITMQ_URL: amqp://tool-firecrawl-rabbitmq:5672
+      PROXY_SERVER: http://tool-web-egress:3128
+      # Firecrawl sees the mandatory proxy's internal address as its peer.
+      # Destination safety is enforced after proxy-side DNS resolution by the
+      # Squid ACL; Firecrawl itself has no network path around that proxy.
+      ALLOW_LOCAL_WEBHOOKS: "true"
+      NUM_WORKERS_PER_QUEUE: "1"
+      CRAWL_CONCURRENT_REQUESTS: "2"
+      MAX_CONCURRENT_JOBS: "2"
+      BROWSER_POOL_SIZE: "1"
+      LOGGING_LEVEL: INFO
+    command: ["node", "dist/src/harness.js", "--start-docker"]
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    networks:
+      - app
+      - web-fetch
+    depends_on:
+      tool-firecrawl-postgres:
+        condition: service_healthy
+      tool-firecrawl-redis:
+        condition: service_healthy
+      tool-firecrawl-rabbitmq:
+        condition: service_healthy
+      tool-firecrawl-playwright:
+        condition: service_healthy
+      tool-web-egress:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3002/v0/health/readiness >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  tool-firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service@sha256:150da5ef39e3aebc322c25f968506ea288042e3b4a5214ae38c18b58a3e941be
+    restart: unless-stopped
+    user: node
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      PORT: "3000"
+      PROXY_SERVER: http://tool-web-egress:3128
+      ALLOW_LOCAL_WEBHOOKS: "true"
+      BLOCK_MEDIA: "true"
+      MAX_CONCURRENT_PAGES: "2"
+    command: ["node", "dist/api.js"]
+    cpus: 1.5
+    mem_limit: 2G
+    memswap_limit: 2G
+    tmpfs:
+      - /tmp:size=1g,noexec,nosuid,nodev
+      - /home/node/.cache:size=512m,uid=1000,gid=1000,mode=0750,noexec,nosuid,nodev
+    networks:
+      - web-fetch
+    depends_on:
+      tool-web-egress:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  tool-firecrawl-redis:
+    image: redis:8.2.1-alpine@sha256:f887e6dacdcfa8e14af2f625fdf4474ff8c37dc36ce13b9e89e6e9a901f155ad
+    <<: *service-defaults
+    read_only: true
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  tool-firecrawl-rabbitmq:
+    image: rabbitmq:4.1.3-alpine@sha256:b529562dde42f1993a0013da03158bc8f6727582e6dd132f41ef218c94aaecd8
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit disk_free_limit 2147483648
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/firecrawl/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 20s
+      timeout: 8s
+      retries: 10
+      start_period: 30s
+
+  tool-firecrawl-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres@sha256:4ca6718b2cef40404b046db5cd37ae45db3e44d1a5750c80522f3587a5b193d5
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${B1_FIRECRAWL_POSTGRES_PASSWORD:?set B1_FIRECRAWL_POSTGRES_PASSWORD}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/firecrawl/postgres:/var/lib/postgresql/data
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  tool-web-egress:
+    image: ubuntu/squid:6.13-25.04_beta@sha256:7e2987a8a2717fca698b76777c7ef286ef256b3cf9f3ce8b3f45b6b4306105bd
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    read_only: true
+    volumes:
+      - ./deploy/firecrawl/squid.conf:/etc/squid/squid.conf:ro
+    tmpfs:
+      - /run:size=16m,nosuid,nodev
+      - /var/log/squid:size=32m,uid=13,gid=13,mode=0750,noexec,nosuid,nodev
+      - /var/spool/squid:size=32m,uid=13,gid=13,mode=0750,noexec,nosuid,nodev
+    networks:
+      - web-fetch
+      - egress
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k parse -f /etc/squid/squid.conf >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   localai:
     build:
@@ -511,6 +756,39 @@ services:
       <<: *python-health
       test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
 
+  lipsync:
+    build:
+      context: ./services/lipsync
+    <<: *service-defaults
+    read_only: true
+    gpus: all
+    labels:
+      b1.ai-hub.runtime: lipsync
+      b1.ai-hub.runtime.kind: musetalk
+      b1.ai-hub.placeholder: "false"
+    environment:
+      B1_LIPSYNC_RUNTIME_VERSION: ${B1_LIPSYNC_RUNTIME_VERSION:-b1-lipsync-musetalk/v0.1.0-b1}
+      B1_LIPSYNC_MODEL_ROOT: /srv/b1-ai-hub/models
+      B1_LIPSYNC_CACHE_ROOT: /srv/b1-ai-hub/cache
+      B1_MUSETALK_COMMIT: ${B1_MUSETALK_COMMIT:-0a89dec45a0192b824e3cf4daf96c239440c5ed8}
+      B1_MUSETALK_UNET_SHA256: ${B1_MUSETALK_UNET_SHA256:-}
+      B1_MUSETALK_UNET_CONFIG_SHA256: ${B1_MUSETALK_UNET_CONFIG_SHA256:-}
+      B1_LIPSYNC_REQUEST_TIMEOUT_SECONDS: ${B1_LIPSYNC_REQUEST_TIMEOUT_SECONDS:-1800}
+      B1_LIPSYNC_MAX_INPUT_BYTES: ${B1_LIPSYNC_MAX_INPUT_BYTES:-268435456}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
+      NVIDIA_VISIBLE_DEVICES: ${B1_LIPSYNC_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${B1_LIPSYNC_NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/lipsync:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/lipsync:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    networks:
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
   audio-cpu:
     build:
       context: ./services/audio-cpu
@@ -546,7 +824,7 @@ services:
       B1_VOSK_STT_MAX_AUDIO_BYTES: ${B1_VOSK_STT_MAX_AUDIO_BYTES:-26214400}
       B1_VOSK_STT_MAX_AUDIO_SECONDS: ${B1_VOSK_STT_MAX_AUDIO_SECONDS:-1800}
       B1_VOSK_STT_WORDS: ${B1_VOSK_STT_WORDS:-true}
-      B1_VOSK_STT_LANGUAGE: ${B1_VOSK_STT_LANGUAGE:-en-us}
+      B1_VOSK_STT_LANGUAGE: ${B1_VOSK_STT_LANGUAGE:-de}
       B1_VOSK_STT_MODEL_PATH: ${B1_VOSK_STT_MODEL_PATH:-}
       B1_CPU_AUDIO_MAX_TEXT_CHARS: ${B1_CPU_AUDIO_MAX_TEXT_CHARS:-4000}
       B1_CPU_RESIDENCY_ENABLED: ${B1_CPU_RESIDENCY_ENABLED:-true}
@@ -657,5 +935,7 @@ networks:
   data:
     internal: true
   runtime:
+    internal: true
+  web-fetch:
     internal: true
   egress: {}

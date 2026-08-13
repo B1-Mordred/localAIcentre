@@ -1,0 +1,26 @@
+{
+  "schema_version": "b1-p40-media-artifact-set/v1",
+  "id": "seated-v4",
+  "published_at": "2026-08-10T06:10:00Z",
+  "purpose": "Approved six-character DialectiCore studio panel with BiRefNet robot matting",
+  "inherits": "seated-v3",
+  "matte_model": {
+    "id": "birefnet-general-lite",
+    "revision": "rembg-v0.0.0",
+    "sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+    "size_bytes": 224005088,
+    "runtime": "CPUExecutionProvider"
+  },
+  "production_gates": {
+    "approved_seated_character_count": 6,
+    "panel_job_id": "job_470f2781e3244a1794e3f7dbdada1290",
+    "panel_sha256": "5eb40a570af88eb6f195ed89609514dc9bbafc9b79b5d965a9289a8abe56cf2e",
+    "wide_lipsync_job_id": "job_4b6438bf321d4818b157b4a8f28a8a88",
+    "speaker_medium_lipsync_job_id": "job_31ce1aaf7b704db8bdf7f63756605fae"
+  },
+  "qualification": {
+    "status": "approved_with_robot_face_tracker_limitation",
+    "production_aliases_enabled": true,
+    "limitation": "MuseTalk internal face detection rejects Grok's dark face in the panel crop; failed clips remain retryable and never use a static fallback"
+  }
+}

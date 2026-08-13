@@ -509,6 +509,18 @@ class FakeRuntimeControlRunner:
         await self._record("unload_other_gpu_runtimes", job)
         return [{"status": "ok"}]
 
+    async def unload_gpu_runtimes_for_job(self, job: dict[str, Any]) -> list[dict[str, Any] | None]:
+        return await self.unload_other_gpu_runtimes(job)
+
+    async def current_runtime_state_by_name(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+    def runtime_state_has_active_model(self, state: dict[str, Any] | None) -> bool:
+        return False
+
+    def runtime_state_matches_job_model(self, state: dict[str, Any] | None, job: dict[str, Any]) -> bool:
+        return False
+
     async def verify_vram_or_recover(self, job: dict[str, Any]) -> None:
         await self._record("verify_vram_or_recover", job)
 
@@ -890,9 +902,11 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 401)
         self.assertEqual(fake.jobs, {})
 
-    def test_prompt_rejects_production_hardware_policy_before_job_creation(self) -> None:
+    def test_prompt_checks_production_hardware_policy_after_scheduler_cleanup(self) -> None:
         fake = FakeDatabase()
         main.database = fake
+        runner = FakeRuntimeControlRunner()
+        main.runtime_control_runner = lambda lease_ttl_seconds=None: runner  # type: ignore[assignment]
         main.settings = replace(
             main.settings,
             runtime_deployment_mode="production",
@@ -926,7 +940,7 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
             )
 
         async def fail_proxy(*_: Any, **__: Any) -> Response:
-            raise AssertionError("hardware admission failure must not forward to ComfyUI")
+            raise AssertionError("hardware admission failure after cleanup must not forward to ComfyUI")
 
         main.runtime_agent_get = runtime_agent_get  # type: ignore[assignment]
         main.proxy_http_bytes = fail_proxy  # type: ignore[assignment]
@@ -944,8 +958,10 @@ class ComfyUiCompatibilityTests(unittest.TestCase):
         self.assertEqual(check["name"], "hardware:resource-policy")
         self.assertEqual(check["status"], "failed")
         self.assertIn("largest GPU VRAM is 6144 MiB", check["detail"])
-        self.assertEqual(fake.jobs, {})
-        self.assertEqual(fake.leases, [])
+        self.assertEqual(len(fake.jobs), 1)
+        self.assertEqual(len(fake.leases), 1)
+        self.assertEqual(len(fake.releases), 1)
+        self.assertEqual(runner.calls, ["unload_other_gpu_runtimes", "verify_vram_or_recover"])
 
     def test_model_free_smoke_prompt_bypasses_hardware_admission_but_keeps_scheduler_lease(self) -> None:
         fake = FakeDatabase()

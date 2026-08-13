@@ -22,7 +22,7 @@
       "aliases": ["chat-quality"],
       "modality": "llm",
       "operations": ["chat"],
-      "preferred_runtimes": ["localai"],
+      "preferred_runtimes": ["lan-localai-worker", "localai"],
       "target_class": "12-14B Q4 model with conservative context or CPU offload",
       "selection_guidance": "Use only after install planning and smoke measurements confirm that the model can preserve the configured VRAM and host RAM reserves.",
       "resource_estimate": { "vram_gib": 11.0, "ram_gib": 14.0, "disk_gib": 14.0, "context_tokens": 8192 },
@@ -117,7 +117,7 @@
       "target_resource_label": "recommended",
       "runtime_policy": "cpu-resident",
       "default_limits": { "cpu_resident_allowed": true },
-      "candidate_manifest_ids": ["b1-vosk-small-en-us-0.15"]
+      "candidate_manifest_ids": ["b1-vosk-small-de-0.15"]
     },
     {
       "id": "sdxl-low-vram-image-workflow",
@@ -134,19 +134,19 @@
       "default_limits": { "maximum_resolution": "1024x1024", "maximum_batch_size": 1, "maximum_steps": 30 }
     },
     {
-      "id": "hunyuanvideo-1.5-native-comfyui-workflow",
-      "display_name": "HunyuanVideo 1.5 Native ComfyUI Workflow",
-      "aliases": ["video-text", "video-image"],
+      "id": "short-video-6gb-sequence-workflow",
+      "display_name": "Wan 2.1 1.3B Low-VRAM ComfyUI Workflow",
+      "aliases": ["video-text"],
       "modality": "video",
-      "operations": ["video-generation", "image-to-video"],
+      "operations": ["video-generation"],
       "preferred_runtimes": ["comfyui"],
-      "target_class": "native ComfyUI HunyuanVideo-1.5 480p FP8 distilled workflow",
-      "selection_guidance": "Use the Comfy-Org HunyuanVideo-1.5 480p FP8 repackaged weights with native ComfyUI core nodes. This model is installed for native compatibility and upgrade readiness, but it exceeds the current 6 GB VRAM host and should be run only with explicit operator acceptance of offload/experimental behavior until measured successfully on upgraded hardware.",
-      "resource_estimate": { "vram_gib": 24.0, "ram_gib": 32.0, "disk_gib": 28.14, "max_resolution": "480p", "max_frames": 129 },
-      "target_resource_label": "offload-required",
+      "target_class": "native ComfyUI Wan 2.1 1.3B text-to-video workflow with CPU UMT5 offload",
+      "selection_guidance": "Install the pinned Comfy-Org Wan 2.1 1.3B manifest and run the bounded low-VRAM smoke before exposing video-text. HunyuanVideo remains upgrade-only on this 6 GB host.",
+      "resource_estimate": { "vram_gib": 5.0, "ram_gib": 14.0, "disk_gib": 9.2, "max_resolution": "512x288", "max_frames": 49 },
+      "target_resource_label": "experimental",
       "runtime_policy": "comfyui-workflow",
-      "default_limits": { "maximum_resolution": "480p", "maximum_batch_size": 1, "maximum_frames": 129, "maximum_duration_seconds": 5, "maximum_steps": 6 },
-      "candidate_manifest_ids": ["b1-comfy-org-hunyuanvideo-1.5-480p-fp8-comfyui"]
+      "default_limits": { "maximum_resolution": "512x288", "maximum_batch_size": 1, "maximum_frames": 49, "maximum_duration_seconds": 7, "maximum_steps": 12 },
+      "candidate_manifest_ids": ["b1-comfy-org-wan2.1-t2v-1.3b-comfyui"]
     }
   ]
 }

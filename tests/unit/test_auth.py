@@ -39,6 +39,12 @@ class AuthTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scopes_for_role(Role.SERVICE, ["admin:write"])
 
+    def test_operator_role_can_run_inference_without_admin_scope(self) -> None:
+        scopes = scopes_for_role(Role.OPERATOR, ["jobs:write", "inference:write"])
+        self.assertEqual(scopes, frozenset({"jobs:write", "inference:write"}))
+        with self.assertRaises(ValueError):
+            scopes_for_role(Role.OPERATOR, ["admin:write"])
+
     def test_admin_can_receive_wildcard_scope(self) -> None:
         self.assertEqual(scopes_for_role(Role.ADMIN), frozenset({"*"}))
 

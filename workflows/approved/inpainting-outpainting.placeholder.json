@@ -1,57 +1,14 @@
 {
-  "id": "inpainting-outpainting",
-  "version": "0.1.0",
-  "display_name": "Inpainting and Outpainting",
-  "description": "Safe placeholder workflow definition for masked image edits.",
-  "modality": "image",
-  "operation": "edit",
-  "model_alias": "image-edit",
-  "backend_policy": "comfyui-only",
-  "runtime_policy": "any",
-  "output_mime_types": ["image/png"],
-  "workflow_json": {},
-  "input_schema": {
-    "type": "object",
-    "required": ["source_image", "mask_image", "prompt"],
-    "properties": {
-      "source_image": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" },
-      "mask_image": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" },
-      "prompt": { "type": "string", "minLength": 1, "maxLength": 2000 },
-      "mode": { "type": "string", "enum": ["inpaint", "outpaint"], "default": "inpaint" },
-      "steps": { "type": "integer", "minimum": 1, "maximum": 40, "default": 20 },
-      "seed": { "type": "integer", "minimum": 0, "default": 0 }
-    },
-    "additionalProperties": false
+  "id": "inpainting-outpainting", "version": "1.0.0", "display_name": "SD 1.5 Masked Inpainting", "description": "Bounded native ComfyUI masked SD 1.5 inpainting workflow. The mask controls the editable region; use Media Studio canvas expansion before submission for outpainting.",
+  "modality": "image", "operation": "edit", "model_alias": "image-edit", "backend_policy": "comfyui-only", "runtime_policy": "any", "output_mime_types": ["image/png"],
+  "workflow_json": {
+    "10": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd-v1-5-pruned-emaonly-b1.safetensors"}}, "11": {"class_type": "LoadImage", "inputs": {"image": "{{source_image_filename}}"}}, "12": {"class_type": "LoadImageMask", "inputs": {"image": "{{mask_image_filename}}", "channel": "alpha"}},
+    "20": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["10", 1]}}, "21": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["10", 1]}},
+    "30": {"class_type": "VAEEncodeForInpaint", "inputs": {"pixels": ["11", 0], "mask": ["12", 0], "vae": ["10", 2], "grow_mask_by": "{{grow_mask_by}}"}},
+    "40": {"class_type": "KSampler", "inputs": {"model": ["10", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "normal", "positive": ["20", 0], "negative": ["21", 0], "latent_image": ["30", 0], "denoise": 1}},
+    "50": {"class_type": "VAEDecode", "inputs": {"samples": ["40", 0], "vae": ["10", 2]}}, "60": {"class_type": "SaveImage", "inputs": {"images": ["50", 0], "filename_prefix": "b1-media-studio/sd15/inpaint"}}
   },
-  "presets": [
-    {
-      "id": "clean-inpaint",
-      "display_name": "Clean inpaint",
-      "description": "Fill the masked area with a bounded local edit.",
-      "values": {
-        "prompt": "cleanly fill the masked area",
-        "mode": "inpaint",
-        "steps": 20,
-        "seed": 0
-      }
-    }
-  ],
-  "output_schema": {
-    "type": "object",
-    "properties": {
-      "images": { "type": "array", "items": { "type": "string" } }
-    }
-  },
-  "resource_class": "rtx3060-32gb",
-  "dependencies": [
-    { "type": "runtime", "id": "comfyui" },
-    { "type": "model", "id": "image-edit" }
-  ],
-  "limits": {
-    "max_width": 1024,
-    "max_height": 1024,
-    "max_steps": 40,
-    "max_batch_size": 1
-  },
-  "visibility_roles": ["admin", "operator", "creator"]
+  "input_schema": {"type": "object", "required": ["source_image", "mask_image", "prompt"], "properties": {"source_image": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"}, "mask_image": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"}, "prompt": {"type": "string", "minLength": 1, "maxLength": 2000}, "negative_prompt": {"type": "string", "maxLength": 2000, "default": "text, watermark, logo, blurry, low quality"}, "mode": {"type": "string", "enum": ["inpaint", "outpaint"], "default": "inpaint"}, "grow_mask_by": {"type": "integer", "minimum": 0, "maximum": 32, "default": 6}, "steps": {"type": "integer", "minimum": 1, "maximum": 30, "default": 20}, "cfg": {"type": "number", "minimum": 1, "maximum": 12, "default": 7}, "seed": {"type": "integer", "minimum": 0, "default": 20260728}}, "additionalProperties": false},
+  "presets": [{"id": "low-vram-inpaint", "display_name": "Low-VRAM Inpaint", "description": "Fast masked SD 1.5 inpaint proof.", "values": {"prompt": "replace the masked area with a small red flower", "negative_prompt": "text, watermark, logo, blurry", "mode": "inpaint", "grow_mask_by": 4, "steps": 2, "cfg": 5, "seed": 20260728}}],
+  "output_schema": {"type": "object", "properties": {"images": {"type": "array", "items": {"type": "string"}}}}, "resource_class": "rtx3060-laptop-6gb-32gb", "dependencies": [{"type": "runtime", "id": "comfyui"}, {"type": "model", "id": "image-edit"}], "limits": {"max_steps": 30, "max_batch_size": 1}, "visibility_roles": ["admin", "operator", "creator", "user", "service"]
 }

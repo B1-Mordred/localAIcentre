@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+
+from starlette.datastructures import FormData, Headers, UploadFile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +47,15 @@ class FakeRequest:
 
     async def stream(self):
         yield self._body
+
+
+class FakeMultipartRequest(FakeRequest):
+    def __init__(self, form: FormData) -> None:
+        super().__init__(body=b"", headers={"content-type": "multipart/form-data; boundary=b1"})
+        self._form = form
+
+    async def form(self) -> FormData:
+        return self._form
 
 
 WAV_BYTES = (
@@ -488,6 +500,97 @@ class AudioSpeechApiTests(unittest.TestCase):
         self.assertEqual(payload["audio_mime_type"], "audio/wav")
         self.assertEqual(base64.b64decode(payload["audio"].encode("ascii")), WAV_BYTES)
         self.assertEqual(payload["filename"], "../sample.wav")
+
+    def test_multipart_audio_transcription_preserves_named_wav_part(self) -> None:
+        upload = UploadFile(
+            filename="dialogue.wav",
+            file=io.BytesIO(WAV_BYTES),
+            headers=Headers({"content-type": "audio/wav"}),
+        )
+        request = FakeMultipartRequest(
+            FormData(
+                [
+                    ("file", upload),
+                    ("model", "stt-default"),
+                    ("language", "de"),
+                    ("response_format", "verbose_json"),
+                ]
+            )
+        )
+
+        payload = asyncio.run(main.transcription_input_from_request(request))
+
+        self.assertEqual(payload["audio_mime_type"], "audio/wav")
+        self.assertEqual(base64.b64decode(payload["audio"].encode("ascii")), WAV_BYTES)
+        self.assertEqual(payload["filename"], "dialogue.wav")
+        self.assertEqual(payload["model"], "stt-default")
+        self.assertEqual(payload["language"], "de")
+        self.assertEqual(payload["response_format"], "verbose_json")
+
+    def test_raw_audio_transcription_accepts_valid_riff_with_trailing_bytes(self) -> None:
+        trailing_wav = WAV_BYTES + b"B1-CAPTURE-METADATA"
+        request = FakeRequest(body=trailing_wav, headers={"content-type": "application/octet-stream"})
+
+        payload = asyncio.run(main.transcription_input_from_request(request))
+
+        self.assertEqual(payload["audio_mime_type"], "audio/wav")
+        self.assertEqual(base64.b64decode(payload["audio"].encode("ascii")), trailing_wav)
+
+    def test_raw_audio_transcription_accepts_streaming_wav_with_unknown_riff_size(self) -> None:
+        # Streaming TTS can emit a RIFF/WAVE header before its final byte size
+        # is known. The bounded received file still contains valid PCM chunks.
+        streaming_wav = WAV_BYTES[:4] + b"\xff\xff\xff\xff" + WAV_BYTES[8:40] + b"\xff\xff\xff\xff" + WAV_BYTES[44:]
+        request = FakeRequest(body=streaming_wav, headers={"content-type": "audio/wav"})
+
+        payload = asyncio.run(main.transcription_input_from_request(request))
+
+        self.assertEqual(payload["audio_mime_type"], "audio/wav")
+        self.assertEqual(base64.b64decode(payload["audio"].encode("ascii")), streaming_wav)
+
+    def test_native_voicebox_stream_resolves_managed_profile_to_bridge(self) -> None:
+        profile = {
+            "id": "vp_managed_voice",
+            "runtime": "voicebox",
+            "engine": "chatterbox",
+            "model_alias": "tts-quality",
+            "profile_type": "clone",
+            "metadata": {},
+            "sample_artifacts": [],
+        }
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
+
+        async def voice_profile_for_inference(payload: dict[str, Any], received_auth: Any) -> dict[str, Any]:
+            self.assertEqual(payload, {"voice_profile_id": "vp_managed_voice"})
+            self.assertIs(received_auth, auth)
+            return profile
+
+        self.patch_attr("voice_profile_for_inference", voice_profile_for_inference)
+        upstream_path, upstream_body = asyncio.run(
+            main.prepare_native_voicebox_request(
+                "generate/stream",
+                FakeRequest({"profile_id": "vp_managed_voice", "text": "Hallo", "engine": "chatterbox"}),
+                json.dumps({"profile_id": "vp_managed_voice", "text": "Hallo", "engine": "chatterbox"}).encode("utf-8"),
+                auth,
+            )
+        )
+
+        self.assertEqual(upstream_path, "v1/audio/speech")
+        forwarded = json.loads(upstream_body)
+        self.assertEqual(forwarded["voice"], "vp_managed_voice")
+        self.assertEqual(forwarded["b1_voice_profile"]["id"], "vp_managed_voice")
+        self.assertNotIn("profile_id", forwarded)
+        self.assertEqual(forwarded["text"], "Hallo")
+
+    def test_native_voicebox_stream_preserves_upstream_profile_uuid(self) -> None:
+        request = FakeRequest({"profile_id": "bd4e9bf1-482b-4900-97c1-48275d1ba28c", "text": "Hallo"})
+        body = asyncio.run(request.body())
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"inference:write"}))
+
+        upstream_path, upstream_body = asyncio.run(main.prepare_native_voicebox_request("generate/stream", request, body, auth))
+
+        self.assertEqual(upstream_path, "generate/stream")
+        self.assertEqual(json.loads(upstream_body), {"profile_id": "bd4e9bf1-482b-4900-97c1-48275d1ba28c", "text": "Hallo"})
+        self.assertTrue(main.is_native_voicebox_speech_request("generate/stream", "POST"))
 
     def test_raw_audio_transcription_rejects_spoofed_audio_content_type(self) -> None:
         for body in (b"not really audio", b"\x89PNG\r\n\x1a\n"):

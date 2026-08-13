@@ -45,5 +45,5 @@
     "max_height": 2048,
     "max_batch_size": 1
   },
-  "visibility_roles": ["admin", "operator", "creator", "user"]
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
 }

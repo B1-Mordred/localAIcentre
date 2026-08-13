@@ -1,0 +1,28 @@
+{
+  "schema_version": "b1-p40-media-artifact-set/v1",
+  "id": "seated-v3",
+  "published_at": "2026-08-10T00:00:00Z",
+  "purpose": "1280x720 seated robot character plates with seed-robust general-object matting",
+  "inherits": "seated-v1",
+  "models": [
+    {
+      "id": "birefnet-general-lite",
+      "revision": "rembg-v0.0.0",
+      "source": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+      "path": "comfyui/birefnet-general-lite/rembg-v0.0.0/matting/birefnet-general-lite.onnx",
+      "sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+      "md5": "4fab47adc4ff364be1713e97b7e66334",
+      "size_bytes": 224005088,
+      "execution_provider": "CPUExecutionProvider",
+      "license": "BiRefNet code MIT; model distributed by the official rembg model release"
+    }
+  ],
+  "qualification": {
+    "rejected_predecessor": "seated-v2",
+    "rejected_reason": "IS-Net retained a near-body halo on a second generated seed",
+    "current_frame_inference_seconds": 18.882,
+    "selected_matte": "birefnet-general-lite",
+    "status": "pending_live_robot_plate_visual_gate",
+    "production_aliases_enabled": false
+  }
+}

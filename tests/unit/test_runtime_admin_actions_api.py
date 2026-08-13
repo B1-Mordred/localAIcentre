@@ -62,9 +62,20 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
 
         class FakeRegistry:
             def adapter(self, runtime: str) -> Any:
-                if runtime == "localai":
-                    return SimpleNamespace(name="localai", external=False)
+                if runtime in {"localai", "lan-localai-worker"}:
+                    return SimpleNamespace(name=runtime, external=False)
                 return None
+
+        class FakeRunner:
+            async def unload_vram_release_check(self, runtime: str) -> tuple[bool, dict[str, Any]]:
+                return True, {"status": "ok", "memory_used_mib": 0, "reserve_mib": 1024}
+
+            def runtime_unload_payload(self, runtime: str, job: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+                return {"job_id": job["id"], "runtime": runtime, "model": str((state or {}).get("active_model") or "")}
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                agent_calls.append({"remote_runtime": runtime, "action": action, "payload": payload})
+                return agent_result
 
         self.patch_attr("authenticate", authenticate)
         self.patch_attr("runtime_agent_post", runtime_agent_post)
@@ -72,6 +83,7 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
             self.patch_attr("admin_graceful_runtime_unload", admin_graceful_runtime_unload)
         self.patch_attr("record_audit_event", record_audit_event)
         self.patch_attr("runtime_registry_snapshot", lambda: FakeRegistry())
+        self.patch_attr("runtime_control_runner", lambda: FakeRunner())
         self.patch_attr("database", FakeDatabase())
         return runtime_states, audit_events, agent_calls
 
@@ -111,6 +123,11 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
                         "service": "localai",
                         "action": "unload",
                         "strategy": "backend_shutdown",
+                    },
+                    "vram_verification": {
+                        "status": "ok",
+                        "memory_used_mib": 0,
+                        "reserve_mib": 1024,
                     },
                 },
             }
@@ -156,6 +173,25 @@ class RuntimeAdminActionApiTests(unittest.TestCase):
         self.assertEqual(result["runtime_agent"]["status"], "unsupported")
         self.assertEqual(runtime_states, [])
         self.assertEqual(audit_events[0]["event_type"], "runtime.unload_requested")
+
+    def test_lan_worker_cancel_uses_authenticated_runtime_hook(self) -> None:
+        _, audit_events, agent_calls = self.patch_common(
+            {"status": "ok", "runtime": "localai", "action": "cancel", "strategy": "backend_shutdown"}
+        )
+
+        result = asyncio.run(
+            main.admin_runtime_cancel(
+                "lan-localai-worker",
+                main.RuntimeActionRequest(reason="operator cancellation", timeout_seconds=12),
+                authorization="Bearer test",
+            )
+        )
+
+        self.assertEqual(result["runtime_agent"]["status"], "ok")
+        self.assertEqual(agent_calls[0]["remote_runtime"], "lan-localai-worker")
+        self.assertEqual(agent_calls[0]["action"], "cancel")
+        self.assertEqual(agent_calls[0]["payload"]["operation"], "cancel")
+        self.assertEqual(audit_events[0]["event_type"], "runtime.cancel_requested")
 
 
 if __name__ == "__main__":

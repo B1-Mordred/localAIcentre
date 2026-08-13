@@ -139,6 +139,32 @@
         "title": "ApiClientDefaultB1ToolsUpdateRequest",
         "type": "object"
       },
+      "ApiClientRoleUpdateRequest": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ApiClientRoleUpdateRequest",
+        "type": "object"
+      },
       "ArtifactRetentionRequest": {
         "properties": {
           "confirm": {
@@ -452,6 +478,22 @@
             "default": "chat-default",
             "title": "Model",
             "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
           },
           "runtime_policy": {
             "default": "any",
@@ -931,6 +973,30 @@
         "title": "JobState",
         "type": "string"
       },
+      "LanWorkerModelAdoptionRequest": {
+        "properties": {
+          "accept_license": {
+            "default": false,
+            "title": "Accept License",
+            "type": "boolean"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "title": "LanWorkerModelAdoptionRequest",
+        "type": "object"
+      },
       "MaintenanceUpdateRequest": {
         "properties": {
           "enabled": {
@@ -1037,6 +1103,22 @@
               }
             ],
             "title": "Preferred Runtime"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
           },
           "status": {
             "anyOf": [
@@ -1582,6 +1664,21 @@
           }
         },
         "title": "NetworkPolicyUpdateRequest",
+        "type": "object"
+      },
+      "OpenWebUIChatCancelRequest": {
+        "properties": {
+          "chat_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Chat Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "title": "OpenWebUIChatCancelRequest",
         "type": "object"
       },
       "OpenWebUiMigrationPlanCreate": {
@@ -3395,6 +3492,74 @@
         "summary": "Admin Api Client Default B1 Tools Update"
       }
     },
+    "/admin/api-clients/{client_id}/role": {
+      "put": {
+        "description": "Change a client role without rotating or exposing its credential.",
+        "operationId": "admin_api_client_role_update_admin_api_clients__client_id__role_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiClientRoleUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Api Client Role Update Admin Api Clients  Client Id  Role Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Api Client Role Update"
+      }
+    },
     "/admin/artifacts/cleanup": {
       "post": {
         "operationId": "admin_artifact_cleanup_admin_artifacts_cleanup_post",
@@ -4628,6 +4793,64 @@
         "summary": "Admin Job Get"
       }
     },
+    "/admin/jobs/{job_id}/approve-seated-character": {
+      "post": {
+        "description": "Record the mandatory visual acceptance of a generated seated plate.",
+        "operationId": "admin_approve_seated_character_admin_jobs__job_id__approve_seated_character_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Approve Seated Character Admin Jobs  Job Id  Approve Seated Character Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Approve Seated Character"
+      }
+    },
     "/admin/jobs/{job_id}/cancel": {
       "post": {
         "operationId": "admin_job_cancel_admin_jobs__job_id__cancel_post",
@@ -5771,6 +5994,64 @@
           }
         },
         "summary": "Admin Models"
+      }
+    },
+    "/admin/models/adopt-lan-worker": {
+      "post": {
+        "operationId": "admin_model_adopt_lan_worker_admin_models_adopt_lan_worker_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LanWorkerModelAdoptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Model Adopt Lan Worker Admin Models Adopt Lan Worker Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Model Adopt Lan Worker"
       }
     },
     "/admin/models/aliases/{alias_id}/policy": {
@@ -7771,6 +8052,73 @@
           }
         },
         "summary": "Admin External Runtime Configuration Set"
+      }
+    },
+    "/admin/runtimes/{runtime}/cancel": {
+      "post": {
+        "operationId": "admin_runtime_cancel_admin_runtimes__runtime__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runtime",
+            "required": true,
+            "schema": {
+              "title": "Runtime",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Runtime Cancel Admin Runtimes  Runtime  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Runtime Cancel"
       }
     },
     "/admin/runtimes/{runtime}/recover": {
@@ -10832,6 +11180,38 @@
               ],
               "title": "Authorization"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-B1-Agent-Conversation",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-B1-Agent-Conversation"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-B1-OpenWebUI-Chat-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-B1-Openwebui-Chat-Id"
+            }
           }
         ],
         "requestBody": {
@@ -11553,6 +11933,71 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/mpeg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/ogg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/wav": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "audio/x-wav": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "video/mp4": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "video/webm": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -11626,6 +12071,64 @@
           }
         },
         "summary": "List Models"
+      }
+    },
+    "/v1/open-webui/chat/cancel": {
+      "post": {
+        "operationId": "cancel_open_webui_chat_v1_open_webui_chat_cancel_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWebUIChatCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Open Webui Chat V1 Open Webui Chat Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Open Webui Chat"
       }
     },
     "/v1/responses": {

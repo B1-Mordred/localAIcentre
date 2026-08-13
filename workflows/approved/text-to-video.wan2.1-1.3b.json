@@ -1,0 +1,24 @@
+{
+  "id": "text-to-video-wan2.1-1.3b",
+  "version": "1.0.0",
+  "display_name": "Wan 2.1 1.3B Low-VRAM Text to Video",
+  "description": "Native ComfyUI Wan 2.1 text-to-video workflow for the 6 GB appliance. UMT5 stays on CPU and the workflow permits only a small, sequential clip.",
+  "modality": "video", "operation": "text-to-video", "model_alias": "video-text", "backend_policy": "comfyui-only", "runtime_policy": "any", "output_mime_types": ["video/mp4"],
+  "workflow_json": {
+    "10": {"class_type": "CLIPLoader", "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "cpu"}},
+    "11": {"class_type": "UNETLoader", "inputs": {"unet_name": "wan2.1_t2v_1.3B_bf16.safetensors", "weight_dtype": "default"}},
+    "12": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+    "20": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["10", 0]}},
+    "21": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["10", 0]}},
+    "30": {"class_type": "EmptyHunyuanLatentVideo", "inputs": {"width": "{{width}}", "height": "{{height}}", "length": "{{frames}}", "batch_size": 1}},
+    "40": {"class_type": "KSampler", "inputs": {"seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["11", 0], "positive": ["20", 0], "negative": ["21", 0], "latent_image": ["30", 0]}},
+    "50": {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["40", 0], "vae": ["12", 0], "tile_size": "{{vae_tile_size}}", "overlap": 64, "temporal_size": 4096, "temporal_overlap": 8}},
+    "60": {"class_type": "CreateVideo", "inputs": {"images": ["50", 0], "fps": "{{fps}}"}},
+    "61": {"class_type": "SaveVideo", "inputs": {"video": ["60", 0], "filename_prefix": "b1-media-studio/wan2.1-1.3b/t2v", "format": "mp4", "codec": "h264"}}
+  },
+  "input_schema": {"type": "object", "required": ["prompt"], "properties": {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}, "negative_prompt": {"type": "string", "maxLength": 2000, "default": "text, watermark, logo, subtitles, low quality, blurry"}, "width": {"type": "integer", "minimum": 256, "maximum": 512, "default": 384}, "height": {"type": "integer", "minimum": 256, "maximum": 288, "default": 256}, "frames": {"type": "integer", "minimum": 5, "maximum": 49, "default": 17}, "fps": {"type": "integer", "minimum": 4, "maximum": 12, "default": 8}, "steps": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6}, "cfg": {"type": "number", "minimum": 1, "maximum": 8, "default": 6}, "vae_tile_size": {"type": "integer", "minimum": 128, "maximum": 512, "default": 256}, "seed": {"type": "integer", "minimum": 0, "default": 20260728}}, "additionalProperties": false},
+  "presets": [{"id": "low-vram-proof", "display_name": "Low-VRAM Proof", "description": "17-frame 384x256 probe for measured admission.", "values": {"prompt": "a paper boat drifting across a calm pond, gentle movement, natural light", "negative_prompt": "text, watermark, logo, subtitles, low quality, blurry", "width": 384, "height": 256, "frames": 17, "fps": 8, "steps": 6, "cfg": 6, "vae_tile_size": 256, "seed": 20260728}}],
+  "output_schema": {"type": "object", "properties": {"videos": {"type": "array", "items": {"type": "string"}}}}, "resource_class": "rtx3060-laptop-6gb-32gb",
+  "dependencies": [{"type": "runtime", "id": "comfyui"}, {"type": "model", "id": "video-text"}],
+  "limits": {"max_width": 512, "max_height": 288, "max_frames": 49, "max_steps": 12, "max_batch_size": 1, "max_duration_seconds": 7}, "visibility_roles": ["admin", "operator", "creator", "service"]
+}

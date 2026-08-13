@@ -1143,11 +1143,27 @@ class SelfTestApiTests(unittest.TestCase):
         self.assertTrue(status["available"])
         self.assertEqual(status["sha256"], expected_digest)
         self.assertEqual(status["download_url"], "/admin/tls/caddy-ca/root.crt")
+        self.assertEqual(status["bootstrap_download_url"], "/.well-known/b1-ai-hub/caddy-root.crt")
         self.assertEqual(status["fingerprint_sha256"], ":".join(expected_digest[index : index + 2].upper() for index in range(0, 64, 2)))
         self.assertEqual(response.body, content)
         self.assertEqual(response.media_type, "application/x-x509-ca-cert")
         self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
         self.assertIn("b1-ai-hub-caddy-root.crt", response.headers["content-disposition"])
+
+    def test_caddy_internal_ca_bootstrap_download_is_public_and_hash_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            content = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+            ca_file.write_bytes(content)
+            expected_digest = main.hashlib.sha256(content).hexdigest()
+            self.patch_settings(caddy_internal_ca_file=str(ca_file))
+
+            response = asyncio.run(main.caddy_internal_ca_bootstrap_download())
+
+        self.assertEqual(response.body, content)
+        self.assertEqual(response.media_type, "application/x-x509-ca-cert")
+        self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
+        self.assertEqual(response.headers["cache-control"], "public, no-store")
 
     def test_caddy_internal_ca_self_test_passes_when_internal_root_is_exportable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

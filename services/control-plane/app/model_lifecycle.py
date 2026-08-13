@@ -1577,6 +1577,14 @@ def download_request_url_allowed(source_url: str, request_url: str, *, source_ty
             raise ModelLifecycleError("huggingface download redirected to an unapproved host")
         return request_url
     source_hostname = _download_hostname(source_url)
+    # GitHub release downloads are intentionally redirected to a signed asset
+    # host. Keep the exception narrowly scoped to GitHub-owned hosts; every
+    # redirect still passes the HTTPS and public-import/SSRF checks above.
+    github_release_hosts = {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+    if source_hostname == "github.com" and (
+        hostname in github_release_hosts or hostname.endswith(".githubusercontent.com")
+    ):
+        return request_url
     if hostname != source_hostname:
         raise ModelLifecycleError("download request target host is not the original source host")
     return request_url

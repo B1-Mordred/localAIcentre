@@ -259,6 +259,96 @@ class LocalAIManagedConfigTests(unittest.TestCase):
             self.assertIn("context_size: 4096", body)
             self.assertIn("gpu_layers: 32", body)
 
+    def test_gemma4_12b_uses_long_context_cpu_offload_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-unsloth-gemma-4-12b-it-qat-gguf-localai" / "1.0.0"
+            view_root.mkdir(parents=True)
+            self.write_minimal_gguf(view_root / "gemma-4-12B-it-Q4_K.gguf", {"general.architecture": "gemma4"})
+            manifest = {
+                "id": "b1-unsloth-gemma-4-12b-it-qat-gguf-localai",
+                "version": "1.0.0",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 32768},
+                "files": [{"path": "gemma-4-12B-it-Q4_K.gguf", "format": "gguf", "size_bytes": 7 * 1024**3}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+            old_values = {
+                key: os.environ.get(key)
+                for key in (
+                    "B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_GEMMA4_12B_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_GEMMA4_12B_GPU_LAYERS",
+                )
+            }
+            os.environ["B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE"] = "2048"
+            os.environ.pop("B1_LOCALAI_MANAGED_GEMMA4_12B_CONTEXT_SIZE", None)
+            os.environ.pop("B1_LOCALAI_MANAGED_GEMMA4_12B_GPU_LAYERS", None)
+            try:
+                b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+            finally:
+                for key, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            body = (
+                root
+                / "configuration"
+                / "b1-managed-b1-unsloth-gemma-4-12b-it-qat-gguf-localai-1.0.0.yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("context_size: 8192", body)
+            self.assertIn("gpu_layers: 16", body)
+            self.assertIn("low_vram: true", body)
+
+    def test_gpt_oss_20b_uses_harmony_template_and_cpu_offload_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            view_root = root / "models" / "b1-openai-gpt-oss-20b-mxfp4-localai" / "1.0.0"
+            view_root.mkdir(parents=True)
+            self.write_minimal_gguf(view_root / "gpt-oss-20b-MXFP4.gguf", {"general.architecture": "gptoss"})
+            manifest = {
+                "id": "b1-openai-gpt-oss-20b-mxfp4-localai",
+                "version": "1.0.0",
+                "modality": "llm",
+                "runtimes": ["localai"],
+                "preferred_runtime": "localai",
+                "resource_estimate": {"context_tokens": 32768},
+                "files": [{"path": "gpt-oss-20b-MXFP4.gguf", "format": "gguf", "size_bytes": 12 * 1024**3}],
+            }
+            (view_root / "manifest.b1.json").write_text(json.dumps({"manifest": manifest}), encoding="utf-8")
+            old_values = {
+                key: os.environ.get(key)
+                for key in (
+                    "B1_LOCALAI_MANAGED_GPT_OSS_20B_CONTEXT_SIZE",
+                    "B1_LOCALAI_MANAGED_GPT_OSS_20B_GPU_LAYERS",
+                )
+            }
+            os.environ.pop("B1_LOCALAI_MANAGED_GPT_OSS_20B_CONTEXT_SIZE", None)
+            os.environ.pop("B1_LOCALAI_MANAGED_GPT_OSS_20B_GPU_LAYERS", None)
+            try:
+                b1_localai_config.sync_managed_configs(root / "models", root / "configuration")
+            finally:
+                for key, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            body = (
+                root
+                / "configuration"
+                / "b1-managed-b1-openai-gpt-oss-20b-mxfp4-localai-1.0.0.yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("# prompt_family: gpt-oss", body)
+            self.assertIn("context_size: 8192", body)
+            self.assertIn("gpu_layers: 8", body)
+            self.assertIn("use_jinja:true", body)
+            self.assertIn("use_tokenizer_template: true", body)
+            self.assertIn("reasoning_format:auto", body)
+            self.assertIn("low_vram: true", body)
+
     def test_laguna_xs_uses_reasoning_and_low_vram_quality_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -304,6 +394,7 @@ class LocalAIManagedConfigTests(unittest.TestCase):
                 / "b1-managed-b1-poolside-laguna-xs-2.1-gguf-q4_k_m-localai-1.0.0.yaml"
             ).read_text(encoding="utf-8")
             self.assertIn("# prompt_family: laguna-xs-2.1", body)
+            self.assertIn("use_tokenizer_template: true", body)
             self.assertIn("context_size: 32768", body)
             self.assertIn("gpu_layers: -1", body)
             self.assertIn("batch: 1024", body)
@@ -315,7 +406,7 @@ class LocalAIManagedConfigTests(unittest.TestCase):
             self.assertIn("cache_type_v: 'q4_0'", body)
             self.assertIn("use_jinja:true", body)
             self.assertIn("cache_ram:1024", body)
-            self.assertIn("--ubatch-size:256", body)
+            self.assertIn("ubatch:256", body)
             self.assertIn("--cpu-moe", body)
             self.assertIn("enable_thinking: true", body)
             self.assertNotIn("disable_reasoning", body)

@@ -1,0 +1,42 @@
+{
+  "id": "video-editing",
+  "version": "1.0.0",
+  "display_name": "Wan 2.1 VACE 1.3B Video Editing",
+  "description": "Native ComfyUI VACE video-to-video editing for short clips. Source-video frames and audio are decoded in ComfyUI, VACE keeps the original motion as control input, and the output retains the decoded audio when available.",
+  "modality": "video",
+  "operation": "video-editing",
+  "model_alias": "video-image",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["video/mp4"],
+  "workflow_json": {
+    "10": {"class_type": "LoadVideo", "inputs": {"file": "{{source_video_filename}}"}},
+    "11": {"class_type": "GetVideoComponents", "inputs": {"video": ["10", 0]}},
+    "20": {"class_type": "CLIPLoader", "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "cpu"}},
+    "21": {"class_type": "UNETLoader", "inputs": {"unet_name": "wan2.1_vace_1.3B_fp16.safetensors", "weight_dtype": "default"}},
+    "22": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+    "30": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["20", 0]}},
+    "31": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["20", 0]}},
+    "40": {"class_type": "WanVaceToVideo", "inputs": {"positive": ["30", 0], "negative": ["31", 0], "vae": ["22", 0], "width": "{{width}}", "height": "{{height}}", "length": "{{frames}}", "batch_size": 1, "strength": "{{strength}}", "control_video": ["11", 0]}},
+    "50": {"class_type": "KSampler", "inputs": {"seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["21", 0], "positive": ["40", 0], "negative": ["40", 1], "latent_image": ["40", 2]}},
+    "60": {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["50", 0], "vae": ["22", 0], "tile_size": "{{vae_tile_size}}", "overlap": 64, "temporal_size": 4096, "temporal_overlap": 8}},
+    "70": {"class_type": "CreateVideo", "inputs": {"images": ["60", 0], "fps": "{{fps}}", "audio": ["11", 1]}},
+    "71": {"class_type": "SaveVideo", "inputs": {"video": ["70", 0], "filename_prefix": "b1-media-studio/wan2.1-vace-1.3b/video-edit", "format": "mp4", "codec": "h264"}}
+  },
+  "input_schema": {
+    "type": "object", "required": ["source_video", "prompt"],
+    "properties": {
+      "source_video": {"type": "string", "contentEncoding": "base64", "contentMediaType": "video/mp4"},
+      "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+      "negative_prompt": {"type": "string", "maxLength": 2000, "default": "text, watermark, logo, subtitles, low quality, blurry"},
+      "width": {"type": "integer", "minimum": 256, "maximum": 384, "default": 384}, "height": {"type": "integer", "minimum": 256, "maximum": 288, "default": 256},
+      "frames": {"type": "integer", "minimum": 5, "maximum": 33, "default": 17}, "fps": {"type": "integer", "minimum": 4, "maximum": 12, "default": 8},
+      "steps": {"type": "integer", "minimum": 1, "maximum": 10, "default": 6}, "cfg": {"type": "number", "minimum": 1, "maximum": 8, "default": 6},
+      "strength": {"type": "number", "minimum": 0.1, "maximum": 1, "default": 0.85}, "vae_tile_size": {"type": "integer", "minimum": 128, "maximum": 384, "default": 256}, "seed": {"type": "integer", "minimum": 0, "default": 20260728}
+    }, "additionalProperties": false
+  },
+  "presets": [{"id": "short-video-edit", "display_name": "Short Video Edit", "description": "17-frame 384x256 VACE edit within the 6 GB resource envelope.", "values": {"prompt": "preserve subject and motion, cinematic natural detail", "negative_prompt": "text, watermark, logo, subtitles, low quality, blurry", "width": 384, "height": 256, "frames": 17, "fps": 8, "steps": 6, "cfg": 6, "strength": 0.85, "vae_tile_size": 256, "seed": 20260728}}],
+  "output_schema": {"type": "object", "properties": {"videos": {"type": "array", "items": {"type": "string"}}}},
+  "resource_class": "rtx3060-laptop-6gb-32gb", "dependencies": [{"type": "runtime", "id": "comfyui"}, {"type": "model", "id": "video-image"}],
+  "limits": {"max_width": 384, "max_height": 288, "max_frames": 33, "max_steps": 10, "max_batch_size": 1, "max_duration_seconds": 5}, "visibility_roles": ["admin", "operator", "creator", "service"]
+}

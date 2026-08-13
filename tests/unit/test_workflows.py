@@ -132,11 +132,13 @@ class WorkflowTests(unittest.TestCase):
                 "frame-interpolation",
                 "image-to-image",
                 "image-to-video",
+                "video-editing",
                 "inpainting-outpainting",
                 "transcription",
                 "tts",
                 "text-to-image",
                 "text-to-video",
+                "text-to-video-wan2.1-1.3b",
                 "upscaling",
             },
         )

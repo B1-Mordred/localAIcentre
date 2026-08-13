@@ -88,6 +88,15 @@ def comfyui_artifacts_from_outputs(prompt_id: str, outputs: dict[str, Any]) -> l
                 file_segment = safe_artifact_segment(filename, f"{kind}-{index}")
                 relative = f"comfyui/{prompt_segment}/{index}-{file_segment}"
                 mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                # SaveVideo currently reports its MP4 through an ``images`` output
+                # key. Preserve native compatibility, but classify artifacts by
+                # their actual media type for the B1 API and Media Studio.
+                if mime_type.startswith("video/"):
+                    kind = "video"
+                elif mime_type.startswith("audio/"):
+                    kind = "audio"
+                elif mime_type.startswith("image/"):
+                    kind = "image"
                 query = urlencode({"filename": filename, "subfolder": subfolder, "type": file_type})
                 artifacts.append(
                     {
@@ -150,6 +159,8 @@ async def ingest_comfyui_artifact(
     artifact_root: Path,
     comfyui_url: str,
     timeout_seconds: float = 120.0,
+    headers: dict[str, str] | None = None,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if artifact.get("source") != "comfyui_view":
         return artifact
@@ -172,8 +183,8 @@ async def ingest_comfyui_artifact(
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
     url = f"{comfyui_url.rstrip('/')}/{view_path.lstrip('/')}"
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            async with client.stream("GET", url) as response:
+        async with httpx.AsyncClient(timeout=timeout_seconds, **(client_kwargs or {})) as client:
+            async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code >= 400:
                     return {**artifact, "ingest_status": "failed", "ingest_error": f"ComfyUI /view returned HTTP {response.status_code}"}
                 with temporary.open("wb") as handle:
@@ -206,18 +217,35 @@ async def ingest_comfyui_artifacts(
     artifact_root: Path,
     comfyui_url: str,
     timeout_seconds: float = 120.0,
+    headers: dict[str, str] | None = None,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     ingested: list[dict[str, Any]] = []
     for artifact in artifacts:
-        ingested.append(await ingest_comfyui_artifact(artifact, artifact_root, comfyui_url, timeout_seconds))
+        ingested.append(
+            await ingest_comfyui_artifact(
+                artifact,
+                artifact_root,
+                comfyui_url,
+                timeout_seconds,
+                headers=headers,
+                client_kwargs=client_kwargs,
+            )
+        )
     return ingested
 
 
-async def fetch_comfyui_history(comfyui_url: str, prompt_id: str, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
+async def fetch_comfyui_history(
+    comfyui_url: str,
+    prompt_id: str,
+    timeout_seconds: float = 10.0,
+    headers: dict[str, str] | None = None,
+    client_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     url = f"{comfyui_url.rstrip('/')}/history/{prompt_id}"
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.get(url)
+        async with httpx.AsyncClient(timeout=timeout_seconds, **(client_kwargs or {})) as client:
+            response = await client.get(url, headers=headers)
         if response.status_code >= 400:
             return None
         payload = response.json()
@@ -295,6 +323,53 @@ def apply_comfyui_parameter_mappings(
             raise ValueError("invalid ComfyUI parameter mapping")
         set_json_path(rendered, path, _parameter_value(parameters, parameter))
     return rendered
+
+
+def workflow_comfyui_staged_upload_specs(workflow_manifest: dict[str, Any]) -> dict[str, str]:
+    """Return staged input names and their expected media type for ComfyUI.
+
+    Workflows opt in by using ``{{source_image_filename}}`` in ``LoadImage`` or
+    ``{{source_video_filename}}`` in ``LoadVideo``.  Only server-returned input
+    filenames are rendered into the native prompt; caller supplied paths never
+    reach ComfyUI.
+    """
+    workflow_json = workflow_manifest.get("workflow_json")
+    if not isinstance(workflow_json, dict):
+        return {}
+    input_schema = workflow_manifest.get("input_schema")
+    schema_properties = input_schema.get("properties") if isinstance(input_schema, dict) else None
+    declared_parameters = set(schema_properties) if isinstance(schema_properties, dict) else None
+    conventional_parameters = {"source_image", "source_video"}
+    parameters: dict[str, str] = {}
+    for node in workflow_json.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        if class_type in {"LoadImage", "LoadImageMask"}:
+            input_name, media_type = "image", "image"
+        elif class_type == "LoadVideo":
+            input_name, media_type = "file", "video"
+        else:
+            continue
+        inputs = node.get("inputs")
+        value = inputs.get(input_name) if isinstance(inputs, dict) else None
+        if not isinstance(value, str):
+            continue
+        match = TEMPLATE_PATTERN.fullmatch(value.strip())
+        parameter = (match.group(1) or match.group(2)) if match else None
+        if parameter and parameter.endswith("_filename"):
+            field_name = parameter.removesuffix("_filename")
+            if declared_parameters is not None and field_name not in declared_parameters:
+                continue
+            if declared_parameters is None and field_name not in conventional_parameters:
+                continue
+            parameters[field_name] = media_type
+    return parameters
+
+
+def workflow_comfyui_staged_upload_parameters(workflow_manifest: dict[str, Any]) -> set[str]:
+    """Compatibility wrapper returning workflow staged-input parameter names."""
+    return set(workflow_comfyui_staged_upload_specs(workflow_manifest))
 
 
 def normalize_comfyui_prompt_payload(

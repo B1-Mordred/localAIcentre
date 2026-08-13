@@ -43,5 +43,5 @@
   "limits": {
     "max_duration_seconds": 300
   },
-  "visibility_roles": ["admin", "operator", "creator", "user"]
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
 }

@@ -1,0 +1,55 @@
+{
+  "schema_version": "b1-p40-media-artifact-set/v1",
+  "id": "seated-v2",
+  "published_at": "2026-08-10T00:00:00Z",
+  "purpose": "1280x720 seated robot character, panel scene, scene-aware MuseTalk, and general-object matting",
+  "images": {
+    "comfyui": "b1-ai-hub/comfyui:v0.3.77-b1@sha256:49cb7d6db248d53f164e970126c82a54b68b592d268dde5f4d783e3fb9afdbbb",
+    "lipsync": "b1-ai-hub-lipsync@sha256:b8a6fb843e78559bd39a8d15d683c82bf3bd825fe4c6f5dba9466dda5840a72f"
+  },
+  "models": [
+    {
+      "id": "b1-sd15-pruned-emaonly-comfyui",
+      "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+      "path": "comfyui/b1-sd15-pruned-emaonly-comfyui/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/diffusion/checkpoints/sd-v1-5-pruned-emaonly-b1.safetensors",
+      "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa",
+      "size_bytes": 4265146304
+    },
+    {
+      "id": "lllyasviel-control-v11p-sd15-openpose-comfyui",
+      "revision": "9ae9f970358db89e211b87c915f9535c6686d5ba",
+      "path": "comfyui/lllyasviel-control-v11p-sd15-openpose-comfyui/9ae9f970358db89e211b87c915f9535c6686d5ba/diffusion/controlnet/b1-control-v11p-sd15-openpose-fp16.safetensors",
+      "sha256": "b25b1125e870275550b2a7de289056cb3c236c01c293bd5ba883657b1c006e3e",
+      "size_bytes": 722598642
+    },
+    {
+      "id": "xuebinqin-isnet-general-use-matting",
+      "revision": "rembg-v0.0.0",
+      "source": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
+      "path": "comfyui/xuebinqin-isnet-general-use-matting/rembg-v0.0.0/matting/isnet-general-use.onnx",
+      "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a",
+      "md5": "fc16ebd8b0c10d971d3513d564d01e29",
+      "size_bytes": 178648008,
+      "execution_provider": "CPUExecutionProvider",
+      "license": "DIS project code Apache-2.0; model distributed by the official rembg model release"
+    },
+    {
+      "id": "tmelyralab-musetalk-v1.5-lipsync",
+      "revision": "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
+      "manifest": "lipsync/manifest.b1.json",
+      "source_archive_sha256": "2e1685e4bcc58531c5118c0ba485199f22012016ed4608cab725a51d131f7ca7",
+      "license_acceptance_required": true,
+      "license": "MuseTalk MIT code and trained model commercially permitted; third-party component licences apply"
+    }
+  ],
+  "qualification": {
+    "matting_candidates": {
+      "u2net_seconds": 0.604,
+      "isnet_general_use_seconds": 1.492,
+      "birefnet_general_lite_seconds": 10.093
+    },
+    "selected_matte": "xuebinqin-isnet-general-use-matting",
+    "status": "rejected_live_robot_plate_visual_gate_seed_sensitive_halo",
+    "production_aliases_enabled": false
+  }
+}

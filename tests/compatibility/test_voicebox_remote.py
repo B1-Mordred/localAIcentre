@@ -50,6 +50,10 @@ def bounded_text(value: str, limit: int = 1000) -> str:
     return value.strip()[:limit]
 
 
+def response_content_type(headers: dict[str, str]) -> str:
+    return (headers.get("Content-Type") or headers.get("content-type") or "").split(";", 1)[0]
+
+
 def acceptance_wav_bytes() -> bytes:
     inline = os.getenv("B1_VOICEBOX_SAMPLE_WAV_BASE64", "").strip()
     if inline:
@@ -80,12 +84,14 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
     checks: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
     build_info: dict[str, Any] = {}
+    last_http: dict[str, Any] = {}
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.checks = {}
         cls.samples = []
         cls.build_info = {}
+        cls.last_http = {}
         cls.voice_base = os.getenv("B1_VOICEBOX_BASE", "https://voice.ai.b1.germering").rstrip("/")
         cls.api_base = os.getenv("B1_VOICEBOX_API_BASE", "https://api.ai.b1.germering").rstrip("/")
         cls.api_key = os.getenv("B1_VOICEBOX_API_KEY", "").strip()
@@ -192,12 +198,50 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context()) as response:
-                return int(getattr(response, "status", response.getcode())), dict(response.headers.items()), response.read()
+                status = int(getattr(response, "status", response.getcode()))
+                response_headers = dict(response.headers.items())
+                body = response.read()
+                cls.last_http = {
+                    "method": method,
+                    "path": path,
+                    "url": url,
+                    "http_status": status,
+                    "content_type": response_content_type(response_headers),
+                    "byte_count": len(body),
+                }
+                return status, response_headers, body
         except urllib.error.HTTPError as exc:
             body = exc.read()
+            headers = dict(exc.headers.items())
+            cls.last_http = {
+                "method": method,
+                "path": path,
+                "url": url,
+                "http_status": int(exc.code),
+                "content_type": response_content_type(headers),
+                "byte_count": len(body),
+            }
             if allow_http_error:
-                return int(exc.code), dict(exc.headers.items()), body
-            raise AssertionError(f"{method} {path} failed with HTTP {exc.code}: {body[:200]!r}") from exc
+                return int(exc.code), headers, body
+            content_type = response_content_type(headers) or "<none>"
+            raise AssertionError(
+                f"{method} {path} failed with http_status={exc.code} content_type={content_type} "
+                f"url={url}: {body[:200]!r}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            cls.last_http = {
+                "method": method,
+                "path": path,
+                "url": url,
+                "http_status": None,
+                "content_type": None,
+                "byte_count": 0,
+                "error_type": exc.__class__.__name__,
+            }
+            raise AssertionError(
+                f"{method} {path} failed before an HTTP response; http_status=<none> "
+                f"content_type=<none> url={url} error={exc.__class__.__name__}: {bounded_text(str(exc), 300)}"
+            ) from exc
 
     @classmethod
     def request_bytes(
@@ -219,16 +263,65 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context()) as response:
                 status = int(getattr(response, "status", response.getcode()))
+                headers = dict(response.headers.items())
                 raw = response.read()
+                cls.last_http = {
+                    "method": method,
+                    "path": path,
+                    "url": url,
+                    "http_status": status,
+                    "content_type": response_content_type(headers),
+                    "byte_count": len(raw),
+                }
         except urllib.error.HTTPError as exc:
             raw = exc.read()
-            raise AssertionError(f"{method} {path} failed with HTTP {exc.code}: {raw[:200]!r}") from exc
+            headers = dict(exc.headers.items())
+            content_type = response_content_type(headers) or "<none>"
+            cls.last_http = {
+                "method": method,
+                "path": path,
+                "url": url,
+                "http_status": int(exc.code),
+                "content_type": response_content_type(headers),
+                "byte_count": len(raw),
+            }
+            raise AssertionError(
+                f"{method} {path} failed with http_status={exc.code} content_type={content_type} "
+                f"url={url}: {raw[:200]!r}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            cls.last_http = {
+                "method": method,
+                "path": path,
+                "url": url,
+                "http_status": None,
+                "content_type": None,
+                "byte_count": 0,
+                "error_type": exc.__class__.__name__,
+            }
+            raise AssertionError(
+                f"{method} {path} failed before an HTTP response; http_status=<none> "
+                f"content_type=<none> url={url} error={exc.__class__.__name__}: {bounded_text(str(exc), 300)}"
+            ) from exc
         if status < 200 or status >= 300:
-            raise AssertionError(f"{method} {path} returned HTTP {status}")
+            raise AssertionError(
+                f"{method} {path} returned http_status={status} "
+                f"content_type={response_content_type(headers) or '<none>'} url={url}"
+            )
         decoded = json.loads(raw.decode("utf-8"))
         if not isinstance(decoded, dict):
             raise AssertionError(f"{method} {path} did not return a JSON object")
         return decoded
+
+    def last_http_fields(self, prefix: str = "") -> dict[str, Any]:
+        fields = self.__class__.last_http
+        key_prefix = f"{prefix}_" if prefix else ""
+        return {
+            f"{key_prefix}http_status": fields.get("http_status"),
+            f"{key_prefix}content_type": fields.get("content_type"),
+            f"{key_prefix}byte_count": fields.get("byte_count"),
+            f"{key_prefix}path": fields.get("path"),
+        }
 
     @classmethod
     def request_json(cls, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -292,7 +385,9 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             upstream_commit=decoded.get("upstream_commit"),
             source_archive_sha256=decoded.get("source_archive_sha256"),
             pinned=decoded.get("pinned"),
+            http_status=status,
             content_type=content_type.split(";", 1)[0],
+            byte_count=len(body),
         )
         self.samples.append(
             {
@@ -329,6 +424,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             content_type="audio/wav",
             filename="b1-voicebox-acceptance.wav",
         )
+        sample_upload_http = self.last_http_fields("sample_upload")
         self.assertEqual(sample_response.get("object"), "voicebox.sample_artifact")
         sample_artifact = sample_response.get("artifact")
         self.assertIsInstance(sample_artifact, dict)
@@ -354,13 +450,17 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             "sample_artifacts": [sample_artifact],
         }
         created = self.request_json("POST", "/admin/voicebox/profiles", create_payload)
+        create_http = self.last_http_fields("create")
         profile_id = str(created.get("id") or "")
         self.assertTrue(profile_id.startswith("vp_"), f"unexpected Voicebox profile id: {profile_id}")
         try:
             fetched = self.request_json("GET", f"/admin/voicebox/profiles/{urllib.parse.quote(profile_id)}")
+            fetch_http = self.last_http_fields("fetch")
             exported = self.request_json("POST", f"/admin/voicebox/profiles/{urllib.parse.quote(profile_id)}/export")
+            export_http = self.last_http_fields("export")
         finally:
             deleted = self.request_json("DELETE", f"/admin/voicebox/profiles/{urllib.parse.quote(profile_id)}")
+            delete_http = self.last_http_fields("delete")
         self.assertEqual(fetched.get("id"), profile_id)
         fetched_samples = fetched.get("sample_artifacts")
         self.assertIsInstance(fetched_samples, list)
@@ -391,6 +491,9 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             fetched_sample_artifact_count=len(fetched_samples),
             fetched_sample_artifact_url=fetched_samples[0].get("url"),
             fetched_sample_artifact_sha256=fetched_samples[0].get("sha256"),
+            **sample_upload_http,
+            **create_http,
+            **fetch_http,
         )
         self.record_check(
             "sample_artifact_protected",
@@ -402,6 +505,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             sample_artifact_mime_type=sample_artifact.get("mime_type"),
             profile_metadata_has_sample_payload=False,
             export_contains_raw_sample_bytes=False,
+            **sample_upload_http,
         )
         self.record_check(
             "profile_export_validated",
@@ -411,11 +515,13 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             sample_artifact_count=len(exported_samples),
             exported_sample_artifact_url=exported_samples[0].get("url"),
             exported_sample_artifact_sha256=exported_samples[0].get("sha256"),
+            **export_http,
         )
         self.record_check(
             "profile_delete_audited",
             profile_id=profile_id,
             deleted_status=deleted.get("status"),
+            **delete_http,
             **audit_proof,
         )
         self.samples.append({"label": "voice-profile-lifecycle", "profile_id": profile_id, "model_alias": model_alias})
@@ -505,6 +611,7 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
             model=payload["model"],
             voice=payload["voice"],
             response_format=payload["response_format"],
+            http_status=status,
             content_type=content_type.split(";", 1)[0],
             byte_count=len(body),
             sha256=digest,
@@ -549,6 +656,9 @@ class VoiceboxRemoteCompatibilityTests(unittest.TestCase):
                 message = await asyncio.wait_for(websocket.recv(), timeout=float(os.getenv("B1_VOICEBOX_WEBSOCKET_RECV_TIMEOUT", "2")))
             except asyncio.TimeoutError:
                 message = None
+            except websockets.exceptions.ConnectionClosedOK:
+                message = None
+                received_type = "closed_ok"
             if isinstance(message, bytes):
                 received_type = "bytes"
             elif isinstance(message, str):

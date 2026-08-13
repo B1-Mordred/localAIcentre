@@ -39,6 +39,7 @@ ALLOWED_INPUT_MIME_TYPES = {
 }
 
 ALLOWED_AUDIO_INPUT_MIME_TYPES = {mime_type for mime_type in ALLOWED_INPUT_MIME_TYPES if mime_type.startswith("audio/")}
+UPLOAD_ID_PATTERN = "upload_"
 
 
 def safe_artifact_segment(value: str, fallback: str) -> str:
@@ -227,9 +228,20 @@ def _looks_like_webp(content: bytes) -> bool:
 
 
 def _looks_like_wav(content: bytes) -> bool:
-    declared_end = _riff_declared_end(content, b"WAVE")
-    if declared_end is None:
+    # WAV producers sometimes append a non-RIFF trailer (for example, capture
+    # metadata) after the declared RIFF container.  Trust neither the header
+    # nor the trailer: validate the complete declared container and ignore only
+    # bytes beyond that container.
+    if len(content) < 12 or not content.startswith(b"RIFF") or content[8:12] != b"WAVE":
         return False
+    declared_end = _u32le(content, 4) + 8
+    if declared_end < 12:
+        return False
+    # Streaming WAV encoders commonly use ``0xffffffff`` for the RIFF size
+    # because the final length is not known when the header is emitted.  Scan
+    # only the bounded bytes we received; every chunk still has to fit within
+    # that actual buffer before the upload is accepted.
+    declared_end = min(declared_end, len(content))
     offset = 12
     has_fmt = False
     has_data = False
@@ -237,6 +249,15 @@ def _looks_like_wav(content: bytes) -> bool:
         chunk_type = content[offset : offset + 4]
         chunk_size = _u32le(content, offset + 4)
         data_start = offset + 8
+        # Streaming WAV writers can leave both RIFF and data sizes as
+        # ``0xffffffff``.  Treat that sentinel as the remaining bounded input
+        # only for the audio data chunk; an unknown chunk with this size is not
+        # accepted because it cannot be structurally bounded safely.
+        if chunk_type == b"data" and chunk_size == 0xFFFFFFFF:
+            if data_start >= declared_end:
+                return False
+            has_data = True
+            break
         data_end = data_start + chunk_size
         if data_end < data_start or data_end > declared_end:
             return False
@@ -434,6 +455,57 @@ def read_staged_input_bytes(artifact_root: Path, reference: dict[str, Any]) -> t
         mime_type = require_allowed_input_mime_type(content, mime_type if isinstance(mime_type, str) else None)
     filename = safe_filename(reference.get("filename") if isinstance(reference.get("filename"), str) else None, "media.bin")
     return content, normalize_mime_type(mime_type), filename
+
+
+def staged_input_reference_for_upload_id(artifact_root: Path, *, owner_id: str, upload_id: str) -> dict[str, Any]:
+    if not isinstance(upload_id, str) or not upload_id.startswith(UPLOAD_ID_PATTERN) or len(upload_id) != len(UPLOAD_ID_PATTERN) + 32:
+        raise ValueError("staged upload id is invalid")
+    suffix = upload_id.removeprefix(UPLOAD_ID_PATTERN)
+    if any(character not in "0123456789abcdef" for character in suffix):
+        raise ValueError("staged upload id is invalid")
+    owner_segment = safe_artifact_segment(owner_id, "owner")
+    directory = artifact_store_path(artifact_root, f"inputs/{owner_segment}/{upload_id}")
+    try:
+        directory_stat = directory.lstat()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"inputs/{owner_segment}/{upload_id}") from None
+    if stat.S_ISLNK(directory_stat.st_mode):
+        raise ValueError("staged upload directory is a symlink")
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise ValueError("staged upload path is not a directory")
+    files = []
+    for candidate in directory.iterdir():
+        if candidate.name.startswith("."):
+            continue
+        try:
+            candidate_stat = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(candidate_stat.st_mode):
+            raise ValueError("staged upload file is a symlink")
+        if stat.S_ISREG(candidate_stat.st_mode):
+            files.append(candidate)
+    if not files:
+        raise FileNotFoundError(f"inputs/{owner_segment}/{upload_id}")
+    if len(files) != 1:
+        raise ValueError("staged upload id contains multiple files")
+    target = artifact_store_path(artifact_root, f"inputs/{owner_segment}/{upload_id}/{files[0].name}")
+    content = read_regular_file_bytes(target)
+    mime_type = require_allowed_input_mime_type(content, mimetypes.guess_type(target.name)[0])
+    filename = safe_filename(target.name, f"media{extension_for_mime_type(mime_type)}")
+    field = filename.split("-", 1)[0] if "-" in filename else kind_for_mime_type(mime_type)
+    relative = target.relative_to(artifact_root.resolve()).as_posix()
+    return {
+        "source": "staged_upload",
+        "id": upload_id,
+        "field": safe_artifact_segment(field, "media"),
+        "kind": kind_for_mime_type(mime_type),
+        "mime_type": mime_type,
+        "filename": filename,
+        "path": relative,
+        "bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def write_artifact_bytes(

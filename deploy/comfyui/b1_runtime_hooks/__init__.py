@@ -405,6 +405,8 @@ def memory_snapshot() -> dict[str, Any]:
 
 
 def check_model_list(payload: dict[str, Any], action: str) -> dict[str, Any] | None:
+    if str(payload.get("operation") or "").strip().lower().replace("_", "-") == "talking-head-lipsync":
+        return json_response("unconfirmed", action, reason="operation_handled_by_b1_control_plane_runner")
     candidates = payload_model_candidates(payload)
     if not candidates:
         return json_response("unconfirmed", action, reason="workflow_dependencies_resolved_by_native_prompt")

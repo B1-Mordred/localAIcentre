@@ -296,7 +296,7 @@ class RuntimeReservationApiTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 422)
                 self.assertEqual(fake_database.inserted, [])
 
-    def test_create_reservation_rejects_gpu_when_production_hardware_policy_fails(self) -> None:
+    def test_create_reservation_defers_gpu_hardware_policy_until_execution(self) -> None:
         self.patch_settings(
             runtime_deployment_mode="production",
             gpu_total_vram_gib=12.0,
@@ -305,6 +305,7 @@ class RuntimeReservationApiTests(unittest.TestCase):
             host_reserve_ram_gib=6.0,
         )
         fake_database = FakeReservationDatabase(row=None)
+        fake_database.row = None
         audit_events: list[dict[str, Any]] = []
         self.patch_attr("database", fake_database)
         self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"runtimes:write"})))
@@ -313,48 +314,20 @@ class RuntimeReservationApiTests(unittest.TestCase):
         self.patch_attr("runtime_registry_snapshot", lambda: fake_runtime_registry(localai=fake_adapter()))
 
         async def runtime_agent_get(path: str) -> tuple[dict[str, Any], str | None]:
-            self.assertEqual(path, "/v1/metrics")
-            return (
-                {
-                    "gpu": {
-                        "available": True,
-                        "devices": [
-                            {
-                                "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
-                                "memory_total_mib": 6144,
-                                "memory_free_mib": 4096,
-                            }
-                        ],
-                    },
-                    "memory": {
-                        "total_bytes": 31 * 1024**3,
-                        "available_bytes": 8 * 1024**3,
-                    },
-                },
-                None,
-            )
+            raise AssertionError("reservation submission must not reject just because VRAM is currently occupied")
 
-        async def forbidden_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            raise AssertionError("reservation conflict gate must not run when hardware admission blocks")
-
-        fake_database.runtime_reservation_gate = forbidden_gate  # type: ignore[method-assign]
         self.patch_attr("runtime_agent_get", runtime_agent_get)
 
-        with self.assertRaises(HTTPException) as caught:
-            asyncio.run(
-                main.runtime_reservation_create(
-                    main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=600, reason="batch window")
-                )
+        result = asyncio.run(
+            main.runtime_reservation_create(
+                main.RuntimeReservationCreate(runtime="localai", model="chat-default", duration_seconds=600, reason="batch window")
             )
+        )
 
-        self.assertEqual(caught.exception.status_code, 503)
-        self.assertEqual(caught.exception.detail["code"], "hardware_resource_policy")
-        check = caught.exception.detail["hardware_resource_policy"]
-        self.assertEqual(check["name"], "hardware:resource-policy")
-        self.assertEqual(check["status"], "failed")
-        self.assertIn("largest GPU VRAM is 6144 MiB", check["detail"])
-        self.assertEqual(fake_database.inserted, [])
-        self.assertEqual(audit_events, [])
+        self.assertEqual(result["runtime"], "localai")
+        self.assertEqual(result["resolved_model_version"], "chat-model@1.0.0")
+        self.assertEqual(fake_database.inserted[0]["owner_id"], "client_1")
+        self.assertEqual(audit_events[0]["event_type"], "runtime_reservation.created")
 
     def test_create_reservation_rejects_conflicting_active_gpu_reservation(self) -> None:
         fake_database = FakeReservationDatabase(reservation_row(owner_id="other_client"))

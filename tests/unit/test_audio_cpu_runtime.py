@@ -176,6 +176,23 @@ with wave.open(str(output), "wb") as wav:
         self.assertEqual(response["b1_engine"], "scaffold")
         self.assertTrue(response["b1_placeholder"])
 
+    def test_pcm_transcription_accepts_streaming_wav_with_unknown_riff_and_data_sizes(self) -> None:
+        wav = bytearray(audio_cpu_main.silence_wav(duration_seconds=0.25, sample_rate=48000))
+        data_offset = wav.find(b"data")
+        self.assertGreaterEqual(data_offset, 12)
+        wav[4:8] = b"\xff\xff\xff\xff"
+        wav[data_offset + 4 : data_offset + 8] = b"\xff\xff\xff\xff"
+
+        pcm, sample_rate, duration = audio_cpu_main.pcm16_mono_wav_from_bytes(
+            bytes(wav),
+            max_audio_seconds=60,
+            mime_type="audio/wav",
+        )
+
+        self.assertEqual(sample_rate, 48000)
+        self.assertEqual(len(pcm), 24000)
+        self.assertAlmostEqual(duration, 0.25)
+
     def test_embeddings_are_deterministic_bounded_and_nonzero(self) -> None:
         self.patch_env({"B1_CPU_AUDIO_ENGINE": "scaffold", "B1_CPU_AUDIO_ENABLE_PLACEHOLDER": "true"})
         first = asyncio.run(audio_cpu_main.embeddings(FakeRequest({"model": "embedding-default", "input": ["hello", "world"], "dimensions": 16})))

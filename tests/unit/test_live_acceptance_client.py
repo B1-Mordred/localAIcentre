@@ -4,6 +4,8 @@ import importlib.util
 import os
 import sys
 import unittest
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -285,6 +287,58 @@ class LiveAcceptanceClientTests(unittest.TestCase):
         self.assertTrue(called)
         self.assertEqual(status, 200)
         self.assertEqual(body, b'{"status":"ok"}')
+
+    def test_voicebox_harness_http_errors_include_status_and_content_type(self) -> None:
+        module = load_module("tests/compatibility/test_voicebox_remote.py", "voicebox_http_error_diagnostics")
+        cls = module.VoiceboxRemoteCompatibilityTests
+        cls.api_base = "https://api.ai.b1.germering"
+        cls.api_key = ""
+        cls.api_host_header = ""
+        cls.timeout_seconds = 1
+        headers = Message()
+        headers.add_header("Content-Type", "application/json")
+
+        def fake_urlopen(*args: Any, **kwargs: Any) -> FakeResponse:
+            raise urllib.error.HTTPError(
+                "https://api.ai.b1.germering/v1/audio/speech",
+                409,
+                "Conflict",
+                headers,
+                None,
+            )
+
+        original = module.urllib.request.urlopen
+        original_ssl_context = cls.ssl_context
+        try:
+            module.urllib.request.urlopen = fake_urlopen
+            cls.ssl_context = classmethod(lambda inner_cls: None)
+            with self.assertRaisesRegex(AssertionError, "http_status=409 content_type=application/json"):
+                cls.request_raw(cls.api_base, "POST", "/v1/audio/speech", {"model": "tts-quality"})
+        finally:
+            module.urllib.request.urlopen = original
+            cls.ssl_context = original_ssl_context
+
+    def test_voicebox_harness_network_errors_report_no_http_response(self) -> None:
+        module = load_module("tests/compatibility/test_voicebox_remote.py", "voicebox_network_error_diagnostics")
+        cls = module.VoiceboxRemoteCompatibilityTests
+        cls.api_base = "https://api.ai.b1.germering"
+        cls.api_key = ""
+        cls.api_host_header = ""
+        cls.timeout_seconds = 1
+
+        def fake_urlopen(*args: Any, **kwargs: Any) -> FakeResponse:
+            raise urllib.error.URLError("connection refused")
+
+        original = module.urllib.request.urlopen
+        original_ssl_context = cls.ssl_context
+        try:
+            module.urllib.request.urlopen = fake_urlopen
+            cls.ssl_context = classmethod(lambda inner_cls: None)
+            with self.assertRaisesRegex(AssertionError, "http_status=<none> content_type=<none>"):
+                cls.request_raw(cls.api_base, "GET", "/health")
+        finally:
+            module.urllib.request.urlopen = original
+            cls.ssl_context = original_ssl_context
 
     def test_plain_http_with_api_key_requires_explicit_development_opt_in(self) -> None:
         seen: dict[str, Any] = {}

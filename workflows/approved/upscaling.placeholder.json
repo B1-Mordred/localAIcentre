@@ -1,21 +1,28 @@
 {
   "id": "upscaling",
-  "version": "0.1.0",
-  "display_name": "Upscaling",
-  "description": "Safe placeholder workflow definition for image upscaling.",
+  "version": "1.0.0",
+  "display_name": "Real-ESRGAN Image Upscaling",
+  "description": "Native ComfyUI Real-ESRGAN x4 workflow. A 2x request runs the approved x4 restoration model then performs a high-quality Lanczos downscale; this retains the same restoration pass for both supported output sizes.",
   "modality": "image",
   "operation": "upscale",
   "model_alias": "image-upscale",
   "backend_policy": "comfyui-only",
   "runtime_policy": "any",
   "output_mime_types": ["image/png"],
-  "workflow_json": {},
+  "workflow_json": {
+    "10": {"class_type": "LoadImage", "inputs": {"image": "{{source_image_filename}}"}},
+    "20": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": "RealESRGAN_x4plus.pth"}},
+    "30": {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["20", 0], "image": ["10", 0]}},
+    "40": {"class_type": "ImageScaleBy", "inputs": {"image": ["30", 0], "upscale_method": "lanczos", "scale_by": "{{post_scale}}"}},
+    "50": {"class_type": "SaveImage", "inputs": {"images": ["40", 0], "filename_prefix": "b1-media-studio/realesrgan-x4plus"}}
+  },
   "input_schema": {
     "type": "object",
     "required": ["source_image"],
     "properties": {
       "source_image": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" },
-      "scale": { "type": "integer", "enum": [2, 4], "default": 2 }
+      "scale": { "type": "integer", "enum": [2, 4], "default": 2 },
+      "post_scale": { "type": "number", "enum": [0.5, 1], "default": 0.5 }
     },
     "additionalProperties": false
   },
@@ -25,7 +32,8 @@
       "display_name": "2x",
       "description": "Default conservative upscale factor.",
       "values": {
-        "scale": 2
+        "scale": 2,
+        "post_scale": 0.5
       }
     }
   ],
@@ -35,7 +43,7 @@
       "images": { "type": "array", "items": { "type": "string" } }
     }
   },
-  "resource_class": "rtx3060-32gb",
+  "resource_class": "rtx3060-laptop-6gb-32gb",
   "dependencies": [
     { "type": "runtime", "id": "comfyui" },
     { "type": "model", "id": "image-upscale" }
@@ -45,5 +53,5 @@
     "max_height": 2048,
     "max_batch_size": 1
   },
-  "visibility_roles": ["admin", "operator", "creator", "user"]
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
 }

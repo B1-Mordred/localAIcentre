@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,23 @@ VALID_JOB_PRIORITIES = {priority.value for priority in PriorityClass}
 COMFYUI_NATIVE_MODEL_ALIAS = "comfyui-native"
 COMFYUI_NATIVE_RESUMABLE_STATES = ("running", "saving", "cancelling")
 RECONCILIATION_SAMPLE_LIMIT = 50
+interactive_gpu_waiters: dict[str, float] = {}
+
+
+async def register_interactive_gpu_waiter(owner: str, ttl_seconds: float) -> None:
+    interactive_gpu_waiters[owner] = time.monotonic() + max(1.0, float(ttl_seconds))
+
+
+async def unregister_interactive_gpu_waiter(owner: str) -> None:
+    interactive_gpu_waiters.pop(owner, None)
+
+
+async def has_interactive_gpu_waiter() -> bool:
+    now = time.monotonic()
+    expired = [owner for owner, deadline in interactive_gpu_waiters.items() if deadline <= now]
+    for owner in expired:
+        interactive_gpu_waiters.pop(owner, None)
+    return bool(interactive_gpu_waiters)
 
 
 def _sample_ids(ids: list[str]) -> list[str]:
@@ -107,11 +125,26 @@ model_alias_policies = Table(
     Column("preferred_runtime", String(64), nullable=True),
     Column("status", String(64), nullable=True),
     Column("idle_timeout_seconds", Integer, nullable=True),
+    Column("reasoning_effort", String(16), nullable=True),
     Column("visibility_roles", JSONB, nullable=False, default=list),
     Column("notes", Text, nullable=False, default=""),
     Column("updated_by", String(128), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+agent_transcripts = Table(
+    "b1_agent_transcripts",
+    metadata,
+    Column("conversation_id", String(128), nullable=False),
+    Column("owner_id", String(128), nullable=False),
+    Column("model_alias", String(128), nullable=False),
+    Column("transcript_envelope", JSONB, nullable=False, default=dict),
+    Column("message_count", Integer, nullable=False, default=0),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("conversation_id", "owner_id"),
 )
 
 model_downloads = Table(
@@ -488,6 +521,77 @@ audit_events = Table(
     Column("remote_addr", String(128), nullable=True),
 )
 
+benchmark_suites = Table(
+    "b1_benchmark_suites", metadata,
+    Column("id", String(128), nullable=False), Column("version", String(64), nullable=False),
+    Column("display_name", String(256), nullable=False), Column("modality", String(64), nullable=False),
+    Column("status", String(32), nullable=False, default="draft"), Column("definition", JSONB, nullable=False, default=dict),
+    Column("content_sha256", String(64), nullable=False), Column("created_by", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False), Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=True), PrimaryKeyConstraint("id", "version"),
+)
+benchmark_profiles = Table(
+    "b1_benchmark_profiles", metadata,
+    Column("id", String(128), nullable=False), Column("version", String(64), nullable=False),
+    Column("display_name", String(256), nullable=False), Column("status", String(32), nullable=False, default="published"),
+    Column("definition", JSONB, nullable=False, default=dict), Column("content_sha256", String(64), nullable=False),
+    Column("created_by", String(128), nullable=True), Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False), PrimaryKeyConstraint("id", "version"),
+)
+benchmark_campaigns = Table(
+    "b1_benchmark_campaigns", metadata,
+    Column("id", String(64), primary_key=True), Column("owner_id", String(128), nullable=False),
+    Column("suite_id", String(128), nullable=False), Column("suite_version", String(64), nullable=False),
+    Column("profile_id", String(128), nullable=False), Column("profile_version", String(64), nullable=False),
+    Column("status", String(32), nullable=False, default="draft"), Column("stage", String(128), nullable=False, default="draft"),
+    Column("progress", Integer, nullable=False, default=0), Column("candidates", JSONB, nullable=False, default=list),
+    Column("judge_snapshot", JSONB, nullable=False, default=dict), Column("device_groups", JSONB, nullable=False, default=list),
+    Column("summary", JSONB, nullable=False, default=dict), Column("failure_message", Text, nullable=True),
+    Column("raw_expires_at", DateTime(timezone=True), nullable=False), Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False), Column("started_at", DateTime(timezone=True), nullable=True),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+)
+benchmark_results = Table(
+    "b1_benchmark_results", metadata,
+    Column("id", String(64), primary_key=True), Column("campaign_id", String(64), nullable=False),
+    Column("candidate_ref", String(256), nullable=False), Column("case_id", String(128), nullable=False),
+    Column("attempt", Integer, nullable=False, default=1), Column("status", String(32), nullable=False, default="pending"),
+    Column("job_id", String(64), nullable=True), Column("output", JSONB, nullable=False, default=dict),
+    Column("metrics", JSONB, nullable=False, default=dict), Column("error_message", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False), Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+)
+benchmark_reviews = Table(
+    "b1_benchmark_reviews", metadata,
+    Column("id", String(64), primary_key=True), Column("campaign_id", String(64), nullable=False),
+    Column("reviewer_id", String(128), nullable=False), Column("blind_token", String(128), nullable=False),
+    Column("result_a_id", String(64), nullable=False), Column("result_b_id", String(64), nullable=False),
+    Column("winner", String(16), nullable=True), Column("scores", JSONB, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False), Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+benchmark_reports = Table(
+    "b1_benchmark_reports", metadata,
+    Column("id", String(64), primary_key=True), Column("campaign_id", String(64), nullable=False),
+    Column("status", String(32), nullable=False), Column("summary", JSONB, nullable=False, default=dict),
+    Column("files", JSONB, nullable=False, default=dict), Column("created_by", String(128), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+benchmark_judge_policy = Table(
+    "b1_benchmark_judge_policy", metadata,
+    Column("id", String(64), primary_key=True), Column("secret_name", String(128), nullable=True),
+    Column("top_models", JSONB, nullable=False, default=list), Column("codex_model", String(256), nullable=True),
+    Column("overrides", JSONB, nullable=False, default=dict), Column("catalog_snapshot", JSONB, nullable=False, default=dict),
+    Column("updated_by", String(128), nullable=True), Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+benchmark_device_locks = Table(
+    "b1_benchmark_device_locks", metadata,
+    Column("device_group", String(64), primary_key=True), Column("campaign_id", String(64), nullable=False),
+    Column("owner_id", String(128), nullable=False), Column("status", String(32), nullable=False, default="active"),
+    Column("expires_at", DateTime(timezone=True), nullable=False), Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 Index(
     "b1_jobs_owner_idempotency_key_uq",
     jobs.c.owner_id,
@@ -505,6 +609,7 @@ Index("b1_browser_sessions_expiry_idx", browser_sessions.c.expires_at)
 Index("b1_model_downloads_status_idx", model_downloads.c.status)
 Index("b1_model_downloads_model_idx", model_downloads.c.model_id, model_downloads.c.model_version)
 Index("b1_model_alias_policies_enabled_idx", model_alias_policies.c.enabled)
+Index("b1_agent_transcripts_owner_expiry_idx", agent_transcripts.c.owner_id, agent_transcripts.c.expires_at)
 Index("b1_runtime_reservations_status_idx", runtime_reservations.c.status)
 Index(
     "b1_runtime_reservations_owner_idempotency_key_uq",
@@ -533,11 +638,17 @@ Index("b1_audit_events_created_at_idx", audit_events.c.created_at)
 Index("b1_audit_events_event_type_idx", audit_events.c.event_type)
 Index("b1_audit_events_actor_id_idx", audit_events.c.actor_id)
 Index("b1_audit_events_target_idx", audit_events.c.target_type, audit_events.c.target_id)
+Index("b1_benchmark_campaigns_status_idx", benchmark_campaigns.c.status)
+Index("b1_benchmark_results_campaign_idx", benchmark_results.c.campaign_id)
+Index("b1_benchmark_reviews_campaign_idx", benchmark_reviews.c.campaign_id)
+Index("b1_benchmark_reviews_blind_uq", benchmark_reviews.c.reviewer_id, benchmark_reviews.c.blind_token, unique=True)
+Index("b1_benchmark_reports_campaign_idx", benchmark_reports.c.campaign_id)
 
 EXPORT_TABLES = [
     jobs,
     models,
     model_alias_policies,
+    agent_transcripts,
     model_downloads,
     scheduler_owner,
     users,
@@ -558,6 +669,14 @@ EXPORT_TABLES = [
     maintenance_state,
     update_plans,
     audit_events,
+    benchmark_suites,
+    benchmark_profiles,
+    benchmark_campaigns,
+    benchmark_results,
+    benchmark_reviews,
+    benchmark_reports,
+    benchmark_judge_policy,
+    benchmark_device_locks,
 ]
 EXPORT_TABLES_BY_NAME = {table.name: table for table in EXPORT_TABLES}
 LOGICAL_EXPORT_FORMAT = "b1-ai-hub-postgres-logical-export/v1"
@@ -595,6 +714,7 @@ SCHEMA_COMPATIBILITY_SQL = [
         "preferred_runtime varchar(64), "
         "status varchar(64), "
         "idle_timeout_seconds integer, "
+        "reasoning_effort varchar(16), "
         "visibility_roles jsonb NOT NULL DEFAULT '[]'::jsonb, "
         "notes text NOT NULL DEFAULT '', "
         "updated_by varchar(128), "
@@ -604,7 +724,22 @@ SCHEMA_COMPATIBILITY_SQL = [
     ),
     "ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS modality varchar(64)",
     "ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS status varchar(64)",
+    "ALTER TABLE b1_model_alias_policies ADD COLUMN IF NOT EXISTS reasoning_effort varchar(16)",
     "CREATE INDEX IF NOT EXISTS b1_model_alias_policies_enabled_idx ON b1_model_alias_policies (enabled)",
+    (
+        "CREATE TABLE IF NOT EXISTS b1_agent_transcripts ("
+        "conversation_id varchar(128) NOT NULL, "
+        "owner_id varchar(128) NOT NULL, "
+        "model_alias varchar(128) NOT NULL, "
+        "transcript_envelope jsonb NOT NULL DEFAULT '{}'::jsonb, "
+        "message_count integer NOT NULL DEFAULT 0, "
+        "expires_at timestamp with time zone NOT NULL, "
+        "created_at timestamp with time zone NOT NULL, "
+        "updated_at timestamp with time zone NOT NULL, "
+        "PRIMARY KEY (conversation_id, owner_id)"
+        ")"
+    ),
+    "CREATE INDEX IF NOT EXISTS b1_agent_transcripts_owner_expiry_idx ON b1_agent_transcripts (owner_id, expires_at)",
     "ALTER TABLE b1_runtime_reservations ADD COLUMN IF NOT EXISTS idempotency_key varchar(256)",
     "CREATE INDEX IF NOT EXISTS b1_runtime_reservations_status_idx ON b1_runtime_reservations (status)",
     (
@@ -949,6 +1084,7 @@ async def upsert_model_alias_policy(payload: dict[str, Any]) -> dict[str, Any]:
         "preferred_runtime": None,
         "status": None,
         "idle_timeout_seconds": None,
+        "reasoning_effort": None,
         "visibility_roles": [],
         "notes": "",
         "updated_by": None,
@@ -965,6 +1101,7 @@ async def upsert_model_alias_policy(payload: dict[str, Any]) -> dict[str, Any]:
             "preferred_runtime": stmt.excluded.preferred_runtime,
             "status": stmt.excluded.status,
             "idle_timeout_seconds": stmt.excluded.idle_timeout_seconds,
+            "reasoning_effort": stmt.excluded.reasoning_effort,
             "visibility_roles": stmt.excluded.visibility_roles,
             "notes": stmt.excluded.notes,
             "updated_by": stmt.excluded.updated_by,
@@ -992,6 +1129,68 @@ async def list_model_alias_policies() -> list[dict[str, Any]]:
         result = await conn.execute(select(model_alias_policies).order_by(model_alias_policies.c.alias.asc()))
         rows = result.mappings().all()
     return [dict(row) for row in rows]
+
+
+async def get_agent_transcript(conversation_id: str, owner_id: str) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            select(agent_transcripts).where(
+                and_(
+                    agent_transcripts.c.conversation_id == conversation_id,
+                    agent_transcripts.c.owner_id == owner_id,
+                    agent_transcripts.c.expires_at > datetime.now(tz=UTC),
+                )
+            )
+        )
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def upsert_agent_transcript(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    existing = await get_agent_transcript(payload["conversation_id"], payload["owner_id"])
+    row = {
+        "model_alias": "",
+        "transcript_envelope": {},
+        "message_count": 0,
+        "expires_at": now,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+        **payload,
+    }
+    stmt = pg_insert(agent_transcripts).values(**row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[agent_transcripts.c.conversation_id, agent_transcripts.c.owner_id],
+        set_={
+            "model_alias": stmt.excluded.model_alias,
+            "transcript_envelope": stmt.excluded.transcript_envelope,
+            "message_count": stmt.excluded.message_count,
+            "expires_at": stmt.excluded.expires_at,
+            "updated_at": now,
+        },
+    )
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return await get_agent_transcript(row["conversation_id"], row["owner_id"]) or row
+
+
+async def delete_agent_transcript(conversation_id: str, owner_id: str) -> bool:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            agent_transcripts.delete().where(
+                and_(
+                    agent_transcripts.c.conversation_id == conversation_id,
+                    agent_transcripts.c.owner_id == owner_id,
+                )
+            )
+        )
+    return bool(result.rowcount)
 
 
 async def delete_model_alias_policy(alias: str) -> dict[str, Any] | None:
@@ -2107,6 +2306,77 @@ async def get_job_by_artifact_url(artifact_url: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def completed_artifact_metadata(row: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """Return trusted managed-artifact metadata from a completed job only."""
+    if row.get("state") != "completed":
+        return None
+    artifacts = row.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get(key), dict):
+            return dict(artifact[key])
+    return None
+
+
+async def get_completed_managed_reference(
+    owner_id: str,
+    *,
+    operation: str,
+    reference_id: str,
+    metadata_key: str,
+    reference_field: str,
+) -> dict[str, Any] | None:
+    """Find an owner-scoped staged reference emitted by a managed job.
+
+    Staged uploads alone are deliberately not enough evidence for scene or
+    seated-character inputs.  The caller must prove that the reference came
+    from the expected completed managed operation and that its artifact
+    metadata contains the requested reusable reference.
+    """
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            select(jobs)
+            .where(
+                and_(
+                    jobs.c.owner_id == owner_id,
+                    jobs.c.operation == operation,
+                    jobs.c.state == "completed",
+                )
+            )
+            .order_by(jobs.c.completed_at.desc())
+            .limit(250)
+        )
+        rows = [dict(row) for row in result.mappings().all()]
+    for row in rows:
+        metadata = completed_artifact_metadata(row, metadata_key)
+        if isinstance(metadata, dict) and metadata.get(reference_field) == reference_id:
+            return {"job": row, "metadata": metadata}
+    return None
+
+
+async def get_completed_seated_character_reference(owner_id: str, reference_id: str) -> dict[str, Any] | None:
+    return await get_completed_managed_reference(
+        owner_id,
+        operation="studio-seated-character",
+        reference_id=reference_id,
+        metadata_key="seated_character",
+        reference_field="seated_reference_artifact_id",
+    )
+
+
+async def get_completed_studio_panel_reference(owner_id: str, reference_id: str) -> dict[str, Any] | None:
+    return await get_completed_managed_reference(
+        owner_id,
+        operation="studio-panel-shot",
+        reference_id=reference_id,
+        metadata_key="studio_panel",
+        reference_field="scene_artifact_id",
+    )
+
+
 async def get_job_by_native_prompt_id(prompt_id: str) -> dict[str, Any] | None:
     if engine is None:
         raise RuntimeError("database engine is not configured")
@@ -2373,6 +2643,186 @@ async def list_audit_events(
     return [dict(row) for row in rows]
 
 
+async def upsert_benchmark_suite(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    row = {"status": "draft", "created_by": None, "published_at": None, "created_at": now, "updated_at": now, **payload}
+    stmt = pg_insert(benchmark_suites).values(**row)
+    stmt = stmt.on_conflict_do_update(index_elements=[benchmark_suites.c.id, benchmark_suites.c.version], set_={
+        "display_name": stmt.excluded.display_name, "modality": stmt.excluded.modality, "status": stmt.excluded.status,
+        "definition": stmt.excluded.definition, "content_sha256": stmt.excluded.content_sha256,
+        "published_at": stmt.excluded.published_at, "updated_at": now,
+    })
+    async with engine.begin() as conn: await conn.execute(stmt)
+    return await get_benchmark_suite(row["id"], row["version"]) or row
+
+
+async def get_benchmark_suite(suite_id: str, version: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn:
+        result = await conn.execute(select(benchmark_suites).where(and_(benchmark_suites.c.id == suite_id, benchmark_suites.c.version == version)))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def list_benchmark_suites() -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_suites).order_by(benchmark_suites.c.id, benchmark_suites.c.version))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def publish_benchmark_suite(suite_id: str, version: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(update(benchmark_suites).where(and_(benchmark_suites.c.id == suite_id, benchmark_suites.c.version == version)).values(status="published", published_at=now, updated_at=now).returning(benchmark_suites))
+        row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def upsert_benchmark_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); row = {"status": "published", "created_by": None, "created_at": now, "updated_at": now, **payload}
+    stmt = pg_insert(benchmark_profiles).values(**row).on_conflict_do_update(index_elements=[benchmark_profiles.c.id, benchmark_profiles.c.version], set_={"display_name": payload["display_name"], "status": row["status"], "definition": row["definition"], "content_sha256": row["content_sha256"], "updated_at": now})
+    async with engine.begin() as conn: await conn.execute(stmt)
+    return row
+
+
+async def list_benchmark_profiles() -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_profiles).order_by(benchmark_profiles.c.id, benchmark_profiles.c.version))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def get_benchmark_profile(profile_id: str, version: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: row = (await conn.execute(select(benchmark_profiles).where(and_(benchmark_profiles.c.id == profile_id, benchmark_profiles.c.version == version)))).mappings().first()
+    return dict(row) if row else None
+
+
+async def insert_benchmark_campaign(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); row = {"status": "draft", "stage": "draft", "progress": 0, "judge_snapshot": {}, "device_groups": [], "summary": {}, "failure_message": None, "started_at": None, "completed_at": None, "created_at": now, "updated_at": now, **payload}
+    async with engine.begin() as conn: await conn.execute(insert(benchmark_campaigns).values(**row))
+    return row
+
+
+async def get_benchmark_campaign(campaign_id: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: row = (await conn.execute(select(benchmark_campaigns).where(benchmark_campaigns.c.id == campaign_id))).mappings().first()
+    return dict(row) if row else None
+
+
+async def list_benchmark_campaigns(limit: int = 100) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_campaigns).order_by(benchmark_campaigns.c.created_at.desc()).limit(max(1, min(limit, 500))))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def update_benchmark_campaign(campaign_id: str, **changes: Any) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    changes["updated_at"] = datetime.now(tz=UTC)
+    async with engine.begin() as conn: row = (await conn.execute(update(benchmark_campaigns).where(benchmark_campaigns.c.id == campaign_id).values(**changes).returning(benchmark_campaigns))).mappings().first()
+    return dict(row) if row else None
+
+
+async def insert_benchmark_result(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); row = {"attempt": 1, "status": "completed", "job_id": None, "output": {}, "metrics": {}, "error_message": None, "completed_at": now, "created_at": now, "updated_at": now, **payload}
+    async with engine.begin() as conn: await conn.execute(insert(benchmark_results).values(**row))
+    return row
+
+
+async def list_benchmark_results(campaign_id: str) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_results).where(benchmark_results.c.campaign_id == campaign_id).order_by(benchmark_results.c.created_at))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def insert_benchmark_review(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); row = {"winner": None, "scores": {}, "created_at": now, "updated_at": now, **payload}
+    async with engine.begin() as conn: await conn.execute(insert(benchmark_reviews).values(**row))
+    return row
+
+
+async def list_benchmark_reviews(campaign_id: str) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_reviews).where(benchmark_reviews.c.campaign_id == campaign_id).order_by(benchmark_reviews.c.created_at))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def upsert_benchmark_judge_policy(payload: dict[str, Any], policy_id: str = "default") -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); existing = await get_benchmark_judge_policy(policy_id)
+    row = {"id": policy_id, "secret_name": None, "top_models": [], "codex_model": None, "overrides": {}, "catalog_snapshot": {}, "updated_by": None, "created_at": existing["created_at"] if existing else now, "updated_at": now, **payload}
+    stmt = pg_insert(benchmark_judge_policy).values(**row).on_conflict_do_update(index_elements=[benchmark_judge_policy.c.id], set_={key: getattr(pg_insert(benchmark_judge_policy).excluded, key) for key in ("secret_name", "top_models", "codex_model", "overrides", "catalog_snapshot", "updated_by", "updated_at")})
+    async with engine.begin() as conn: await conn.execute(stmt)
+    return await get_benchmark_judge_policy(policy_id) or row
+
+
+async def get_benchmark_judge_policy(policy_id: str = "default") -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: row = (await conn.execute(select(benchmark_judge_policy).where(benchmark_judge_policy.c.id == policy_id))).mappings().first()
+    return dict(row) if row else None
+
+
+async def acquire_benchmark_device_locks(campaign_id: str, owner_id: str, device_groups: list[str], expires_at: datetime) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC); acquired: list[dict[str, Any]] = []
+    async with engine.begin() as conn:
+        await conn.execute(benchmark_device_locks.delete().where(or_(benchmark_device_locks.c.expires_at <= now, benchmark_device_locks.c.status != "active")))
+        for group in sorted(set(device_groups)):
+            row = {"device_group": group, "campaign_id": campaign_id, "owner_id": owner_id, "status": "active", "expires_at": expires_at, "created_at": now, "updated_at": now}
+            try: await conn.execute(insert(benchmark_device_locks).values(**row))
+            except IntegrityError as exc: raise ValueError(f"device group {group} is already locked") from exc
+            acquired.append(row)
+    return acquired
+
+
+async def active_benchmark_device_lock(device_group: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.connect() as conn: row = (await conn.execute(select(benchmark_device_locks).where(and_(benchmark_device_locks.c.device_group == device_group, benchmark_device_locks.c.status == "active", benchmark_device_locks.c.expires_at > now)))).mappings().first()
+    return dict(row) if row else None
+
+
+async def release_benchmark_device_locks(campaign_id: str) -> int:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.begin() as conn: result = await conn.execute(benchmark_device_locks.delete().where(benchmark_device_locks.c.campaign_id == campaign_id))
+    return int(result.rowcount or 0)
+
+
+async def purge_expired_benchmark_outputs(now: datetime | None = None) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    current = now or datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        rows = (await conn.execute(select(benchmark_campaigns).where(benchmark_campaigns.c.raw_expires_at <= current))).mappings().all()
+        campaign_ids = [row["id"] for row in rows]
+        if campaign_ids:
+            await conn.execute(update(benchmark_results).where(and_(benchmark_results.c.campaign_id.in_(campaign_ids), benchmark_results.c.output != {})).values(output={"retention_status": "deleted", "deleted_at": current.isoformat()}, updated_at=current))
+    return [dict(row) for row in rows]
+
+
+async def insert_benchmark_report(payload: dict[str, Any]) -> dict[str, Any]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    row = {"created_at": datetime.now(tz=UTC), **payload}
+    async with engine.begin() as conn: await conn.execute(insert(benchmark_reports).values(**row))
+    return row
+
+
+async def list_benchmark_reports(campaign_id: str) -> list[dict[str, Any]]:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: rows = (await conn.execute(select(benchmark_reports).where(benchmark_reports.c.campaign_id == campaign_id).order_by(benchmark_reports.c.created_at.desc()))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def get_benchmark_report(report_id: str) -> dict[str, Any] | None:
+    if engine is None: raise RuntimeError("database engine is not configured")
+    async with engine.connect() as conn: row = (await conn.execute(select(benchmark_reports).where(benchmark_reports.c.id == report_id))).mappings().first()
+    return dict(row) if row else None
+
+
 async def claim_next_job(
     runtime_names: list[str],
     claimed_state: str = "running",
@@ -2388,6 +2838,9 @@ async def claim_next_job(
     states = claimable_states or ["queued"]
     now = datetime.now(tz=UTC)
     async with engine.begin() as conn:
+        lock_rows = (await conn.execute(select(benchmark_device_locks.c.device_group, benchmark_device_locks.c.campaign_id).where(and_(benchmark_device_locks.c.status == "active", benchmark_device_locks.c.expires_at > now)))).mappings().all()
+        locked_groups = {row["device_group"]: row["campaign_id"] for row in lock_rows}
+        runtime_groups = {"localai": "b1-gpu", "comfyui": "b1-gpu", "voicebox": "b1-gpu", "lipsync": "b1-gpu", "lan-localai-worker": "p40-gpu", "lan-deepseek-worker": "p40-gpu", "lan-p40-media": "p40-gpu"}
         active_reservations: list[dict[str, Any]] = []
         if respect_runtime_reservations:
             await expire_active_runtime_reservations(conn, now)
@@ -2398,6 +2851,10 @@ async def claim_next_job(
             )
             active_reservations = [dict(row) for row in reservation_result.mappings().all()]
         filters = [jobs.c.state.in_(states), jobs.c.runtime.in_(runtime_names)]
+        for runtime, group in runtime_groups.items():
+            campaign_id = locked_groups.get(group)
+            if campaign_id and runtime in runtime_names:
+                filters.append(or_(jobs.c.runtime != runtime, jobs.c.owner_id == f"benchmark:{campaign_id}"))
         if active_reservations:
             filters.append(
                 or_(
@@ -2964,6 +3421,29 @@ async def update_api_client_default_b1_tools(client_id: str, default_b1_tools: l
             update(api_clients)
             .where(api_clients.c.id == client_id)
             .values(default_b1_tools=default_b1_tools, updated_at=now)
+        )
+    return await get_api_client(client_id)
+
+
+async def update_api_client_role_and_scopes(
+    client_id: str,
+    role: str,
+    scopes: list[str],
+) -> dict[str, Any] | None:
+    if engine is None:
+        raise RuntimeError("database engine is not configured")
+    now = datetime.now(tz=UTC)
+    async with engine.begin() as conn:
+        result = await conn.execute(select(api_clients).where(api_clients.c.id == client_id).with_for_update())
+        row = result.mappings().first()
+        if row is None:
+            return None
+        if row["revoked_at"] is not None:
+            return dict(row)
+        await conn.execute(
+            update(api_clients)
+            .where(api_clients.c.id == client_id)
+            .values(role=role, scopes=scopes, updated_at=now)
         )
     return await get_api_client(client_id)
 

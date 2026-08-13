@@ -40,6 +40,7 @@ COPY --from=localai_llama_cpp_backend /llama-cpp-rpc-server /opt/b1/localai/back
 COPY --from=localai_llama_cpp_backend /run.sh /opt/b1/localai/backends/llama-cpp/run.sh
 
 COPY b1-localai-entrypoint.sh /usr/local/bin/b1-localai-entrypoint.sh
+COPY b1-p40-worker-entrypoint.sh /usr/local/bin/b1-p40-worker-entrypoint.sh
 COPY b1_localai_config.py /usr/local/bin/b1_localai_config.py
 COPY b1_localai_proxy.py /usr/local/bin/b1_localai_proxy.py
 
@@ -48,12 +49,12 @@ RUN ln -s llama-cpp /opt/b1/localai/backends/cuda12-llama-cpp \
     && if ! getent group "${B1_LOCALAI_GID}" >/dev/null; then groupadd --system --gid "${B1_LOCALAI_GID}" b1; fi \
     && if ! getent passwd "${B1_LOCALAI_UID}" >/dev/null; then useradd --system --uid "${B1_LOCALAI_UID}" --gid "${B1_LOCALAI_GID}" --home-dir /srv/b1-ai-hub/localai --shell /usr/sbin/nologin b1; fi \
     && chown -R "${B1_LOCALAI_UID}:${B1_LOCALAI_GID}" /srv/b1-ai-hub \
-    && chmod 0755 /usr/local/bin/b1-localai-entrypoint.sh /usr/local/bin/b1_localai_config.py /usr/local/bin/b1_localai_proxy.py
+    && chmod 0755 /usr/local/bin/b1-localai-entrypoint.sh /usr/local/bin/b1-p40-worker-entrypoint.sh /usr/local/bin/b1_localai_config.py /usr/local/bin/b1_localai_proxy.py
 
-USER ${B1_LOCALAI_UID}:${B1_LOCALAI_GID}
+USER 0:0
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=60m \
     CMD curl -fsS http://127.0.0.1:8080/readyz || exit 1
 
-ENTRYPOINT ["tini", "--", "b1-localai-entrypoint.sh"]
+ENTRYPOINT ["b1-p40-worker-entrypoint.sh"]

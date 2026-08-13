@@ -91,10 +91,14 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["aliases"], ["chat-default", "chat-fast"])
         self.assertEqual(profiles["everyday-llm-7-9b-q4"]["resource_label"], "recommended")
         self.assertEqual(profiles["quality-llm-12-14b-q4"]["resource_label"], "offload-required")
+        self.assertEqual(
+            profiles["quality-llm-12-14b-q4"]["preferred_runtimes"],
+            ["lan-localai-worker", "localai"],
+        )
         self.assertEqual(profiles["short-video-6gb-sequence-workflow"]["resource_label"], "recommended")
         self.assertEqual(
             profiles["short-video-6gb-sequence-workflow"]["candidate_manifest_ids"],
-            ["b1-sd15-pruned-emaonly-comfyui-video-sequence"],
+            ["b1-comfy-org-wan2.1-t2v-1.3b-comfyui"],
         )
         self.assertEqual(profiles["fast-cpu-tts"]["candidate_manifest_ids"], ["b1-piper-en-us-amy-low"])
         self.assertEqual(profiles["quality-voicebox-tts"]["candidate_manifest_ids"], ["b1-resembleai-chatterbox-voicebox"])
@@ -128,9 +132,14 @@ class CatalogTests(unittest.TestCase):
             "deprecation",
             "runtime_smoke",
             "measurements",
+            "capabilities",
         }
 
         self.assertTrue(expected_governance <= properties)
+        measurement_runtimes = set(
+            schema["properties"]["measurements"]["properties"]["runs"]["items"]["properties"]["runtime"]["enum"]
+        )
+        self.assertIn("lan-localai-worker", measurement_runtimes)
         for manifest_path in sorted((ROOT / "model-catalog" / "seed").glob("*.manifest.json")):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(set(manifest) - properties, set(), manifest_path.name)
@@ -440,6 +449,20 @@ class CatalogTests(unittest.TestCase):
                 "runtimes": ["localai"],
                 "preferred_runtime": "localai",
                 "runtime_adapter_versions": {"localai": ">=4.7.1 <5"},
+                "capabilities": {
+                    "schema": "b1-ai-hub-model-capabilities/v1",
+                    "chat_template": "embedded-jinja",
+                    "streaming": True,
+                    "thinking": True,
+                    "reasoning_content": True,
+                    "tool_calls": True,
+                    "json_tool_arguments": True,
+                    "sequential_tool_calls": True,
+                    "reasoning_between_tool_calls": True,
+                    "speculative_decoding": "experimental",
+                    "speculative_draft_model": "chat-small-draft",
+                    "validated_context_tokens": [65536, 16384, 32768],
+                },
                 "companion_files": [
                     {
                         "path": "tokenizer.json",
@@ -477,6 +500,20 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(record["companion_files"][0]["path"], "tokenizer.json")
             self.assertEqual(record["permissions"]["downloadable_by"], ["admin", "service"])
             self.assertEqual(record["deprecation"]["replacement_model"], "chat-next")
+            self.assertEqual(record["capabilities"]["chat_template"], "embedded-jinja")
+            self.assertEqual(record["capabilities"]["validated_context_tokens"], [16384, 32768, 65536])
+
+            public = catalog.require_alias("chat-default").to_openai_model()
+            self.assertTrue(public["capabilities"]["reasoning_content"])
+            self.assertEqual(public["capabilities"]["speculative_decoding"], "experimental")
+
+            invalid = dict(manifest)
+            invalid["capabilities"] = {
+                "schema": "b1-ai-hub-model-capabilities/v1",
+                "tool_calls": "yes",
+            }
+            with self.assertRaisesRegex(CatalogError, "capabilities.tool_calls must be boolean"):
+                parse_manifest_payload(invalid)
 
     def test_manifest_file_source_path_round_trips_and_validates(self) -> None:
         payload = {

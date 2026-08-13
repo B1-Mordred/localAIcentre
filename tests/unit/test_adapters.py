@@ -12,7 +12,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "control-plane"))
 
 import app.adapters as adapters  # noqa: E402
-from app.adapters import ADAPTER_CONTRACT_VERSION, RuntimeResolutionError, build_runtime_registry, validate_external_runtime_base_url  # noqa: E402
+from app.adapters import (  # noqa: E402
+    ADAPTER_CONTRACT_VERSION,
+    RuntimeResolutionError,
+    build_runtime_registry,
+    validate_external_runtime_base_url,
+    validate_lan_runtime_base_url,
+)
 from app.catalog import (  # noqa: E402
     AliasDefinition,
     ManifestFile,
@@ -137,6 +143,85 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertIn("image-generation", public["capabilities"]["operations"])
         self.assertTrue(public["capabilities"]["requires_gpu"])
         self.assertTrue(public["native_api"])
+
+    def test_lan_p40_media_adapter_is_private_authenticated_and_fail_closed(self) -> None:
+        self.patch_resolver(["192.168.2.109"])
+        registry = self.registry(
+            lan_p40_media_url="https://p40-worker.b1.germering:9443",
+            lan_p40_media_hostname="p40-worker.b1.germering",
+            lan_p40_media_allowed_cidrs=("192.168.2.109/32",),
+            lan_p40_media_tls_ca_file="/run/secrets/p40-ca.crt",
+            lan_p40_media_api_key="runtime-token",
+        )
+        adapter = registry.adapter("lan-p40-media")
+
+        self.assertIsNotNone(adapter)
+        self.assertTrue(adapter.configured)
+        self.assertTrue(adapter.private_lan)
+        self.assertEqual(adapter.health_path, "/media/healthz")
+        self.assertEqual(adapter.request_headers(), {"Authorization": "Bearer runtime-token"})
+        self.assertIn("studio-seated-character", adapter.operations)
+        self.assertNotIn("studio-panel-shot", adapter.operations)
+
+        catalog = ModelCatalog(
+            aliases=[AliasDefinition(alias="seated-p40", modality="image", preferred_runtime="lan-p40-media", status="installed")],
+            manifests=[
+                manifest(
+                    "seated-p40-model",
+                    "image",
+                    ["seated-p40"],
+                    ["lan-p40-media"],
+                    "lan-p40-media",
+                    vram_gib=5.8,
+                    operations=["studio-seated-character"],
+                )
+            ],
+            policy=ResourcePolicy(),
+        )
+        self.assertEqual(
+            registry.resolve(catalog.require_alias("seated-p40"), operation="studio-seated-character").runtime,
+            "lan-p40-media",
+        )
+
+    def test_lan_p40_media_adapter_rejects_dns_outside_approved_cidr(self) -> None:
+        self.patch_resolver(["100.100.100.100"])
+        adapter = self.registry(
+            lan_p40_media_url="https://p40-worker.b1.germering:9443",
+            lan_p40_media_hostname="p40-worker.b1.germering",
+            lan_p40_media_allowed_cidrs=("192.168.2.109/32",),
+            lan_p40_media_tls_ca_file="/run/secrets/p40-ca.crt",
+        ).adapter("lan-p40-media")
+
+        self.assertIsNotNone(adapter)
+        self.assertFalse(adapter.configured)
+        self.assertIn("approved CIDRs", adapter.configuration_error)
+
+    def test_panel_compositor_resolves_to_in_process_cpu_adapter(self) -> None:
+        catalog = ModelCatalog(
+            aliases=[AliasDefinition(alias="studio-panel-shot", modality="image", preferred_runtime="panel-cpu", status="installed")],
+            manifests=[
+                manifest(
+                    "panel-compositor",
+                    "image",
+                    ["studio-panel-shot"],
+                    ["panel-cpu"],
+                    "panel-cpu",
+                    vram_gib=0.0,
+                    operations=["studio-panel-shot"],
+                )
+            ],
+            policy=ResourcePolicy(),
+        )
+        registry = self.registry()
+        adapter = registry.adapter("panel-cpu")
+        resolution = registry.resolve(catalog.require_alias("studio-panel-shot"), operation="studio-panel-shot")
+
+        self.assertIsNotNone(adapter)
+        self.assertFalse(adapter.requires_gpu)
+        self.assertEqual(resolution.runtime, "panel-cpu")
+        self.assertFalse(resolution.requires_gpu)
+        self.assertEqual(adapter.adapter_contract()["surfaces"]["scheduler"], "cpu-or-external")
+        self.assertEqual(asyncio.run(adapter.health())["status"], "ok")
 
     def test_non_comfy_policy_selects_non_comfy_runtime_when_available(self) -> None:
         catalog = ModelCatalog(
@@ -288,6 +373,89 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertEqual(normalized, "")
         self.assertEqual(error, "external runtime hostname could not be resolved safely")
 
+    def test_lan_runtime_validation_requires_exact_host_and_approved_cidr(self) -> None:
+        resolver = lambda _hostname, _port: ["192.168.2.109"]
+
+        normalized, error = validate_lan_runtime_base_url(
+            "https://p40-worker.b1.germering:9443",
+            approved_hostname="p40-worker.b1.germering",
+            approved_cidrs=("192.168.2.109/32",),
+            resolver=resolver,
+        )
+
+        self.assertEqual(normalized, "https://p40-worker.b1.germering:9443")
+        self.assertIsNone(error)
+        for url, hostname, addresses in (
+            ("http://p40-worker.b1.germering:9443", "p40-worker.b1.germering", ["192.168.2.109"]),
+            ("https://other.b1.germering:9443", "p40-worker.b1.germering", ["192.168.2.109"]),
+            ("https://p40-worker.b1.germering:9443/v1", "p40-worker.b1.germering", ["192.168.2.109"]),
+            ("https://p40-worker.b1.germering:9443", "p40-worker.b1.germering", ["192.168.2.110"]),
+        ):
+            with self.subTest(url=url, addresses=addresses):
+                rejected, rejection = validate_lan_runtime_base_url(
+                    url,
+                    approved_hostname=hostname,
+                    approved_cidrs=("192.168.2.109/32",),
+                    resolver=lambda _host, _port, answers=addresses: answers,
+                )
+                self.assertEqual(rejected, "")
+                self.assertIsNotNone(rejection)
+
+        normalized_path, path_error = validate_lan_runtime_base_url(
+            "https://p40-worker.b1.germering:9443/deepseek",
+            approved_hostname="p40-worker.b1.germering",
+            approved_cidrs=("192.168.2.109/32",),
+            approved_path="/deepseek",
+            resolver=resolver,
+        )
+        self.assertEqual(normalized_path, "https://p40-worker.b1.germering:9443/deepseek")
+        self.assertIsNone(path_error)
+
+    def test_lan_worker_adapter_is_private_managed_and_redacts_trust_paths(self) -> None:
+        self.patch_resolver(["192.168.2.109"])
+        registry = self.registry(
+            lan_localai_worker_url="https://p40-worker.b1.germering:9443",
+            lan_localai_worker_hostname="p40-worker.b1.germering",
+            lan_localai_worker_allowed_cidrs=("192.168.2.109/32",),
+            lan_localai_worker_tls_ca_file="/run/trust/p40-worker.crt",
+            lan_localai_worker_api_key="hook-token",
+        )
+        adapter = registry.adapter("lan-localai-worker")
+
+        self.assertIsNotNone(adapter)
+        self.assertTrue(adapter.configured)
+        self.assertTrue(adapter.private_lan)
+        public = adapter.public_dict()
+        self.assertNotIn("tls_ca_file", public)
+        self.assertNotIn("approved_hostname", public)
+        self.assertNotIn("approved_cidrs", public)
+        self.assertNotIn("api_key", public)
+        self.assertEqual(adapter.request_headers(), {"Authorization": "Bearer hook-token"})
+        self.assertEqual(public["adapter_contract"]["surfaces"]["scheduler"], "global-gpu-lease")
+        self.assertEqual(public["adapter_contract"]["methods"]["metrics"], "authenticated-lan-runtime-metrics")
+
+    def test_lan_deepseek_adapter_uses_isolated_path_and_private_trust_policy(self) -> None:
+        self.patch_resolver(["192.168.2.109"])
+        registry = self.registry(
+            lan_deepseek_worker_url="https://p40-worker.b1.germering:9443/deepseek",
+            lan_deepseek_worker_hostname="p40-worker.b1.germering",
+            lan_deepseek_worker_allowed_cidrs=("192.168.2.109/32",),
+            lan_deepseek_worker_tls_ca_file="/run/trust/p40-worker.crt",
+            lan_deepseek_worker_api_key="hook-token",
+        )
+        adapter = registry.adapter("lan-deepseek-worker")
+
+        self.assertIsNotNone(adapter)
+        self.assertTrue(adapter.configured)
+        self.assertTrue(adapter.private_lan)
+        self.assertEqual(
+            adapter.openai_url("/v1/chat/completions"),
+            "https://p40-worker.b1.germering:9443/deepseek/v1/chat/completions",
+        )
+        self.assertEqual(adapter.request_headers(), {"Authorization": "Bearer hook-token"})
+        self.assertEqual(adapter.modalities, ("llm",))
+        self.assertEqual(adapter.operations, ("chat", "responses"))
+
     def test_external_runtime_public_shape_redacts_secret_and_joins_v1_path(self) -> None:
         registry = self.registry(
             allow_external=True,
@@ -320,8 +488,9 @@ class RuntimeAdapterTests(unittest.TestCase):
                 return {"ok": True}
 
         class FakeAsyncClient:
-            def __init__(self, timeout: float) -> None:
+            def __init__(self, timeout: float, **kwargs: object) -> None:
                 self.timeout = timeout
+                self.__class__.init_calls.append({"timeout": timeout, **kwargs})
 
             async def __aenter__(self) -> "FakeAsyncClient":
                 return self
@@ -334,6 +503,7 @@ class RuntimeAdapterTests(unittest.TestCase):
                 return FakeResponse()
 
         FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        FakeAsyncClient.init_calls = []  # type: ignore[attr-defined]
         original = httpx.AsyncClient
         httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(httpx, "AsyncClient", original))
@@ -351,6 +521,22 @@ class RuntimeAdapterTests(unittest.TestCase):
         self.assertEqual(body, {"ok": True})
         self.assertEqual(FakeAsyncClient.calls[0]["url"], "https://api.example.com/v1/models")  # type: ignore[attr-defined]
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer secret-token")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.init_calls[0]["timeout"], 120.0)  # type: ignore[attr-defined]
+
+        self.patch_resolver(["192.168.2.109"])
+        lan_adapter = self.registry(
+            lan_localai_worker_url="https://p40-worker.b1.germering:9443",
+            lan_localai_worker_hostname="p40-worker.b1.germering",
+            lan_localai_worker_allowed_cidrs=("192.168.2.109/32",),
+            lan_localai_worker_tls_ca_file="/run/trust/p40-worker.crt",
+            lan_localai_worker_api_key="hook-token",
+        ).adapter("lan-localai-worker")
+        self.assertIsNotNone(lan_adapter)
+
+        asyncio.run(lan_adapter.post_openai_json("/v1/chat/completions", {"model": "laguna-s-quality"}))
+
+        self.assertEqual(FakeAsyncClient.init_calls[1]["timeout"], 3700.0)  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.init_calls[1]["verify"], "/run/trust/p40-worker.crt")  # type: ignore[attr-defined]
 
     def test_localai_openai_payload_uses_resolved_model_and_strips_b1_policy(self) -> None:
         catalog = ModelCatalog(

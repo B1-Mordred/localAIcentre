@@ -5,14 +5,18 @@ import asyncio
 from contextlib import suppress
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import unicodedata
+import wave
 from pathlib import Path, PurePath
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -89,6 +93,8 @@ VOICEBOX_LANGUAGES = {
     "tr",
 }
 VOICEBOX_PROFILE_MAP_LOCK = threading.Lock()
+VOICE_ALIGNMENT_LOCK = threading.Lock()
+VOICE_ALIGNMENT_CACHE: dict[str, Any] = {}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -452,6 +458,34 @@ def safe_runtime_scalar(value: Any) -> bool:
     return not any(ord(character) < 32 for character in stripped)
 
 
+def request_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def request_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
+def request_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
 def safe_artifact_path_segments(relative_path: str) -> list[str]:
     segments: list[str] = []
     for raw_part in relative_path.split("/"):
@@ -646,6 +680,581 @@ def native_generation_payload(payload: dict[str, Any], profile: dict[str, Any] |
     return body
 
 
+def json_body_object(body: bytes, content_type: str) -> dict[str, Any] | None:
+    if "json" not in content_type.lower():
+        return None
+    try:
+        payload = json.loads(body or b"{}")
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def accept_allows_wav(accept_header: str) -> bool:
+    if not accept_header.strip():
+        return True
+    values = {item.split(";", 1)[0].strip().lower() for item in accept_header.split(",")}
+    return "audio/wav" in values or "audio/*" in values or "*/*" in values
+
+
+def broadcast_audio_policy(payload: dict[str, Any] | None, accept_header: str = "") -> dict[str, Any] | None:
+    if not isinstance(payload, dict) or not env_bool("B1_VOICEBOX_BROADCAST_AUDIO_ENABLED", True):
+        return None
+    explicit = payload.get("b1_broadcast_audio")
+    normalize = request_bool(payload.get("normalize"), False)
+    if explicit is not None and not request_bool(explicit, False):
+        return None
+    if explicit is None and not normalize:
+        return None
+    if not accept_allows_wav(accept_header):
+        return None
+    sample_rate = request_int(
+        payload.get("b1_audio_sample_rate") or payload.get("output_sample_rate"),
+        env_int("B1_VOICEBOX_BROADCAST_SAMPLE_RATE", 48000),
+        8000,
+        192000,
+    )
+    true_peak_ceiling = env_float("B1_VOICEBOX_BROADCAST_TRUE_PEAK_DBTP", -1.5)
+    requested_true_peak = request_float(payload.get("b1_true_peak_dbtp"), true_peak_ceiling, -9.0, 0.0)
+    true_peak_dbtp = min(requested_true_peak, true_peak_ceiling)
+    return {
+        "sample_rate": sample_rate,
+        "channels": 1,
+        "loudness_lufs": request_float(payload.get("b1_loudness_lufs"), env_float("B1_VOICEBOX_BROADCAST_LOUDNESS_LUFS", -18.0), -70.0, -5.0),
+        "loudness_range_lu": request_float(payload.get("b1_loudness_range_lu"), env_float("B1_VOICEBOX_BROADCAST_LRA_LU", 11.0), 1.0, 50.0),
+        "true_peak_dbtp": true_peak_dbtp,
+        "limit_amplitude": min(1.0, max(0.0625, 10 ** (true_peak_dbtp / 20.0))),
+    }
+
+
+def broadcast_audio_headers(policy: dict[str, Any]) -> dict[str, str]:
+    return {
+        "content-type": "audio/wav",
+        "x-b1-audio-policy": "broadcast",
+        "x-b1-audio-sample-rate": str(policy["sample_rate"]),
+        "x-b1-audio-channels": str(policy["channels"]),
+        "x-b1-audio-loudness-lufs": str(policy["loudness_lufs"]),
+        "x-b1-audio-true-peak-dbtp": str(policy["true_peak_dbtp"]),
+    }
+
+
+def broadcast_loudnorm_filter(policy: dict[str, Any], measurements: dict[str, Any] | None = None, *, print_format: str = "none") -> str:
+    options = (
+        f"aresample={int(policy['sample_rate'])},"
+        f"loudnorm=I={float(policy['loudness_lufs'])}:"
+        f"TP={float(policy['true_peak_dbtp'])}:"
+        f"LRA={float(policy['loudness_range_lu'])}:"
+    )
+    if measurements:
+        options += (
+            f"measured_I={measurements['input_i']}:"
+            f"measured_TP={measurements['input_tp']}:"
+            f"measured_LRA={measurements['input_lra']}:"
+            f"measured_thresh={measurements['input_thresh']}:"
+            f"offset={measurements['target_offset']}:"
+            "linear=true:"
+        )
+    else:
+        options += "linear=false:"
+    options += (
+        f"dual_mono=true:print_format={print_format},"
+        f"alimiter=limit={float(policy['limit_amplitude']):.6f}:attack=5:release=50:level=false"
+    )
+    return options
+
+
+def parse_loudnorm_measurements(stderr: bytes) -> dict[str, Any] | None:
+    text = stderr.decode("utf-8", errors="ignore")
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    required = {"input_i", "input_tp", "input_lra", "input_thresh", "target_offset"}
+    if not isinstance(payload, dict) or not required.issubset(payload):
+        return None
+    return {key: str(payload[key]) for key in required}
+
+
+def ffmpeg_run(content: bytes, args: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        args,
+        input=content,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def measure_loudnorm(content: bytes, policy: dict[str, Any], timeout: float) -> dict[str, Any] | None:
+    filters = broadcast_loudnorm_filter(policy, print_format="json")
+    result = ffmpeg_run(
+        content,
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-nostats",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-af",
+            filters,
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout,
+    )
+    if result.returncode != 0:
+        return None
+    return parse_loudnorm_measurements(result.stderr)
+
+
+def render_broadcast_wav(content: bytes, policy: dict[str, Any], timeout: float, measurements: dict[str, Any] | None = None) -> bytes:
+    filters = broadcast_loudnorm_filter(policy, measurements=measurements, print_format="none")
+    result = ffmpeg_run(
+        content,
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostats",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            str(int(policy["channels"])),
+            "-ar",
+            str(int(policy["sample_rate"])),
+            "-af",
+            filters,
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+            "pipe:1",
+        ],
+        timeout=timeout,
+    )
+    if result.returncode != 0 or not result.stdout:
+        error = result.stderr.decode("utf-8", errors="ignore").strip()[:300]
+        raise RuntimeError(error or "ffmpeg broadcast audio processing failed")
+    return result.stdout
+
+
+def postprocess_broadcast_wav(content: bytes, policy: dict[str, Any]) -> bytes:
+    if not content:
+        raise RuntimeError("empty upstream audio cannot be broadcast-normalized")
+    timeout = env_float("B1_VOICEBOX_BROADCAST_FFMPEG_TIMEOUT_SECONDS", 120.0)
+    measurements = measure_loudnorm(content, policy, timeout)
+    return render_broadcast_wav(content, policy, timeout, measurements=measurements)
+
+
+async def maybe_postprocess_broadcast_wav(content: bytes, policy: dict[str, Any] | None) -> bytes:
+    if policy is None:
+        return content
+    return await asyncio.to_thread(postprocess_broadcast_wav, content, policy)
+
+
+def voice_timing_dir() -> Path:
+    return voicebox_data_dir() / "timing"
+
+
+def audio_wav_properties(content: bytes) -> dict[str, int]:
+    with wave.open(io.BytesIO(content), "rb") as handle:
+        frames = handle.getnframes()
+        sample_rate = handle.getframerate()
+        channels = handle.getnchannels()
+        sample_width = handle.getsampwidth()
+    if sample_rate <= 0:
+        raise ValueError("WAV sample rate is invalid")
+    bytes_per_frame = max(1, channels * sample_width)
+    data_offset = content.find(b"data")
+    if data_offset >= 0 and len(content) >= data_offset + 8:
+        actual_data_bytes = max(0, len(content) - data_offset - 8)
+        actual_frames = actual_data_bytes // bytes_per_frame
+        if actual_frames > 0 and (frames <= 0 or frames > actual_frames * 2):
+            frames = actual_frames
+    return {
+        "frames": int(frames),
+        "sample_rate": int(sample_rate),
+        "channels": int(channels),
+        "sample_width": int(sample_width),
+        "duration_ms": int(round((frames / sample_rate) * 1000)),
+    }
+
+
+def wav_to_mono_float_tensor(content: bytes, torch_module: Any) -> tuple[Any, int]:
+    with wave.open(io.BytesIO(content), "rb") as handle:
+        sample_rate = int(handle.getframerate())
+        channels = int(handle.getnchannels())
+        sample_width = int(handle.getsampwidth())
+        frame_bytes = handle.readframes(handle.getnframes())
+    if not frame_bytes or sample_rate <= 0 or channels <= 0:
+        raise ValueError("WAV audio has no readable PCM frames")
+    if sample_width == 2:
+        waveform = torch_module.frombuffer(bytearray(frame_bytes), dtype=torch_module.int16).float() / 32768.0
+    elif sample_width == 4:
+        waveform = torch_module.frombuffer(bytearray(frame_bytes), dtype=torch_module.int32).float() / 2147483648.0
+    elif sample_width == 1:
+        waveform = (torch_module.frombuffer(bytearray(frame_bytes), dtype=torch_module.uint8).float() - 128.0) / 128.0
+    else:
+        raise ValueError(f"unsupported WAV sample width {sample_width}")
+    usable = (waveform.numel() // channels) * channels
+    if usable <= 0:
+        raise ValueError("WAV audio frame count is invalid")
+    waveform = waveform[:usable].reshape(-1, channels).transpose(0, 1)
+    if channels > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    return waveform.contiguous(), sample_rate
+
+
+WORD_RE = re.compile(r"[\wÀ-ÖØ-öø-ÿ]+(?:[-'][\wÀ-ÖØ-öø-ÿ]+)?", re.UNICODE)
+
+
+def timing_text_words(text: str) -> list[str]:
+    return [match.group(0) for match in WORD_RE.finditer(text)]
+
+
+def normalize_alignment_word(word: str) -> str:
+    normalized = word.strip().lower()
+    normalized = (
+        normalized.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+        .replace("æ", "ae")
+        .replace("œ", "oe")
+    )
+    decomposed = unicodedata.normalize("NFKD", normalized)
+    ascii_word = "".join(character for character in decomposed if not unicodedata.combining(character))
+    return re.sub(r"[^a-z']", "", ascii_word)
+
+
+def espeak_language(language: str) -> str:
+    normalized = (language or "en").strip().lower().replace("_", "-")
+    if normalized.startswith("de"):
+        return "de"
+    if normalized.startswith("en"):
+        return "en-us"
+    return normalized.split("-", 1)[0] or "en-us"
+
+
+def fallback_word_phonemes(word: str) -> list[str]:
+    return [char.lower() for char in word if char.isalnum()] or [word]
+
+
+def phonemize_words(words: list[str], language: str) -> list[list[str]]:
+    if not words:
+        return []
+    try:
+        import espeakng_loader
+        from phonemizer import phonemize
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+        from phonemizer.separator import Separator
+
+        tmp = voicebox_data_dir() / "tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        tempfile.tempdir = str(tmp)
+        EspeakWrapper.set_library(str(espeakng_loader.get_library_path()))
+        EspeakWrapper.set_data_path(str(espeakng_loader.get_data_path()))
+        lines = phonemize(
+            words,
+            language=espeak_language(language),
+            backend="espeak",
+            strip=True,
+            preserve_punctuation=False,
+            with_stress=False,
+            njobs=1,
+            language_switch="remove-flags",
+            words_mismatch="ignore",
+            separator=Separator(phone=" ", word=" | ", syllable=""),
+        )
+    except Exception as exc:
+        log_json(component="b1-voicebox-proxy", event="voice_timing_phonemizer_unavailable", error=exc.__class__.__name__)
+        return [fallback_word_phonemes(word) for word in words]
+    result: list[list[str]] = []
+    for word, line in zip(words, lines, strict=False):
+        cleaned = re.sub(r"[|‖]+", " ", str(line)).strip()
+        phones = [item for item in cleaned.split() if item]
+        result.append(phones or fallback_word_phonemes(word))
+    while len(result) < len(words):
+        result.append(fallback_word_phonemes(words[len(result)]))
+    return result
+
+
+def mms_alignment_enabled() -> bool:
+    return env_bool("B1_VOICEBOX_TIMING_MMS_ALIGNER_ENABLED", True)
+
+
+def mms_alignment_device() -> str:
+    return os.getenv("B1_VOICEBOX_TIMING_MMS_ALIGNER_DEVICE", "cpu").strip().lower() or "cpu"
+
+
+def mms_alignment_cache() -> tuple[Any, Any, Any, str]:
+    device = mms_alignment_device()
+    cache_key = f"mms-fa:{device}"
+    with VOICE_ALIGNMENT_LOCK:
+        cached = VOICE_ALIGNMENT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        import torch
+        import torchaudio
+
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "cpu"
+        bundle = torchaudio.pipelines.MMS_FA
+        model = bundle.get_model(with_star=False).to(device)
+        model.eval()
+        tokenizer = bundle.get_tokenizer()
+        aligner = bundle.get_aligner()
+        cached = (model, tokenizer, aligner, device)
+        VOICE_ALIGNMENT_CACHE[cache_key] = cached
+        return cached
+
+
+def forced_align_words_mms(content: bytes, words: list[str]) -> dict[str, Any] | None:
+    if not mms_alignment_enabled() or not words:
+        return None
+    normalized_words = [normalize_alignment_word(word) for word in words]
+    if any(not word for word in normalized_words):
+        return None
+    try:
+        import torch
+        import torchaudio
+
+        model, tokenizer, aligner, device = mms_alignment_cache()
+        waveform, sample_rate = wav_to_mono_float_tensor(content, torch)
+        if waveform.ndim != 2 or waveform.shape[0] < 1:
+            return None
+        target_sample_rate = int(torchaudio.pipelines.MMS_FA.sample_rate)
+        if int(sample_rate) != target_sample_rate:
+            waveform = torchaudio.functional.resample(waveform, int(sample_rate), target_sample_rate)
+        waveform = waveform.to(device)
+        tokens = tokenizer(normalized_words)
+        with torch.inference_mode():
+            emission, _ = model(waveform)
+            token_spans = aligner(emission[0].cpu(), tokens)
+        waveform_duration_ms = int(round((waveform.shape[1] / target_sample_rate) * 1000))
+        ratio = waveform_duration_ms / max(1, emission.shape[1])
+    except Exception as exc:
+        log_json(component="b1-voicebox-proxy", event="voice_timing_mms_alignment_failed", error=exc.__class__.__name__)
+        return None
+    word_timestamps: list[dict[str, Any]] = []
+    character_timestamps: list[dict[str, Any]] = []
+    for word_index, (original_word, normalized_word, spans) in enumerate(zip(words, normalized_words, token_spans, strict=False)):
+        if not spans:
+            return None
+        start_ms = int(round(spans[0].start * ratio))
+        end_ms = int(round(spans[-1].end * ratio))
+        if word_timestamps and start_ms < word_timestamps[-1]["end_ms"]:
+            start_ms = int(word_timestamps[-1]["end_ms"])
+        end_ms = max(start_ms, end_ms)
+        scores = [float(getattr(span, "score", 0.0)) for span in spans]
+        word_timestamps.append(
+            {
+                "word": original_word,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "confidence": round(max(0.0, min(1.0, sum(scores) / max(1, len(scores)))), 4),
+            }
+        )
+        for character, span in zip(normalized_word, spans, strict=False):
+            character_start_ms = int(round(span.start * ratio))
+            character_end_ms = int(round(span.end * ratio))
+            character_timestamps.append(
+                {
+                    "character": character,
+                    "start_ms": max(start_ms, character_start_ms),
+                    "end_ms": min(end_ms, max(character_start_ms, character_end_ms)),
+                    "word_index": word_index,
+                    "confidence": round(max(0.0, min(1.0, float(getattr(span, "score", 0.0)))), 4),
+                }
+            )
+    return {
+        "word_timestamps": word_timestamps,
+        "character_timestamps": character_timestamps,
+        "method": "torchaudio-mms-fa",
+        "device": device,
+    }
+
+
+def timing_generation_id(payload: dict[str, Any], audio_sha256: str) -> str:
+    identity = {
+        "audio_sha256": audio_sha256,
+        "engine": payload.get("engine"),
+        "language": payload.get("language"),
+        "profile_id": payload.get("profile_id") or payload.get("voice") or payload.get("speaker"),
+        "text": payload.get("text") if isinstance(payload.get("text"), str) else payload.get("input"),
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return f"gen_{digest[:32]}"
+
+
+def build_voice_timing_payload(payload: dict[str, Any], content: bytes) -> dict[str, Any]:
+    props = audio_wav_properties(content)
+    text = payload.get("text") if isinstance(payload.get("text"), str) else payload.get("input")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("timing metadata requires the generation text")
+    words = timing_text_words(text)
+    if not words:
+        raise ValueError("timing metadata requires at least one spoken word")
+    language = str(payload.get("language") or os.getenv("B1_VOICEBOX_DEFAULT_LANGUAGE", "en"))
+    audio_sha256 = hashlib.sha256(content).hexdigest()
+    generation_id = timing_generation_id(payload, audio_sha256)
+    duration_ms = max(0, int(props["duration_ms"]))
+    alignment = forced_align_words_mms(content, words)
+    if alignment is not None:
+        word_timestamps = alignment["word_timestamps"]
+        timing_method = str(alignment["method"])
+        timing_precision = "word-forced-aligned_phoneme-estimated"
+        word_confidence_default = 0.75
+        phoneme_confidence_default = 0.5
+    else:
+        weights = [max(1, len(word)) for word in words]
+        total_weight = max(1, sum(weights))
+        word_timestamps = []
+        cursor = 0
+        for word_index, word in enumerate(words):
+            if word_index == len(words) - 1:
+                word_end = duration_ms
+            else:
+                word_end = int(round(duration_ms * sum(weights[: word_index + 1]) / total_weight))
+            if word_end < cursor:
+                word_end = cursor
+            word_timestamps.append(
+                {
+                    "word": word,
+                    "start_ms": cursor,
+                    "end_ms": word_end,
+                    "confidence": 0.55,
+                }
+            )
+            cursor = word_end
+        timing_method = "b1-proportional-ipa-estimate"
+        timing_precision = "estimated"
+        word_confidence_default = 0.55
+        phoneme_confidence_default = 0.45
+    phonemes_by_word = phonemize_words(words, language)
+    phoneme_timestamps: list[dict[str, Any]] = []
+    for word_index, word_entry in enumerate(word_timestamps):
+        word = words[word_index] if word_index < len(words) else str(word_entry.get("word") or "")
+        phones = phonemes_by_word[word_index] if word_index < len(phonemes_by_word) else fallback_word_phonemes(word)
+        word_start = int(word_entry["start_ms"])
+        phone_start = word_start
+        word_end = int(word_entry["end_ms"])
+        phone_duration = max(0, word_end - word_start)
+        for phone_index, phoneme in enumerate(phones):
+            if phone_index == len(phones) - 1:
+                phone_end = word_end
+            else:
+                phone_end = word_start + int(round(phone_duration * (phone_index + 1) / max(1, len(phones))))
+            if phone_end < phone_start:
+                phone_end = phone_start
+            phoneme_timestamps.append(
+                {
+                    "phoneme": phoneme,
+                    "start_ms": phone_start,
+                    "end_ms": phone_end,
+                    "word_index": word_index,
+                    "confidence": phoneme_confidence_default,
+                }
+            )
+            phone_start = phone_end
+        word_entry.setdefault("confidence", word_confidence_default)
+    result = {
+        "schema_version": "b1_voice_timing.v1",
+        "generation_id": generation_id,
+        "audio_sha256": audio_sha256,
+        "audio_bytes": len(content),
+        "audio_sample_rate": props["sample_rate"],
+        "audio_channels": props["channels"],
+        "profile_id": str(payload.get("profile_id") or payload.get("voice") or payload.get("speaker") or ""),
+        "engine": str(payload.get("engine") or ""),
+        "language": language,
+        "duration_ms": duration_ms,
+        "phoneme_alphabet": "ipa",
+        "timing_method": timing_method,
+        "timing_precision": timing_precision,
+        "word_timestamps": word_timestamps,
+        "phoneme_timestamps": phoneme_timestamps,
+    }
+    if alignment is not None:
+        result["alignment_model"] = "torchaudio.pipelines.MMS_FA"
+        result["alignment_device"] = alignment.get("device")
+        result["character_timestamps"] = alignment.get("character_timestamps", [])
+    return result
+
+
+def voice_timing_path(name: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "", name.strip())
+    if not safe:
+        raise ValueError("timing metadata identifier is empty")
+    return voice_timing_dir() / f"{safe}.json"
+
+
+def store_voice_timing(metadata: dict[str, Any]) -> None:
+    generation_id = str(metadata.get("generation_id") or "")
+    audio_sha256 = str(metadata.get("audio_sha256") or "")
+    if not generation_id or not SHA256_RE.fullmatch(audio_sha256):
+        raise ValueError("timing metadata is missing generation_id or audio_sha256")
+    root = voice_timing_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(metadata, sort_keys=True, indent=2)
+    for name in (generation_id, f"sha256-{audio_sha256}"):
+        path = voice_timing_path(name)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(path)
+
+
+def load_voice_timing(generation_id: str = "", audio_sha256: str = "") -> dict[str, Any] | None:
+    candidates: list[str] = []
+    if generation_id.strip():
+        candidates.append(generation_id.strip())
+    if audio_sha256.strip():
+        candidates.append(f"sha256-{audio_sha256.strip().lower()}")
+    for candidate in candidates:
+        try:
+            payload = json.loads(voice_timing_path(candidate).read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("schema_version") == "b1_voice_timing.v1":
+            return payload
+    return None
+
+
+def timing_response_headers(metadata: dict[str, Any]) -> dict[str, str]:
+    return {
+        "x-b1-generation-id": str(metadata.get("generation_id") or ""),
+        "x-b1-audio-sha256": str(metadata.get("audio_sha256") or ""),
+        "x-b1-timing-url": f"/generate/timing/{metadata.get('generation_id')}",
+    }
+
+
+def maybe_store_voice_timing(payload: dict[str, Any] | None, content: bytes, response_headers: dict[str, str]) -> None:
+    if not isinstance(payload, dict):
+        return
+    try:
+        metadata = build_voice_timing_payload(payload, content)
+        store_voice_timing(metadata)
+    except Exception as exc:
+        log_json(component="b1-voicebox-proxy", event="voice_timing_store_failed", error=exc.__class__.__name__)
+        return
+    response_headers.update(timing_response_headers(metadata))
+
+
 async def native_profile_exists(client: Any, native_profile_id: str) -> bool:
     response = await client.get(f"{upstream_http_base_url()}/profiles/{native_profile_id}")
     return response.status_code < 400
@@ -741,7 +1350,39 @@ async def ensure_native_clone_profile(client: Any, payload: dict[str, Any], prof
     return native_profile_id
 
 
-async def voicebox_openai_speech_bridge(client: Any, body: bytes, content_type: str) -> Response:
+async def post_native_generation(client: Any, payload: dict[str, Any], generation_lock: asyncio.Lock | None = None) -> Any:
+    if generation_lock is None:
+        return await client.post(f"{upstream_http_base_url()}/generate/stream", json=payload)
+    async with generation_lock:
+        return await client.post(f"{upstream_http_base_url()}/generate/stream", json=payload)
+
+
+def upstream_generation_failure_response(upstream: Any, action: str = "speech") -> JSONResponse:
+    return JSONResponse(
+        json_response(
+            "failed",
+            action,
+            reason="upstream_generation_failed",
+            upstream_status=upstream.status_code,
+            upstream_content_type=str(upstream.headers.get("content-type") or "").split(";", 1)[0],
+        ),
+        status_code=upstream.status_code,
+    )
+
+
+def broadcast_audio_failure_response(exc: Exception, action: str = "speech") -> JSONResponse:
+    return JSONResponse(
+        json_response("failed", action, reason="broadcast_audio_postprocess_failed", error=str(exc)[:300]),
+        status_code=502,
+    )
+
+
+async def voicebox_openai_speech_bridge(
+    client: Any,
+    body: bytes,
+    content_type: str,
+    generation_lock: asyncio.Lock | None = None,
+) -> Response:
     if "json" not in content_type.lower():
         raise ValueError("Voicebox speech bridge requires a JSON request body")
     try:
@@ -761,13 +1402,45 @@ async def voicebox_openai_speech_bridge(client: Any, body: bytes, content_type: 
             raise ValueError("Voicebox speech bridge needs a B1 voice profile or native Voicebox profile_id")
         native_profile_id = candidate.strip()
     generation_payload = native_generation_payload(payload, profile, native_profile_id, engine)
-    upstream = await client.post(f"{upstream_http_base_url()}/generate/stream", json=generation_payload)
+    upstream = await post_native_generation(client, generation_payload, generation_lock)
+    if upstream.status_code >= 400:
+        return upstream_generation_failure_response(upstream, "speech")
+    policy = broadcast_audio_policy(payload, "audio/wav")
+    try:
+        content = await maybe_postprocess_broadcast_wav(upstream.content, policy)
+    except RuntimeError as exc:
+        return broadcast_audio_failure_response(exc, "speech")
     response_headers = {
         key: value
         for key, value in upstream.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding"
+        if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"content-encoding", "content-length"}
     }
-    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+    if policy is not None:
+        response_headers.update(broadcast_audio_headers(policy))
+    maybe_store_voice_timing(generation_payload, content, response_headers)
+    response_headers.setdefault("content-type", "audio/wav")
+    return Response(content=content, status_code=upstream.status_code, headers=response_headers)
+
+
+async def generate_timing_metadata(
+    client: Any,
+    payload: dict[str, Any],
+    generation_lock: asyncio.Lock | None = None,
+) -> dict[str, Any]:
+    existing = load_voice_timing(str(payload.get("generation_id") or ""), str(payload.get("audio_sha256") or ""))
+    if existing is not None:
+        return existing
+    text = payload.get("text") if isinstance(payload.get("text"), str) else payload.get("input")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("timing metadata lookup needs generation_id, audio_sha256, or a generation text")
+    upstream = await post_native_generation(client, payload, generation_lock)
+    if upstream.status_code >= 400:
+        raise RuntimeError(f"upstream generation failed with HTTP {upstream.status_code}")
+    policy = broadcast_audio_policy(payload, "audio/wav")
+    content = await maybe_postprocess_broadcast_wav(upstream.content, policy)
+    metadata = build_voice_timing_payload(payload, content)
+    store_voice_timing(metadata)
+    return metadata
 
 
 def apply_b1_voice_profile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -914,6 +1587,7 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
     app = FastAPI(title="B1 Voicebox Runtime Proxy", docs_url=None, redoc_url=None)
     runtime_manager = manager or VoiceboxProcessManager(default_upstream_command(), cwd=os.getenv("B1_VOICEBOX_UPSTREAM_CWD", "/app"))
     request_tracker = tracker or NativeRequestTracker()
+    generation_lock = asyncio.Lock()
 
     @app.on_event("startup")
     async def startup() -> None:
@@ -982,6 +1656,41 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
             status_code=200 if response.status_code < 400 else 503,
         )
 
+    @app.post("/generate/timing")
+    async def generate_timing(request: Request) -> JSONResponse:
+        request_tracker.begin()
+        try:
+            body = await request.body()
+            payload = json_body_object(body, request.headers.get("content-type", ""))
+            if not isinstance(payload, dict):
+                return JSONResponse(json_response("invalid", "timing", reason="JSON object request body required"), status_code=422)
+            try:
+                async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+                    metadata = await generate_timing_metadata(client, payload, generation_lock)
+            except ValueError as exc:
+                return JSONResponse(json_response("invalid", "timing", reason=str(exc)), status_code=422)
+            except RuntimeError as exc:
+                return JSONResponse(json_response("failed", "timing", reason=str(exc)[:300]), status_code=502)
+            except httpx.HTTPError as exc:
+                return JSONResponse(
+                    json_response("unhealthy", "timing", reason="upstream_unreachable", error=exc.__class__.__name__),
+                    status_code=503,
+                )
+            return JSONResponse(metadata, headers=timing_response_headers(metadata))
+        finally:
+            request_tracker.end()
+
+    @app.get("/generate/timing/{generation_id}")
+    async def get_generate_timing(generation_id: str) -> JSONResponse:
+        request_tracker.begin()
+        try:
+            metadata = load_voice_timing(generation_id, "")
+            if metadata is None:
+                return JSONResponse(json_response("missing", "timing", reason="timing_metadata_not_found"), status_code=404)
+            return JSONResponse(metadata, headers=timing_response_headers(metadata))
+        finally:
+            request_tracker.end()
+
     @app.websocket("/{path:path}")
     async def websocket_proxy(websocket: WebSocket, path: str) -> None:
         import websockets
@@ -1043,11 +1752,12 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
                 if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"host", "content-length", "authorization"}
             }
             forward_body = body
+            request_payload = json_body_object(body, request.headers.get("content-type", ""))
             if request.method.upper() == "POST" and path.strip("/") == "v1/audio/speech":
                 content_type = request.headers.get("content-type", "")
                 async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
                     try:
-                        return await voicebox_openai_speech_bridge(client, body, content_type)
+                        return await voicebox_openai_speech_bridge(client, body, content_type, generation_lock)
                     except ValueError as exc:
                         return JSONResponse(json_response("invalid", "speech", reason=str(exc)), status_code=422)
                     except httpx.HTTPError as exc:
@@ -1057,18 +1767,36 @@ def create_app(manager: VoiceboxProcessManager | None = None, tracker: NativeReq
                         )
             try:
                 async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-                    upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
+                    if request.method.upper() == "POST" and path.strip("/") == "generate/stream":
+                        async with generation_lock:
+                            upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
+                    else:
+                        upstream = await client.request(request.method, upstream_path, content=forward_body, headers=headers)
             except httpx.HTTPError as exc:
                 return JSONResponse(
                     json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__),
                     status_code=503,
-                )
+                        )
+            if request.method.upper() == "POST" and path.strip("/") == "generate/stream" and upstream.status_code >= 400:
+                return upstream_generation_failure_response(upstream, "native-generate")
+            content = upstream.content
+            policy = None
+            if request.method.upper() == "POST" and path.strip("/") == "generate/stream" and upstream.status_code < 400:
+                policy = broadcast_audio_policy(request_payload, request.headers.get("accept", ""))
+                try:
+                    content = await maybe_postprocess_broadcast_wav(content, policy)
+                except RuntimeError as exc:
+                    return broadcast_audio_failure_response(exc, "native-generate")
             response_headers = {
                 key: value
                 for key, value in upstream.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "content-encoding"
+                if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"content-encoding", "content-length"}
             }
-            return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+            if policy is not None:
+                response_headers.update(broadcast_audio_headers(policy))
+            if request.method.upper() == "POST" and path.strip("/") == "generate/stream" and upstream.status_code < 400:
+                maybe_store_voice_timing(request_payload, content, response_headers)
+            return Response(content=content, status_code=upstream.status_code, headers=response_headers)
         finally:
             request_tracker.end()
 

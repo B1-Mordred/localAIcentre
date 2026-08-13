@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,29 @@ PNG_BYTES = bytes.fromhex(
     "0000000d49444154789c6360f8ffff3f0005fe02fea7f3c553"
     "0000000049454e44ae426082"
 )
+
+
+def pcm_wav_bytes(duration_ms: int = 500, sample_rate: int = 16000) -> bytes:
+    sample_count = max(1, int(sample_rate * duration_ms / 1000))
+    data = b"\x00\x00" * sample_count
+    byte_rate = sample_rate * 2
+    block_align = 2
+    return (
+        b"RIFF"
+        + (36 + len(data)).to_bytes(4, "little")
+        + b"WAVE"
+        + b"fmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (1).to_bytes(2, "little")
+        + sample_rate.to_bytes(4, "little")
+        + byte_rate.to_bytes(4, "little")
+        + block_align.to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + len(data).to_bytes(4, "little")
+        + data
+    )
 
 
 def resolution() -> Any:
@@ -244,7 +268,7 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.detail["code"], "owner_queue_limit")
         self.assertEqual(fake_database.inserted, [])
 
-    def test_create_job_record_rejects_gpu_job_when_production_hardware_policy_fails(self) -> None:
+    def test_create_job_record_defers_gpu_hardware_policy_until_execution(self) -> None:
         fake_database = FakeAdmissionDatabase()
         self.patch_attr("database", fake_database)
         self.patch_settings(
@@ -257,32 +281,20 @@ class AdmissionApiTests(unittest.TestCase):
         )
 
         async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
-            self.assertEqual(path, "/v1/metrics")
-            return {
-                "gpu": {
-                    "available": True,
-                    "devices": [{"name": "RTX 3060 Laptop GPU", "memory_total_mib": 6144, "memory_free_mib": 4096}],
-                },
-                "memory": {"total_bytes": 31 * 1024**3, "available_bytes": 8 * 1024**3},
-            }, None
+            raise AssertionError("job submission must not reject just because VRAM is currently occupied")
 
         self.patch_attr("runtime_agent_get", runtime_agent_get)
 
-        with self.assertRaises(HTTPException) as caught:
-            asyncio.run(
-                main.create_job_record(
-                    "client_1",
-                    main.MediaJobCreate(modality="image", operation="generation", model="image-default"),
-                    resolution=resolution(),
-                )
+        result = asyncio.run(
+            main.create_job_record(
+                "client_1",
+                main.MediaJobCreate(modality="image", operation="generation", model="image-default"),
+                resolution=resolution(),
             )
+        )
 
-        self.assertEqual(caught.exception.status_code, 503)
-        self.assertEqual(caught.exception.detail["code"], "hardware_resource_policy")
-        hardware = caught.exception.detail["hardware_resource_policy"]
-        self.assertEqual(hardware["status"], "failed")
-        self.assertIn("largest GPU VRAM is 6144 MiB", hardware["detail"])
-        self.assertEqual(fake_database.inserted, [])
+        self.assertTrue(result["id"].startswith("job_"))
+        self.assertEqual(fake_database.inserted[0]["runtime"], "comfyui")
 
     def test_create_job_record_allows_cpu_job_without_gpu_hardware_admission(self) -> None:
         fake_database = FakeAdmissionDatabase()
@@ -639,6 +651,49 @@ class AdmissionApiTests(unittest.TestCase):
         self.assertEqual(result["b1_job_id"], "job_existing")
         self.assertEqual(fake_database.inserted, [])
 
+    def test_managed_video_image_resolves_private_upload_before_workflow_validation(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:write"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=1024 * 1024)
+            reference = main.stage_media_input(
+                auth,
+                field_name="source_image",
+                content=PNG_BYTES,
+                declared_mime_type="image/png",
+                filename="studio.png",
+            )
+            payload = main.MediaJobCreate(
+                modality="video",
+                operation="image-to-video",
+                model="video-image",
+                input={"source_image_artifact_id": reference["id"], "prompt": "gentle studio motion"},
+                priority="video",
+            )
+
+            resolved = main.resolve_managed_video_image_source(auth, payload)
+
+        self.assertNotIn("source_image_artifact_id", resolved.input)
+        self.assertEqual(resolved.input["source_image"]["source"], "staged_upload")
+        self.assertEqual(resolved.input["source_image"]["id"], reference["id"])
+        self.assertEqual(resolved.input["source_image"]["mime_type"], "image/png")
+
+    def test_managed_video_image_rejects_inline_base64_before_queueing(self) -> None:
+        auth = AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:write"}))
+        payload = main.MediaJobCreate(
+            modality="video",
+            operation="image-to-video",
+            model="video-image",
+            input={"source_image": "aGVsbG8=", "prompt": "gentle studio motion"},
+            priority="video",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            main.resolve_managed_video_image_source(auth, payload)
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["code"], "video_image_inline_source_not_supported")
+        self.assertEqual(caught.exception.detail["field"], "input.source_image")
+
     def test_media_job_idempotency_returns_existing_before_workflow_or_alias_checks(self) -> None:
         payload = media_job_payload(input={"workflow_id": "workflow_1", "workflow_version": "1.0.0", "parameters": {"prompt": "castle"}})
         existing = job_row(idempotency_key="media_1", request_params=payload.model_dump())
@@ -681,6 +736,26 @@ class AdmissionApiTests(unittest.TestCase):
             self.assertEqual(caught.exception.status_code, 507)
             self.assertEqual(caught.exception.detail["code"], "artifact_storage_limit")
             self.assertFalse(any(Path(tmp).rglob("*.*")))
+
+    def test_media_upload_accepts_raw_wav_audio_field_without_filename(self) -> None:
+        self.patch_auth(AuthContext(subject_id="client_1", role=Role.SERVICE, scopes=frozenset({"jobs:write"})))
+        wav = pcm_wav_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, upload_max_bytes=len(wav) + 128, artifact_storage_reserve_bytes=0)
+            request = FakeRequest(body=wav, headers={"content-type": "audio/x-wav"})
+
+            result = asyncio.run(main.media_upload_create(request, x_b1_field="audio", x_b1_filename=None))
+
+            reference = result["reference"]
+            self.assertIsInstance(reference, dict)
+            self.assertEqual(reference["id"][:7], "upload_")
+            self.assertEqual(reference["field"], "audio")
+            self.assertEqual(reference["kind"], "audio")
+            self.assertEqual(reference["mime_type"], "audio/wav")
+            self.assertEqual(reference["filename"], "audio.wav")
+            self.assertEqual(reference["sha256"], hashlib.sha256(wav).hexdigest())
+            self.assertEqual(result["input"], reference)
+            self.assertEqual((Path(tmp) / reference["path"]).read_bytes(), wav)
 
     def test_admin_admission_returns_queue_and_storage_report(self) -> None:
         fake_database = FakeAdmissionDatabase(owner_queued=1, owner_active=2, owner_recent=3, global_queued=4)

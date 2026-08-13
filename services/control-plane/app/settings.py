@@ -76,8 +76,21 @@ class Settings:
     database_url: str
     redis_url: str
     localai_url: str
+    lan_localai_worker_url: str
+    lan_localai_worker_hostname: str
+    lan_localai_worker_allowed_cidrs: tuple[str, ...]
+    lan_localai_worker_tls_ca_file: str
+    lan_deepseek_worker_url: str
+    lan_deepseek_worker_hostname: str
+    lan_deepseek_worker_allowed_cidrs: tuple[str, ...]
+    lan_deepseek_worker_tls_ca_file: str
+    lan_p40_media_url: str
+    lan_p40_media_hostname: str
+    lan_p40_media_allowed_cidrs: tuple[str, ...]
+    lan_p40_media_tls_ca_file: str
     comfyui_url: str
     voicebox_url: str
+    lipsync_url: str
     audio_cpu_url: str
     artifact_base_url: str
     artifact_server_token: str
@@ -128,8 +141,10 @@ class Settings:
     comfyui_prompt_poll_seconds: int
     comfyui_prompt_completion_timeout_seconds: int
     comfyui_prompt_idle_grace_seconds: int
+    talking_head_lipsync_fallback_renderer: bool
     model_download_runner_enabled: bool
     model_download_runner_interval_seconds: int
+    model_download_request_timeout_seconds: int
     backup_scheduler_enabled: bool
     backup_scheduler_interval_seconds: int
     allow_external_providers: bool
@@ -217,8 +232,21 @@ def load_settings() -> Settings:
         database_url=database_url,
         redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
         localai_url=os.getenv("LOCALAI_URL", "http://localai:8000"),
+        lan_localai_worker_url=os.getenv("B1_LAN_LOCALAI_WORKER_URL", ""),
+        lan_localai_worker_hostname=os.getenv("B1_LAN_LOCALAI_WORKER_HOSTNAME", ""),
+        lan_localai_worker_allowed_cidrs=_words("B1_LAN_LOCALAI_WORKER_ALLOWED_CIDRS", ""),
+        lan_localai_worker_tls_ca_file=os.getenv("B1_LAN_LOCALAI_WORKER_TLS_CA_FILE", ""),
+        lan_deepseek_worker_url=os.getenv("B1_LAN_DEEPSEEK_WORKER_URL", ""),
+        lan_deepseek_worker_hostname=os.getenv("B1_LAN_DEEPSEEK_WORKER_HOSTNAME", ""),
+        lan_deepseek_worker_allowed_cidrs=_words("B1_LAN_DEEPSEEK_WORKER_ALLOWED_CIDRS", ""),
+        lan_deepseek_worker_tls_ca_file=os.getenv("B1_LAN_DEEPSEEK_WORKER_TLS_CA_FILE", ""),
+        lan_p40_media_url=os.getenv("B1_LAN_P40_MEDIA_URL", ""),
+        lan_p40_media_hostname=os.getenv("B1_LAN_P40_MEDIA_HOSTNAME", ""),
+        lan_p40_media_allowed_cidrs=_words("B1_LAN_P40_MEDIA_ALLOWED_CIDRS", ""),
+        lan_p40_media_tls_ca_file=os.getenv("B1_LAN_P40_MEDIA_TLS_CA_FILE", ""),
         comfyui_url=os.getenv("COMFYUI_URL", "http://comfyui:8000"),
         voicebox_url=os.getenv("VOICEBOX_URL", "http://voicebox:8000"),
+        lipsync_url=os.getenv("LIPSYNC_URL", "http://lipsync:8000"),
         audio_cpu_url=os.getenv("AUDIO_CPU_URL", "http://audio-cpu:8000"),
         artifact_base_url=os.getenv("ARTIFACT_BASE_URL", "http://artifact-server:8000"),
         artifact_server_token=_read_secret(os.getenv("B1_ARTIFACT_SERVER_TOKEN_FILE"), os.getenv("B1_ARTIFACT_SERVER_TOKEN", "")),
@@ -269,8 +297,10 @@ def load_settings() -> Settings:
         comfyui_prompt_poll_seconds=_int("B1_COMFY_PROMPT_POLL_SECONDS", 2),
         comfyui_prompt_completion_timeout_seconds=_int("B1_COMFY_PROMPT_COMPLETION_TIMEOUT_SECONDS", 7200),
         comfyui_prompt_idle_grace_seconds=_int("B1_COMFY_PROMPT_IDLE_GRACE_SECONDS", 5),
+        talking_head_lipsync_fallback_renderer=_bool("B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER", False),
         model_download_runner_enabled=_bool("B1_MODEL_DOWNLOAD_RUNNER_ENABLED", True),
         model_download_runner_interval_seconds=_int("B1_MODEL_DOWNLOAD_RUNNER_INTERVAL_SECONDS", 2),
+        model_download_request_timeout_seconds=_int("B1_MODEL_DOWNLOAD_REQUEST_TIMEOUT_SECONDS", 900),
         backup_scheduler_enabled=_bool("B1_BACKUP_SCHEDULER_ENABLED", True),
         backup_scheduler_interval_seconds=_int("B1_BACKUP_SCHEDULER_INTERVAL_SECONDS", 60),
         allow_external_providers=_bool("B1_ALLOW_EXTERNAL_PROVIDERS", False),

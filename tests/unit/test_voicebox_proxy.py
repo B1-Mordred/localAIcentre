@@ -2,15 +2,43 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
+try:
+    import fastapi  # noqa: F401
+except ModuleNotFoundError:
+    FASTAPI_AVAILABLE = False
+else:
+    FASTAPI_AVAILABLE = True
+
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def tiny_wav(duration_ms: int = 1000, sample_rate: int = 48000) -> bytes:
+    frames = int(sample_rate * duration_ms / 1000)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b"\0\0" * frames)
+    return buffer.getvalue()
+
+
+def streamed_wav_header(content: bytes) -> bytes:
+    data = bytearray(content)
+    data_offset = data.find(b"data")
+    if data_offset >= 0:
+        data[data_offset + 4 : data_offset + 8] = b"\xff\xff\xff\xff"
+    return bytes(data)
 
 
 def load_proxy():
@@ -88,6 +116,38 @@ class FakeVoiceboxClient:
         return FakeResponse(status_code=404, payload={"detail": "not found"})
 
 
+class FailingSpeechVoiceboxClient(FakeVoiceboxClient):
+    async def post(self, url: str, **kwargs: object) -> FakeResponse:
+        self.calls.append({"method": "POST", "url": url, "json": kwargs.get("json")})
+        if url.endswith("/generate/stream"):
+            return FakeResponse(status_code=404, payload={"detail": "Profile not found"}, content=b"")
+        return FakeResponse(status_code=404, payload={"detail": "not found"}, content=b"")
+
+
+class SlowVoiceboxClient(FakeVoiceboxClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+
+    async def post(self, url: str, **kwargs: object) -> FakeResponse:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            return await super().post(url, **kwargs)
+        finally:
+            self.active -= 1
+
+
+class FakeCompletedProcess:
+    def __init__(self, stdout: bytes = b"RIFF48k", stderr: bytes = b"", returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "FastAPI is required for Voicebox proxy tests")
 class VoiceboxProxyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.proxy = load_proxy()
@@ -404,6 +464,151 @@ class VoiceboxProxyTests(unittest.TestCase):
         self.assertEqual(generation_call["json"]["max_chunk_chars"], 1200)
         self.assertEqual(profile_map["vp_narrator"]["native_profile_id"], "native-profile-1")
         self.assertEqual(profile_map["vp_narrator"]["sample_sha256s"], ["a" * 64])
+
+    def test_broadcast_audio_policy_uses_normalize_true_and_clamps_peak(self) -> None:
+        policy = self.proxy.broadcast_audio_policy(
+            {"normalize": True, "b1_true_peak_dbtp": -0.1, "b1_loudness_lufs": -16, "b1_audio_sample_rate": 48000},
+            "audio/wav",
+        )
+
+        self.assertIsNotNone(policy)
+        self.assertEqual(policy["sample_rate"], 48000)
+        self.assertEqual(policy["loudness_lufs"], -16.0)
+        self.assertEqual(policy["true_peak_dbtp"], -1.5)
+
+    def test_broadcast_audio_policy_preserves_raw_when_normalize_false(self) -> None:
+        self.assertIsNone(self.proxy.broadcast_audio_policy({"normalize": False}, "audio/wav"))
+
+    def test_openai_speech_bridge_postprocesses_broadcast_audio(self) -> None:
+        client = FakeVoiceboxClient()
+        payload = {"model": "voicebox-quality", "input": "hello", "voice": "native-profile-1", "normalize": True}
+        with patch.dict("os.environ", {"B1_VOICEBOX_UPSTREAM_URL": "http://voicebox-upstream"}, clear=False), patch.object(
+            self.proxy.subprocess,
+            "run",
+            return_value=FakeCompletedProcess(stdout=b"RIFF48k"),
+        ) as run:
+            response = asyncio.run(
+                self.proxy.voicebox_openai_speech_bridge(
+                    client,
+                    json.dumps(payload).encode("utf-8"),
+                    "application/json",
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"RIFF48k")
+        self.assertEqual(response.headers["x-b1-audio-policy"], "broadcast")
+        self.assertEqual(response.headers["x-b1-audio-sample-rate"], "48000")
+        command = run.call_args.args[0]
+        self.assertIn("-ar", command)
+        self.assertIn("48000", command)
+        self.assertIn("loudnorm=I=-18.0:TP=-1.5", " ".join(command))
+
+    def test_voice_timing_payload_is_bound_to_final_wav(self) -> None:
+        audio = tiny_wav(duration_ms=1200)
+        payload = {
+            "profile_id": "native-profile-1",
+            "text": "Guten Morgen",
+            "language": "de",
+            "engine": "chatterbox",
+        }
+
+        metadata = self.proxy.build_voice_timing_payload(payload, audio)
+
+        self.assertEqual(metadata["schema_version"], "b1_voice_timing.v1")
+        self.assertEqual(metadata["profile_id"], "native-profile-1")
+        self.assertEqual(metadata["engine"], "chatterbox")
+        self.assertEqual(metadata["language"], "de")
+        self.assertEqual(metadata["duration_ms"], 1200)
+        self.assertEqual(metadata["audio_sample_rate"], 48000)
+        self.assertEqual(metadata["audio_channels"], 1)
+        self.assertEqual(metadata["audio_sha256"], self.proxy.hashlib.sha256(audio).hexdigest())
+        self.assertEqual(metadata["phoneme_alphabet"], "ipa")
+        self.assertEqual(metadata["timing_precision"], "estimated")
+        self.assertEqual([item["word"] for item in metadata["word_timestamps"]], ["Guten", "Morgen"])
+        self.assertGreaterEqual(len(metadata["phoneme_timestamps"]), 2)
+        previous_end = 0
+        for item in metadata["word_timestamps"]:
+            self.assertGreaterEqual(item["start_ms"], previous_end)
+            self.assertGreaterEqual(item["end_ms"], item["start_ms"])
+            previous_end = item["end_ms"]
+        self.assertEqual(previous_end, 1200)
+
+    def test_voice_timing_duration_uses_actual_bytes_for_streamed_wav_header(self) -> None:
+        audio = streamed_wav_header(tiny_wav(duration_ms=1200))
+        payload = {"profile_id": "native-profile-1", "text": "Guten Morgen", "language": "de", "engine": "chatterbox"}
+
+        metadata = self.proxy.build_voice_timing_payload(payload, audio)
+
+        self.assertEqual(metadata["duration_ms"], 1200)
+        self.assertEqual(metadata["word_timestamps"][-1]["end_ms"], 1200)
+
+    def test_voice_timing_store_and_lookup_by_generation_or_checksum(self) -> None:
+        audio = tiny_wav(duration_ms=500)
+        payload = {"profile_id": "native-profile-1", "text": "hello world", "language": "en", "engine": "chatterbox"}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"B1_VOICEBOX_DATA_DIR": tmp}, clear=False):
+            metadata = self.proxy.build_voice_timing_payload(payload, audio)
+            self.proxy.store_voice_timing(metadata)
+            by_generation = self.proxy.load_voice_timing(metadata["generation_id"], "")
+            by_checksum = self.proxy.load_voice_timing("", metadata["audio_sha256"])
+
+        self.assertEqual(by_generation["generation_id"], metadata["generation_id"])
+        self.assertEqual(by_checksum["audio_sha256"], metadata["audio_sha256"])
+
+    def test_voice_timing_uses_forced_alignment_when_available(self) -> None:
+        audio = tiny_wav(duration_ms=1000)
+        payload = {"profile_id": "native-profile-1", "text": "hello world", "language": "en", "engine": "chatterbox"}
+        alignment = {
+            "word_timestamps": [
+                {"word": "hello", "start_ms": 100, "end_ms": 420, "confidence": 0.9},
+                {"word": "world", "start_ms": 520, "end_ms": 900, "confidence": 0.88},
+            ],
+            "character_timestamps": [
+                {"character": "h", "start_ms": 100, "end_ms": 160, "word_index": 0, "confidence": 0.9}
+            ],
+            "method": "torchaudio-mms-fa",
+            "device": "cpu",
+        }
+        with patch.object(self.proxy, "forced_align_words_mms", return_value=alignment):
+            metadata = self.proxy.build_voice_timing_payload(payload, audio)
+
+        self.assertEqual(metadata["timing_method"], "torchaudio-mms-fa")
+        self.assertEqual(metadata["timing_precision"], "word-forced-aligned_phoneme-estimated")
+        self.assertEqual(metadata["alignment_model"], "torchaudio.pipelines.MMS_FA")
+        self.assertEqual(metadata["alignment_device"], "cpu")
+        self.assertEqual(metadata["character_timestamps"], alignment["character_timestamps"])
+        self.assertEqual(metadata["word_timestamps"][0]["start_ms"], 100)
+        self.assertEqual(metadata["phoneme_timestamps"][0]["start_ms"], 100)
+
+    def test_openai_speech_bridge_preserves_error_status_and_json_type(self) -> None:
+        client = FailingSpeechVoiceboxClient()
+        payload = {"model": "voicebox-quality", "input": "hello", "voice": "missing-native-profile"}
+        with patch.dict("os.environ", {"B1_VOICEBOX_UPSTREAM_URL": "http://voicebox-upstream"}, clear=False):
+            response = asyncio.run(
+                self.proxy.voicebox_openai_speech_bridge(
+                    client,
+                    json.dumps(payload).encode("utf-8"),
+                    "application/json",
+                )
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.media_type, "application/json")
+        self.assertIn(b"upstream_generation_failed", response.body)
+
+    def test_native_generation_lock_serializes_concurrent_posts(self) -> None:
+        async def run() -> SlowVoiceboxClient:
+            client = SlowVoiceboxClient()
+            lock = asyncio.Lock()
+            await asyncio.gather(
+                self.proxy.post_native_generation(client, {"text": "one"}, lock),
+                self.proxy.post_native_generation(client, {"text": "two"}, lock),
+            )
+            return client
+
+        client = asyncio.run(run())
+
+        self.assertEqual(client.max_active, 1)
 
 
 if __name__ == "__main__":

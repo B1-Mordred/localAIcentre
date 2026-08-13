@@ -27,6 +27,14 @@ The production image starts a B1 proxy on `:17493` and starts upstream Voicebox 
 
 The proxy also serves read-only `GET /b1/runtime/build-info` with the B1 proxy version, Jamie Pine Voicebox version, pinned upstream commit, and source archive SHA-256. Authenticated `POST /b1/runtime/build-info` and `POST /b1/runtime/status` provide the same scheduler-facing lifecycle contract used by LocalAI and ComfyUI. The status payload reports the managed upstream process, active native request count, lifecycle actions, pinned build metadata, and model inventory as counts only. The Voicebox compatibility harness records these live endpoints and Control Center acceptance reports reject speech/WebSocket limitation evidence that does not match the deployed proxy metadata.
 
+For native `POST /generate/stream`, the proxy serializes generation requests before forwarding them to upstream Voicebox. This protects the pinned Chatterbox backend from concurrent generation crashes while preserving the external native route and profile UUID contract.
+
+Successful WAV stream responses include `x-b1-generation-id`, `x-b1-audio-sha256`, and `x-b1-timing-url` when B1 can parse the final audio. `POST /generate/timing` accepts either `generation_id` or `audio_sha256` and returns the stored `b1_voice_timing.v1` JSON payload. It can also generate timing from a full native generation payload, but clients that need exact media binding should call `/generate/stream` first and retrieve timing with the returned generation ID or checksum.
+
+The proxy uses TorchAudio `MMS_FA` for real local CTC word and character alignment when `/srv/b1-ai-hub/cache/voicebox/xdg/torch/hub/checkpoints/model.pt` exists. It runs on CPU by default via `B1_VOICEBOX_TIMING_MMS_ALIGNER_DEVICE=cpu`; set `B1_VOICEBOX_TIMING_MMS_ALIGNER_ENABLED=false` to force the proportional fallback. IPA phonemes are generated with eSpeak/phonemizer and placed inside aligned word windows because upstream Chatterbox does not expose native phoneme timing.
+
+The validated MMS_FA checkpoint SHA-256 on 2026-07-30 is `20ef12963ab4924bef49ac4fc7f58ad5da2ee43b2c11bc8c853c9b90ecdbc680`.
+
 ## Runtime Layout
 
 The production override resets the development placeholder environment and volume list. The Voicebox container receives only:
@@ -118,5 +126,33 @@ The sample path mapping is controlled by:
 - `B1_VOICEBOX_SAMPLE_LIST_FIELD`, defaulting to `reference_audio_paths`
 
 Adjust the sample field names only if the pinned upstream Voicebox route for the selected engine expects different JSON keys. Unsafe artifact URLs, traversal, malformed percent escapes, and missing mounted samples are rejected with HTTP 422 before upstream Voicebox sees the request.
+
+## Broadcast Audio Contract
+
+The native Voicebox stream route returns raw upstream audio unless B1 broadcast post-processing is enabled for the request. Production clients should use:
+
+```json
+{
+  "profile_id": "native-voicebox-profile-uuid",
+  "text": "Kurzer Broadcast-Audio-Test.",
+  "language": "de",
+  "engine": "chatterbox",
+  "normalize": true,
+  "effects_chain": []
+}
+```
+
+With `Accept: audio/wav`, `normalize: true` enables B1 post-processing by default. The proxy returns mono PCM WAV at `48000` Hz, applies `ffmpeg loudnorm`, and applies an `alimiter` ceiling at the configured true-peak policy, default `-1.5 dBTP`. `normalize: false` keeps the upstream output unchanged. Optional B1-specific fields are `b1_broadcast_audio`, `b1_audio_sample_rate`, `b1_loudness_lufs`, `b1_loudness_range_lu`, and `b1_true_peak_dbtp`; requested true-peak values hotter than the configured ceiling are clamped.
+
+Relevant environment defaults:
+
+- `B1_VOICEBOX_BROADCAST_AUDIO_ENABLED=true`
+- `B1_VOICEBOX_BROADCAST_SAMPLE_RATE=48000`
+- `B1_VOICEBOX_BROADCAST_LOUDNESS_LUFS=-18.0`
+- `B1_VOICEBOX_BROADCAST_LRA_LU=11.0`
+- `B1_VOICEBOX_BROADCAST_TRUE_PEAK_DBTP=-1.5`
+- `B1_VOICEBOX_BROADCAST_FFMPEG_TIMEOUT_SECONDS=120`
+
+When post-processing is applied, responses include `x-b1-audio-policy: broadcast` plus headers describing sample rate, channels, loudness target, and true-peak target. Post-processing failures return structured JSON with `reason: "broadcast_audio_postprocess_failed"` instead of returning raw non-conforming speech.
 
 Control Center uploads reference samples through `POST /admin/voicebox/sample-artifacts`, which writes bounded audio files under `/artifacts/voicebox/references/...` and returns a profile-ready `sample_artifacts[]` entry with sample ID, URL, SHA-256, MIME type, and byte count. Compatibility evidence follows that entry through fetched profile state, export, and upload/export/delete audit events; audit metadata must identify the target sample/profile and remain free of raw sample arrays. Storage cleanup for these samples uses `POST /admin/voicebox/sample-artifacts/retention-plan` and `POST /admin/voicebox/sample-artifacts/cleanup`; it only deletes old unreferenced files and preserves every sample still referenced by a Voicebox profile row, including deleted rows retained for recovery.

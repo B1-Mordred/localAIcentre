@@ -118,6 +118,20 @@ class FakeDatabase:
             row["cidr_allowlist"] = cidr_allowlist
         return dict(row)
 
+    async def update_api_client_role_and_scopes(
+        self,
+        client_id: str,
+        role: str,
+        scopes: list[str],
+    ) -> dict[str, Any] | None:
+        row = self.api_clients.get(client_id)
+        if row is None:
+            return None
+        if row.get("revoked_at") is None:
+            row["role"] = role
+            row["scopes"] = list(scopes)
+        return dict(row)
+
     async def update_modelhub_client_cidr_allowlist(self, client_id: str, cidr_allowlist: list[str]) -> dict[str, Any] | None:
         row = self.modelhub_clients.get(client_id)
         if row is None:
@@ -284,6 +298,7 @@ class BrowserAuthApiTests(unittest.TestCase):
             "admin_api_clients",
             "admin_api_client_create",
             "admin_api_client_cidr_update",
+            "admin_api_client_role_update",
             "admin_api_client_revoke",
             "modelhub_clients",
             "modelhub_client_create",
@@ -414,6 +429,33 @@ class BrowserAuthApiTests(unittest.TestCase):
         self.assertEqual(updated["cidr_allowlist"], ["10.0.1.0/24"])
         self.assertEqual(self.database.api_clients["client_worker"]["cidr_allowlist"], ["10.0.1.0/24"])
         self.assertIn("api_client.cidr_allowlist_updated", [event["event_type"] for event in self.database.audit_events])
+
+    def test_api_client_role_can_be_updated_without_exposing_credential(self) -> None:
+        self.database.api_clients["client_dialecticore"] = {
+            "id": "client_dialecticore",
+            "display_name": "DialectiCore",
+            "role": "service",
+            "scopes": ["jobs:read", "jobs:write", "models:read"],
+            "key_prefix": "b1k_dialecticore",
+            "key_salt": "salt",
+            "key_hash": "hash",
+            "cidr_allowlist": [],
+            "revoked_at": None,
+        }
+
+        updated = asyncio.run(
+            main.admin_api_client_role_update(
+                "client_dialecticore",
+                main.ApiClientRoleUpdateRequest(role=main.Role.OPERATOR),
+                authorization="Bearer setup-key",
+            )
+        )
+
+        self.assertEqual(updated["role"], "operator")
+        self.assertIn("workflows:write", updated["scopes"])
+        self.assertNotIn("key_hash", updated)
+        self.assertNotIn("key_salt", updated)
+        self.assertIn("api_client.role_updated", [event["event_type"] for event in self.database.audit_events])
 
     def test_modelhub_client_cidr_allowlist_update_syncs_backing_api_client(self) -> None:
         self.database.api_clients["client_hub"] = {

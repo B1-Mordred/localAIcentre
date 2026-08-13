@@ -11,7 +11,8 @@ from urllib.parse import unquote
 from .scheduler import AdmissionDecision, CpuResidencyDecision, ResourceEstimate, ResourcePolicy, classify_cpu_residency, classify_resource_fit
 
 
-RUNTIME_NAMES = {"localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"}
+RUNTIME_NAMES = {"localai", "lan-localai-worker", "lan-deepseek-worker", "lan-p40-media", "comfyui", "voicebox", "audio-cpu", "panel-cpu", "openai-compatible", "generic-http"}
+CPU_ONLY_RUNTIMES = {"audio-cpu", "panel-cpu"}
 MODALITIES = {"llm", "vlm", "embedding", "tts", "stt", "image", "video", "workflow"}
 EXECUTION_MODES = {"hosted-inference", "downloadable", "network-share"}
 INSTALLATION_STATUSES = {"available", "installed", "quarantined", "failed"}
@@ -22,6 +23,7 @@ DEPRECATION_STATUSES = {"active", "deprecated", "replaced", "removed"}
 MEASUREMENT_SCHEMA = "b1-ai-hub-model-measurements/v1"
 RUNTIME_SMOKE_SCHEMA = "b1-ai-hub-runtime-smoke/v1"
 MODEL_PROFILE_SCHEMA = "b1-ai-hub-model-profiles/v1"
+MODEL_CAPABILITIES_SCHEMA = "b1-ai-hub-model-capabilities/v1"
 MEASUREMENT_RUN_STATUSES = {"ok", "warning", "failed", "skipped", "unconfirmed"}
 MODEL_PROFILE_RESOURCE_LABELS = {"recommended", "expected", "offload-required", "experimental", "incompatible"}
 MODEL_PROFILE_RUNTIME_POLICIES = {
@@ -69,11 +71,17 @@ OPERATION_ALIASES: dict[str, dict[str, set[str]]] = {
         "image-edit": {"edit", "image-edit", "image-to-image", "inpaint", "inpainting", "outpaint", "outpainting", "inpainting-outpainting"},
         "background-removal": {"background-removal", "remove-background"},
         "upscaling": {"upscale", "upscaling", "image-upscale"},
+        "studio-panel-shot": {"studio-panel-shot"},
+        "studio-seated-character": {"studio-seated-character"},
     },
     "video": {
         "video-generation": {"generation", "text-to-video", "video-generation"},
-        "image-to-video": {"image-to-video", "image-video", "video-image"},
+        # VACE uses the same image-sequence conditioning path for both a still
+        # and a decoded source video.  Keep the public editing operation in the
+        # same capability group so one installed VACE manifest can serve both.
+        "image-to-video": {"image-to-video", "image-video", "video-image", "video-edit", "video-editing"},
         "frame-interpolation": {"frame-interpolation", "interpolation"},
+        "talking-head-lipsync": {"audio-driven-talking-head", "audio-to-lip", "lip-sync", "lipsync", "talking-head-lipsync"},
     },
     "workflow": {
         "workflow": {"comfyui-prompt", "native-workflow", "workflow"},
@@ -212,6 +220,30 @@ class ModelDeprecation:
 
 
 @dataclass(frozen=True)
+class ModelCapabilities:
+    schema: str = MODEL_CAPABILITIES_SCHEMA
+    chat_template: str | None = None
+    streaming: bool | None = None
+    thinking: bool | None = None
+    reasoning_content: bool | None = None
+    tool_calls: bool | None = None
+    json_tool_arguments: bool | None = None
+    sequential_tool_calls: bool | None = None
+    reasoning_between_tool_calls: bool | None = None
+    speculative_decoding: str | None = None
+    speculative_draft_model: str | None = None
+    validated_context_tokens: list[int] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            key: value
+            for key, value in _without_none(asdict(self)).items()
+            if value != []
+        }
+        return data if len(data) > 1 else {}
+
+
+@dataclass(frozen=True)
 class ModelManifest:
     id: str
     version: str
@@ -225,6 +257,7 @@ class ModelManifest:
     resource_estimate: ModelResourceEstimate
     license: ModelLicense
     execution_modes: list[str]
+    capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     installation_status: str = "installed"
     description: str | None = None
     aliases: list[str] = field(default_factory=list)
@@ -254,6 +287,7 @@ class ModelManifest:
                 "resource_estimate": self.resource_estimate.to_dict(),
                 "license": self.license.to_dict(),
                 "execution_modes": list(self.execution_modes),
+                "capabilities": self.capabilities.to_dict() or None,
                 "installation_status": self.installation_status,
                 "aliases": list(self.aliases),
                 "visibility_roles": list(self.visibility_roles),
@@ -364,6 +398,7 @@ class AliasDefinition:
     enabled: bool = True
     preferred_runtime_override: str | None = None
     idle_timeout_seconds: int | None = None
+    reasoning_effort: str | None = None
     visibility_roles: tuple[str, ...] = ()
     policy_source: str = "seed"
     notes: str = ""
@@ -404,7 +439,7 @@ class CatalogAlias:
 
     @property
     def requires_gpu(self) -> bool:
-        return self.preferred_runtime != "audio-cpu" and (self.manifest is None or self.manifest.resource_estimate.vram_gib > 0)
+        return self.preferred_runtime not in CPU_ONLY_RUNTIMES and (self.manifest is None or self.manifest.resource_estimate.vram_gib > 0)
 
     def to_openai_model(self) -> dict[str, Any]:
         resolved = None
@@ -414,7 +449,7 @@ class CatalogAlias:
                 "version": self.manifest.version,
                 "display_name": self.manifest.display_name,
             }
-        return {
+        record = {
             "id": self.alias.alias,
             "object": "model",
             "owned_by": "b1-ai-hub",
@@ -426,6 +461,7 @@ class CatalogAlias:
             "preferred_runtime": self.preferred_runtime,
             "runtimes": self.runtimes,
             "operations": self.operations,
+            "capabilities": self.manifest.capabilities.to_dict() if self.manifest else {},
             "resource_label": self.decision.label,
             "resource_decision": asdict(self.decision),
             "resolved_model": resolved,
@@ -434,10 +470,73 @@ class CatalogAlias:
             "cpu_resident_reason": self.cpu_residency.reason,
             "preferred_runtime_override": self.alias.preferred_runtime_override,
             "idle_timeout_seconds": self.alias.idle_timeout_seconds,
+            "reasoning_effort": self.alias.reasoning_effort,
             "visibility_roles": list(self.alias.visibility_roles),
             "alias_policy_source": self.alias.policy_source,
             "notes": self.alias.notes,
         }
+        if self.alias.alias == "video-image":
+            record["input_contract"] = {
+                "operation": "image-to-video",
+                "source_image_field": "source_image_artifact_id",
+                "source_image_contract": "Upload one private PNG, JPEG, or WebP to POST /v1/media/uploads, then pass response.reference.id unchanged as input.source_image_artifact_id to POST /v1/media/jobs. Inline base64 and URLs are not accepted.",
+                "maximum_source_images": 1,
+                "limits": {
+                    "width": {"minimum": 256, "maximum": 384},
+                    "height": {"minimum": 256, "maximum": 288},
+                    "fps": {"minimum": 4, "maximum": 12},
+                    "frames": {"minimum": 5, "maximum": 33},
+                    "duration_ms": {"minimum": 417, "maximum": 5000},
+                },
+            }
+        if self.alias.alias == "studio-panel-shot":
+            record["input_contract"] = {
+                "operation": "studio-panel-shot",
+                "private_uploads_only": True,
+                "required_fields": ["studio_reference_artifact_id", "participants", "camera", "width", "height"],
+                "participant_fields": ["participant_id", "seat", "portrait_artifact_id", "full_body_artifact_id", "seated_reference_artifact_id"],
+                "seated_reference_artifact_id": "required owner-scoped reference returned by a completed studio-seated-character job; full-body references are never used as a standing fallback",
+                "camera": {"view": ["establishing_wide"], "action": ["cut"]},
+                "seed": {"required": False, "default": 20260802, "minimum": 0, "maximum": 2147483647},
+                "limits": {"width": {"minimum": 256, "maximum": 1280}, "height": {"minimum": 144, "maximum": 720}, "aspect_ratio": "16:9", "maximum_participants": 6},
+            }
+        if self.alias.alias in {"studio-seated-character", "studio-seated-character-p40"}:
+            p40_native = self.alias.alias == "studio-seated-character-p40"
+            record["input_contract"] = {
+                "operation": "studio-seated-character",
+                "private_uploads_only": True,
+                "required_fields": ["participant_id", "portrait_artifact_id", "full_body_artifact_id", "studio_reference_artifact_id", "seat", "pose", "camera_view", "camera_angle", "width", "height"],
+                "pose": ["neutral_seated"],
+                "camera_view": ["establishing_wide"],
+                "camera_angle": ["front_three_quarter"],
+                "seed": {"required": False, "default": 20260802, "minimum": 0, "maximum": 2147483647},
+                "limits": (
+                    {"width": {"minimum": 1280, "maximum": 1280}, "height": {"minimum": 720, "maximum": 720}}
+                    if p40_native
+                    else {"width": {"minimum": 384, "maximum": 512}, "height": {"minimum": 512, "maximum": 720}}
+                ),
+                "pipeline": {"type": "sd15_img2img_openpose_controlnet", "identity_input": "portrait_artifact_id", "wardrobe_input": "full_body_artifact_id", "alpha_output": "matte PNG"},
+            }
+        if self.alias.alias == "talking-head-lipsync":
+            record["scene_conditioned_contract"] = {
+                "operation": "talking-head-lipsync",
+                "private_uploads_only": True,
+                "required_scene_fields": ["scene_artifact_id", "speaker_participant_id", "camera_view", "seating_plan", "face_regions"],
+                "lip_sync_mode": "audio_driven_seated_panel",
+                "supported_camera_views": ["establishing_wide", "speaker_medium", "speaker_close", "panel_two_shot", "reaction"],
+                "camera": {"optional": True, "fields": {"view": "must equal camera_view", "action": ["cut"], "composition": ["native_scene_camera"]}},
+                "framed_participant_ids": "optional ordered one or two participant ids; panel_two_shot requires exactly two and must include the speaker",
+                "coverage": {
+                    "establishing_wide": {"minimum_output": "512x288", "minimum_face_height_px": None},
+                    "speaker_medium": {"minimum_output": "1024x576", "minimum_face_height_px": 140},
+                    "speaker_close": {"minimum_output": "1024x576", "minimum_face_height_px": 220},
+                    "panel_two_shot": {"minimum_output": "1024x576", "minimum_face_height_px": 110},
+                    "reaction": {"minimum_output": "1024x576", "minimum_face_height_px": 110},
+                    "failure_code": "unsupported_camera_coverage",
+                },
+                "wall_screen_artifact_id": "optional private image; rendered only inside the fixed rear studio screen region",
+            }
+        return record
 
 
 class ModelCatalog:
@@ -478,7 +577,7 @@ class ModelCatalog:
     def _decision_for(self, manifest: ModelManifest | None) -> AdmissionDecision:
         if manifest is None:
             return AdmissionDecision(False, "uninstalled", "alias has no installed model manifest")
-        estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
+        estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime not in CPU_ONLY_RUNTIMES)
         return classify_resource_fit(self.policy, estimate)
 
     def _cpu_residency_for(self, alias: AliasDefinition, manifest: ModelManifest | None) -> CpuResidencyDecision:
@@ -487,7 +586,7 @@ class ModelCatalog:
             preferred_runtime = manifest.preferred_runtime
             if alias.preferred_runtime_override and alias.preferred_runtime_override in manifest.runtimes:
                 preferred_runtime = alias.preferred_runtime_override
-        requires_gpu = preferred_runtime != "audio-cpu"
+        requires_gpu = preferred_runtime not in CPU_ONLY_RUNTIMES
         estimate = (
             manifest.resource_estimate.to_scheduler_estimate(requires_gpu=requires_gpu)
             if manifest is not None
@@ -520,7 +619,7 @@ class ModelCatalog:
         return sorted(versions, key=lambda item: item.version, reverse=True)[0]
 
     def manifest_record(self, manifest: ModelManifest) -> dict[str, Any]:
-        estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime != "audio-cpu")
+        estimate = manifest.resource_estimate.to_scheduler_estimate(requires_gpu=manifest.preferred_runtime not in CPU_ONLY_RUNTIMES)
         decision = classify_resource_fit(self.policy, estimate)
         return {
             **manifest.to_dict(),
@@ -840,6 +939,67 @@ def _parse_deprecation(data: Any, context: str) -> ModelDeprecation:
     )
 
 
+def _parse_capabilities(data: Any, context: str) -> ModelCapabilities:
+    if data is None:
+        return ModelCapabilities()
+    if not isinstance(data, dict):
+        raise CatalogError(f"{context} must be an object")
+    boolean_fields = {
+        "streaming",
+        "thinking",
+        "reasoning_content",
+        "tool_calls",
+        "json_tool_arguments",
+        "sequential_tool_calls",
+        "reasoning_between_tool_calls",
+    }
+    allowed = {
+        "schema",
+        "chat_template",
+        "speculative_decoding",
+        "speculative_draft_model",
+        "validated_context_tokens",
+    } | boolean_fields
+    _require_keys(data, {"schema"}, context)
+    _forbid_extra_keys(data, allowed, context)
+    schema = _string(data, "schema", context)
+    if schema != MODEL_CAPABILITIES_SCHEMA:
+        raise CatalogError(f"{context}.schema is unsupported: {schema}")
+    for key in boolean_fields:
+        if key in data and not isinstance(data[key], bool):
+            raise CatalogError(f"{context}.{key} must be boolean")
+    speculative_decoding = data.get("speculative_decoding")
+    if speculative_decoding is not None:
+        speculative_decoding = _string(data, "speculative_decoding", context)
+        if speculative_decoding not in {"disabled", "experimental", "enabled"}:
+            raise CatalogError(f"{context}.speculative_decoding is unsupported: {speculative_decoding}")
+    draft_model = _optional_string(data, "speculative_draft_model", context)
+    if draft_model and speculative_decoding not in {"experimental", "enabled"}:
+        raise CatalogError(f"{context}.speculative_draft_model requires experimental or enabled speculative_decoding")
+    context_tokens = data.get("validated_context_tokens", [])
+    if not isinstance(context_tokens, list) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 4_194_304
+        for value in context_tokens
+    ):
+        raise CatalogError(f"{context}.validated_context_tokens must contain positive integers up to 4194304")
+    if len(context_tokens) != len(set(context_tokens)):
+        raise CatalogError(f"{context}.validated_context_tokens must not contain duplicates")
+    return ModelCapabilities(
+        schema=schema,
+        chat_template=_optional_string(data, "chat_template", context),
+        streaming=data.get("streaming"),
+        thinking=data.get("thinking"),
+        reasoning_content=data.get("reasoning_content"),
+        tool_calls=data.get("tool_calls"),
+        json_tool_arguments=data.get("json_tool_arguments"),
+        sequential_tool_calls=data.get("sequential_tool_calls"),
+        reasoning_between_tool_calls=data.get("reasoning_between_tool_calls"),
+        speculative_decoding=speculative_decoding,
+        speculative_draft_model=draft_model,
+        validated_context_tokens=sorted(context_tokens),
+    )
+
+
 def _validate_runtime_smoke_runtime_config(data: dict[str, Any], runtime: str, context: str) -> dict[str, Any]:
     allowed = {"prompt", "request", "payload", "timeout_seconds"}
     _forbid_extra_keys(data, allowed, context)
@@ -1058,6 +1218,7 @@ def _parse_manifest(
         "deprecation",
         "runtime_smoke",
         "measurements",
+        "capabilities",
     }
     _require_keys(data, required, context)
     _forbid_extra_keys(data, allowed, context)
@@ -1110,6 +1271,7 @@ def _parse_manifest(
         resource_estimate=resource_estimate,
         license=license_info,
         execution_modes=execution_modes,
+        capabilities=_parse_capabilities(data.get("capabilities"), f"{context}.capabilities"),
         installation_status=installation_status,
         aliases=aliases,
         visibility_roles=_string_list(data, "visibility_roles", context, ROLES) if "visibility_roles" in data else [],
@@ -1327,6 +1489,7 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
             "preferred_runtime",
             "status",
             "idle_timeout_seconds",
+            "reasoning_effort",
             "visibility_roles",
             "notes",
             "updated_by",
@@ -1355,6 +1518,11 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
     if idle_timeout_seconds is not None:
         if not isinstance(idle_timeout_seconds, int) or idle_timeout_seconds < 30 or idle_timeout_seconds > 86400:
             raise CatalogError(f"{context}.idle_timeout_seconds must be between 30 and 86400 seconds")
+    reasoning_effort = data.get("reasoning_effort")
+    if reasoning_effort in {"", None}:
+        reasoning_effort = None
+    if reasoning_effort is not None and reasoning_effort not in {"low", "medium", "high"}:
+        raise CatalogError(f"{context}.reasoning_effort must be low, medium, or high")
     visibility_roles = _string_list(data, "visibility_roles", context, ROLES) if "visibility_roles" in data else []
     notes = data.get("notes", "")
     if not isinstance(notes, str):
@@ -1371,6 +1539,7 @@ def _parse_alias_policy(data: dict[str, Any], context: str) -> dict[str, Any]:
         "preferred_runtime": preferred_runtime,
         "status": status.strip() if isinstance(status, str) else None,
         "idle_timeout_seconds": idle_timeout_seconds,
+        "reasoning_effort": reasoning_effort,
         "visibility_roles": tuple(visibility_roles),
         "notes": notes,
     }
@@ -1400,6 +1569,7 @@ def _apply_alias_policies(aliases: list[AliasDefinition], alias_policies: list[d
                 enabled=policy["enabled"],
                 preferred_runtime_override=policy["preferred_runtime"],
                 idle_timeout_seconds=policy["idle_timeout_seconds"],
+                reasoning_effort=policy["reasoning_effort"],
                 visibility_roles=policy["visibility_roles"],
                 policy_source="database",
                 notes=policy["notes"],
@@ -1418,6 +1588,7 @@ def _apply_alias_policies(aliases: list[AliasDefinition], alias_policies: list[d
                 enabled=policy["enabled"],
                 preferred_runtime_override=policy["preferred_runtime"],
                 idle_timeout_seconds=policy["idle_timeout_seconds"],
+                reasoning_effort=policy["reasoning_effort"],
                 visibility_roles=policy["visibility_roles"],
                 policy_source="database-custom",
                 notes=policy["notes"],

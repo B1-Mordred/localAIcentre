@@ -124,5 +124,5 @@
     "max_batch_size": 1,
     "max_duration_seconds": 1
   },
-  "visibility_roles": ["admin", "operator", "creator"]
+  "visibility_roles": ["admin", "operator", "creator", "service"]
 }

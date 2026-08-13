@@ -36,6 +36,14 @@ class ModelToolPolicyTests(unittest.TestCase):
         url = model_tools.validate_tool_url("HTTPS://Example.TEST/path?q=1#section", resolver=lambda _host, _port: ["93.184.216.34"])
         self.assertEqual(url, "https://example.test/path?q=1")
 
+    def test_web_fetch_rejects_search_engine_results_pages(self) -> None:
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("web_fetch",)),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        with self.assertRaisesRegex(model_tools.ModelToolError, "web_search"):
+            asyncio.run(registry.web_fetch({"url": "https://html.duckduckgo.com/html/?q=German+news"}))
+
     def test_html_to_text_removes_scripts_and_tags(self) -> None:
         text = model_tools.html_to_text("<html><script>secret()</script><h1>Title</h1><p>A&nbsp;B</p></html>", max_chars=100)
         self.assertEqual(text, "Title A B")
@@ -43,6 +51,58 @@ class ModelToolPolicyTests(unittest.TestCase):
     def test_html_title_extracts_document_title(self) -> None:
         title = model_tools.html_title("<html><head><title> Example Domain </title></head><body><h1>Ignored</h1></body></html>")
         self.assertEqual(title, "Example Domain")
+
+    def test_query_passage_selection_prefers_relevant_section(self) -> None:
+        source = "\n".join(
+            [
+                "Introduction Generic material about serialization.",
+                "JSONEncoder This class converts Python objects into JSON strings.",
+                "Networking Unrelated material about sockets and addresses.",
+                "JSONDecoder This class converts JSON documents into Python objects.",
+            ]
+        )
+        text, selected, total = model_tools.select_relevant_passages(source, "documented JSONDecoder class", max_chars=300)
+        self.assertIn("JSONDecoder", text)
+        self.assertNotIn("Networking", text)
+        self.assertGreaterEqual(selected, 1)
+        self.assertGreaterEqual(total, selected)
+
+    def test_structured_html_preserves_block_boundaries(self) -> None:
+        text = model_tools.html_to_structured_text("<h1>Title</h1><p>First paragraph.</p><p>Second paragraph.</p>")
+        self.assertEqual(text.splitlines(), ["Title", "First paragraph.", "Second paragraph."])
+
+    def test_web_fetch_uses_progressive_default_query_and_cache(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>Docs</title></head><body><p>" + ("irrelevant words " * 500) + "</p><h2>JSONDecoder</h2><p>Simple JSON decoder class.</p></body></html>",
+            )
+
+        model_tools.WEB_FETCH_CACHE.clear()
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("web_fetch",), max_result_chars=12000),
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        first = asyncio.run(registry.execute("web_fetch", {"url": "https://example.com/docs", "query": "JSONDecoder class"}))
+        second = asyncio.run(registry.execute("web_fetch", {"url": "https://example.com/docs", "query": "JSONDecoder class"}))
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["max_chars"], 5000)
+        self.assertEqual(first["extraction"], "query_passages")
+        self.assertIn("JSONDecoder", first["text"])
+        self.assertFalse(first["cache_hit"])
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(len(requests), 1)
+
+    def test_web_fetch_schema_accepts_query_and_preserves_hard_cap(self) -> None:
+        definition = model_tools.builtin_tool_definition("web_fetch", model_tools.ModelToolSettings(max_result_chars=12000))
+        properties = definition["function"]["parameters"]["properties"]
+        self.assertIn("query", properties)
+        self.assertEqual(properties["max_chars"]["maximum"], 12000)
 
     def test_search_result_parser_extracts_links(self) -> None:
         parser = model_tools.SearchResultParser("https://search.example/")
@@ -60,6 +120,32 @@ class ModelToolPolicyTests(unittest.TestCase):
             model_tools.unwrap_search_result_url("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs&rut=abc"),
             "https://example.com/docs",
         )
+
+    def test_web_search_discards_provider_navigation_links(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                text=(
+                    '<a href="/html/">DuckDuckGo</a>'
+                    '<a href="https://news.example.test/latest">German news</a>'
+                ),
+            )
+
+        registry = model_tools.ModelToolRegistry(
+            model_tools.ModelToolSettings(allowed_tools=("web_search",)),
+            transport=httpx.MockTransport(handler),
+            resolver=lambda _host, _port: ["93.184.216.34"],
+        )
+        result = asyncio.run(registry.web_search({"query": "German news"}))
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"], [{"title": "German news", "url": "https://news.example.test/latest"}])
+
+    def test_parse_google_news_rss_extracts_headlines(self) -> None:
+        result = model_tools.parse_google_news_rss(
+            b"<rss><channel><item><title>Headline</title><link>https://news.example.test/article</link></item></channel></rss>",
+            max_results=5,
+        )
+        self.assertEqual(result, [{"title": "Headline", "url": "https://news.example.test/article"}])
 
     def test_registry_definitions_only_include_enabled_requested_tools(self) -> None:
         registry = model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",)))
@@ -521,14 +607,119 @@ class ModelToolPolicyTests(unittest.TestCase):
 
 @unittest.skipIf(main is None or model_tools is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
 class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
+    def test_current_information_intent_detects_broad_freshness_requests(self) -> None:
+        for text in (
+            "What are today's headlines?",
+            "Look up the current price of electricity.",
+            "Search the web for the latest weather forecast.",
+            "What is the schedule this week?",
+            "What is the most performant model for this GPU?",
+            "Recommend the best local inference engine.",
+        ):
+            self.assertTrue(main.chat_request_requests_current_information(main.ChatCompletionRequest(messages=[{"role": "user", "content": text}])))
+        self.assertFalse(main.chat_request_requests_current_information(main.ChatCompletionRequest(messages=[{"role": "user", "content": "Is the future bright?"}])))
+
+    def test_tool_instruction_requires_current_evidence_for_recommendations(self) -> None:
+        instruction = main.b1_text_tool_instruction(
+            [{"type": "function", "function": {"name": "web_search", "description": "Search", "parameters": {"type": "object"}}}]
+        )["content"]
+        self.assertIn("Treat model, software, hardware, and product recommendations as time-sensitive", instruction)
+        self.assertIn("direct hardware-specific benchmarks", instruction)
+        self.assertIn("Never invent throughput or benchmark figures", instruction)
+
+    def test_internet_capability_intent_is_narrow(self) -> None:
+        for text in (
+            "Can you access the internet?",
+            "Could you browse the web?",
+            "Are you able to access live websites?",
+            "Do you have internet access?",
+        ):
+            payload = main.ChatCompletionRequest(messages=[{"role": "user", "content": text}])
+            self.assertTrue(main.chat_request_asks_about_internet_capability(payload), text)
+        search_request = main.ChatCompletionRequest(messages=[{"role": "user", "content": "Can you browse the web for Munich weather?"}])
+        self.assertFalse(main.chat_request_asks_about_internet_capability(search_request))
+
+    def test_internet_capability_response_reports_attached_tools(self) -> None:
+        payload = main.ChatCompletionRequest(model="laguna-xs-2.1", messages=[{"role": "user", "content": "Can you access the internet?"}])
+        resolution = SimpleNamespace(runtime="localai", resolved_model_version="laguna@v1", public_alias="laguna-xs-2.1")
+        response = main.b1_internet_capability_response(payload, resolution, ["web_search", "web_fetch"])
+        body = json.loads(response.body.decode("utf-8"))
+        answer = body["choices"][0]["message"]["content"]
+        self.assertIn("Yes.", answer)
+        self.assertIn("`web_search`", answer)
+        self.assertIn("`web_fetch`", answer)
+        self.assertIn("policy", answer)
+        self.assertEqual(response.headers["x-b1-tool-stop-reason"], "capability_report")
+        self.assertEqual(response.headers["x-b1-tool-iterations"], "0")
+
+    def test_laguna_reasoning_normalization_removes_duplicate_visible_answer(self) -> None:
+        resolution = SimpleNamespace(model_id="poolside-laguna-xs", resolved_model_version="laguna@v1")
+        duplicated = {"choices": [{"message": {"role": "assistant", "content": "Current answer</think>Current answer"}}]}
+        normalized = main.normalize_laguna_reasoning_response(duplicated, resolution)
+        self.assertEqual(normalized["choices"][0]["message"]["content"], "Current answer")
+        self.assertNotIn("reasoning_content", normalized["choices"][0]["message"])
+
+        reasoned = {"choices": [{"message": {"role": "assistant", "content": "<think>Inspect the source.</think>Final answer"}}]}
+        normalized = main.normalize_laguna_reasoning_response(reasoned, resolution)
+        self.assertEqual(normalized["choices"][0]["message"]["content"], "Final answer")
+        self.assertEqual(normalized["choices"][0]["message"]["reasoning_content"], "Inspect the source.")
+
+    def test_open_webui_output_history_is_normalized_for_chat_runtimes(self) -> None:
+        messages = main.normalize_open_webui_chat_messages(
+            [
+                {"role": "user", "content": "What is the capital of France?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "content": [{"type": "output_text", "text": "Recall geography."}],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Paris."}],
+                        },
+                    ],
+                },
+                {"role": "user", "content": "How is life?"},
+            ]
+        )
+        self.assertEqual(messages[1]["content"], "<think>Recall geography.</think>Paris.")
+        self.assertNotIn("output", messages[1])
+        self.assertEqual(messages[-1]["content"], "How is life?")
+
+    def test_open_webui_blank_assistant_turn_and_untrusted_tools_are_removed(self) -> None:
+        payload = main.strip_b1_chat_fields(
+            {
+                "model": "chat-default",
+                "tools": [{"type": "function", "function": {"name": "view_note"}}],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+                "messages": [
+                    {"role": "user", "content": "Earlier question"},
+                    {"role": "assistant", "content": ""},
+                    {"role": "user", "content": "Current question"},
+                ],
+            }
+        )
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+        self.assertNotIn("parallel_tool_calls", payload)
+        self.assertEqual(payload["messages"], [{"role": "user", "content": "Current question"}])
+
     async def test_chat_tool_response_can_be_consumed_as_openai_sse(self) -> None:
+        content = "Current answer " * 100
         response = main.chat_tool_response_to_stream(
             JSONResponse(
                 {
                     "id": "chatcmpl-test",
                     "model": "chat-default",
                     "created": 123,
-                    "choices": [{"message": {"role": "assistant", "content": "Current answer"}, "finish_reason": "stop"}],
+                    "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 40, "completion_tokens": 100, "total_tokens": 140},
+                    "timings": {"predicted_n": 100, "predicted_ms": 5000.0, "predicted_per_second": 20.0},
                 },
                 headers={"X-B1-Tools": "web_search", "Content-Length": "1"},
             )
@@ -543,12 +734,17 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
             for line in event_text.splitlines()
             if line.startswith("data: ") and line != "data: [DONE]"
         ]
+        self.assertEqual(len(events), 3)
         self.assertEqual(events[0]["choices"][0]["delta"], {"role": "assistant"})
-        self.assertEqual(events[1]["choices"][0]["delta"]["content"], "Current answer")
+        self.assertEqual(events[1]["choices"][0]["delta"]["content"], content)
         self.assertEqual(events[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(events[-1]["usage"]["completion_tokens"], 100)
+        self.assertEqual(events[-1]["timings"]["predicted_per_second"], 20.0)
+        self.assertEqual(events[-1]["timings"]["tokens_per_second"], 20.0)
         self.assertIn("data: [DONE]", event_text)
         self.assertEqual(response.headers["x-b1-tools"], "web_search")
         self.assertNotIn("content-length", response.headers)
+        self.assertNotIn("connection", response.headers)
 
     async def test_admin_model_tool_execute_runs_enabled_tool_and_audits(self) -> None:
         requests: list[httpx.Request] = []
@@ -680,6 +876,74 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
         self.assertEqual(calls[1]["messages"][-1]["role"], "system")
 
+    async def test_tool_loop_writer_receives_reasoning_calls_and_results_for_next_agent_turn(self) -> None:
+        calls: list[dict[str, object]] = []
+        persisted: list[list[dict[str, object]]] = []
+
+        async def fake_runtime_json(_path, runtime_payload, _resolution, _operation, owner_id=None):
+            calls.append(runtime_payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "reasoning_content": "I should fetch the source before answering.",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "web_fetch", "arguments": json.dumps({"url": "https://example.com"})},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Verified answer."}}]})
+
+        async def fake_execute(_registry, _tool_call):
+            return {"ok": True, "tool": "web_fetch", "url": "https://example.com", "text": "Verified source text"}
+
+        async def writer(messages):
+            persisted.append(messages)
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Check the source."}],
+            b1_tools=["web_fetch"],
+        )
+        await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+            transcript_writer=writer,
+        )
+
+        self.assertEqual(len(persisted), 1)
+        transcript = persisted[0]
+        assistant = next(message for message in transcript if message.get("role") == "assistant")
+        tool = next(message for message in transcript if message.get("role") == "tool")
+        self.assertEqual(assistant["reasoning_content"], "I should fetch the source before answering.")
+        self.assertEqual(assistant["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(tool["tool_call_id"], "call_1")
+        self.assertIn("Verified source text", tool["content"])
+        self.assertEqual(calls[1]["messages"][-3]["reasoning_content"], "I should fetch the source before answering.")
+        self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
+
     async def test_chat_tool_loop_replaces_client_tools_with_b1_tool_allowlist(self) -> None:
         calls: list[dict[str, object]] = []
 
@@ -788,6 +1052,64 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1]["messages"][-1]["role"], "system")
         self.assertIn("view_note", calls[1]["messages"][-1]["content"])
 
+    async def test_chat_tool_loop_closes_tools_after_a_failed_tool_result(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(_path, payload, _resolution, _operation, owner_id=None):
+            calls.append(payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_fetch",
+                                            "type": "function",
+                                            "function": {"name": "web_fetch", "arguments": '{"url":"https://blocked.example"}'},
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return JSONResponse({"choices": [{"message": {"role": "assistant", "content": "The site denied access, so I cannot use it as a source."}}]})
+
+        async def fake_execute(_registry, _tool_call):
+            return {"ok": False, "tool": "web_fetch", "error": "the remote endpoint rejected the request (HTTP 403)", "status_code": 403}
+
+        original_runtime_json = main.call_openai_runtime_json
+        original_execute = main.execute_b1_tool_call
+        main.call_openai_runtime_json = fake_runtime_json
+        main.execute_b1_tool_call = fake_execute
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+        self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
+
+        payload = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Fetch the blocked page."}],
+            b1_tools=["web_fetch"],
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["choices"][0]["message"]["content"], "The site denied access, so I cannot use it as a source.")
+        self.assertNotIn("requested tool call failed", body["choices"][0]["message"]["content"])
+        self.assertNotIn("tools", calls[1])
+        self.assertEqual(calls[1]["tool_choice"], "none")
+        self.assertEqual(response.headers["x-b1-tool-stop-reason"], "tool_failure")
+
     async def test_chat_tool_loop_retries_transient_runtime_failure(self) -> None:
         calls: list[dict[str, object]] = []
 
@@ -818,6 +1140,52 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(response.body.decode("utf-8"))
         self.assertEqual(body["choices"][0]["message"]["content"], "Recovered")
         self.assertEqual(len(calls), 2)
+
+    async def test_chat_tool_loop_retries_gpt_oss_harmony_analysis_fragment(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_runtime_json(_path, runtime_payload, _resolution, _operation, owner_id=None):
+            calls.append(runtime_payload)
+            if len(calls) == 1:
+                return JSONResponse(
+                    {"choices": [{"message": {"role": "assistant", "content": "We have?}??????**\nThe user says:"}}]}
+                )
+            return JSONResponse(
+                {"choices": [{"message": {"role": "assistant", "content": "Build a scarce skill, document results, and negotiate from evidence."}}]}
+            )
+
+        original_runtime_json = main.call_openai_runtime_json
+        main.call_openai_runtime_json = fake_runtime_json
+        self.addCleanup(lambda: setattr(main, "call_openai_runtime_json", original_runtime_json))
+
+        payload = main.ChatCompletionRequest(
+            model="gpt-oss-reasoning",
+            messages=[{"role": "user", "content": "How can I improve my income?"}],
+            b1_tools=["web_fetch"],
+        )
+        response = await main.call_chat_with_b1_tools(
+            payload,
+            main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
+            SimpleNamespace(
+                runtime="lan-localai-worker",
+                model_id="b1-openai-gpt-oss-20b-mxfp4-localai",
+                resolved_model_version="b1-openai-gpt-oss-20b-mxfp4-localai@v1",
+                public_alias="gpt-oss-reasoning",
+            ),
+            ["web_fetch"],
+            model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
+            owner_id="user_1",
+        )
+
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(
+            body["choices"][0]["message"]["content"],
+            "Build a scarce skill, document results, and negotiate from evidence.",
+        )
+        self.assertEqual(response.headers["x-b1-gpt-oss-final-retry"], "1")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("tools", calls[1])
+        self.assertEqual(calls[1]["tool_choice"], "none")
 
     async def test_chat_tool_loop_executes_text_protocol_tool_call(self) -> None:
         calls: list[dict[str, object]] = []
@@ -921,9 +1289,11 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["choices"][0]["message"]["content"], "Example Domain")
         self.assertEqual(len(executed), 1)
         self.assertEqual(response.headers["x-b1-tool-stop-reason"], "duplicate_tool_call")
-        self.assertEqual(response.headers["x-b1-tool-answer"], "synthesized")
-        self.assertTrue(body["b1_tool_answer_synthesized"])
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(response.headers["x-b1-tool-answer"], "model_final")
+        self.assertNotIn("b1_tool_answer_synthesized", body)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1]["tool_choice"], "none")
+        self.assertIn("Do not include JSON", calls[-1]["messages"][-2]["content"])
 
     async def test_chat_tool_loop_synthesizes_search_results_on_max_iterations(self) -> None:
         calls: list[dict[str, object]] = []

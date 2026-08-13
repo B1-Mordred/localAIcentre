@@ -311,6 +311,86 @@ class VoiceboxProfilesApiTests(unittest.TestCase):
         self.assertEqual(fields["speed"]["input_mode"], "decimal")
         self.assertIn("sample", result["forbidden_metadata_key_fragments"])
 
+    def test_default_voice_selector_uses_visible_voicebox_profile(self) -> None:
+        row = voice_profile_row(id="vp_visible", visibility_roles=["user"], updated_at=datetime(2026, 7, 22, 12, 30, tzinfo=UTC))
+        fake_database = FakeVoiceProfileDatabase([row])
+        self.patch_common(fake_database, AuthContext(subject_id="user_1", role=Role.USER, scopes=frozenset({"inference:write"})))
+        resolution = main.RuntimeResolution(
+            public_alias="tts-quality",
+            model_id="b1-resembleai-chatterbox-voicebox",
+            model_version="1.0.0",
+            resolved_model_version="b1-resembleai-chatterbox-voicebox@1.0.0",
+            runtime="voicebox",
+            preferred_runtime="voicebox",
+            requires_gpu=True,
+            resource_label="expected",
+            runtime_policy="any",
+        )
+
+        selected = asyncio.run(
+            main.default_voice_profile_for_resolution(
+                {"voice": "default"},
+                AuthContext(subject_id="user_1", role=Role.USER, scopes=frozenset({"inference:write"})),
+                resolution,
+            )
+        )
+
+        self.assertEqual(selected["id"], "vp_visible")
+        self.assertEqual(fake_database.list_kwargs, {"include_deleted": False, "runtime": "voicebox", "status": "active"})
+
+    def test_async_voicebox_job_attaches_default_profile_id(self) -> None:
+        row = voice_profile_row(id="vp_visible", visibility_roles=["user"])
+        fake_database = FakeVoiceProfileDatabase([row])
+        auth = AuthContext(subject_id="user_1", role=Role.USER, scopes=frozenset({"jobs:write"}))
+        self.patch_common(fake_database, auth)
+        resolution = main.RuntimeResolution(
+            public_alias="tts-quality",
+            model_id="b1-resembleai-chatterbox-voicebox",
+            model_version="1.0.0",
+            resolved_model_version="b1-resembleai-chatterbox-voicebox@1.0.0",
+            runtime="voicebox",
+            preferred_runtime="voicebox",
+            requires_gpu=True,
+            resource_label="expected",
+            runtime_policy="any",
+        )
+        payload = main.MediaJobCreate(
+            modality="tts",
+            operation="speech",
+            model="tts-quality",
+            input={"input": "hello", "voice": "default"},
+            priority="interactive",
+        )
+
+        rewritten, profile = asyncio.run(main.attach_default_voice_profile_if_needed(auth, payload, resolution))
+
+        self.assertEqual(profile["id"], "vp_visible")
+        self.assertEqual(rewritten.input["voice_profile_id"], "vp_visible")
+        self.assertEqual(rewritten.input["voice"], "default")
+
+    def test_default_voice_selector_requires_visible_profile(self) -> None:
+        row = voice_profile_row(id="vp_hidden", visibility_roles=["admin"])
+        fake_database = FakeVoiceProfileDatabase([row])
+        auth = AuthContext(subject_id="user_1", role=Role.USER, scopes=frozenset({"inference:write"}))
+        self.patch_common(fake_database, auth)
+        resolution = main.RuntimeResolution(
+            public_alias="tts-quality",
+            model_id="b1-resembleai-chatterbox-voicebox",
+            model_version="1.0.0",
+            resolved_model_version="b1-resembleai-chatterbox-voicebox@1.0.0",
+            runtime="voicebox",
+            preferred_runtime="voicebox",
+            requires_gpu=True,
+            resource_label="expected",
+            runtime_policy="any",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(main.default_voice_profile_for_resolution({"voice": "default"}, auth, resolution))
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["requested_model"], "tts-quality")
+
     def test_service_role_cannot_read_voice_profile_policy(self) -> None:
         fake_database = FakeVoiceProfileDatabase()
         auth = AuthContext(subject_id="service_1", role=Role.SERVICE, scopes=frozenset({"runtimes:read"}))

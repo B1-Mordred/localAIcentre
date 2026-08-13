@@ -144,12 +144,19 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("bootstrap", open_webui.get("depends_on", {}))
         self.assertEqual(control_plane["environment"]["B1_OPEN_WEBUI_API_KEY_FILE"], "/run/secrets/open_webui_api_key")
         dockerfile = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("ghcr.io/open-webui/open-webui:v0.10.2@sha256:9fcea9c6e32ab60b0498f3986c6cdf651ddbe61db48d2213a3d28048ddd673d4", dockerfile)
+        self.assertIn("ghcr.io/open-webui/open-webui:v0.11.0@sha256:21a1ece1e32d1c79681c8d6b36a6f2f54abeb96d0f648965d793265dbef541f6", dockerfile)
+        self.assertIn("COPY b1_cancel_bridge.py /app/backend/open_webui/b1_cancel_bridge.py", dockerfile)
+        self.assertIn("python /tmp/b1-patch-open-webui-tasks.py", dockerfile)
         self.assertIn("chgrp -R 999 /app/backend/open_webui/static", dockerfile)
 
     def test_open_webui_is_local_only_by_default(self) -> None:
         environment = self.compose["services"]["open-webui"]["environment"]
         self.assertEqual(environment["ENABLE_OPENAI_API"], "true")
+        self.assertEqual(environment["ENABLE_WEBSOCKET_SUPPORT"], "false")
+        self.assertEqual(environment["ENABLE_FORWARD_USER_INFO_HEADERS"], "true")
+        self.assertEqual(environment["FORWARD_SESSION_INFO_HEADER_CHAT_ID"], "X-B1-OpenWebUI-Chat-Id")
+        self.assertEqual(environment["TASK_MODEL"], "${B1_OPEN_WEBUI_TASK_MODEL:-chat-fast}")
+        self.assertEqual(environment["TASK_MODEL_EXTERNAL"], "${B1_OPEN_WEBUI_TASK_MODEL_EXTERNAL:-chat-fast}")
         self.assertEqual(environment["ENABLE_PERSISTENT_CONFIG"], "false")
         self.assertEqual(environment["ENABLE_OAUTH_PERSISTENT_CONFIG"], "false")
         self.assertEqual(environment["B1_OPEN_WEBUI_API_BASE_URL"], "${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}")
@@ -170,15 +177,42 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["ENABLE_IMAGE_GENERATION"], "false")
         self.assertEqual(environment["ENABLE_IMAGE_EDIT"], "false")
         self.assertEqual(environment["USER_PERMISSIONS_FEATURES_IMAGE_GENERATION"], "false")
-        self.assertEqual(environment["ENABLE_WEB_SEARCH"], "false")
+        self.assertEqual(environment["ENABLE_WEB_SEARCH"], "true")
+        self.assertEqual(environment["WEB_SEARCH_ENGINE"], "searxng")
+        self.assertEqual(environment["SEARXNG_QUERY_URL"], "http://tool-search:8080/search")
+        self.assertEqual(environment["WEB_SEARCH_RESULT_COUNT"], "5")
+        self.assertEqual(environment["WEB_SEARCH_CONCURRENT_REQUESTS"], "2")
+        self.assertEqual(environment["WEB_LOADER_ENGINE"], "firecrawl")
+        self.assertEqual(environment["FIRECRAWL_API_BASE_URL"], "http://tool-firecrawl:3002")
+        self.assertEqual(environment["WEB_FETCH_MAX_CONTENT_LENGTH"], "200000")
         self.assertEqual(environment["ENABLE_LOCAL_WEB_FETCH"], "false")
         self.assertEqual(environment["WEB_SEARCH_TRUST_ENV"], "false")
-        self.assertEqual(environment["USER_PERMISSIONS_FEATURES_WEB_SEARCH"], "false")
+        self.assertEqual(environment["USER_PERMISSIONS_FEATURES_WEB_SEARCH"], "true")
         self.assertEqual(environment["ENABLE_COMMUNITY_SHARING"], "false")
         self.assertEqual(environment["ENABLE_EVALUATION_ARENA_MODELS"], "false")
         self.assertEqual(environment["ENABLE_VERSION_UPDATE_CHECK"], "false")
         self.assertEqual(environment["OFFLINE_MODE"], "true")
         self.assertEqual(environment["ENABLE_OTEL"], "false")
+
+    def test_web_fetch_is_confined_to_filtered_proxy(self) -> None:
+        services = self.compose["services"]
+        self.assertEqual(services["open-webui"]["networks"], ["app"])
+        self.assertEqual(set(services["tool-firecrawl"]["networks"]), {"app", "web-fetch"})
+        self.assertEqual(services["tool-firecrawl-playwright"]["networks"], ["web-fetch"])
+        self.assertEqual(set(services["tool-web-egress"]["networks"]), {"web-fetch", "egress"})
+        self.assertTrue(self.compose["networks"]["web-fetch"]["internal"])
+        self.assertEqual(services["tool-firecrawl"]["environment"]["PROXY_SERVER"], "http://tool-web-egress:3128")
+        self.assertEqual(services["tool-firecrawl-playwright"]["environment"]["PROXY_SERVER"], "http://tool-web-egress:3128")
+        self.assertEqual(services["tool-firecrawl"]["environment"]["ALLOW_LOCAL_WEBHOOKS"], "true")
+        self.assertEqual(services["tool-firecrawl-playwright"]["environment"]["ALLOW_LOCAL_WEBHOOKS"], "true")
+        self.assertNotIn("ports", services["tool-firecrawl"])
+        self.assertNotIn("ports", services["tool-firecrawl-playwright"])
+        self.assertNotIn("ports", services["tool-web-egress"])
+
+        squid = (ROOT / "deploy" / "firecrawl" / "squid.conf").read_text(encoding="utf-8")
+        for blocked_range in ("10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"):
+            self.assertIn(blocked_range, squid)
+        self.assertIn("http_access deny private_networks", squid)
 
     def test_no_latest_image_tags(self) -> None:
         for name, service in self.compose["services"].items():
@@ -246,7 +280,7 @@ class ComposePolicyTests(unittest.TestCase):
         for name in ("app", "data", "runtime"):
             self.assertTrue(networks[name].get("internal"), name)
 
-    def test_only_control_plane_has_model_download_egress(self) -> None:
+    def test_only_control_plane_and_isolated_web_tools_have_egress(self) -> None:
         networks = self.compose["networks"]
         self.assertIn("egress", networks)
         self.assertFalse(networks["egress"].get("internal", False))
@@ -256,7 +290,7 @@ class ComposePolicyTests(unittest.TestCase):
             for name, service in self.compose["services"].items()
             if "egress" in service.get("networks", [])
         )
-        self.assertEqual(services_with_egress, ["control-plane"])
+        self.assertEqual(services_with_egress, ["control-plane", "tool-search", "tool-web-egress"])
         for runtime in ("localai", "comfyui", "voicebox", "audio-cpu"):
             self.assertNotIn("egress", self.compose["services"][runtime].get("networks", []), runtime)
 
@@ -344,10 +378,22 @@ class ComposePolicyTests(unittest.TestCase):
             "B1_HOST_VOICE",
             "B1_HOST_MONITORING",
         ):
-            block_start = caddyfile.index("{$" + host_var)
+            block_start = caddyfile.index("\n{$" + host_var) + 1
             block_end = caddyfile.find("\n}\n", block_start)
             self.assertIn("import b1_tls", caddyfile[block_start:block_end], host_var)
         self.assertEqual(self.production_env["B1_CADDY_TLS_ARGS"], "internal")
+
+    def test_gateway_exposes_only_caddy_root_as_http_bootstrap_download(self) -> None:
+        caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+        block_start = caddyfile.index("http://{$B1_HOST_CHAT")
+        block_end = caddyfile.index("\n}\n", block_start)
+        block = caddyfile[block_start:block_end]
+        self.assertIn("@caddy_root path /b1-caddy-root.crt", block)
+        self.assertIn("root * /data/caddy/pki/authorities/local", block)
+        self.assertIn("rewrite * /root.crt", block)
+        self.assertIn("Content-Disposition \"attachment; filename=b1-caddy-root.crt\"", block)
+        self.assertIn("X-B1-CA-SHA256", block)
+        self.assertIn("redir https://{host}{uri} permanent", block)
 
     def test_gateway_caddy_admin_api_is_loopback_only(self) -> None:
         gateway = self.compose["services"]["gateway"]
@@ -380,13 +426,13 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn('Permissions-Policy "camera=(), microphone=(), geolocation=()"', caddyfile)
         self.assertIn('Permissions-Policy "camera=(self), microphone=(self), geolocation=()"', caddyfile)
         for host_var in ("B1_HOST_CHAT", "B1_HOST_MEDIA", "B1_HOST_VOICE"):
-            block_start = caddyfile.index("{$" + host_var)
+            block_start = caddyfile.index("\n{$" + host_var) + 1
             block_end = caddyfile.find("\n}\n", block_start)
             block = caddyfile[block_start:block_end]
             self.assertIn("import media_capture_security_headers", block, host_var)
             self.assertNotIn("import security_headers", block, host_var)
         for host_var in ("B1_HOST_CONTROL", "B1_HOST_API", "B1_HOST_MODELS", "B1_HOST_COMFY"):
-            block_start = caddyfile.index("{$" + host_var)
+            block_start = caddyfile.index("\n{$" + host_var) + 1
             block_end = caddyfile.find("\n}\n", block_start)
             block = caddyfile[block_start:block_end]
             self.assertIn("import security_headers", block, host_var)
@@ -415,7 +461,7 @@ class ComposePolicyTests(unittest.TestCase):
             "B1_HOST_VOICE",
             "B1_HOST_MONITORING",
         ):
-            block_start = caddyfile.index("{$" + host_var)
+            block_start = caddyfile.index("\n{$" + host_var) + 1
             block_end = caddyfile.find("\n}\n", block_start)
             self.assertIn("import request_limits", caddyfile[block_start:block_end], host_var)
         self.assertIn("import request_limits", legacy_caddyfile)
@@ -912,7 +958,7 @@ class ComposePolicyTests(unittest.TestCase):
     def test_gateway_strips_spoofed_compatibility_headers_except_managed_hosts(self) -> None:
         caddyfile = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
         for host_var in ("B1_HOST_API", "B1_HOST_MODELS"):
-            block_start = caddyfile.index("{$" + host_var)
+            block_start = caddyfile.index("\n{$" + host_var) + 1
             block_end = caddyfile.find("\n}\n", block_start)
             block = caddyfile[block_start:block_end]
             self.assertIn("header_up -X-B1-Compatibility", block, host_var)

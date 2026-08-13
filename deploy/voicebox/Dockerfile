@@ -6,7 +6,7 @@ ARG B1_VOICEBOX_TARBALL_SHA256=d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9
 
 WORKDIR /build
 
-RUN apt-get update \
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,7 +34,7 @@ ARG B1_LUXTTS_COMMIT=28ae6a61151684fffc9d1a7aa15eafa02286fe0b
 WORKDIR /build
 COPY constraints.txt /tmp/voicebox-constraints.txt
 
-RUN apt-get update \
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
     && apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -98,7 +98,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
     && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libsndfile1 tini build-essential \
     && rm -rf /var/lib/apt/lists/*
 

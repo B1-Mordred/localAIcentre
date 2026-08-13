@@ -1,0 +1,26 @@
+{
+  "id": "b1-studio-panel-shot-compositor",
+  "version": "20260809.1",
+  "display_name": "B1 Studio Panel Shot Compositor",
+  "description": "Private-reference 16:9 studio panel keyframe compositor. It accepts only approved transparent studio-seated-character plates, composites them at fixed seats with chair/table depth occlusion over the supplied studio reference, and records semantic pixel-derived seat occupancy plus normalized speaker-face and wall-screen geometry for B1's seated audio-driven lipsync path.",
+  "modality": "image",
+  "operations": ["studio-panel-shot"],
+  "source": {
+    "type": "catalog",
+    "url": "https://github.com/B1-Mordred/localAIcentre",
+    "revision": "20260809.1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "files": [{"path": "internal/b1-studio-panel-shot-compositor", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size_bytes": 1, "format": "internal", "quantization": "none"}],
+  "runtimes": ["panel-cpu"],
+  "preferred_runtime": "panel-cpu",
+  "resource_estimate": {"vram_gib": 0.0, "ram_gib": 0.5, "disk_gib": 0.1, "max_resolution": "1280x720", "max_frames": 1},
+  "license": {"name": "B1 AI Hub internal compositor", "url": "https://github.com/B1-Mordred/localAIcentre", "redistribution": "inference-only", "attribution": "B1 AI Hub", "acceptance_required": false},
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": ["studio-panel-shot"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "permissions": {"visible_to": ["admin", "operator", "creator", "user", "service"], "installable_by": ["admin"], "downloadable_by": [], "inference_roles": ["admin", "operator", "creator", "user", "service"]},
+  "runtime_adapter_versions": {"panel-cpu": "b1-studio-panel-compositor/v2"},
+  "deprecation": {"status": "active"}
+}

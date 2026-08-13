@@ -11,22 +11,25 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import ssl
 import stat
 import uuid
 from contextlib import suppress
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from time import monotonic
-from typing import Any, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 
+import anyio
 import httpx
 import redis.asyncio as redis
+from sqlalchemy.exc import IntegrityError
 from fastapi import Body, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from websockets.asyncio.client import connect as websocket_connect
@@ -41,6 +44,7 @@ from . import artifacts as artifact_policy
 from . import backup_restore
 from . import backup_migration_rollback
 from . import backup_schedule
+from . import benchmarking
 from . import compose_override as compose_override_policy
 from . import open_webui_migration
 from . import rollback_rehearsal
@@ -72,7 +76,7 @@ from .auth import (
     verify_api_key,
     verify_password,
 )
-from .catalog import ID_PATTERN, MODALITIES, RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, load_catalog, runtime_smoke_summary_for_manifest
+from .catalog import ID_PATTERN, MODALITIES, RUNTIME_NAMES, CatalogAlias, CatalogError, ModelCatalog, canonical_operation, load_catalog, runtime_smoke_summary_for_manifest
 from .executor import (
     GPU_RUNTIMES,
     GPU_STATE_STEPS,
@@ -107,10 +111,39 @@ control_plane_started_at: datetime | None = None
 comfyui_native_prompt_resume: dict[str, Any] | None = None
 backup_operation_lock = asyncio.Lock()
 current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("b1_current_request", default=None)
+@dataclass
+class ToolLoopLease:
+    resolved_model_version: str
+    owner: str | None
+    runtime_prepared: bool = False
+
+
+@dataclass
+class OpenWebUIStreamState:
+    request_id: str
+    conversation_key: str
+    supersede_requested: asyncio.Event
+    finished: asyncio.Event
+
+
+class OpenWebUIStreamSuperseded(Exception):
+    """Stop an Open WebUI stream because a newer message replaced it."""
+
+
+current_b1_tool_loop_lease: contextvars.ContextVar[ToolLoopLease | None] = contextvars.ContextVar(
+    "b1_current_tool_loop_lease",
+    default=None,
+)
 modelhub_blob_rate_windows: dict[str, tuple[int, float]] = {}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 CSRF_EXEMPT_PATHS = {"/auth/login", "/auth/setup"}
 OPEN_WEBUI_CLIENT_ID = "client_open_webui_internal"
+OPEN_WEBUI_CHAT_LEASE_WAIT_SECONDS = 600.0
+SYNC_INFERENCE_HANDOFF_WAIT_SECONDS = 5.0
+OPEN_WEBUI_STREAM_DRAIN_SECONDS = 8.0
+OPEN_WEBUI_EXPLICIT_CANCEL_WAIT_SECONDS = 15.0
+OPEN_WEBUI_CHAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+open_webui_streams: dict[str, OpenWebUIStreamState] = {}
 OPEN_WEBUI_SCOPES = ["models:read", "inference:write", "jobs:read", "jobs:write", "workflows:read"]
 COMFYUI_OUTPUT_KEYS = {
     "images": "image",
@@ -248,6 +281,26 @@ IDEMPOTENCY_IDENTITY_FIELDS = (
     "model_alias",
     "priority",
 )
+TALKING_HEAD_LIPSYNC_OPERATION = "talking-head-lipsync"
+SHA256_HEX_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+CHARACTER_PERFORMANCE_SCHEMA_VERSION = "dialecticore.character_performance.v1"
+CHARACTER_PERFORMANCE_FIELDS = {
+    "schema_version",
+    "on_camera_energy",
+    "gaze_style",
+    "head_motion",
+    "expression_range",
+    "gesture_frequency",
+    "signature_habit",
+    "variation_seed",
+}
+CHARACTER_PERFORMANCE_ENUMS = {
+    "on_camera_energy": {"restrained", "measured", "engaged"},
+    "gaze_style": {"steady", "reflective", "responsive"},
+    "head_motion": {"minimal", "subtle", "expressive"},
+    "expression_range": {"contained", "warm", "animated"},
+    "gesture_frequency": {"none", "occasional", "frequent"},
+}
 
 app = FastAPI(
     title="B1 AI Hub Control Plane",
@@ -263,9 +316,14 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     temperature: float | None = None
     max_tokens: int | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
     runtime_policy: str = "any"
     b1_tools: list[str] | None = Field(default=None, max_length=16)
     b1_tool_max_iterations: int = Field(default=4, ge=1, le=8)
+
+
+class OpenWebUIChatCancelRequest(BaseModel):
+    chat_id: str = Field(min_length=1, max_length=128)
 
 
 class EmbeddingRequest(BaseModel):
@@ -288,6 +346,42 @@ class RuntimeReservationCreate(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     duration_seconds: int = Field(default=300, ge=30, le=7200)
     reason: str = Field(default="", max_length=RUNTIME_RESERVATION_REASON_MAX_LENGTH)
+
+
+class BenchmarkSuiteRequest(BaseModel):
+    definition: dict[str, Any]
+
+
+class BenchmarkCampaignCreate(BaseModel):
+    suite_id: str = Field(min_length=1, max_length=128)
+    suite_version: str = Field(default="1", min_length=1, max_length=64)
+    profile_id: str = Field(min_length=1, max_length=128)
+    profile_version: str = Field(default="1", min_length=1, max_length=64)
+    candidates: list[dict[str, Any]] = Field(min_length=1, max_length=32)
+    device_groups: list[Literal["b1-gpu", "p40-gpu"]] = Field(default_factory=list, max_length=2)
+
+
+class BenchmarkResultCreate(BaseModel):
+    candidate_ref: str = Field(min_length=1, max_length=256)
+    case_id: str = Field(min_length=1, max_length=128)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    job_id: str | None = Field(default=None, max_length=64)
+
+
+class BenchmarkReviewCreate(BaseModel):
+    blind_token: str = Field(min_length=1, max_length=128)
+    result_a_id: str = Field(min_length=1, max_length=64)
+    result_b_id: str = Field(min_length=1, max_length=64)
+    winner: Literal["a", "b", "tie"]
+    scores: dict[str, float] = Field(default_factory=dict)
+
+
+class BenchmarkJudgePolicyRequest(BaseModel):
+    secret_name: str | None = Field(default=None, max_length=128)
+    top_models: list[str] = Field(default_factory=list, max_length=3)
+    codex_model: str | None = Field(default=None, max_length=256)
+    overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class AcceptanceReportCreate(BaseModel):
@@ -332,6 +426,7 @@ class ModelAliasPolicyRequest(BaseModel):
     preferred_runtime: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=64)
     idle_timeout_seconds: int | None = Field(default=None, ge=30, le=86400)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
     visibility_roles: list[Role] = Field(default_factory=list)
     notes: str = Field(default="", max_length=2000)
 
@@ -358,6 +453,11 @@ class CidrAllowlistUpdateRequest(BaseModel):
 
 class ApiClientDefaultB1ToolsUpdateRequest(BaseModel):
     default_b1_tools: list[str] = Field(default_factory=list, max_length=16)
+
+
+class ApiClientRoleUpdateRequest(BaseModel):
+    role: Role
+    scopes: list[str] | None = None
 
 
 class NetworkPolicyUpdateRequest(BaseModel):
@@ -477,6 +577,12 @@ class HuggingFaceGgufManifestDraftRequest(BaseModel):
 class ModelInstallRequest(ModelInstallPlanRequest):
     confirm: bool = False
     smoke_test: bool = False
+
+
+class LanWorkerModelAdoptionRequest(BaseModel):
+    manifest: dict[str, Any]
+    confirm: bool = False
+    accept_license: bool = False
 
 
 class ModelDownloadCreate(ModelInstallPlanRequest):
@@ -1198,6 +1304,18 @@ def require_workflow_governance_reader(auth: AuthContext) -> None:
     raise HTTPException(status_code=403, detail="workflow governance access requires admin, operator, or creator role")
 
 
+def require_benchmark_reader(auth: AuthContext) -> None:
+    require_scope(auth, "benchmarks:read")
+
+
+def require_benchmark_writer(auth: AuthContext) -> None:
+    require_scope(auth, "benchmarks:write")
+
+
+def require_benchmark_reviewer(auth: AuthContext) -> None:
+    require_scope(auth, "benchmarks:review")
+
+
 def subject_can_read_job(auth: AuthContext, job: dict[str, Any]) -> bool:
     return auth.has_scope("*") or job.get("owner_id") == auth.subject_id
 
@@ -1271,6 +1389,14 @@ async def proxy_http_bytes_to_url(
             "x-b1-cpu-audio-engine",
             "x-b1-gpu-lease-required",
             "x-b1-placeholder",
+            "x-b1-audio-policy",
+            "x-b1-audio-sample-rate",
+            "x-b1-audio-channels",
+            "x-b1-audio-loudness-lufs",
+            "x-b1-audio-true-peak-dbtp",
+            "x-b1-generation-id",
+            "x-b1-audio-sha256",
+            "x-b1-timing-url",
         }
     }
     return Response(content=proxied.content, status_code=proxied.status_code, headers=response_headers)
@@ -1452,6 +1578,21 @@ async def enforce_gpu_hardware_admission(resolution: RuntimeResolution | None) -
     if resolution is None or not resolution.requires_gpu:
         return
     if settings.runtime_deployment_mode != "production":
+        return
+    if resolution.runtime in {"lan-localai-worker", "lan-deepseek-worker"}:
+        # The dedicated runner validates the remote P40 through its authenticated
+        # metrics hook. Main-appliance VRAM policy does not describe that GPU.
+        return
+    # A matching resident pipeline has already passed admission and will not
+    # allocate another model-sized GPU buffer. Requiring the cold-load reserve
+    # again would reject its follow-up requests on a 6 GB host.
+    active = await current_runtime_state(resolution.runtime)
+    if (
+        active is not None
+        and str(active.get("resolved_model_version") or "") == resolution.resolved_model_version
+        and str(active.get("active_model") or "") == resolution.model_id
+        and str(active.get("status") or "") in {"idle", "loaded", "ready", "running"}
+    ):
         return
     check = await hardware_resource_policy_snapshot()
     if check.get("status") == "ok":
@@ -2313,6 +2454,21 @@ def runtime_registry_snapshot() -> RuntimeRegistry:
     if runtime_registry is None:
         runtime_registry = build_runtime_registry(
             localai_url=settings.localai_url,
+            lan_localai_worker_url=settings.lan_localai_worker_url,
+            lan_localai_worker_hostname=settings.lan_localai_worker_hostname,
+            lan_localai_worker_allowed_cidrs=settings.lan_localai_worker_allowed_cidrs,
+            lan_localai_worker_tls_ca_file=settings.lan_localai_worker_tls_ca_file,
+            lan_localai_worker_api_key=settings.runtime_control_token,
+            lan_deepseek_worker_url=settings.lan_deepseek_worker_url,
+            lan_deepseek_worker_hostname=settings.lan_deepseek_worker_hostname,
+            lan_deepseek_worker_allowed_cidrs=settings.lan_deepseek_worker_allowed_cidrs,
+            lan_deepseek_worker_tls_ca_file=settings.lan_deepseek_worker_tls_ca_file,
+            lan_deepseek_worker_api_key=settings.runtime_control_token,
+            lan_p40_media_url=settings.lan_p40_media_url,
+            lan_p40_media_hostname=settings.lan_p40_media_hostname,
+            lan_p40_media_allowed_cidrs=settings.lan_p40_media_allowed_cidrs,
+            lan_p40_media_tls_ca_file=settings.lan_p40_media_tls_ca_file,
+            lan_p40_media_api_key=settings.runtime_control_token,
             comfyui_url=settings.comfyui_url,
             voicebox_url=settings.voicebox_url,
             audio_cpu_url=settings.audio_cpu_url,
@@ -2598,6 +2754,698 @@ def enforce_workflow_backend_policy(workflow: dict[str, Any] | None, resolution:
         )
 
 
+def is_talking_head_lipsync_request(payload: MediaJobCreate) -> bool:
+    return payload.modality == "video" and canonical_operation(payload.operation, "video") == TALKING_HEAD_LIPSYNC_OPERATION
+
+
+def validate_talking_head_upload_reference(value: Any, field_name: str) -> None:
+    if isinstance(value, dict):
+        source = value.get("source")
+        upload_id = value.get("id")
+        path = value.get("path")
+        if source == "staged_upload" and isinstance(upload_id, str) and isinstance(path, str):
+            return
+    if isinstance(value, str) and value.startswith("upload_"):
+        suffix = value.removeprefix("upload_")
+        if len(suffix) == 32 and all(character in "0123456789abcdef" for character in suffix):
+            return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "invalid_talking_head_lipsync_input",
+            "message": f"{field_name} must be a staged upload reference or upload_ id returned by /v1/media/uploads",
+        },
+    )
+
+
+def validate_talking_head_int(input_payload: dict[str, Any], field_name: str, minimum: int, maximum: int) -> None:
+    value = input_payload.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum or value > maximum:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_talking_head_lipsync_input",
+                "message": f"{field_name} must be an integer from {minimum} to {maximum}",
+            },
+        )
+
+
+def validate_character_performance_plan(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_talking_head_performance_plan", "message": "performance_plan must be an object"},
+        )
+    unknown = sorted(set(value) - CHARACTER_PERFORMANCE_FIELDS)
+    missing = sorted(CHARACTER_PERFORMANCE_FIELDS - set(value))
+    if unknown or missing:
+        detail: dict[str, Any] = {
+            "code": "invalid_talking_head_performance_plan",
+            "message": "performance_plan must contain exactly the supported DialectiCore performance fields",
+        }
+        if unknown:
+            detail["unknown_fields"] = unknown
+        if missing:
+            detail["missing_fields"] = missing
+        raise HTTPException(status_code=422, detail=detail)
+    if value.get("schema_version") != CHARACTER_PERFORMANCE_SCHEMA_VERSION:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unsupported_talking_head_performance_plan",
+                "message": f"performance_plan.schema_version must be {CHARACTER_PERFORMANCE_SCHEMA_VERSION}",
+            },
+        )
+    for field_name, allowed_values in CHARACTER_PERFORMANCE_ENUMS.items():
+        if value.get(field_name) not in allowed_values:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_talking_head_performance_plan",
+                    "message": f"performance_plan.{field_name} must be one of {', '.join(sorted(allowed_values))}",
+                },
+            )
+    signature_habit = value.get("signature_habit")
+    if not isinstance(signature_habit, str) or not signature_habit.strip() or len(signature_habit) > 240:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_talking_head_performance_plan",
+                "message": "performance_plan.signature_habit must be a non-empty description of at most 240 characters",
+            },
+        )
+    variation_seed = value.get("variation_seed")
+    if isinstance(variation_seed, bool) or not isinstance(variation_seed, int) or not 0 <= variation_seed <= 2_147_483_647:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_talking_head_performance_plan",
+                "message": "performance_plan.variation_seed must be an integer from 0 to 2147483647",
+            },
+        )
+
+
+def validate_talking_head_lipsync_job_request(payload: MediaJobCreate) -> MediaJobCreate:
+    if not is_talking_head_lipsync_request(payload):
+        return payload
+    input_payload = payload.input
+    scene_mode = input_payload.get("scene_artifact_id") is not None
+    if scene_mode:
+        # The declared scene face region is the source of truth for a seated
+        # panel. A portrait remains an optional identity reference, never a
+        # second face-detection gate.
+        if input_payload.get("portrait_artifact_id") is not None:
+            validate_talking_head_upload_reference(input_payload.get("portrait_artifact_id"), "portrait_artifact_id")
+    else:
+        validate_talking_head_upload_reference(input_payload.get("portrait_artifact_id"), "portrait_artifact_id")
+    validate_talking_head_upload_reference(input_payload.get("audio_artifact_id"), "audio_artifact_id")
+    audio_sha256 = input_payload.get("audio_sha256")
+    if not isinstance(audio_sha256, str) or not SHA256_HEX_RE.fullmatch(audio_sha256):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_talking_head_lipsync_input",
+                "message": "audio_sha256 must be a 64-character SHA-256 hex digest",
+            },
+        )
+    timing = input_payload.get("timing")
+    if timing is not None:
+        if not isinstance(timing, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_talking_head_lipsync_input", "message": "timing must be an object when supplied"},
+            )
+        timing_sha256 = timing.get("audio_sha256")
+        if timing_sha256 is not None:
+            if not isinstance(timing_sha256, str) or not SHA256_HEX_RE.fullmatch(timing_sha256):
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_talking_head_lipsync_input", "message": "timing.audio_sha256 must be a SHA-256 hex digest"},
+                )
+            if not hmac.compare_digest(timing_sha256.lower(), audio_sha256.lower()):
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_talking_head_lipsync_input", "message": "timing.audio_sha256 does not match audio_sha256"},
+                )
+    validate_talking_head_int(input_payload, "width", 64, 1920)
+    validate_talking_head_int(input_payload, "height", 64, 1080)
+    validate_talking_head_int(input_payload, "fps", 1, 60)
+    validate_talking_head_int(input_payload, "duration_ms", 250, 60000)
+    validate_character_performance_plan(input_payload.get("performance_plan"))
+    if scene_mode:
+        validate_talking_head_scene_input(input_payload)
+    updates: dict[str, Any] = {}
+    if payload.operation != TALKING_HEAD_LIPSYNC_OPERATION:
+        updates["operation"] = TALKING_HEAD_LIPSYNC_OPERATION
+    if payload.priority == "single_video":
+        updates["priority"] = PriorityClass.VIDEO.value
+    return payload.model_copy(update=updates) if updates else payload
+
+
+def validate_normalized_region(value: Any, field_name: str) -> None:
+    if not isinstance(value, dict) or set(value) != {"x", "y", "width", "height"}:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": field_name, "message": "face_region must contain x, y, width, and height"})
+    numeric = {key: value.get(key) for key in ("x", "y", "width", "height")}
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in numeric.values()):
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": field_name, "message": "face_region values must be numbers"})
+    x, y, width, height = (float(numeric[key]) for key in ("x", "y", "width", "height"))
+    if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1 or y + height > 1:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": field_name, "message": "face_region must be normalized inside 0..1 with positive size"})
+
+
+def validate_talking_head_scene_input(input_payload: dict[str, Any]) -> None:
+    validate_talking_head_upload_reference(input_payload.get("scene_artifact_id"), "scene_artifact_id")
+    if input_payload.get("wall_screen_artifact_id") is not None:
+        validate_talking_head_upload_reference(input_payload.get("wall_screen_artifact_id"), "wall_screen_artifact_id")
+    speaker = input_payload.get("speaker_participant_id")
+    if not isinstance(speaker, str) or not ID_PATTERN.match(speaker):
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.speaker_participant_id", "message": "speaker_participant_id must be a valid participant identifier"})
+    camera_view = input_payload.get("camera_view")
+    supported_views = {"establishing_wide", "speaker_medium", "speaker_close", "panel_two_shot", "reaction"}
+    if camera_view not in supported_views:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.camera_view", "message": "camera_view must be establishing_wide, speaker_medium, speaker_close, panel_two_shot, or reaction"})
+    camera = input_payload.get("camera")
+    if camera is not None:
+        if not isinstance(camera, dict) or set(camera) != {"view", "action", "composition"} or camera.get("view") != camera_view or camera.get("action") != "cut" or camera.get("composition") != "native_scene_camera":
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.camera", "message": "camera must specify the selected view, action=cut, and composition=native_scene_camera"})
+    seating_plan = input_payload.get("seating_plan")
+    if not isinstance(seating_plan, dict) or speaker not in seating_plan or not seating_plan:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.seating_plan", "message": "seating_plan must map the selected speaker to a fixed seat"})
+    seats: set[int] = set()
+    for participant_id, seat in seating_plan.items():
+        if not isinstance(participant_id, str) or not ID_PATTERN.match(participant_id) or isinstance(seat, bool) or not isinstance(seat, int) or not 1 <= seat <= 6 or seat in seats:
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.seating_plan", "message": "seating_plan must use unique seats 1 through 6"})
+        seats.add(seat)
+    regions = input_payload.get("face_regions")
+    if not isinstance(regions, list) or not regions:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.face_regions", "message": "face_regions must contain the selected speaker region"})
+    speaker_region = None
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict) or set(region) != {"participant_id", "seat", "face_region"}:
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": f"input.face_regions[{index}]", "message": "each face region must contain participant_id, seat, and face_region"})
+        participant_id = region.get("participant_id")
+        seat = region.get("seat")
+        if participant_id not in seating_plan or seat != seating_plan.get(participant_id):
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": f"input.face_regions[{index}]", "message": "face region participant and seat must match seating_plan"})
+        validate_normalized_region(region.get("face_region"), f"input.face_regions[{index}].face_region")
+        if participant_id == speaker:
+            if speaker_region is not None:
+                raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.face_regions", "message": "face_regions must contain the selected speaker exactly once"})
+            speaker_region = region
+    if speaker_region is None:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.face_regions", "message": "face_regions must contain the selected speaker"})
+    width, height = input_payload.get("width"), input_payload.get("height")
+    if isinstance(width, int) and isinstance(height, int) and abs(width / height - (16 / 9)) > 0.03:
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.width", "message": "scene-conditioned talking-head-lipsync requires a 16:9 output"})
+    if camera_view != "establishing_wide" and (not isinstance(width, int) or not isinstance(height, int) or width < 1024 or height < 576):
+        raise HTTPException(status_code=422, detail={"code": "unsupported_camera_coverage", "field": "input.width", "message": f"{camera_view} requires output width >= 1024 and height >= 576"})
+    framed = input_payload.get("framed_participant_ids")
+    if framed is not None:
+        if not isinstance(framed, list) or not 1 <= len(framed) <= 2 or len(set(framed)) != len(framed) or any(not isinstance(item, str) or item not in seating_plan for item in framed):
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.framed_participant_ids", "message": "framed_participant_ids must contain one or two unique participants from seating_plan"})
+        if speaker not in framed:
+            raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.framed_participant_ids", "message": "framed_participant_ids must include speaker_participant_id"})
+    if camera_view == "panel_two_shot" and (not isinstance(framed, list) or len(framed) != 2):
+        raise HTTPException(status_code=422, detail={"code": "invalid_talking_head_scene_input", "field": "input.framed_participant_ids", "message": "panel_two_shot requires exactly two ordered framed_participant_ids"})
+
+
+def private_upload_reference(auth: AuthContext, value: Any, field_name: str, allowed_mime_types: set[str]) -> dict[str, Any]:
+    upload_id = value.get("id") if isinstance(value, dict) else value
+    if not isinstance(upload_id, str):
+        raise HTTPException(status_code=422, detail={"code": "invalid_private_media_reference", "field": f"input.{field_name}", "message": f"{field_name} must be an upload_ identifier returned by POST /v1/media/uploads"})
+    try:
+        reference = media_artifacts.staged_input_reference_for_upload_id(Path(settings.artifact_root), owner_id=auth.subject_id, upload_id=upload_id)
+        _, mime_type, _ = media_artifacts.read_staged_input_bytes(Path(settings.artifact_root), reference)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "invalid_private_media_reference", "field": f"input.{field_name}", "message": f"{field_name} must reference one existing private upload owned by this API client"}) from exc
+    if mime_type not in allowed_mime_types:
+        raise HTTPException(status_code=422, detail={"code": "invalid_private_media_type", "field": f"input.{field_name}", "message": f"{field_name} has unsupported media type {mime_type}"})
+    return reference
+
+
+def is_studio_panel_shot_request(payload: MediaJobCreate) -> bool:
+    return payload.modality == "image" and canonical_operation(payload.operation, "image") == "studio-panel-shot" and payload.model == "studio-panel-shot"
+
+
+def is_studio_seated_character_request(payload: MediaJobCreate) -> bool:
+    return (
+        payload.modality == "image"
+        and canonical_operation(payload.operation, "image") == "studio-seated-character"
+        and payload.model in {"studio-seated-character", "studio-seated-character-p40"}
+    )
+
+
+def validate_studio_seated_character_request(payload: MediaJobCreate) -> MediaJobCreate:
+    if not is_studio_seated_character_request(payload):
+        return payload
+    input_payload = dict(payload.input)
+    required = {
+        "participant_id",
+        "portrait_artifact_id",
+        "full_body_artifact_id",
+        "studio_reference_artifact_id",
+        "seat",
+        "pose",
+        "camera_view",
+        "camera_angle",
+        "width",
+        "height",
+    }
+    missing = sorted(required - set(input_payload))
+    unknown = sorted(set(input_payload) - (required | {"seed"}))
+    if missing or unknown:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_seated_character_input", "message": "studio-seated-character requires the documented private reference and pose fields", "missing_fields": missing, "unknown_fields": unknown})
+    participant_id = input_payload.get("participant_id")
+    if not isinstance(participant_id, str) or not ID_PATTERN.match(participant_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_seated_character_input", "field": "input.participant_id", "message": "participant_id must be a valid participant identifier"})
+    seat = input_payload.get("seat")
+    if isinstance(seat, bool) or not isinstance(seat, int) or not 1 <= seat <= 6:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_seated_character_input", "field": "input.seat", "message": "seat must be an integer from 1 to 6"})
+    if input_payload.get("pose") != "neutral_seated" or input_payload.get("camera_view") != "establishing_wide" or input_payload.get("camera_angle") != "front_three_quarter":
+        raise HTTPException(status_code=422, detail={"code": "unsupported_seated_character_profile", "message": "only pose=neutral_seated, camera_view=establishing_wide, and camera_angle=front_three_quarter are currently supported"})
+    dimensions = (
+        (("width", 1280, 1280), ("height", 720, 720))
+        if payload.model == "studio-seated-character-p40"
+        else (("width", 384, 512), ("height", 512, 720))
+    )
+    for field_name, minimum, maximum in dimensions:
+        value = input_payload.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise HTTPException(status_code=422, detail={"code": "invalid_studio_seated_character_input", "field": f"input.{field_name}", "message": f"{field_name} must be an integer from {minimum} to {maximum}"})
+    seed = input_payload.get("seed", 20260802)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2_147_483_647:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_seated_character_input", "field": "input.seed", "message": "seed must be an integer from 0 to 2147483647"})
+    input_payload["seed"] = seed
+    updates: dict[str, Any] = {"input": input_payload}
+    if payload.priority == "single_image":
+        updates["priority"] = PriorityClass.SINGLE_IMAGE.value
+    return payload.model_copy(update=updates)
+
+
+def resolve_studio_seated_character_inputs(auth: AuthContext, payload: MediaJobCreate) -> MediaJobCreate:
+    if not is_studio_seated_character_request(payload):
+        return payload
+    input_payload = dict(payload.input)
+    allowed_image_types = {"image/png", "image/jpeg", "image/webp"}
+    for field_name in ("portrait_artifact_id", "full_body_artifact_id", "studio_reference_artifact_id"):
+        input_payload[field_name] = private_upload_reference(auth, input_payload.get(field_name), field_name, allowed_image_types)
+    return payload.model_copy(update={"input": input_payload})
+
+
+def resolve_studio_panel_shot_inputs(auth: AuthContext, payload: MediaJobCreate) -> MediaJobCreate:
+    if not is_studio_panel_shot_request(payload):
+        return payload
+    input_payload = dict(payload.input)
+    allowed_image_types = {"image/png", "image/jpeg", "image/webp"}
+    input_payload["studio_reference_artifact_id"] = private_upload_reference(auth, input_payload.get("studio_reference_artifact_id"), "studio_reference_artifact_id", allowed_image_types)
+    participants = input_payload.get("participants")
+    if not isinstance(participants, list) or not 1 <= len(participants) <= 6:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.participants", "message": "participants must contain one to six fixed-seat participants"})
+    seats: set[int] = set()
+    participant_ids: set[str] = set()
+    resolved_participants: list[dict[str, Any]] = []
+    for index, participant in enumerate(participants):
+        required_fields = {"participant_id", "seat", "portrait_artifact_id", "full_body_artifact_id", "seated_reference_artifact_id"}
+        if not isinstance(participant, dict) or set(participant) != required_fields:
+            raise HTTPException(status_code=422, detail={"code": "seated_reference_required", "field": f"input.participants[{index}]", "message": "each participant must contain participant_id, seat, portrait_artifact_id, full_body_artifact_id, and seated_reference_artifact_id returned by studio-seated-character"})
+        participant_id, seat = participant.get("participant_id"), participant.get("seat")
+        if not isinstance(participant_id, str) or not ID_PATTERN.match(participant_id) or participant_id in participant_ids or isinstance(seat, bool) or not isinstance(seat, int) or not 1 <= seat <= 6 or seat in seats:
+            raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": f"input.participants[{index}]", "message": "participants require unique valid ids and seats 1 through 6"})
+        participant_ids.add(participant_id)
+        seats.add(seat)
+        resolved_participants.append({
+            "participant_id": participant_id,
+            "seat": seat,
+            "portrait_artifact_id": private_upload_reference(auth, participant.get("portrait_artifact_id"), f"participants[{index}].portrait_artifact_id", allowed_image_types),
+            "full_body_artifact_id": private_upload_reference(auth, participant.get("full_body_artifact_id"), f"participants[{index}].full_body_artifact_id", allowed_image_types),
+            "seated_reference_artifact_id": private_upload_reference(auth, participant.get("seated_reference_artifact_id"), f"participants[{index}].seated_reference_artifact_id", {"image/png"}),
+        })
+    camera = input_payload.get("camera")
+    if camera != {"view": "establishing_wide", "action": "cut"}:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.camera", "message": "studio-panel-shot currently supports only camera.view=establishing_wide and camera.action=cut"})
+    for field_name, minimum, maximum in (("width", 256, 1280), ("height", 144, 720)):
+        value = input_payload.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": f"input.{field_name}", "message": f"{field_name} must be an integer from {minimum} to {maximum}"})
+    if abs(input_payload["width"] / input_payload["height"] - (16 / 9)) > 0.03:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.width", "message": "studio-panel-shot requires a 16:9 output"})
+    seed = input_payload.get("seed", 2_026_080_2)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2_147_483_647:
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.seed", "message": "seed must be an integer from 0 to 2147483647"})
+    input_payload["seed"] = seed
+    input_payload["participants"] = resolved_participants
+    return payload.model_copy(update={"input": input_payload})
+
+
+async def validate_studio_panel_seated_references(auth: AuthContext, payload: MediaJobCreate) -> None:
+    """Reject arbitrary PNG uploads masquerading as approved seated plates."""
+    if not is_studio_panel_shot_request(payload):
+        return
+    participants = payload.input.get("participants")
+    if not isinstance(participants, list):
+        return
+    for index, participant in enumerate(participants):
+        if not isinstance(participant, dict):
+            continue
+        reference = participant.get("seated_reference_artifact_id")
+        reference_id = reference.get("id") if isinstance(reference, dict) else None
+        completed = (
+            await database.get_completed_seated_character_reference(auth.subject_id, reference_id)
+            if isinstance(reference_id, str)
+            else None
+        )
+        metadata = completed.get("metadata") if isinstance(completed, dict) else None
+        quality = metadata.get("quality_control") if isinstance(metadata, dict) else None
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("participant_id") != participant.get("participant_id")
+            or metadata.get("seat") != participant.get("seat")
+            or not isinstance(quality, dict)
+            or quality.get("status") != "passed"
+            or quality.get("seated_pose_detected") is not True
+            or metadata.get("transparent_background") is not True
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "seated_reference_required",
+                    "field": f"input.participants[{index}].seated_reference_artifact_id",
+                    "message": f"participant {participant.get('participant_id') or index} has no completed, owner-scoped QC-passed seated character reference for the declared seat",
+                },
+            )
+
+
+async def validate_scene_conditioned_panel_reference(auth: AuthContext, payload: MediaJobCreate) -> None:
+    """Require a semantically QC-passed B1 panel master for seated lipsync."""
+    if not is_talking_head_lipsync_request(payload):
+        return
+    scene = payload.input.get("scene_artifact_id")
+    reference_id = scene.get("id") if isinstance(scene, dict) else None
+    if not isinstance(reference_id, str):
+        return
+    completed = await database.get_completed_studio_panel_reference(auth.subject_id, reference_id)
+    metadata = completed.get("metadata") if isinstance(completed, dict) else None
+    quality = metadata.get("quality_control") if isinstance(metadata, dict) else None
+    occupancy = metadata.get("seat_occupancy") if isinstance(metadata, dict) else None
+    if (
+        not isinstance(metadata, dict)
+        or not isinstance(quality, dict)
+        or quality.get("status") != "passed"
+        or metadata.get("source_card_compositing") is not False
+        or not isinstance(occupancy, list)
+        or not occupancy
+        or any(not isinstance(item, dict) or item.get("occupied") is not True or item.get("seated_pose_detected") is not True for item in occupancy)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "scene_panel_qc_required",
+                "field": "input.scene_artifact_id",
+                "message": "scene_artifact_id must be a completed owner-scoped studio-panel-shot with semantic seated-panel quality-control evidence",
+            },
+        )
+
+
+def resolve_talking_head_private_uploads(auth: AuthContext, payload: MediaJobCreate) -> MediaJobCreate:
+    if not is_talking_head_lipsync_request(payload):
+        return payload
+    input_payload = dict(payload.input)
+    if input_payload.get("portrait_artifact_id") is not None:
+        input_payload["portrait_artifact_id"] = private_upload_reference(auth, input_payload.get("portrait_artifact_id"), "portrait_artifact_id", {"image/png", "image/jpeg", "image/webp"})
+    input_payload["audio_artifact_id"] = private_upload_reference(auth, input_payload.get("audio_artifact_id"), "audio_artifact_id", {"audio/wav"})
+    if input_payload.get("scene_artifact_id") is not None:
+        input_payload["scene_artifact_id"] = private_upload_reference(auth, input_payload.get("scene_artifact_id"), "scene_artifact_id", {"image/png", "image/jpeg", "image/webp"})
+    if input_payload.get("wall_screen_artifact_id") is not None:
+        input_payload["wall_screen_artifact_id"] = private_upload_reference(auth, input_payload.get("wall_screen_artifact_id"), "wall_screen_artifact_id", {"image/png", "image/jpeg", "image/webp"})
+    return payload.model_copy(update={"input": input_payload})
+
+
+def is_managed_video_image_request(payload: MediaJobCreate) -> bool:
+    """Whether a request targets the managed Wan VACE image-to-video contract."""
+    return (
+        payload.modality == "video"
+        and canonical_operation(payload.operation, "video") == "image-to-video"
+        and payload.model == "video-image"
+    )
+
+
+def video_image_input_error(code: str, field: str, message: str, **extra: Any) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": code,
+            "field": field,
+            "message": message,
+            "accepted_source_field": "input.source_image_artifact_id",
+            **extra,
+        },
+    )
+
+
+def resolve_managed_video_image_source(
+    auth: AuthContext,
+    payload: MediaJobCreate,
+    *,
+    allow_internal_staged_source: bool = False,
+) -> MediaJobCreate:
+    """Resolve the public private-upload reference before a VACE job is queued.
+
+    ComfyUI receives only the server-owned staged reference.  This intentionally
+    keeps raw base64 and caller-supplied paths out of the native workflow layer.
+    """
+    if not is_managed_video_image_request(payload):
+        return payload
+    input_payload = dict(payload.input)
+    upload_id = input_payload.get("source_image_artifact_id")
+    supplied_source = input_payload.get("source_image")
+    if upload_id is not None and supplied_source is not None:
+        raise video_image_input_error(
+            "ambiguous_video_image_source",
+            "input.source_image_artifact_id",
+            "send exactly one source image using source_image_artifact_id",
+        )
+    reference: dict[str, Any]
+    if not isinstance(upload_id, str) or not upload_id:
+        if allow_internal_staged_source and isinstance(supplied_source, dict) and supplied_source.get("source") == "staged_upload":
+            reference = supplied_source
+        elif supplied_source is not None:
+            raise video_image_input_error(
+                "video_image_inline_source_not_supported",
+                "input.source_image",
+                "inline base64 source_image is not supported; upload the image to /v1/media/uploads and send reference.id as source_image_artifact_id",
+            )
+        raise video_image_input_error(
+            "video_image_source_image_artifact_id_required",
+            "input.source_image_artifact_id",
+            "source_image_artifact_id must be the private upload_ identifier returned by POST /v1/media/uploads",
+        )
+    else:
+        try:
+            reference = media_artifacts.staged_input_reference_for_upload_id(
+                Path(settings.artifact_root), owner_id=auth.subject_id, upload_id=upload_id
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise video_image_input_error(
+                "invalid_video_image_source_upload",
+                "input.source_image_artifact_id",
+                "source_image_artifact_id must reference one existing private image upload owned by this API client",
+            ) from exc
+    try:
+        _, mime_type, _ = media_artifacts.read_staged_input_bytes(Path(settings.artifact_root), reference)
+    except (FileNotFoundError, ValueError) as exc:
+        raise video_image_input_error(
+            "invalid_video_image_source_upload",
+            "input.source_image_artifact_id",
+            "source_image_artifact_id must reference one existing private image upload owned by this API client",
+        ) from exc
+    if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+        raise video_image_input_error(
+            "invalid_video_image_source_type",
+            "input.source_image_artifact_id",
+            "source_image_artifact_id must reference a PNG, JPEG, or WebP image upload",
+            mime_type=mime_type,
+        )
+    input_payload.pop("source_image_artifact_id", None)
+    input_payload["source_image"] = reference
+    return payload.model_copy(update={"input": input_payload})
+
+
+def public_lip_sync_summary(job: dict[str, Any]) -> dict[str, Any] | None:
+    artifacts = job.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        lip_sync = artifact.get("lip_sync")
+        if isinstance(lip_sync, dict):
+            return lip_sync
+    return None
+
+
+def public_performance_summary(job: dict[str, Any]) -> dict[str, Any] | None:
+    artifacts = job.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get("performance"), dict):
+            return artifact["performance"]
+    return None
+
+
+def public_studio_panel_summary(job: dict[str, Any]) -> dict[str, Any] | None:
+    artifacts = job.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get("studio_panel"), dict):
+            return artifact["studio_panel"]
+    return None
+
+
+def public_seated_character_summary(job: dict[str, Any]) -> dict[str, Any] | None:
+    artifacts = job.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get("seated_character"), dict):
+            return artifact["seated_character"]
+    return None
+
+
+def media_job_has_workflow_or_native_comfyui_input(payload: MediaJobCreate) -> bool:
+    if isinstance(payload.input.get("workflow_id"), str) or isinstance(payload.input.get("workflow_version"), str):
+        return True
+    return any(isinstance(payload.input.get(key), dict) for key in ("comfyui_payload", "comfyui_prompt", "native_prompt", "workflow_json"))
+
+
+def managed_media_workflow_operation(modality: str, operation: str) -> str:
+    if modality == "image" and operation in {"generation", "image-generation"}:
+        return "generation"
+    if modality == "image" and operation in {"edit", "image-edit", "image-to-image"}:
+        return "edit"
+    if modality == "video" and operation in {"generation", "text-to-video"}:
+        return "text-to-video"
+    return operation
+
+
+def managed_media_workflow_operations(modality: str, operation: str) -> set[str]:
+    normalized = managed_media_workflow_operation(modality, operation)
+    if modality == "image" and normalized == "generation":
+        return {"generation", "image-generation", "text-to-image"}
+    if modality == "image" and normalized == "edit":
+        return {"edit", "image-edit", "image-to-image"}
+    if modality == "video" and normalized == "text-to-video":
+        return {"generation", "text-to-video"}
+    return {normalized}
+
+
+def workflow_has_executable_comfyui_json(workflow: dict[str, Any]) -> bool:
+    workflow_json = workflow.get("workflow_json")
+    return isinstance(workflow_json, dict) and bool(workflow_json)
+
+
+def workflow_runtime_preference_score(workflow: dict[str, Any], preferred_operation: str) -> tuple[int, int, str, str]:
+    operation_penalty = 0 if workflow.get("operation") == preferred_operation else 1
+    resource_class = str(workflow.get("resource_class") or "")
+    requires_upgrade = 1 if resource_class == "requires-upgrade" else 0
+    return (operation_penalty, requires_upgrade, str(workflow.get("id") or ""), str(workflow.get("version") or ""))
+
+
+def managed_media_parameters_for_workflow(workflow: dict[str, Any], input_payload: dict[str, Any]) -> dict[str, Any]:
+    schema = workflow.get("input_schema") if isinstance(workflow.get("input_schema"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    source = dict(input_payload)
+    nested_parameters = source.get("parameters")
+    if isinstance(nested_parameters, dict):
+        source.update(nested_parameters)
+    size = source.get("size")
+    if isinstance(size, str) and "x" in size.lower():
+        width_text, height_text = size.lower().split("x", 1)
+        with suppress(ValueError):
+            source.setdefault("width", int(width_text))
+            source.setdefault("height", int(height_text))
+    parameters: dict[str, Any] = {}
+    for name, raw_schema in properties.items():
+        if not isinstance(name, str) or not isinstance(raw_schema, dict):
+            continue
+        if name in source and source[name] is not None:
+            parameters[name] = source[name]
+        elif "default" in raw_schema:
+            parameters[name] = raw_schema["default"]
+    return parameters
+
+
+async def default_comfyui_workflow_for_media_job(auth: AuthContext, payload: MediaJobCreate) -> dict[str, Any] | None:
+    preferred_operation = managed_media_workflow_operation(payload.modality, payload.operation)
+    operations = managed_media_workflow_operations(payload.modality, payload.operation)
+    candidates: list[dict[str, Any]] = []
+    blocked_dependency: dict[str, Any] | None = None
+    for row in await database.list_workflows():
+        workflow = public_workflow(row)
+        if workflow.get("modality") != payload.modality:
+            continue
+        if workflow.get("operation") not in operations:
+            continue
+        if workflow.get("model_alias") != payload.model:
+            continue
+        if workflow.get("backend_policy") == "non-comfy-only":
+            continue
+        if not visible_to_role(workflow, auth.role.value, auth.scopes):
+            continue
+        if not workflow.get("publishable"):
+            blocked_dependency = blocked_dependency or workflow
+            continue
+        if not workflow_has_executable_comfyui_json(workflow):
+            continue
+        candidates.append(workflow)
+    if candidates:
+        candidates.sort(key=lambda workflow: workflow_runtime_preference_score(workflow, preferred_operation))
+        return candidates[0]
+    if blocked_dependency is not None:
+        raise HTTPException(
+            status_code=424,
+            detail={
+                "message": "default managed ComfyUI workflow dependencies are not ready",
+                "workflow_id": blocked_dependency.get("id"),
+                "workflow_version": blocked_dependency.get("version"),
+                "dependency_status": blocked_dependency.get("dependency_status"),
+            },
+        )
+    return None
+
+
+async def attach_default_comfyui_workflow_if_needed(
+    auth: AuthContext,
+    payload: MediaJobCreate,
+    resolution: RuntimeResolution,
+) -> tuple[MediaJobCreate, dict[str, Any] | None]:
+    if resolution.runtime != "comfyui" or media_job_has_workflow_or_native_comfyui_input(payload):
+        return payload, None
+    workflow = await default_comfyui_workflow_for_media_job(auth, payload)
+    if workflow is None:
+        return payload, None
+    workflow_payload = MediaJobCreate(
+        modality=str(workflow["modality"]),
+        operation=str(workflow["operation"]),
+        model=str(workflow["model_alias"]),
+        runtime_policy=str(workflow.get("runtime_policy") or payload.runtime_policy),
+        priority=payload.priority,
+        input={
+            "workflow_id": workflow["id"],
+            "workflow_version": workflow["version"],
+            "parameters": managed_media_parameters_for_workflow(workflow, payload.input),
+        },
+    )
+    try:
+        validate_workflow_job_request(workflow, workflow_payload.model_dump(), max_staged_media_bytes=settings.upload_max_bytes)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return workflow_payload, workflow
+
+
 async def seed_workflows_from_directory(seed_dir: Path) -> dict[str, Any]:
     seeded: list[str] = []
     for workflow in load_workflows(seed_dir):
@@ -2758,10 +3606,90 @@ def require_openai_forwarding(resolution: RuntimeResolution, operation: str) -> 
         )
 
 
-async def acquire_inference_lease(resolution: RuntimeResolution, operation: str, owner_id: str | None = None) -> str | None:
+def trusted_open_webui_conversation_key(value: str | None, auth: AuthContext) -> str | None:
+    if auth.subject_id != OPEN_WEBUI_CLIENT_ID or value is None:
+        return None
+    chat_id = value.strip()
+    if not OPEN_WEBUI_CHAT_ID_PATTERN.fullmatch(chat_id):
+        raise HTTPException(status_code=422, detail="X-B1-OpenWebUI-Chat-Id must be 1-128 safe ASCII characters")
+    return hashlib.sha256(chat_id.encode("utf-8")).hexdigest()
+
+
+def register_open_webui_stream(conversation_key: str) -> tuple[OpenWebUIStreamState, OpenWebUIStreamState | None]:
+    state = OpenWebUIStreamState(
+        request_id=uuid.uuid4().hex,
+        conversation_key=conversation_key,
+        supersede_requested=asyncio.Event(),
+        finished=asyncio.Event(),
+    )
+    previous = open_webui_streams.get(conversation_key)
+    open_webui_streams[conversation_key] = state
+    if previous is not None:
+        previous.supersede_requested.set()
+    return state, previous
+
+
+def finish_open_webui_stream(state: OpenWebUIStreamState) -> None:
+    if open_webui_streams.get(state.conversation_key) is state:
+        open_webui_streams.pop(state.conversation_key, None)
+    state.finished.set()
+
+
+async def request_open_webui_stream_cancel(conversation_key: str) -> dict[str, Any]:
+    state = open_webui_streams.get(conversation_key)
+    if state is None:
+        return {"status": "ok", "active": False, "completed": True}
+
+    state.supersede_requested.set()
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(state.finished.wait()),
+            timeout=OPEN_WEBUI_EXPLICIT_CANCEL_WAIT_SECONDS,
+        )
+    except TimeoutError:
+        return {
+            "status": "pending",
+            "active": True,
+            "completed": False,
+            "request_id": state.request_id,
+        }
+    return {
+        "status": "ok",
+        "active": True,
+        "completed": True,
+        "request_id": state.request_id,
+    }
+
+
+def open_webui_status_sse(description: str, *, done: bool) -> str:
+    return f"data: {json.dumps({'event': {'type': 'status', 'data': {'description': description, 'done': done}}}, ensure_ascii=False)}\n\n"
+
+
+async def acquire_inference_lease(
+    resolution: RuntimeResolution,
+    operation: str,
+    owner_id: str | None = None,
+    supersede_requested: asyncio.Event | None = None,
+) -> str | None:
     if not resolution.requires_gpu:
         return None
-    await enforce_gpu_hardware_admission(resolution)
+    device_group = benchmarking.DEVICE_GROUP_BY_RUNTIME.get(resolution.runtime)
+    lock_lookup = getattr(database, "active_benchmark_device_lock", None)
+    if device_group and lock_lookup is not None:
+        campaign_lock = await lock_lookup(device_group)
+        bypass_owner = f"benchmark:{campaign_lock.get('campaign_id')}" if campaign_lock else None
+        if campaign_lock and owner_id != bypass_owner:
+            raise HTTPException(
+                status_code=423,
+                detail={
+                    "code": "benchmark_campaign_active",
+                    "message": f"{device_group} is exclusively locked by a benchmark campaign",
+                    "campaign_id": campaign_lock.get("campaign_id"),
+                    "device_group": device_group,
+                    "expires_at": jsonable_encoder(campaign_lock.get("expires_at")),
+                },
+                headers={"Retry-After": "60"},
+            )
     gate = await database.runtime_reservation_gate(owner_id or "", resolution.runtime, resolution.resolved_model_version, GPU_RUNTIMES)
     if not gate.get("allowed"):
         active = gate.get("active_reservation") or {}
@@ -2780,10 +3708,49 @@ async def acquire_inference_lease(resolution: RuntimeResolution, operation: str,
             },
         )
     owner = f"sync-{operation}-{uuid.uuid4().hex}"
-    lease = await database.acquire_scheduler_owner(owner, max(30, settings.sync_inference_lease_ttl_seconds))
-    if not lease.get("acquired"):
-        raise HTTPException(status_code=409, detail={"message": "GPU scheduler lease is held by another owner", "lease": jsonable_encoder(lease)})
-    return owner
+    if owner_id == OPEN_WEBUI_CLIENT_ID and operation in {"chat", "chat-tool-loop"}:
+        wait_seconds = OPEN_WEBUI_CHAT_LEASE_WAIT_SECONDS
+    elif operation in {"chat", "chat-tool-loop", "responses"}:
+        # A streamed response can deliver its final [DONE] event just before
+        # Starlette runs the shielded background finalizer that releases the
+        # scheduler lease. Give an immediately following public API request a
+        # small handoff window so that bookkeeping race does not surface as a
+        # spurious 409. This remains deliberately much shorter than Open
+        # WebUI's user-facing queue window and does not permit parallel GPU
+        # inference.
+        wait_seconds = SYNC_INFERENCE_HANDOFF_WAIT_SECONDS
+    else:
+        wait_seconds = 0.0
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    priority_registered = False
+    if wait_seconds > 0:
+        register_waiter = getattr(database, "register_interactive_gpu_waiter", None)
+        if register_waiter is not None:
+            await register_waiter(owner, wait_seconds + 5.0)
+            priority_registered = True
+    try:
+        while True:
+            if supersede_requested is not None and supersede_requested.is_set():
+                raise OpenWebUIStreamSuperseded()
+            lease = await database.acquire_scheduler_owner(owner, max(30, settings.sync_inference_lease_ttl_seconds))
+            if lease.get("acquired"):
+                return owner
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "GPU scheduler lease is held by another owner",
+                        "lease": jsonable_encoder(lease),
+                        "waited_seconds": wait_seconds,
+                    },
+                )
+            await asyncio.sleep(min(0.25, remaining))
+    finally:
+        if priority_registered:
+            unregister_waiter = getattr(database, "unregister_interactive_gpu_waiter", None)
+            if unregister_waiter is not None:
+                await unregister_waiter(owner)
 
 
 async def renew_inference_lease(owner: str | None) -> bool:
@@ -2829,10 +3796,15 @@ async def release_inference_lease(owner: str | None) -> None:
 
 
 def scheduler_runtime_urls() -> dict[str, str]:
+    p40_media_url = settings.lan_p40_media_url.rstrip("/")
     return {
         "localai": settings.localai_url,
+        "lan-localai-worker": settings.lan_localai_worker_url,
+        "lan-deepseek-worker": settings.lan_deepseek_worker_url,
+        "lan-p40-media": f"{p40_media_url}/media" if p40_media_url else "",
         "comfyui": settings.comfyui_url,
         "voicebox": settings.voicebox_url,
+        "lipsync": settings.lipsync_url,
     }
 
 
@@ -2851,6 +3823,12 @@ def runtime_control_runner(lease_ttl_seconds: int | None = None) -> GpuJobRunner
         reserve_vram_gib=settings.gpu_reserve_vram_gib,
         default_idle_timeout_seconds=settings.gpu_default_idle_timeout_seconds,
         runtime_urls=scheduler_runtime_urls(),
+        runtime_tls_ca_files={
+            "lan-localai-worker": settings.lan_localai_worker_tls_ca_file,
+            "lan-deepseek-worker": settings.lan_deepseek_worker_tls_ca_file,
+            "lan-p40-media": settings.lan_p40_media_tls_ca_file,
+        },
+        talking_head_lipsync_fallback_renderer=settings.talking_head_lipsync_fallback_renderer,
     )
 
 
@@ -2878,13 +3856,31 @@ def sync_runtime_job(resolution: RuntimeResolution, operation: str) -> dict[str,
     }
 
 
+async def sync_gpu_runtime_has_reusable_model(runner: Any, job: dict[str, Any]) -> bool:
+    runtime = str(job.get("runtime") or "")
+    if runtime not in GPU_RUNTIMES:
+        return False
+    state = (await runner.current_runtime_state_by_name()).get(runtime)
+    if not runner.runtime_state_has_active_model(state):
+        return False
+    if not runner.runtime_state_matches_job_model(state, job):
+        return False
+    status = str((state or {}).get("status") or "").strip().lower()
+    stage = str((state or {}).get("stage") or "").strip().lower()
+    return status in {"idle", "loaded", "ready", "warm", "warmed"} or stage in {"idle", "loaded", "ready", "warming"}
+
+
 async def prepare_sync_gpu_runtime(resolution: RuntimeResolution, operation: str) -> bool:
     if not resolution.requires_gpu:
         return False
     runner = runtime_control_runner(settings.sync_inference_lease_ttl_seconds)
     job = sync_runtime_job(resolution, operation)
-    await runner.unload_other_gpu_runtimes(job)
+    await runner.unload_gpu_runtimes_for_job(job)
+    if await sync_gpu_runtime_has_reusable_model(runner, job):
+        await runner.warm_runtime_model(job)
+        return True
     await runner.verify_vram_or_recover(job)
+    await enforce_gpu_hardware_admission(resolution)
     await runner.load_runtime_model(job)
     await runner.warm_runtime_model(job)
     return True
@@ -2895,6 +3891,45 @@ async def mark_sync_gpu_runtime_idle(resolution: RuntimeResolution, operation: s
         return
     runner = runtime_control_runner(settings.sync_inference_lease_ttl_seconds)
     await runner.record_runtime_idle_for_job(sync_runtime_job(resolution, operation), {"source": "sync_inference"})
+
+
+async def cancel_sync_gpu_runtime(resolution: RuntimeResolution, operation: str) -> None:
+    if not resolution.requires_gpu:
+        return
+    runner = runtime_control_runner(settings.sync_inference_lease_ttl_seconds)
+    job = sync_runtime_job(resolution, operation)
+    payload = runner.runtime_unload_payload(
+        resolution.runtime,
+        job,
+        {
+            "active_model": resolution.model_id,
+            "model_alias": resolution.public_alias,
+            "resolved_model_version": resolution.resolved_model_version,
+        },
+    )
+    payload["operation"] = "cancel"
+    result = await runner.post_runtime_control(resolution.runtime, "cancel", payload)
+    if runner.runtime_hook_status(result) != "ok":
+        raise RuntimeError(f"{resolution.runtime} runtime cancel was not confirmed")
+    released, verification = await runner.unload_vram_release_check(resolution.runtime)
+    if not released:
+        raise RuntimeError(f"{resolution.runtime} runtime retained VRAM after cancellation")
+    await runner.upsert_runtime_state(
+        {
+            "runtime": resolution.runtime,
+            "status": "cancel_ok",
+            "stage": "idle_unloaded",
+            "active_model": None,
+            "model_alias": None,
+            "resolved_model_version": None,
+            "job_id": job["id"],
+            "details": {
+                "source": "sync_stream_cancel",
+                "hook": runner.compact_hook_result(result),
+                "vram_verification": verification,
+            },
+        }
+    )
 
 
 def native_comfyui_resolution() -> RuntimeResolution:
@@ -2983,7 +4018,60 @@ def native_voicebox_resolution() -> RuntimeResolution:
 
 
 def is_native_voicebox_speech_request(path: str, method: str) -> bool:
-    return method.upper() == "POST" and path.strip("/") == "v1/audio/speech"
+    return method.upper() == "POST" and path.strip("/") in {"v1/audio/speech", "generate/stream"}
+
+
+def native_voicebox_managed_profile_id(payload: dict[str, Any]) -> str | None:
+    """Return a B1-managed profile id carried by either supported Voicebox shape."""
+    profile_id = voice_profile_id_from_payload(payload)
+    if profile_id is not None:
+        return profile_id
+    candidate = payload.get("profile_id")
+    if isinstance(candidate, str) and candidate.strip().startswith("vp_"):
+        if not voice_profile_policy.valid_voice_profile_id(candidate):
+            raise HTTPException(status_code=422, detail="voice profile id is malformed")
+        return candidate.strip()
+    return None
+
+
+async def prepare_native_voicebox_request(
+    path: str,
+    request: Request,
+    body: bytes,
+    auth: AuthContext,
+) -> tuple[str, bytes]:
+    """Resolve B1 profiles before forwarding a native Voicebox speech request.
+
+    Native Voicebox UUIDs deliberately pass through unchanged.  B1-managed
+    ``vp_`` profile ids need the private profile envelope so the Voicebox proxy
+    can create or reuse its corresponding native clone profile.
+    """
+    content_type = request.headers.get("content-type", "")
+    if "json" not in content_type.lower():
+        return path, body
+    try:
+        payload = json.loads(body or b"{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Voicebox speech request body must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Voicebox speech request body must be a JSON object")
+
+    profile_id = native_voicebox_managed_profile_id(payload)
+    if profile_id is None:
+        return path, body
+    profile = await voice_profile_for_inference({"voice_profile_id": profile_id}, auth)
+    if profile is None:  # Defensive: a requested id must resolve or raise above.
+        raise HTTPException(status_code=404, detail="voice profile not found")
+    if profile.get("runtime") != "voicebox":
+        raise HTTPException(status_code=422, detail="voice profile runtime does not support native Voicebox speech")
+
+    forwarded = voice_profile_policy.apply_voice_profile_to_payload(payload, profile)
+    # ``profile_id`` is an upstream Voicebox field.  A B1 ``vp_`` id must not
+    # leak through as one because it would be unknown to the upstream service.
+    forwarded.pop("profile_id", None)
+    # The bridge understands the B1 profile envelope; the upstream Voicebox
+    # service only receives its native UUID after that mapping is resolved.
+    return "v1/audio/speech", json.dumps(forwarded, separators=(",", ":")).encode("utf-8")
 
 
 async def proxy_voicebox_compatibility(path: str, request: Request, auth: AuthContext) -> Response:
@@ -2992,20 +4080,25 @@ async def proxy_voicebox_compatibility(path: str, request: Request, auth: AuthCo
 
     require_not_in_maintenance("voicebox/native-audio-speech")
     body = await request.body()
+    upstream_path, upstream_body = await prepare_native_voicebox_request(path, request, body, auth)
     resolution = native_voicebox_resolution()
     lease_owner: str | None = None
     runtime_prepared = False
     try:
         lease_owner = await acquire_inference_lease(resolution, "voicebox-native-speech", owner_id=auth.subject_id)
-        runtime_prepared = await prepare_sync_gpu_runtime(resolution, "voicebox-native-speech")
+        runtime_prepared = await await_with_inference_lease_renewal(
+            lease_owner,
+            "voicebox-native-speech",
+            prepare_sync_gpu_runtime(resolution, "voicebox-native-speech"),
+        )
         return await await_with_inference_lease_renewal(
             lease_owner,
             "voicebox-native-speech",
             proxy_http_bytes(
                 settings.voicebox_url,
-                path,
+                upstream_path,
                 request,
-                body=body,
+                body=upstream_body,
                 timeout_seconds=float(settings.sync_inference_lease_ttl_seconds),
             ),
         )
@@ -3053,6 +4146,7 @@ async def prepare_comfyui_native_runtime(job: dict[str, Any]) -> None:
         if state == JobState.VERIFYING_VRAM:
             await runner.verify_vram_or_recover(runtime_job)
         if state == JobState.LOADING:
+            await enforce_gpu_hardware_admission(native_comfyui_resolution())
             await runner.load_runtime_model(runtime_job)
         if state == JobState.WARMING:
             await runner.warm_runtime_model(runtime_job)
@@ -3879,6 +4973,51 @@ def chat_request_explicit_b1_tool_names(payload: ChatCompletionRequest) -> list[
     return list(payload.b1_tools or [])
 
 
+CURRENT_INFORMATION_REQUEST = re.compile(
+    r"\b(?:latest|today|current(?:ly)?|recent|news|headlines?|breaking|live|now|this\s+(?:week|month|year)|"
+    r"as\s+of|weather|forecast|price|prices|score|scores|schedule|search(?:\s+the)?\s+web|look\s+up|"
+    r"best|fastest|recommend(?:ed|ation)?|most\s+(?:performant|capable|efficient))\b",
+    flags=re.IGNORECASE,
+)
+
+INTERNET_CAPABILITY_REQUEST = re.compile(
+    r"^\s*(?:can|could|may)\s+you\s+(?:directly\s+)?(?:access|browse)\s+(?:the\s+)?(?:internet|web|live\s+websites?)\s*[?.!]*\s*$|"
+    r"^\s*are\s+you\s+able\s+to\s+(?:access|browse)\s+(?:the\s+)?(?:internet|web|live\s+websites?)\s*[?.!]*\s*$|"
+    r"^\s*do\s+you\s+have\s+(?:direct\s+)?(?:access\s+to\s+the\s+internet|internet\s+access)\s*[?.!]*\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def chat_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and str(part.get("type") or "") in {"text", "input_text"}
+    )
+
+
+def chat_request_requests_current_information(payload: ChatCompletionRequest) -> bool:
+    """Recognize broad requests that need fresh public information."""
+    for message in reversed(payload.messages):
+        if not isinstance(message, dict) or str(message.get("role") or "") != "user":
+            continue
+        return bool(CURRENT_INFORMATION_REQUEST.search(chat_message_text(message.get("content"))))
+    return False
+
+
+def chat_request_asks_about_internet_capability(payload: ChatCompletionRequest) -> bool:
+    """Recognize capability questions that models must not answer from training."""
+    for message in reversed(payload.messages):
+        if not isinstance(message, dict) or str(message.get("role") or "") != "user":
+            continue
+        return bool(INTERNET_CAPABILITY_REQUEST.fullmatch(chat_message_text(message.get("content"))))
+    return False
+
+
 async def requested_b1_model_tools(payload: ChatCompletionRequest, auth: AuthContext | None = None) -> tuple[list[str], model_tools.ModelToolRegistry]:
     requested = list(payload.b1_tools or [])
     if not chat_request_has_explicit_b1_tools(payload) and not requested and auth is not None:
@@ -3891,11 +5030,239 @@ async def requested_b1_model_tools(payload: ChatCompletionRequest, auth: AuthCon
     return [tool for tool in requested if tool in registry.tool_names()], registry
 
 
-def strip_b1_chat_fields(payload: dict[str, Any]) -> dict[str, Any]:
+def strip_b1_chat_fields(payload: dict[str, Any], *, preserve_client_tools: bool = False) -> dict[str, Any]:
     cleaned = dict(payload)
     cleaned.pop("b1_tools", None)
     cleaned.pop("b1_tool_max_iterations", None)
+    # Standard OpenAI tool fields belong to API clients and must reach the
+    # runtime unchanged. Open WebUI also attaches private UI helpers such as
+    # ``view_note`` that neither B1 nor the runtime can execute, so its trusted
+    # client identity retains the prior sanitization. When B1-managed tools are
+    # requested, ``merge_openai_tool_definitions`` replaces any client fields
+    # with the centrally registered definitions before execution.
+    if not preserve_client_tools:
+        cleaned.pop("tools", None)
+        cleaned.pop("tool_choice", None)
+        cleaned.pop("parallel_tool_calls", None)
+    # The resolved GPT-OSS effort is restored after generic B1 fields are
+    # removed so only that model family receives this runtime parameter.
+    cleaned.pop("reasoning_effort", None)
+    cleaned["messages"] = normalize_open_webui_chat_messages(cleaned.get("messages"))
     return cleaned
+
+
+AGENT_CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+AGENT_TRANSCRIPT_SCHEMA = "b1-ai-hub-agent-transcript/v1"
+AGENT_TRANSCRIPT_MAX_MESSAGES = 48
+AGENT_TRANSCRIPT_MAX_BYTES = 56 * 1024
+AGENT_TRANSCRIPT_RETENTION = timedelta(hours=24)
+
+
+def validate_agent_conversation_id(value: str | None) -> str | None:
+    # Endpoint unit tests may invoke the function directly, leaving FastAPI's
+    # Header sentinel in place instead of the runtime ``None`` default.
+    if value is None or not isinstance(value, str):
+        return None
+    conversation_id = value.strip()
+    if not AGENT_CONVERSATION_ID_PATTERN.fullmatch(conversation_id):
+        raise HTTPException(status_code=422, detail="X-B1-Agent-Conversation must be 8-128 ASCII letters, digits, dots, underscores, or hyphens")
+    return conversation_id
+
+
+def agent_transcript_secret_name(conversation_id: str, owner_id: str) -> str:
+    digest = hashlib.sha256(f"{owner_id}\0{conversation_id}".encode("utf-8")).hexdigest()
+    return f"agent-transcript-{digest}"
+
+
+def bounded_agent_transcript_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    size = 0
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        normalized = json.loads(json.dumps(message, ensure_ascii=False, sort_keys=True))
+        encoded_size = len(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if selected and (len(selected) >= AGENT_TRANSCRIPT_MAX_MESSAGES or size + encoded_size > AGENT_TRANSCRIPT_MAX_BYTES):
+            break
+        if encoded_size > AGENT_TRANSCRIPT_MAX_BYTES:
+            continue
+        selected.append(normalized)
+        size += encoded_size
+    return list(reversed(selected))
+
+
+async def load_agent_transcript(conversation_id: str | None, owner_id: str, model_alias: str) -> list[dict[str, Any]]:
+    if conversation_id is None:
+        return []
+    row = await database.get_agent_transcript(conversation_id, owner_id)
+    if row is None:
+        return []
+    if row.get("model_alias") != model_alias:
+        raise HTTPException(status_code=409, detail="agent conversation belongs to a different model alias")
+    try:
+        raw = secret_store.decrypt_value(
+            require_master_encryption_key(),
+            agent_transcript_secret_name(conversation_id, owner_id),
+            row.get("transcript_envelope") or {},
+        )
+        parsed = json.loads(raw)
+    except (secret_store.SecretStoreError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="agent conversation transcript is unavailable") from exc
+    messages = parsed.get("messages") if isinstance(parsed, dict) and parsed.get("schema") == AGENT_TRANSCRIPT_SCHEMA else None
+    if not isinstance(messages, list) or not all(isinstance(message, dict) for message in messages):
+        raise HTTPException(status_code=503, detail="agent conversation transcript is invalid")
+    return bounded_agent_transcript_messages(messages)
+
+
+async def persist_agent_transcript(conversation_id: str | None, owner_id: str, model_alias: str, messages: list[dict[str, Any]]) -> None:
+    if conversation_id is None:
+        return
+    transcript = bounded_agent_transcript_messages(messages)
+    payload = json.dumps({"schema": AGENT_TRANSCRIPT_SCHEMA, "messages": transcript}, ensure_ascii=False, separators=(",", ":"))
+    try:
+        envelope = secret_store.encrypt_value(
+            require_master_encryption_key(),
+            agent_transcript_secret_name(conversation_id, owner_id),
+            payload,
+        )
+    except secret_store.SecretStoreError as exc:
+        raise HTTPException(status_code=503, detail="agent conversation transcript could not be encrypted") from exc
+    await database.upsert_agent_transcript(
+        {
+            "conversation_id": conversation_id,
+            "owner_id": owner_id,
+            "model_alias": model_alias,
+            "transcript_envelope": envelope,
+            "message_count": len(transcript),
+            "expires_at": datetime.now(tz=UTC) + AGENT_TRANSCRIPT_RETENTION,
+        }
+    )
+
+
+def prepend_agent_transcript(runtime_payload: dict[str, Any], transcript: list[dict[str, Any]]) -> dict[str, Any]:
+    if not transcript:
+        return runtime_payload
+    merged = dict(runtime_payload)
+    incoming = list(merged.get("messages") or [])
+    if incoming[: len(transcript)] == transcript:
+        return merged
+    merged["messages"] = [*transcript, *incoming]
+    return merged
+
+
+async def gpt_oss_reasoning_effort(payload: ChatCompletionRequest, resolution: RuntimeResolution) -> str | None:
+    model_id = str(getattr(resolution, "model_id", "")).lower()
+    resolved_model_version = str(getattr(resolution, "resolved_model_version", "")).lower()
+    if "gpt-oss" not in model_id and "gpt-oss" not in resolved_model_version:
+        return None
+    if payload.reasoning_effort is not None:
+        return payload.reasoning_effort
+    policy = await database.get_model_alias_policy(resolution.public_alias)
+    configured = policy.get("reasoning_effort") if policy else None
+    if configured in {"low", "medium", "high"}:
+        return configured
+    return "high" if resolution.public_alias == "gpt-oss-reasoning" else "medium"
+
+
+def inject_gpt_oss_reasoning_effort(runtime_payload: dict[str, Any], effort: str | None) -> dict[str, Any]:
+    if effort is None:
+        return runtime_payload
+    updated = dict(runtime_payload)
+    # LocalAI 4.7+ maps this field to the embedded GPT-OSS Harmony template's
+    # ``reasoning_effort`` kwarg. Injecting a separate system message instead
+    # turns it into developer instructions and can displace the real prompt.
+    updated["reasoning_effort"] = effort
+    return updated
+
+
+def open_webui_output_item_text(item: Any) -> str:
+    """Extract text from Open WebUI's persisted Responses-style output item."""
+    if not isinstance(item, dict):
+        return ""
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type") or "") in {"text", "input_text", "output_text"} and isinstance(part.get("text"), str):
+            parts.append(part["text"])
+    return "".join(parts)
+
+
+def normalize_open_webui_chat_messages(messages: Any) -> list[dict[str, Any]]:
+    """Translate Open WebUI's stored `output` items back into Chat API turns.
+
+    New Open WebUI releases persist streamed assistant answers under `output`
+    while retaining an empty legacy `content` field.  The next request is sent
+    to this OpenAI-compatible endpoint as Chat Completions, whose runtimes do
+    not understand that private structure.  Recover the assistant answer
+    before forwarding it and remove the private field.  Reasoning blocks are
+    retained in the historical assistant context for runtimes such as Laguna
+    that require their prior reasoning/tool loop history.
+    """
+    if not isinstance(messages, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+
+    def discard_unanswered_user_turn() -> None:
+        """Remove user input whose following assistant turn was unrecoverable."""
+        while normalized and str(normalized[-1].get("role") or "") == "user":
+            normalized.pop()
+
+    for raw_message in messages:
+        if not isinstance(raw_message, dict):
+            continue
+        message = dict(raw_message)
+        stored_output = message.pop("output", None)
+        role = str(message.get("role") or "")
+        if role != "assistant":
+            # A malformed historic turn can arrive as multiple adjacent user
+            # messages when its blank assistant response was omitted by the
+            # Open WebUI request builder. Only the newest is actionable.
+            if role == "user" and normalized and str(normalized[-1].get("role") or "") == "user":
+                normalized.pop()
+            normalized.append(message)
+            continue
+        if not isinstance(stored_output, list):
+            # Open WebUI has persisted a number of completed streamed turns
+            # with neither content nor output. They are not usable context and
+            # otherwise leave the runtime with consecutive user messages.
+            content = message.get("content")
+            if (content is None or (isinstance(content, str) and not content.strip())) and not message.get("tool_calls"):
+                discard_unanswered_user_turn()
+                continue
+            normalized.append(message)
+            continue
+        existing_content = message.get("content")
+        content_is_empty = existing_content is None or (isinstance(existing_content, str) and not existing_content.strip())
+        if not content_is_empty:
+            normalized.append(message)
+            continue
+        reasoning_parts: list[str] = []
+        answer_parts: list[str] = []
+        for item in stored_output:
+            item_type = str(item.get("type") or "") if isinstance(item, dict) else ""
+            text = open_webui_output_item_text(item)
+            if not text:
+                continue
+            if item_type == "reasoning":
+                reasoning_parts.append(text)
+            elif item_type == "message":
+                answer_parts.append(text)
+        recovered = "".join(answer_parts)
+        if reasoning_parts:
+            recovered = f"<think>{''.join(reasoning_parts)}</think>{recovered}"
+        if recovered:
+            message["content"] = recovered
+        elif not message.get("tool_calls"):
+            discard_unanswered_user_turn()
+            continue
+        normalized.append(message)
+    return normalized
 
 
 def strip_b1_response_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3920,7 +5287,7 @@ def merge_openai_tool_definitions(payload: dict[str, Any], definitions: list[dic
 
 
 def b1_text_tool_instruction(definitions: list[dict[str, Any]]) -> dict[str, str]:
-    tool_summaries: list[dict[str, Any]] = []
+    tool_names: list[str] = []
     for definition in definitions:
         function = definition.get("function") if isinstance(definition, dict) else None
         if not isinstance(function, dict):
@@ -3928,19 +5295,15 @@ def b1_text_tool_instruction(definitions: list[dict[str, Any]]) -> dict[str, str
         name = str(function.get("name") or "").strip()
         if not name:
             continue
-        tool_summaries.append(
-            {
-                "name": name,
-                "description": str(function.get("description") or "")[:500],
-                "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {"type": "object"},
-            }
-        )
+        tool_names.append(name)
     content = (
-        "B1 AI Hub tools are available for this request. If you need one, reply with only a JSON object in this exact shape: "
+        "B1 AI Hub tools are available. Use them for current or source-specific information; otherwise answer directly. "
+        "Prefer native tool calls. Text-only fallback: return only "
         '{"b1_tool_call":{"name":"tool_name","arguments":{}}}. '
-        "Use only one tool call per message. Use the tool result in the next turn to answer the user. "
-        "Do not claim tools are unavailable. Available B1 tools: "
-        f"{json.dumps(tool_summaries, ensure_ascii=False, sort_keys=True)}"
+        "For current questions search first, then fetch a result only when its snippet is insufficient. "
+        f"The current date is {datetime.now(tz=UTC).date().isoformat()}. Treat model, software, hardware, and product recommendations as time-sensitive. "
+        "Prefer primary sources and direct hardware-specific benchmarks. Never invent throughput or benchmark figures. "
+        f"Enabled tools: {', '.join(tool_names)}. Never claim they are unavailable."
     )
     return {"role": "system", "content": content}
 
@@ -3985,14 +5348,11 @@ def parse_b1_text_tool_call(content: Any, enabled_tools: set[str]) -> dict[str, 
 
 
 def b1_text_tool_result_instruction(name: str, result: dict[str, Any]) -> dict[str, str]:
-    compact_result = json.dumps(result, ensure_ascii=False, sort_keys=True)
-    if len(compact_result) > 6000:
-        compact_result = f"{compact_result[:6000]}...[truncated]"
     return {
         "role": "system",
         "content": (
-            f"B1 tool {name} returned this JSON result: {compact_result}\n"
-            "Use the result to answer the user directly. Do not call another tool unless the result is insufficient."
+            f"The preceding tool message is the result from {name}. Use it as evidence. "
+            "Answer directly if sufficient; otherwise call one enabled tool for missing information."
         ),
     }
 
@@ -4202,6 +5562,45 @@ def synthesize_b1_tool_response(
     )
 
 
+def b1_internet_capability_response(
+    payload: ChatCompletionRequest,
+    resolution: RuntimeResolution,
+    requested_tools: list[str],
+) -> JSONResponse:
+    tool_names = [name for name in ("web_search", "web_fetch") if name in requested_tools]
+    readable_tools = " and ".join(f"`{name}`" for name in tool_names)
+    content = (
+        f"Yes. In this B1 AI Hub request I can use the managed {readable_tools} tools to retrieve current public information. "
+        "I do not have unrestricted network access; web access is mediated by B1 policy and limited to permitted public HTTP/HTTPS sources."
+    )
+    body = annotate_runtime_response(
+        {
+            "id": f"chatcmpl_b1_capability_{uuid.uuid4().hex}",
+            "object": "chat.completion",
+            "created": int(datetime.now(tz=UTC).timestamp()),
+            "model": payload.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+        resolution,
+    )
+    return JSONResponse(
+        content=jsonable_encoder(body),
+        headers={
+            **runtime_response_headers(resolution),
+            "X-B1-Tools": ",".join(requested_tools),
+            "X-B1-Tool-Iterations": "0",
+            "X-B1-Tool-Stop-Reason": "capability_report",
+            "X-B1-Tool-Answer": "capability",
+        },
+    )
+
+
 def first_chat_message_tool_calls(body: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     if not isinstance(body, dict):
         return None, []
@@ -4220,11 +5619,68 @@ def first_chat_message_tool_calls(body: Any) -> tuple[dict[str, Any] | None, lis
     return message, [item for item in tool_calls if isinstance(item, dict)]
 
 
+def gpt_oss_final_content_is_suspicious(message: dict[str, Any] | None, resolution: RuntimeResolution) -> bool:
+    """Reject obvious Harmony analysis/prefill fragments as public answers."""
+    model_hint = f"{getattr(resolution, 'model_id', '')} {getattr(resolution, 'resolved_model_version', '')}".lower()
+    if "gpt-oss" not in model_hint or not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    stripped = content.strip()
+    if any(marker in stripped for marker in ("<|start|>", "<|channel|>", "<|message|>", "<|end|>")):
+        return True
+    if re.search(r"\b(?:the\s+)?user\s+(?:says|asks)\s*:\s*$", stripped, flags=re.IGNORECASE):
+        return True
+    if len(stripped) < 240 and re.search(r"[?}*]{6,}", stripped):
+        return True
+    return False
+
+
 def json_response_body(response: JSONResponse) -> Any:
     try:
         return json.loads(response.body.decode("utf-8"))
     except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+
+
+def b1_tool_model_final_is_usable(response: JSONResponse | None) -> bool:
+    if response is None or response.status_code >= 400:
+        return False
+    body = json_response_body(response)
+    message, tool_calls = first_chat_message_tool_calls(body)
+    if message is None or tool_calls:
+        return False
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    return '"b1_tool_call"' not in content
+
+
+async def try_b1_tool_model_final(
+    loop_payload: dict[str, Any],
+    resolution: RuntimeResolution,
+    owner_id: str | None,
+    *,
+    reason: str,
+    stop_reason: str,
+    iterations: int,
+    requested_tools: list[str],
+) -> JSONResponse | None:
+    response = await call_openai_runtime_json(
+        "/v1/chat/completions",
+        force_b1_tool_answer_payload(loop_payload, reason),
+        resolution,
+        "chat",
+        owner_id=owner_id,
+    )
+    if not b1_tool_model_final_is_usable(response):
+        return None
+    response.headers["X-B1-Tool-Iterations"] = str(iterations)
+    response.headers["X-B1-Tools"] = ",".join(requested_tools)
+    response.headers["X-B1-Tool-Stop-Reason"] = stop_reason
+    response.headers["X-B1-Tool-Answer"] = "model_final"
+    return response
 
 
 def response_content_part_to_chat(part: Any) -> Any:
@@ -4359,18 +5815,25 @@ async def execute_b1_tool_call(registry: model_tools.ModelToolRegistry, tool_cal
     except model_tools.ModelToolError as exc:
         return {"ok": False, "tool": name, "error": str(exc)}
     except httpx.HTTPStatusError as exc:
-        return {"ok": False, "tool": name, "error": f"HTTP {exc.response.status_code}"}
+        status_code = exc.response.status_code
+        return {
+            "ok": False,
+            "tool": name,
+            "error": f"the remote endpoint rejected the request (HTTP {status_code})",
+            "status_code": status_code,
+        }
     except httpx.HTTPError as exc:
         return {"ok": False, "tool": name, "error": exc.__class__.__name__}
 
 
-async def call_chat_with_b1_tools(
+async def _call_chat_with_b1_tools_under_lease(
     payload: ChatCompletionRequest,
     runtime_payload: dict[str, Any],
     resolution: RuntimeResolution,
     requested_tools: list[str],
     registry: model_tools.ModelToolRegistry,
     owner_id: str | None,
+    transcript_writer: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> JSONResponse:
     if payload.b1_tools and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
@@ -4388,7 +5851,11 @@ async def call_chat_with_b1_tools(
         # LocalAI may briefly return 502/503/504 while replacing its single
         # backend process during a model switch. Retry only those transient
         # statuses; never replay a successful or client-error request.
-        for attempt in range(3):
+        # A graceful LocalAI unload stops its backend process.  On this host a
+        # cold backend restart can take roughly 15 seconds, so keep the GPU
+        # lease while covering that bounded transition instead of surfacing a
+        # gateway error to the chat client.
+        for attempt in range(6):
             response = await call_openai_runtime_json(
                 "/v1/chat/completions",
                 loop_payload,
@@ -4415,12 +5882,39 @@ async def call_chat_with_b1_tools(
                     "tool_calls": tool_calls,
                 }
         if not tool_calls:
+            if gpt_oss_final_content_is_suspicious(assistant_message, resolution):
+                retry = await call_openai_runtime_json(
+                    "/v1/chat/completions",
+                    force_b1_tool_answer_payload(
+                        loop_payload,
+                        "the previous generation ended with an incomplete internal analysis fragment",
+                    ),
+                    resolution,
+                    "chat",
+                    owner_id=owner_id,
+                )
+                if retry is None:
+                    return JSONResponse(
+                        status_code=502,
+                        content={"error": {"message": "GPT-OSS did not produce a usable final answer after one retry"}},
+                    )
+                if retry.status_code >= 400:
+                    return retry
+                retry_message, retry_tool_calls = first_chat_message_tool_calls(json_response_body(retry))
+                if retry_tool_calls or gpt_oss_final_content_is_suspicious(retry_message, resolution):
+                    return JSONResponse(
+                        status_code=502,
+                        content={"error": {"message": "GPT-OSS did not produce a usable final answer after one retry"}},
+                    )
+                response = retry
+                response.headers["X-B1-GPT-OSS-Final-Retry"] = "1"
             response.headers["X-B1-Tool-Iterations"] = str(iteration)
             response.headers["X-B1-Tools"] = ",".join(requested_tools)
             return response
         if assistant_message is not None:
             loop_payload["messages"].append(assistant_message)
         duplicate_tool_requested = False
+        tool_failed = False
         for tool_call in tool_calls:
             tool_call_id = str(tool_call.get("id") or f"b1-tool-{uuid.uuid4().hex}")
             function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
@@ -4457,7 +5951,39 @@ async def call_chat_with_b1_tools(
                 }
             )
             loop_payload["messages"].append(b1_text_tool_result_instruction(name, result))
+            tool_failed = tool_failed or not bool(result.get("ok"))
+        if transcript_writer is not None:
+            await transcript_writer(list(loop_payload["messages"]))
+        if tool_failed:
+            # The failed result is already part of the durable conversation
+            # context.  Close the loop after this attempt so capable models
+            # can explain or recover from a rejected remote endpoint without
+            # repeatedly issuing the same call.
+            response = await call_openai_runtime_json(
+                "/v1/chat/completions",
+                force_b1_tool_answer_payload(loop_payload, "a requested tool could not complete"),
+                resolution,
+                "chat",
+                owner_id=owner_id,
+            )
+            if response is not None:
+                response.headers["X-B1-Tool-Iterations"] = str(iteration + 1)
+                response.headers["X-B1-Tools"] = ",".join(requested_tools)
+                response.headers["X-B1-Tool-Stop-Reason"] = "tool_failure"
+                return response
         if duplicate_tool_requested:
+            if any(item.get("name") in {"web_search", "web_fetch"} for item in executed_results):
+                model_final = await try_b1_tool_model_final(
+                    loop_payload,
+                    resolution,
+                    owner_id,
+                    reason="the model repeated an identical tool call",
+                    stop_reason="duplicate_tool_call",
+                    iterations=iteration,
+                    requested_tools=requested_tools,
+                )
+                if model_final is not None:
+                    return model_final
             synthesized = synthesize_b1_tool_response(
                 payload,
                 resolution,
@@ -4480,6 +6006,18 @@ async def call_chat_with_b1_tools(
                 response.headers["X-B1-Tools"] = ",".join(requested_tools)
                 response.headers["X-B1-Tool-Stop-Reason"] = "duplicate_tool_call"
                 return response
+    if any(item.get("name") in {"web_search", "web_fetch"} for item in executed_results):
+        model_final = await try_b1_tool_model_final(
+            loop_payload,
+            resolution,
+            owner_id,
+            reason="the configured B1 tool iteration limit was reached",
+            stop_reason="max_iterations",
+            iterations=payload.b1_tool_max_iterations,
+            requested_tools=requested_tools,
+        )
+        if model_final is not None:
+            return model_final
     synthesized = synthesize_b1_tool_response(
         payload,
         resolution,
@@ -4503,6 +6041,44 @@ async def call_chat_with_b1_tools(
         response.headers["X-B1-Tool-Stop-Reason"] = "max_iterations"
         return response
     raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied chat response")
+
+
+async def call_chat_with_b1_tools(
+    payload: ChatCompletionRequest,
+    runtime_payload: dict[str, Any],
+    resolution: RuntimeResolution,
+    requested_tools: list[str],
+    registry: model_tools.ModelToolRegistry,
+    owner_id: str | None,
+    transcript_writer: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+) -> JSONResponse:
+    """Run an agent turn under one cross-runtime lease.
+
+    A tool result is another inference turn, not a new independent request.
+    Keeping the lease and loaded model until the complete loop finishes avoids
+    a GPU unload/reload between every tool call and prevents another runtime
+    from entering the gap.
+    """
+    requires_gpu = bool(getattr(resolution, "requires_gpu", False))
+    loop_owner = await acquire_inference_lease(resolution, "chat-tool-loop", owner_id=owner_id) if requires_gpu else None
+    loop_lease = ToolLoopLease(resolution.resolved_model_version, loop_owner)
+    token = current_b1_tool_loop_lease.set(loop_lease)
+    try:
+        return await _call_chat_with_b1_tools_under_lease(
+            payload,
+            runtime_payload,
+            resolution,
+            requested_tools,
+            registry,
+            owner_id,
+            transcript_writer,
+        )
+    finally:
+        current_b1_tool_loop_lease.reset(token)
+        if requires_gpu and loop_lease.runtime_prepared:
+            with suppress(Exception):
+                await mark_sync_gpu_runtime_idle(resolution, "chat-tool-loop")
+        await release_inference_lease(loop_owner)
 
 
 def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
@@ -4541,16 +6117,18 @@ def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
         }
     ]
     if text_content:
-        for offset in range(0, len(text_content), 256):
-            chunks.append(
-                {
-                    "id": response_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": {"content": text_content[offset : offset + 256]}, "finish_reason": None}],
-                }
-            )
+        # This response is already complete, so splitting it into a burst of
+        # tiny events provides no streaming benefit. Open WebUI can fall behind
+        # that burst and leave the finished answer hidden until a page reload.
+        chunks.append(
+            {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": text_content}, "finish_reason": None}],
+            }
+        )
     final_chunk: dict[str, Any] = {
         "id": response_id,
         "object": "chat.completion.chunk",
@@ -4560,6 +6138,15 @@ def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
     }
     if isinstance(body.get("usage"), dict):
         final_chunk["usage"] = body["usage"]
+    if isinstance(body.get("timings"), dict):
+        stream_timings = dict(body["timings"])
+        decode_rate = stream_timings.get("predicted_per_second")
+        if isinstance(decode_rate, (int, float)) and not isinstance(decode_rate, bool):
+            # Open WebUI preserves arbitrary timing fields in the usage
+            # tooltip. Give the llama.cpp/LocalAI decode rate an explicit,
+            # provider-neutral label while retaining the native timings.
+            stream_timings.setdefault("tokens_per_second", decode_rate)
+        final_chunk["timings"] = stream_timings
     chunks.append(final_chunk)
 
     async def events():
@@ -4568,7 +6155,7 @@ def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
         yield "data: [DONE]\n\n"
 
     headers = {key: value for key, value in chat_response.headers.items() if key.lower().startswith("x-b1-")}
-    headers.update({"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    headers["Cache-Control"] = "no-cache"
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
 
 
@@ -4584,6 +6171,51 @@ def runtime_prepare_error_detail(exc: RuntimePreparationError, resolution: Runti
     }
 
 
+def normalize_gpt_oss_harmony_response(body: Any, resolution: RuntimeResolution) -> Any:
+    if "gpt-oss" not in resolution.model_id.lower() and "gpt-oss" not in resolution.resolved_model_version.lower():
+        return body
+    if not isinstance(body, dict) or not isinstance(body.get("choices"), list):
+        return body
+    final_marker = "<|start|>assistant<|channel|>final"
+    for choice in body["choices"]:
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            continue
+        message = choice["message"]
+        content = message.get("content")
+        if not isinstance(content, str) or final_marker not in content:
+            continue
+        reasoning, final = content.rsplit(final_marker, 1)
+        final = final.replace("<|end|>", "").replace("<|message|>", "").strip()
+        reasoning = reasoning.replace("<|end|>", "").strip()
+        if final:
+            message["content"] = final
+            if reasoning and not message.get("reasoning_content"):
+                message["reasoning_content"] = reasoning
+    return body
+
+
+def normalize_laguna_reasoning_response(body: Any, resolution: RuntimeResolution) -> Any:
+    model_hint = f"{getattr(resolution, 'model_id', '')} {resolution.resolved_model_version}".lower()
+    if "laguna" not in model_hint or not isinstance(body, dict) or not isinstance(body.get("choices"), list):
+        return body
+    for choice in body["choices"]:
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            continue
+        message = choice["message"]
+        content = message.get("content")
+        if not isinstance(content, str) or "</think>" not in content:
+            continue
+        reasoning, final = content.rsplit("</think>", 1)
+        reasoning = reasoning.removeprefix("<think>").strip()
+        final = final.strip()
+        if not final:
+            continue
+        message["content"] = final
+        if reasoning and reasoning != final and not message.get("reasoning_content"):
+            message["reasoning_content"] = reasoning
+    return body
+
+
 async def call_openai_runtime_json(
     path: str,
     payload: dict[str, Any],
@@ -4595,15 +6227,53 @@ async def call_openai_runtime_json(
     if adapter is None:
         return None
     forwarded = adapter.openai_payload(payload, resolution)
-    owner = await acquire_inference_lease(resolution, operation, owner_id=owner_id)
+    active_tool_loop = current_b1_tool_loop_lease.get()
+    using_tool_loop_lease = active_tool_loop is not None and active_tool_loop.resolved_model_version == resolution.resolved_model_version
+    owner = active_tool_loop.owner if using_tool_loop_lease else await acquire_inference_lease(resolution, operation, owner_id=owner_id)
     prepared = False
     try:
-        prepared = await prepare_sync_gpu_runtime(resolution, operation)
-        status_code, headers, body = await await_with_inference_lease_renewal(
-            owner,
-            operation,
-            adapter.post_openai_json(path, forwarded),
-        )
+        if using_tool_loop_lease and active_tool_loop.runtime_prepared:
+            prepared = True
+        else:
+            prepared = await await_with_inference_lease_renewal(
+                owner,
+                operation,
+                prepare_sync_gpu_runtime(resolution, operation),
+            )
+            if using_tool_loop_lease and prepared:
+                active_tool_loop.runtime_prepared = True
+        for attempt in range(6):
+            try:
+                status_code, headers, body = await await_with_inference_lease_renewal(
+                    owner,
+                    operation,
+                    adapter.post_openai_json(path, forwarded),
+                )
+            except httpx.HTTPError as exc:
+                # A LocalAI reload briefly closes the proxy listener as well
+                # as returning 503 while the backend process starts. Retry
+                # only failures that happen before an HTTP request can be
+                # accepted. A read/write/protocol failure may follow partial
+                # or complete inference and replaying it can create duplicate
+                # parallel-one work on the LAN worker.
+                safe_pre_acceptance_error = isinstance(
+                    exc,
+                    (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout),
+                )
+                if (
+                    resolution.runtime not in {"localai", "lan-localai-worker", "lan-deepseek-worker"}
+                    or attempt == 5
+                    or not safe_pre_acceptance_error
+                ):
+                    raise
+                await asyncio.sleep(0.5 * (2**attempt))
+                continue
+            # The LocalAI idle watchdog can finish an unload between the
+            # scheduler's warm hook and this first request. Its proxy returns
+            # a transient gateway status while the backend is replaced.
+            if resolution.runtime not in {"localai", "lan-localai-worker", "lan-deepseek-worker"} or status_code not in {502, 503, 504} or attempt == 5:
+                break
+            await asyncio.sleep(0.5 * (2**attempt))
     except RuntimePreparationError as exc:
         raise HTTPException(status_code=503, detail=runtime_prepare_error_detail(exc, resolution, operation)) from exc
     except httpx.HTTPError as exc:
@@ -4611,13 +6281,44 @@ async def call_openai_runtime_json(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
-        if prepared:
+        if prepared and not using_tool_loop_lease:
             with suppress(Exception):
                 await mark_sync_gpu_runtime_idle(resolution, operation)
-        await release_inference_lease(owner)
+        if not using_tool_loop_lease:
+            await release_inference_lease(owner)
+    body = normalize_gpt_oss_harmony_response(body, resolution)
+    body = normalize_laguna_reasoning_response(body, resolution)
     safe_headers = {key: value for key, value in headers.items() if key.lower() != "content-type"}
     safe_headers.update(runtime_response_headers(resolution))
     return JSONResponse(status_code=status_code, content=jsonable_encoder(annotate_runtime_response(body, resolution)), headers=safe_headers)
+
+
+async def wait_for_sync_runtime_request_drain(
+    resolution: RuntimeResolution,
+    *,
+    timeout_seconds: float = OPEN_WEBUI_STREAM_DRAIN_SECONDS,
+) -> bool:
+    adapter = openai_runtime_adapter(resolution)
+    if adapter is None or resolution.runtime not in {"lan-localai-worker", "lan-deepseek-worker"}:
+        return False
+    deadline = monotonic() + max(0.1, timeout_seconds)
+    try:
+        async with httpx.AsyncClient(timeout=3.0, **adapter.httpx_client_kwargs()) as client:
+            while monotonic() < deadline:
+                response = await client.get(
+                    adapter.openai_url("/b1/runtime/metrics"),
+                    headers=adapter.request_headers(),
+                )
+                if response.status_code < 400:
+                    payload = response.json()
+                    work = payload.get("work") if isinstance(payload, dict) else None
+                    active_requests = work.get("active_requests") if isinstance(work, dict) else None
+                    if active_requests == 0:
+                        return True
+                await asyncio.sleep(0.1)
+    except (httpx.HTTPError, ValueError):
+        return False
+    return False
 
 
 async def call_openai_runtime_stream(
@@ -4626,15 +6327,31 @@ async def call_openai_runtime_stream(
     resolution: RuntimeResolution,
     operation: str,
     owner_id: str | None = None,
+    supersede_requested: asyncio.Event | None = None,
+    request_scoped_cancel: bool = False,
 ) -> StreamingResponse | None:
     adapter = openai_runtime_adapter(resolution)
     if adapter is None:
         return None
     forwarded = adapter.openai_payload(payload, resolution)
-    owner = await acquire_inference_lease(resolution, operation, owner_id=owner_id)
+    if supersede_requested is None:
+        owner = await acquire_inference_lease(resolution, operation, owner_id=owner_id)
+    else:
+        owner = await acquire_inference_lease(
+            resolution,
+            operation,
+            owner_id=owner_id,
+            supersede_requested=supersede_requested,
+        )
     prepared = False
     try:
-        prepared = await prepare_sync_gpu_runtime(resolution, operation)
+        if supersede_requested is not None and supersede_requested.is_set():
+            raise OpenWebUIStreamSuperseded()
+        prepared = await await_with_inference_lease_renewal(
+            owner,
+            operation,
+            prepare_sync_gpu_runtime(resolution, operation),
+        )
     except RuntimePreparationError as exc:
         await release_inference_lease(owner)
         raise HTTPException(status_code=503, detail=runtime_prepare_error_detail(exc, resolution, operation)) from exc
@@ -4648,57 +6365,122 @@ async def call_openai_runtime_stream(
     finalized = False
     finalize_lock = asyncio.Lock()
 
-    async def finalize_stream() -> None:
+    async def finalize_stream(*, cancel_runtime: bool = False) -> None:
         nonlocal finalized
         async with finalize_lock:
             if finalized:
                 return
-            finalized = True
-            if prepared:
+            if cancel_runtime and prepared:
+                drained = request_scoped_cancel and await wait_for_sync_runtime_request_drain(resolution)
+                if drained:
+                    with suppress(Exception):
+                        await mark_sync_gpu_runtime_idle(resolution, operation)
+                else:
+                    with suppress(Exception):
+                        await cancel_sync_gpu_runtime(resolution, operation)
+            elif prepared:
                 with suppress(Exception):
                     await mark_sync_gpu_runtime_idle(resolution, operation)
             await release_inference_lease(owner)
+            finalized = True
+
+    async def shielded_finalize_stream(*, cancel_runtime: bool = False) -> None:
+        # Starlette cancels the response task when the downstream client closes.
+        # Keep runtime cancellation and lease release alive inside that cancel
+        # scope so an abandoned stream cannot retain the global GPU lease.
+        with anyio.CancelScope(shield=True):
+            await finalize_stream(cancel_runtime=cancel_runtime)
 
     async def chunks():
         last_renewed = datetime.now(tz=UTC)
         renew_interval = max(15, min(60, settings.sync_inference_lease_ttl_seconds // 3))
+        completed = False
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", adapter.openai_url(path), json=forwarded, headers={"Accept": "text/event-stream"}) as response:
-                    if response.status_code >= 400:
-                        body = (await response.aread()).decode("utf-8", errors="replace")
-                        error = {
-                            "error": {
-                                "message": body[:1000],
-                                "type": "runtime_error",
-                                "code": response.status_code,
-                            },
-                            "b1_runtime": resolution.runtime,
-                            "b1_resolved_model": resolution.resolved_model_version,
-                            "b1_public_model": resolution.public_alias,
-                        }
-                        yield f"data: {json.dumps(error)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
-                    async for chunk in response.aiter_bytes():
-                        if chunk:
-                            now = datetime.now(tz=UTC)
-                            if owner is not None and (now - last_renewed).total_seconds() >= renew_interval:
-                                if not await renew_inference_lease(owner):
-                                    error = {
-                                        "error": {
-                                            "message": "GPU scheduler lease was lost during streaming response",
-                                            "type": "scheduler_lease_lost",
-                                        },
-                                        "b1_runtime": resolution.runtime,
-                                        "b1_resolved_model": resolution.resolved_model_version,
-                                        "b1_public_model": resolution.public_alias,
-                                    }
-                                    yield f"data: {json.dumps(error)}\n\n"
-                                    yield "data: [DONE]\n\n"
-                                    return
-                                last_renewed = now
-                            yield chunk
+            if supersede_requested is not None and supersede_requested.is_set():
+                yield open_webui_status_sse("Previous response superseded by your newer message", done=True)
+                yield "data: [DONE]\n\n"
+                return
+            async with httpx.AsyncClient(timeout=None, **adapter.httpx_client_kwargs()) as client:
+                for attempt in range(6):
+                    try:
+                        stream_headers = {"Accept": "text/event-stream", **adapter.request_headers()}
+                        async with client.stream("POST", adapter.openai_url(path), json=forwarded, headers=stream_headers) as response:
+                            if response.status_code in {502, 503, 504} and resolution.runtime in {"localai", "lan-localai-worker", "lan-deepseek-worker"} and attempt < 5:
+                                await response.aread()
+                                await asyncio.sleep(0.5 * (2**attempt))
+                                continue
+                            if response.status_code >= 400:
+                                body = (await response.aread()).decode("utf-8", errors="replace")
+                                error = {
+                                    "error": {
+                                        "message": body[:1000],
+                                        "type": "runtime_error",
+                                        "code": response.status_code,
+                                    },
+                                    "b1_runtime": resolution.runtime,
+                                    "b1_resolved_model": resolution.resolved_model_version,
+                                    "b1_public_model": resolution.public_alias,
+                                }
+                                yield f"data: {json.dumps(error)}\n\n"
+                                yield "data: [DONE]\n\n"
+                                completed = True
+                                return
+                            upstream_chunks = response.aiter_bytes().__aiter__()
+                            while True:
+                                if supersede_requested is None:
+                                    try:
+                                        chunk = await anext(upstream_chunks)
+                                    except StopAsyncIteration:
+                                        break
+                                else:
+                                    next_chunk = asyncio.create_task(anext(upstream_chunks))
+                                    superseded = asyncio.create_task(supersede_requested.wait())
+                                    try:
+                                        done, _pending = await asyncio.wait(
+                                            {next_chunk, superseded},
+                                            return_when=asyncio.FIRST_COMPLETED,
+                                        )
+                                        if superseded in done and supersede_requested.is_set():
+                                            yield open_webui_status_sse(
+                                                "Previous response superseded by your newer message",
+                                                done=True,
+                                            )
+                                            yield "data: [DONE]\n\n"
+                                            return
+                                        try:
+                                            chunk = next_chunk.result()
+                                        except StopAsyncIteration:
+                                            break
+                                    finally:
+                                        for pending_task in (next_chunk, superseded):
+                                            if not pending_task.done():
+                                                pending_task.cancel()
+                                        await asyncio.gather(next_chunk, superseded, return_exceptions=True)
+                                if chunk:
+                                    now = datetime.now(tz=UTC)
+                                    if owner is not None and (now - last_renewed).total_seconds() >= renew_interval:
+                                        if not await renew_inference_lease(owner):
+                                            error = {
+                                                "error": {
+                                                    "message": "GPU scheduler lease was lost during streaming response",
+                                                    "type": "scheduler_lease_lost",
+                                                },
+                                                "b1_runtime": resolution.runtime,
+                                                "b1_resolved_model": resolution.resolved_model_version,
+                                                "b1_public_model": resolution.public_alias,
+                                            }
+                                            yield f"data: {json.dumps(error)}\n\n"
+                                            yield "data: [DONE]\n\n"
+                                            return
+                                        last_renewed = now
+                                    yield chunk
+                            completed = True
+                            return
+                    except httpx.HTTPError as exc:
+                        if resolution.runtime in {"localai", "lan-localai-worker", "lan-deepseek-worker"} and attempt < 5:
+                            await asyncio.sleep(0.5 * (2**attempt))
+                            continue
+                        raise exc
         except httpx.HTTPError as exc:
             error = {
                 "error": {
@@ -4712,9 +6494,100 @@ async def call_openai_runtime_stream(
             yield f"data: {json.dumps(error)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            await finalize_stream()
+            await shielded_finalize_stream(cancel_runtime=not completed)
 
-    return StreamingResponse(chunks(), media_type="text/event-stream", background=BackgroundTask(finalize_stream))
+    return StreamingResponse(
+        chunks(),
+        media_type="text/event-stream",
+        background=BackgroundTask(shielded_finalize_stream, cancel_runtime=True),
+    )
+
+
+async def call_open_webui_runtime_stream(
+    path: str,
+    payload: dict[str, Any],
+    resolution: RuntimeResolution,
+    operation: str,
+    *,
+    conversation_key: str,
+    owner_id: str,
+) -> StreamingResponse:
+    async def chunks():
+        state, previous = register_open_webui_stream(conversation_key)
+        response: StreamingResponse | None = None
+        response_iterator: Any = None
+        stream_task: asyncio.Task[StreamingResponse | None] | None = None
+        try:
+            yield open_webui_status_sse(
+                "Stopping the previous response before starting your newer message"
+                if previous is not None
+                else "Waiting for the P40 worker",
+                done=False,
+            )
+            stream_task = asyncio.create_task(
+                call_openai_runtime_stream(
+                    path,
+                    payload,
+                    resolution,
+                    operation,
+                    owner_id=owner_id,
+                    supersede_requested=state.supersede_requested,
+                    request_scoped_cancel=True,
+                )
+            )
+            heartbeat_at = monotonic() + 10.0
+            while not stream_task.done():
+                done, _pending = await asyncio.wait({stream_task}, timeout=0.5)
+                if done:
+                    break
+                if monotonic() >= heartbeat_at:
+                    yield ": b1-open-webui-waiting\n\n"
+                    heartbeat_at = monotonic() + 10.0
+            response = await stream_task
+            if response is None:
+                raise HTTPException(status_code=502, detail="runtime did not produce a proxied chat response")
+            if state.supersede_requested.is_set():
+                if response.background is not None:
+                    await response.background()
+                yield open_webui_status_sse("Response superseded by your newer message", done=True)
+                yield "data: [DONE]\n\n"
+                return
+            yield open_webui_status_sse("P40 worker acquired", done=True)
+            response_iterator = response.body_iterator
+            async for chunk in response_iterator:
+                yield chunk
+        except OpenWebUIStreamSuperseded:
+            yield open_webui_status_sse("Response superseded by your newer message", done=True)
+            yield "data: [DONE]\n\n"
+        except HTTPException as exc:
+            message = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail)
+            yield f"data: {json.dumps({'error': {'message': message, 'type': 'b1_admission_error', 'code': exc.status_code}})}\n\n"
+            yield "data: [DONE]\n\n"
+        except httpx.HTTPError as exc:
+            yield f"data: {json.dumps({'error': {'message': f'chat handoff failed: {exc.__class__.__name__}', 'type': 'runtime_proxy_error'}})}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            with anyio.CancelScope(shield=True):
+                state.supersede_requested.set()
+                if response_iterator is not None:
+                    with suppress(Exception):
+                        await response_iterator.aclose()
+                if stream_task is not None and not stream_task.done():
+                    with suppress(Exception):
+                        response = await stream_task
+                if response is not None and response.background is not None:
+                    with suppress(Exception):
+                        await response.background()
+                finish_open_webui_stream(state)
+
+    return StreamingResponse(
+        chunks(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-B1-Queue-Mode": "open-webui-conversation-supersede",
+        },
+    )
 
 
 def media_job_links(job_id: str) -> dict[str, str]:
@@ -4832,6 +6705,18 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
     native_comfyui = native_comfyui_public_job_summary(job, raw_request)
     if native_comfyui is not None:
         job["native_comfyui"] = native_comfyui
+    lip_sync = public_lip_sync_summary(job)
+    if lip_sync is not None:
+        job["lip_sync"] = lip_sync
+    performance = public_performance_summary(job)
+    if performance is not None:
+        job["performance"] = performance
+    studio_panel = public_studio_panel_summary(job)
+    if studio_panel is not None:
+        job["studio_panel"] = studio_panel
+    seated_character = public_seated_character_summary(job)
+    if seated_character is not None:
+        job["seated_character"] = seated_character
     if job.get("id"):
         job["links"] = media_job_links(str(job["id"]))
     return jsonable_encoder(job)
@@ -5046,7 +6931,12 @@ async def create_job_record(
             ensure_idempotent_job_matches(existing, request_payload, resolution)
             return existing
     require_not_in_maintenance(f"{request_payload.modality}/{request_payload.operation}")
-    await enforce_gpu_hardware_admission(resolution)
+    if resolution is not None:
+        device_group = benchmarking.DEVICE_GROUP_BY_RUNTIME.get(resolution.runtime)
+        lock_lookup = getattr(database, "active_benchmark_device_lock", None)
+        campaign_lock = await lock_lookup(device_group) if device_group and lock_lookup is not None else None
+        if campaign_lock and owner != f"benchmark:{campaign_lock.get('campaign_id')}":
+            raise HTTPException(status_code=423, detail={"code": "benchmark_campaign_active", "message": f"{device_group} is exclusively locked by a benchmark campaign", "campaign_id": campaign_lock.get("campaign_id"), "device_group": device_group, "expires_at": jsonable_encoder(campaign_lock.get("expires_at"))}, headers={"Retry-After": "60"})
     await enforce_queue_admission(owner)
     enforce_artifact_storage_headroom(0)
     job_id = f"job_{uuid.uuid4().hex}"
@@ -5082,6 +6972,7 @@ async def startup() -> None:
     globals()["settings"] = settings_for_startup
     database.configure_engine(settings_for_startup.database_url)
     await database.verify_schema_current()
+    await seed_builtin_benchmarks()
     await load_network_policy_cache()
     await load_maintenance_state_cache()
     await load_resource_policy_override()
@@ -5090,20 +6981,14 @@ async def startup() -> None:
     open_webui_client = await ensure_open_webui_api_client()
     globals()["model_catalog"] = await refresh_catalog_cache()
     await load_admission_policy_override()
-    globals()["runtime_registry"] = build_runtime_registry(
-        localai_url=settings_for_startup.localai_url,
-        comfyui_url=settings_for_startup.comfyui_url,
-        voicebox_url=settings_for_startup.voicebox_url,
-        audio_cpu_url=settings_for_startup.audio_cpu_url,
-        allow_external=settings_for_startup.allow_external_providers,
-        **runtime_registry_external_inputs(settings_for_startup),
-    )
+    globals()["runtime_registry"] = runtime_registry_snapshot()
     await refresh_node_pin_registry()
     seeded_workflows = await seed_workflows_from_directory(Path(settings_for_startup.workflow_seed_dir))
     redis_client = redis.from_url(settings_for_startup.redis_url, decode_responses=True)
     database.configure_scheduler_redis(redis_client)
     job_runners = []
     job_runner_tasks = []
+    job_runner_tasks.append(asyncio.create_task(benchmark_retention_loop(), name="b1-benchmark-retention"))
     comfyui_native_prompt_resume = await resume_comfyui_native_prompt_trackers()
     if settings_for_startup.job_runner_enabled:
         cpu_runner = CpuJobRunner(
@@ -5129,14 +7014,16 @@ async def startup() -> None:
             runtime_control_token=settings_for_startup.runtime_control_token,
             reserve_vram_gib=resource_policy().gpu_reserve_vram_gib,
             default_idle_timeout_seconds=settings_for_startup.gpu_default_idle_timeout_seconds,
-            runtime_urls={
-                "localai": settings_for_startup.localai_url,
-                "comfyui": settings_for_startup.comfyui_url,
-                "voicebox": settings_for_startup.voicebox_url,
+            runtime_urls=scheduler_runtime_urls(),
+            runtime_tls_ca_files={
+                "lan-localai-worker": settings_for_startup.lan_localai_worker_tls_ca_file,
+                "lan-deepseek-worker": settings_for_startup.lan_deepseek_worker_tls_ca_file,
+                "lan-p40-media": settings_for_startup.lan_p40_media_tls_ca_file,
             },
             comfyui_poll_seconds=settings_for_startup.comfyui_prompt_poll_seconds,
             comfyui_completion_timeout_seconds=settings_for_startup.comfyui_prompt_completion_timeout_seconds,
             pause_check=queued_runner_pause_active,
+            talking_head_lipsync_fallback_renderer=settings_for_startup.talking_head_lipsync_fallback_renderer,
         )
         job_runners.append(gpu_runner)
         job_runner_tasks.append(asyncio.create_task(gpu_runner.run_forever(), name="b1-gpu-job-runner"))
@@ -5144,6 +7031,7 @@ async def startup() -> None:
         model_download_runner = ModelDownloadRunner(
             Path(settings_for_startup.data_root),
             settings_for_startup.model_download_runner_interval_seconds,
+            request_timeout_seconds=settings_for_startup.model_download_request_timeout_seconds,
             master_key=settings_for_startup.master_key,
             pause_check=queued_runner_pause_active,
         )
@@ -6167,6 +8055,63 @@ async def voice_profile_for_inference(payload: dict[str, Any], auth: AuthContext
     return row
 
 
+def speech_request_asks_for_default_voice(payload: dict[str, Any]) -> bool:
+    for key in ("voice_profile_id", "b1_voice_profile_id", "voice_profile"):
+        if isinstance(payload.get(key), str) and payload[key].strip():
+            return False
+    voice = payload.get("voice")
+    if voice is None:
+        return True
+    return isinstance(voice, str) and voice.strip().lower() in {"", "default", "auto"}
+
+
+async def default_voice_profile_for_resolution(payload: dict[str, Any], auth: AuthContext, resolution: RuntimeResolution) -> dict[str, Any] | None:
+    if resolution.runtime != "voicebox":
+        return None
+    if not speech_request_asks_for_default_voice(payload):
+        return None
+    rows = await database.list_voice_profiles(include_deleted=False, runtime="voicebox", status="active")
+    for row in rows:
+        if row.get("model_alias") != resolution.public_alias:
+            continue
+        if voice_profile_policy.subject_can_use_profile(row, subject_id=auth.subject_id, role=auth.role.value, scopes=auth.scopes):
+            return row
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "message": "Voicebox speech needs an active B1 voice profile or native Voicebox profile_id",
+            "requested_model": resolution.public_alias,
+            "hint": "Create a Voicebox profile in Control Center or pass voice/voice_profile_id as an existing vp_* profile id.",
+        },
+    )
+
+
+async def attach_default_voice_profile_if_needed(
+    auth: AuthContext,
+    payload: MediaJobCreate,
+    resolution: RuntimeResolution,
+) -> tuple[MediaJobCreate, dict[str, Any] | None]:
+    profile = await voice_profile_for_inference(payload.input, auth)
+    if profile is None:
+        profile = await default_voice_profile_for_resolution(payload.input, auth, resolution)
+    enforce_voice_profile_matches_resolution(profile, resolution)
+    if profile is None or voice_profile_id_from_payload(payload.input):
+        return payload, profile
+    rewritten_input = dict(payload.input)
+    rewritten_input["voice_profile_id"] = profile["id"]
+    return (
+        MediaJobCreate(
+            modality=payload.modality,
+            operation=payload.operation,
+            model=payload.model,
+            input=rewritten_input,
+            priority=payload.priority,
+            runtime_policy=payload.runtime_policy,
+        ),
+        profile,
+    )
+
+
 def enforce_voice_profile_matches_resolution(profile: dict[str, Any] | None, resolution: RuntimeResolution) -> None:
     if profile is None:
         return
@@ -6204,7 +8149,29 @@ def public_model_record(row: dict[str, Any]) -> dict[str, Any]:
     public = dict(row)
     try:
         manifest = model_lifecycle.parse_uploaded_manifest(public["manifest"])
-        public["runtime_views"] = model_lifecycle.runtime_view_plan(manifest, data_root_path())
+        if manifest.runtimes in (["lan-localai-worker"], ["lan-deepseek-worker"]):
+            remote_runtime = manifest.runtimes[0]
+            runs = manifest.measurements.get("runs") if isinstance(manifest.measurements, dict) else []
+            attestation = next(
+                (
+                    run
+                    for run in reversed(runs if isinstance(runs, list) else [])
+                    if isinstance(run, dict) and run.get("type") == "worker-artifact-attestation" and run.get("status") == "ok"
+                ),
+                None,
+            )
+            hook = attestation.get("hook") if isinstance(attestation, dict) and isinstance(attestation.get("hook"), dict) else {}
+            public["runtime_views"] = []
+            public["remote_runtime"] = {
+                "runtime": remote_runtime,
+                "artifact_attested": attestation is not None,
+                "attested_at": attestation.get("completed_at") if isinstance(attestation, dict) else None,
+                "llama_commit": hook.get("llama_commit"),
+                "image_digest": hook.get("image_digest"),
+                "profiles_sha256": hook.get("profiles_sha256"),
+            }
+        else:
+            public["runtime_views"] = model_lifecycle.runtime_view_plan(manifest, data_root_path())
         public["runtime_smoke_summary"] = runtime_smoke_summary_for_manifest(manifest)
     except (CatalogError, ValueError, model_lifecycle.ModelLifecycleError) as exc:
         public["runtime_views_error"] = str(exc)
@@ -6504,6 +8471,7 @@ def public_model_alias_policy(row: dict[str, Any]) -> dict[str, Any]:
             "preferred_runtime": row.get("preferred_runtime"),
             "status": row.get("status"),
             "idle_timeout_seconds": row.get("idle_timeout_seconds"),
+            "reasoning_effort": row.get("reasoning_effort"),
             "visibility_roles": row.get("visibility_roles") or [],
             "notes": row.get("notes") or "",
             "updated_by": row.get("updated_by"),
@@ -6553,6 +8521,7 @@ def validate_model_alias_policy_payload(alias_id: str, payload: ModelAliasPolicy
         "preferred_runtime": preferred_runtime,
         "status": status,
         "idle_timeout_seconds": payload.idle_timeout_seconds,
+        "reasoning_effort": payload.reasoning_effort,
         "visibility_roles": [role.value for role in payload.visibility_roles],
         "notes": payload.notes.strip(),
     }
@@ -7336,6 +9305,171 @@ async def installed_model_alias_conflicts(manifest: Any) -> list[dict[str, str]]
         for alias in sorted(requested_aliases.intersection(str(item) for item in installed_aliases)):
             conflicts.append({"alias": alias, "installed_model_ref": installed_ref})
     return conflicts
+
+
+def require_lan_worker_only_manifest(manifest: Any) -> None:
+    supported_runtimes = {"lan-localai-worker", "lan-deepseek-worker"}
+    if len(manifest.runtimes) != 1 or manifest.runtimes[0] not in supported_runtimes or manifest.preferred_runtime != manifest.runtimes[0]:
+        raise HTTPException(status_code=422, detail="LAN worker adoption requires exactly one managed LAN worker runtime")
+    if manifest.modality != "llm" or not manifest.operations or any(canonical_operation(item, "llm") != "chat" for item in manifest.operations):
+        raise HTTPException(status_code=422, detail="LAN worker adoption currently supports LLM chat/response models only")
+    if set(manifest.execution_modes) != {"hosted-inference"}:
+        raise HTTPException(status_code=422, detail="LAN worker adoption requires hosted-inference as the only execution mode")
+    if not manifest.aliases:
+        raise HTTPException(status_code=422, detail="LAN worker adoption requires at least one dedicated model alias")
+    if not re.fullmatch(r"[0-9a-f]{40}", manifest.source.revision):
+        raise HTTPException(status_code=422, detail="LAN worker adoption requires a full immutable 40-character source revision")
+    allowed_file_counts = {1, 2} if manifest.preferred_runtime == "lan-localai-worker" else {4, 5}
+    if len(manifest.files) not in allowed_file_counts:
+        raise HTTPException(status_code=422, detail="LAN worker artifact count does not match the selected managed runtime")
+
+
+def lan_worker_manifest_identity(manifest: Any) -> dict[str, Any]:
+    payload = manifest.to_dict()
+    return {
+        key: payload.get(key)
+        for key in ("id", "version", "source", "files", "runtimes", "preferred_runtime")
+    }
+
+
+async def attest_lan_worker_manifest(manifest: Any) -> dict[str, Any]:
+    runtime = manifest.preferred_runtime
+    expected_backend = "laguna" if runtime == "lan-localai-worker" else "deepseek-v4"
+    adapter = runtime_registry_snapshot().adapter(runtime)
+    if adapter is None or not adapter.configured:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "LAN worker adapter is not configured", "reason": getattr(adapter, "configuration_error", None)},
+        )
+    payload = {
+        "runtime": runtime,
+        "model": f"{manifest.id}@{manifest.version}",
+        "resolved_model_version": f"{manifest.id}@{manifest.version}",
+        "modality": manifest.modality,
+        "operation": "attest",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0), **adapter.httpx_client_kwargs()) as client:
+            response = await client.post(adapter.url_for("/b1/runtime/attest"), headers=adapter.request_headers(), json=payload)
+    except (httpx.HTTPError, OSError, RuntimeResolutionError) as exc:
+        raise HTTPException(status_code=503, detail={"message": "LAN worker attestation failed", "reason": exc.__class__.__name__}) from exc
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="LAN worker attestation returned invalid JSON") from exc
+    if response.status_code >= 400 or not isinstance(result, dict) or result.get("status") != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "LAN worker rejected model attestation", "worker_status": response.status_code, "reason": result.get("reason") if isinstance(result, dict) else None},
+        )
+    if result.get("runtime") != runtime or result.get("backend") != expected_backend:
+        raise HTTPException(status_code=422, detail="LAN worker attestation did not identify the selected managed backend")
+    if result.get("model_id") != manifest.id or result.get("version") != manifest.version:
+        raise HTTPException(status_code=422, detail="LAN worker attestation model identity does not match the manifest")
+    expected = {file.path: (file.sha256.lower(), file.size_bytes) for file in manifest.files}
+    observed_files = result.get("files")
+    if not isinstance(observed_files, list) or len(observed_files) != len(expected):
+        raise HTTPException(status_code=422, detail="LAN worker attestation file count does not match the manifest")
+    observed: dict[str, tuple[str, int]] = {}
+    normalized_files: list[dict[str, Any]] = []
+    for item in observed_files:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="LAN worker attestation contains an invalid file entry")
+        path = item.get("path")
+        digest = item.get("sha256")
+        size = item.get("size_bytes")
+        if (
+            not isinstance(path, str)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size <= 0
+            or item.get("read_only") is not True
+            or path in observed
+        ):
+            raise HTTPException(status_code=422, detail="LAN worker attestation contains invalid or mutable artifact evidence")
+        observed[path] = (digest, size)
+        normalized_files.append(
+            {
+                "path": path,
+                "sha256": digest,
+                "size_bytes": size,
+                "role": item.get("role"),
+                "read_only": True,
+            }
+        )
+    if observed != expected:
+        raise HTTPException(status_code=422, detail="LAN worker artifact hashes or sizes do not match the manifest")
+    llama_commit = result.get("llama_commit")
+    image_digest = result.get("image_digest")
+    profiles_sha256 = result.get("profiles_sha256")
+    if not isinstance(llama_commit, str) or re.fullmatch(r"[0-9a-f]{40}", llama_commit) is None:
+        raise HTTPException(status_code=422, detail="LAN worker attestation is missing the pinned llama.cpp commit")
+    if not isinstance(image_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        raise HTTPException(status_code=422, detail="LAN worker attestation is missing the pinned image digest")
+    if not isinstance(profiles_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", profiles_sha256) is None:
+        raise HTTPException(status_code=422, detail="LAN worker attestation is missing the profile document hash")
+    return {
+        "status": "ok",
+        "runtime": runtime,
+        "backend": expected_backend,
+        "model_id": manifest.id,
+        "version": manifest.version,
+        "files": normalized_files,
+        "llama_commit": llama_commit,
+        "image_digest": image_digest,
+        "profiles_sha256": profiles_sha256,
+    }
+
+
+def manifest_with_lan_worker_attestation(manifest: Any, attestation: dict[str, Any]) -> Any:
+    payload = manifest.to_dict()
+    now = datetime.now(tz=UTC).isoformat()
+    measurements = dict(payload.get("measurements") or {})
+    runs = [
+        run
+        for run in measurements.get("runs") or []
+        if isinstance(run, dict) and run.get("type") != "worker-artifact-attestation"
+    ][-99:]
+    runs.append(
+        {
+            "id": f"lan-worker-attestation-{uuid.uuid4().hex}",
+            "type": "worker-artifact-attestation",
+            "status": "ok",
+            "runtime": manifest.preferred_runtime,
+            "model_alias": manifest.aliases[0],
+            "resolved_model_version": f"{manifest.id}@{manifest.version}",
+            "started_at": now,
+            "completed_at": now,
+            "peak_vram_mib": 0,
+            "hook": {
+                "status": "ok",
+                "reason": "authenticated_worker_artifact_attestation",
+                "llama_commit": attestation["llama_commit"],
+                "image_digest": attestation["image_digest"],
+                "profiles_sha256": attestation["profiles_sha256"],
+                "files": attestation["files"],
+            },
+        }
+    )
+    estimate = manifest.resource_estimate.to_dict()
+    measurements.update(
+        {
+            "schema": "b1-ai-hub-model-measurements/v1",
+            "updated_at": now,
+            "source": str(measurements.get("source") or "Authenticated B1 LAN worker artifact attestation."),
+            "original_resource_estimate": measurements.get("original_resource_estimate") or estimate,
+            "latest_resource_estimate": measurements.get("latest_resource_estimate") or estimate,
+            "runs": runs,
+        }
+    )
+    payload["measurements"] = measurements
+    payload["installation_status"] = "installed"
+    try:
+        return model_lifecycle.parse_uploaded_manifest(payload)
+    except (CatalogError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"attested LAN worker manifest is invalid: {exc}") from exc
 
 
 def runtime_views_include(runtime_views: list[dict[str, Any]], runtime: str) -> bool:
@@ -8430,6 +10564,42 @@ async def admin_api_client_default_b1_tools_update(
     return public_api_client(row)
 
 
+@app.put("/admin/api-clients/{client_id}/role")
+async def admin_api_client_role_update(
+    client_id: str,
+    payload: ApiClientRoleUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Change a client role without rotating or exposing its credential."""
+    auth = await authenticate(authorization)
+    require_scope(auth, "admin:write")
+    require_credential_admin(auth)
+    try:
+        scopes = scopes_for_role(payload.role, payload.scopes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    row = await database.update_api_client_role_and_scopes(client_id, payload.role.value, sorted(scopes))
+    if row is None:
+        raise HTTPException(status_code=404, detail="API client not found")
+    if row.get("revoked_at") is not None:
+        raise HTTPException(status_code=409, detail="revoked API clients cannot be modified")
+    log_event("api_client_role_updated", client_id=client_id, role=payload.role.value, scope_count=len(scopes))
+    await record_audit_event(
+        auth,
+        "api_client.role_updated",
+        target_type="api_client",
+        target_id=client_id,
+        summary=f"Updated API client role for {row['display_name']}",
+        metadata={
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "scopes": sorted(scopes),
+            "key_prefix": row["key_prefix"],
+        },
+    )
+    return public_api_client(row)
+
+
 @app.delete("/admin/api-clients/{client_id}")
 async def admin_api_client_revoke(client_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -8837,7 +11007,7 @@ async def current_runtime_state(runtime: str) -> dict[str, Any] | None:
 def compact_runtime_action_result(result: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {"status": "unconfirmed"}
-    allowed_keys = {"status", "reason", "action", "strategy", "runtime_action", "service", "runtime", "message", "error", "code"}
+    allowed_keys = {"status", "reason", "action", "strategy", "runtime_action", "service", "runtime", "message", "error", "code", "memory_used_mib", "reserve_mib"}
     return {key: value for key, value in result.items() if key in allowed_keys}
 
 
@@ -8848,6 +11018,12 @@ def runtime_action_status(result: dict[str, Any] | None) -> str:
 async def admin_graceful_runtime_unload(runtime: str) -> dict[str, Any] | None:
     state = await current_runtime_state(runtime)
     if not state or not (state.get("active_model") or state.get("resolved_model_version")):
+        if runtime in {"lan-localai-worker", "lan-deepseek-worker"}:
+            return await runtime_control_runner().post_runtime_control(
+                runtime,
+                "unload",
+                {"job_id": f"admin-unload-{runtime}", "runtime": runtime, "operation": "unload"},
+            )
         return {"status": "unconfirmed", "runtime": runtime, "action": "unload", "reason": "runtime_state_model_missing"}
     runner = runtime_control_runner()
     try:
@@ -8863,11 +11039,15 @@ async def admin_graceful_runtime_unload(runtime: str) -> dict[str, Any] | None:
 async def record_confirmed_runtime_unload(runtime: str, result: dict[str, Any] | None, auth: AuthContext, reason: str) -> None:
     if runtime_action_status(result) != "ok":
         return
+    runner = runtime_control_runner()
+    released, verification = await runner.unload_vram_release_check(runtime)
+    status = "unload_ok" if released else "unload_failed"
+    stage = "idle_unloaded" if released else "unload_vram_unverified"
     await database.upsert_runtime_state(
         {
             "runtime": runtime,
-            "status": "unload_ok",
-            "stage": "idle_unloaded",
+            "status": status,
+            "stage": stage,
             "active_model": None,
             "model_alias": None,
             "resolved_model_version": None,
@@ -8877,6 +11057,7 @@ async def record_confirmed_runtime_unload(runtime: str, result: dict[str, Any] |
                 "requested_by": auth.subject_id,
                 **freeform_reason_metadata(reason),
                 "hook": compact_runtime_action_result(result),
+                "vram_verification": verification,
             },
         }
     )
@@ -8900,6 +11081,16 @@ async def admin_runtime_action(
         graceful_result = await admin_graceful_runtime_unload(runtime)
     if action == "unload" and runtime_action_status(graceful_result) == "ok":
         agent_result, agent_error = graceful_result, None
+    elif runtime in {"lan-localai-worker", "lan-deepseek-worker"}:
+        state = await current_runtime_state(runtime) or {}
+        control_payload = runtime_control_runner().runtime_unload_payload(
+            runtime,
+            {"id": state.get("job_id") or f"admin-{action}-{runtime}", "runtime": runtime},
+            state,
+        )
+        control_payload["operation"] = action
+        agent_result = await runtime_control_runner().post_runtime_control(runtime, action, control_payload)
+        agent_error = None
     else:
         agent_result, agent_error = await runtime_agent_post(
             f"/v1/runtime-actions/{runtime}/{action}",
@@ -8935,6 +11126,11 @@ async def admin_runtime_action(
 @app.post("/admin/runtimes/{runtime}/recover")
 async def admin_runtime_recover(runtime: str, payload: RuntimeActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     return await admin_runtime_action(runtime, "recover", payload, authorization)
+
+
+@app.post("/admin/runtimes/{runtime}/cancel")
+async def admin_runtime_cancel(runtime: str, payload: RuntimeActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    return await admin_runtime_action(runtime, "cancel", payload, authorization)
 
 
 @app.post("/admin/runtimes/{runtime}/unload")
@@ -9253,6 +11449,7 @@ SELF_TEST_PUBLIC_HOST_KEYS = ("chat", "control", "media", "comfy", "voice", "mod
 ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD = b"b1 artifact delivery self-test\n"
 CADDY_CA_DOWNLOAD_FILENAME = "b1-ai-hub-caddy-root.crt"
 CADDY_CA_MAX_BYTES = 1024 * 1024
+CADDY_CA_BOOTSTRAP_DOWNLOAD_PATH = "/.well-known/b1-ai-hub/caddy-root.crt"
 
 
 def normalized_public_host(value: str) -> str:
@@ -9320,6 +11517,7 @@ def caddy_internal_ca_status_payload() -> dict[str, Any]:
         "tls_mode": caddy_tls_mode(),
         "required": caddy_internal_ca_required(),
         "download_url": None,
+        "bootstrap_download_url": None,
         "available": False,
         "readable": False,
         "regular_file": False,
@@ -9381,6 +11579,7 @@ def caddy_internal_ca_status_payload() -> dict[str, Any]:
                     "sha256": digest,
                     "fingerprint_sha256": ":".join(digest[index : index + 2].upper() for index in range(0, len(digest), 2)),
                     "download_url": "/admin/tls/caddy-ca/root.crt",
+                    "bootstrap_download_url": CADDY_CA_BOOTSTRAP_DOWNLOAD_PATH,
                 }
             )
     if blockers:
@@ -10458,6 +12657,36 @@ async def admin_caddy_internal_ca_root(authorization: str | None = Header(defaul
     )
 
 
+@app.get(
+    CADDY_CA_BOOTSTRAP_DOWNLOAD_PATH,
+    response_class=Response,
+    include_in_schema=False,
+)
+async def caddy_internal_ca_bootstrap_download() -> Response:
+    """Expose only the public LAN CA for first-time client trust bootstrapping."""
+    status = await asyncio.to_thread(caddy_internal_ca_status_payload)
+    if not status.get("available"):
+        raise HTTPException(status_code=404, detail="Caddy internal CA root certificate is not available")
+    path = caddy_internal_ca_path()
+    try:
+        content = await asyncio.to_thread(read_regular_file_no_symlink, path, max_bytes=CADDY_CA_MAX_BYTES)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"Caddy internal CA root certificate cannot be read: {exc.__class__.__name__}") from exc
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != status.get("sha256"):
+        raise HTTPException(status_code=409, detail="Caddy internal CA root certificate changed during export; retry the download")
+    return Response(
+        content=content,
+        media_type="application/x-x509-ca-cert",
+        headers={
+            "Content-Disposition": f'attachment; filename="{CADDY_CA_DOWNLOAD_FILENAME}"',
+            "ETag": f'"sha256:{digest}"',
+            "Cache-Control": "public, no-store",
+            "X-B1-SHA256": digest,
+        },
+    )
+
+
 @app.get("/admin/acceptance-reports")
 async def admin_acceptance_reports(
     authorization: str | None = Header(default=None),
@@ -11100,6 +13329,47 @@ async def admin_job_get(job_id: str, authorization: str | None = Header(default=
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return public_job(job)
+
+
+@app.post("/admin/jobs/{job_id}/approve-seated-character")
+async def admin_approve_seated_character(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Record the mandatory visual acceptance of a generated seated plate."""
+    auth = await authenticate(authorization)
+    require_scope(auth, "jobs:write")
+    require_queue_admin(auth)
+    job = await database.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.get("operation") != "studio-seated-character" or job.get("state") != JobState.COMPLETED.value:
+        raise HTTPException(status_code=409, detail={"code": "seated_character_review_unavailable", "message": "only completed studio-seated-character jobs can be visually approved"})
+    artifacts = [dict(item) for item in job.get("artifacts") or [] if isinstance(item, dict)]
+    approved = False
+    for artifact in artifacts:
+        seated = artifact.get("seated_character")
+        if not isinstance(seated, dict):
+            continue
+        quality = seated.get("quality_control")
+        if not isinstance(quality, dict) or quality.get("status") not in {"review_required", "passed"}:
+            continue
+        quality = dict(quality)
+        quality.update({"status": "passed", "seated_pose_detected": True, "visual_reviewed": True, "reviewed_by": auth.subject_id, "reviewed_at": datetime.now(tz=UTC).isoformat()})
+        seated = dict(seated)
+        seated["quality_control"] = quality
+        artifact["seated_character"] = seated
+        approved = True
+    if not approved:
+        raise HTTPException(status_code=409, detail={"code": "seated_character_review_unavailable", "message": "job has no reviewable seated-character artifact"})
+    updated = await database.update_job(job_id, artifacts=artifacts)
+    await record_audit_event(
+        auth,
+        "studio_seated_character.approved",
+        target_type="job",
+        target_id=job_id,
+        summary=f"Visually approved seated character plate {job_id}",
+        metadata={"operation": "studio-seated-character", "artifact_count": len(artifacts)},
+        correlation_id=job.get("correlation_id"),
+    )
+    return public_job(updated or job)
 
 
 @app.get(
@@ -11836,6 +14106,380 @@ async def workflow_unpublish(workflow_id: str, version: str, authorization: str 
     return public_workflow(row)
 
 
+async def seed_builtin_benchmarks() -> None:
+    for definition in benchmarking.DEFAULT_SUITES:
+        validated = benchmarking.validate_suite(definition)
+        await database.upsert_benchmark_suite({"id": validated["id"], "version": validated["version"], "display_name": validated["display_name"], "modality": validated["modality"], "status": "published", "definition": validated, "content_sha256": benchmarking.content_sha256(validated), "published_at": datetime.now(tz=UTC)})
+    for definition in benchmarking.DEFAULT_PROFILES:
+        validated = benchmarking.validate_profile(definition)
+        await database.upsert_benchmark_profile({"id": validated["id"], "version": validated["version"], "display_name": validated["display_name"], "definition": validated, "content_sha256": benchmarking.content_sha256(validated)})
+
+
+async def enforce_benchmark_retention() -> int:
+    campaigns = await database.purge_expired_benchmark_outputs()
+    raw_root = (Path(settings.artifact_root) / "benchmarks" / "raw").resolve(); removed = 0
+    for path in benchmarking.expired_raw_paths(campaigns):
+        resolved = path.resolve()
+        if raw_root in resolved.parents and resolved.is_dir() and not resolved.is_symlink():
+            shutil.rmtree(resolved); removed += 1
+    return removed
+
+
+async def benchmark_retention_loop() -> None:
+    while True:
+        try: await enforce_benchmark_retention()
+        except Exception as exc: LOG.warning("benchmark retention failed: %s", type(exc).__name__)
+        await asyncio.sleep(21600)
+
+
+async def external_benchmark_judgement(campaign: dict[str, Any], prompt: str, answer: str) -> dict[str, Any]:
+    snapshot = campaign.get("judge_snapshot") or {}; models = list(snapshot.get("top_models") or [])
+    if snapshot.get("codex_model"): models.append(str(snapshot["codex_model"]))
+    if not models: return {"scores": [], "usage": [], "average": None}
+    policy = await database.get_benchmark_judge_policy() or {}; secret_name = str(policy.get("secret_name") or "")
+    secret_row = await database.get_encrypted_secret(secret_name) if secret_name else None
+    if secret_row is None: return {"scores": [], "usage": [], "average": None, "error": "judge secret unavailable"}
+    try: api_key = secret_store.decrypt_value(require_master_encryption_key(), secret_name, secret_row.get("secret_envelope") or {})
+    except (HTTPException, secret_store.SecretStoreError): return {"scores": [], "usage": [], "average": None, "error": "judge secret unavailable"}
+    scores: list[dict[str, Any]] = []; usage: list[dict[str, Any]] = []
+    instruction = "Evaluate the candidate response. Return only JSON with numeric 0-100 fields quality and instruction, plus a short evidence string."
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for model in models:
+            try:
+                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://control.ai.b1.germering", "X-Title": "B1 Benchmark Lab"}, json={"model": model, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps({"prompt": prompt, "candidate_answer": answer}, ensure_ascii=False)}], "response_format": {"type": "json_object"}, "temperature": 0})
+                response.raise_for_status(); body = response.json(); content = body["choices"][0]["message"]["content"]
+                parsed = json.loads(content) if isinstance(content, str) else content
+                quality = benchmarking.normalized_score(parsed.get("quality")); instruction_score = benchmarking.normalized_score(parsed.get("instruction"))
+                if quality is not None and instruction_score is not None: scores.append({"model": model, "quality": quality, "instruction": instruction_score, "evidence": str(parsed.get("evidence") or "")[:500]})
+                usage.append({"model": model, **(body.get("usage") or {})})
+            except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                scores.append({"model": model, "error": type(exc).__name__})
+    valid = [item for item in scores if "quality" in item]
+    average = {"quality": sum(item["quality"] for item in valid) / len(valid), "instruction": sum(item["instruction"] for item in valid) / len(valid)} if valid else None
+    return {"scores": scores, "usage": usage, "average": average}
+
+
+async def run_text_benchmark_campaign(campaign_id: str) -> None:
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: return
+    suite = await database.get_benchmark_suite(campaign["suite_id"], campaign["suite_version"])
+    cases = (suite or {}).get("definition", {}).get("cases", []); total = max(1, len(cases) * len(campaign.get("candidates") or [])); completed = 0
+    internal_auth = AuthContext(subject_id=f"benchmark:{campaign_id}", role=Role.ADMIN, scopes=frozenset({"*"}))
+    try:
+        for candidate in campaign.get("candidates") or []:
+            candidate_ref = str(candidate.get("ref") or "")
+            for case in cases:
+                result_payload: dict[str, Any] = {"id": f"bres_{uuid.uuid4().hex}", "campaign_id": campaign_id, "candidate_ref": candidate_ref, "case_id": str(case.get("id") or "case")}
+                started = monotonic()
+                try:
+                    resolution = resolve_catalog_alias_for_modalities_auth(candidate_ref, {"llm", "vlm"}, internal_auth, str(candidate.get("runtime_policy") or "any"), operation="chat")
+                    runtime_payload = {"model": candidate_ref, "messages": [{"role": "user", "content": str(case.get("prompt") or "")}], "stream": False, "temperature": 0}
+                    response = await call_openai_runtime_json("/v1/chat/completions", runtime_payload, resolution, "benchmark-chat", owner_id=f"benchmark:{campaign_id}")
+                    if response is None or response.status_code >= 400: raise RuntimeError("runtime did not return a successful benchmark response")
+                    body = json_response_body(response); answer = str(body.get("choices", [{}])[0].get("message", {}).get("content") or "")
+                    latency = monotonic() - started; judgement = await external_benchmark_judgement(campaign, str(case.get("prompt") or ""), answer)
+                    judge_average = judgement.get("average") or {}; nonempty = min(100.0, 40.0 + len(answer.strip()) / 10.0) if answer.strip() else 0.0
+                    metrics = {"quality": judge_average.get("quality", nonempty), "instruction": judge_average.get("instruction", nonempty), "latency": max(0.0, 100.0 - latency * 2.0), "reliability": 100.0, "cost": 50.0}
+                    result_payload.update({"status": "completed", "output": {"answer": answer, "runtime": resolution.runtime, "resolved_model_version": resolution.resolved_model_version, "judge": judgement}, "metrics": metrics})
+                except Exception as exc:
+                    result_payload.update({"status": "failed", "output": {}, "metrics": {"reliability": 0.0}, "error_message": f"{type(exc).__name__}: {str(exc)[:500]}"})
+                await database.insert_benchmark_result(result_payload); completed += 1
+                await database.update_benchmark_campaign(campaign_id, stage="running-cases", progress=min(90, 5 + int(85 * completed / total)))
+        campaign = await database.get_benchmark_campaign(campaign_id) or campaign; ranking = await benchmark_ranking(campaign)
+        await database.update_benchmark_campaign(campaign_id, status="review", stage="human-review", progress=90, summary={"ranking": ranking, "result_count": completed, "expected_results": total, "cost": await benchmark_cost_summary(campaign_id)})
+    except Exception as exc:
+        await database.update_benchmark_campaign(campaign_id, status="failed", stage="failed", failure_message=f"{type(exc).__name__}: {str(exc)[:500]}")
+    finally:
+        await database.release_benchmark_device_locks(campaign_id)
+
+
+async def run_media_benchmark_campaign(campaign_id: str) -> None:
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: return
+    suite = await database.get_benchmark_suite(campaign["suite_id"], campaign["suite_version"]); definition = (suite or {}).get("definition") or {}
+    modality = str(definition.get("modality") or (suite or {}).get("modality") or "image"); cases = definition.get("cases") or []
+    total = max(1, len(cases) * len(campaign.get("candidates") or [])); completed = 0
+    default_operation = "text-to-image" if modality == "image" else "text-to-video"
+    if campaign["suite_id"] == "talking-head": default_operation = "talking-head-lipsync"
+    try:
+        if not settings.admin_bootstrap_key: raise RuntimeError("admin bootstrap key is required for the internal benchmark runner")
+        headers = {"Authorization": f"Bearer {settings.admin_bootstrap_key}", "X-B1-Benchmark-Campaign": campaign_id}
+        async with httpx.AsyncClient(base_url="http://127.0.0.1:8000", headers=headers, timeout=60.0) as client:
+            for candidate in campaign.get("candidates") or []:
+                candidate_ref = str(candidate.get("ref") or "")
+                for case in cases:
+                    result_payload: dict[str, Any] = {"id": f"bres_{uuid.uuid4().hex}", "campaign_id": campaign_id, "candidate_ref": candidate_ref, "case_id": str(case.get("id") or "case")}
+                    started = monotonic()
+                    try:
+                        media_input = dict(case.get("input") or {}); media_input.setdefault("prompt", str(case.get("prompt") or ""))
+                        request_body = {"modality": str(candidate.get("modality") or modality), "operation": str(candidate.get("operation") or default_operation), "model": candidate_ref, "input": media_input, "priority": str(candidate.get("priority") or ("single_image" if modality == "image" else "batch_video")), "runtime_policy": str(candidate.get("runtime_policy") or "any")}
+                        response = await client.post("/v1/media/jobs", json=request_body); response.raise_for_status(); job_id = response.json()["id"]
+                        timeout_seconds = max(30, min(int(candidate.get("timeout_seconds") or 3600), 14400)); deadline = monotonic() + timeout_seconds
+                        job: dict[str, Any] = {}
+                        while monotonic() < deadline:
+                            current = await database.get_benchmark_campaign(campaign_id)
+                            if current and current.get("status") == "cancelled": raise RuntimeError("campaign cancelled")
+                            job = await database.get_job(job_id) or {}
+                            if job.get("state") in TERMINAL_JOB_STATES: break
+                            await asyncio.sleep(2)
+                        if job.get("state") != JobState.COMPLETED.value: raise RuntimeError(job.get("failure_message") or f"media job ended in {job.get('state') or 'timeout'}")
+                        latency = monotonic() - started
+                        result_payload.update({"status": "completed", "job_id": job_id, "output": {"artifacts": job.get("artifacts") or [], "runtime": job.get("runtime"), "resolved_model_version": job.get("resolved_model_version")}, "metrics": {"latency": max(0.0, 100.0 - latency / 10.0), "reliability": 100.0}})
+                    except Exception as exc:
+                        result_payload.update({"status": "failed", "output": {}, "metrics": {"reliability": 0.0}, "error_message": f"{type(exc).__name__}: {str(exc)[:500]}"})
+                    await database.insert_benchmark_result(result_payload); completed += 1
+                    await database.update_benchmark_campaign(campaign_id, stage="running-media-cases", progress=min(90, 5 + int(85 * completed / total)))
+        campaign = await database.get_benchmark_campaign(campaign_id) or campaign; ranking = await benchmark_ranking(campaign)
+        await database.update_benchmark_campaign(campaign_id, status="review", stage="human-review", progress=90, summary={"ranking": ranking, "result_count": completed, "expected_results": total, "cost": await benchmark_cost_summary(campaign_id)})
+    except Exception as exc:
+        await database.update_benchmark_campaign(campaign_id, status="failed", stage="failed", failure_message=f"{type(exc).__name__}: {str(exc)[:500]}")
+    finally:
+        await database.release_benchmark_device_locks(campaign_id)
+
+
+def public_benchmark_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return jsonable_encoder(rows)
+
+
+async def benchmark_ranking(campaign: dict[str, Any], *, final: bool = False) -> list[dict[str, Any]]:
+    profile_row = await database.get_benchmark_profile(campaign["profile_id"], campaign["profile_version"])
+    if profile_row is None: raise HTTPException(status_code=409, detail="campaign benchmark profile no longer exists")
+    results = await database.list_benchmark_results(campaign["id"])
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        if result.get("status") == "completed": grouped.setdefault(result["candidate_ref"], []).append({"metrics": result.get("metrics") or {}})
+    ranking = benchmarking.build_ranking(grouped, profile_row["definition"], final=final)
+    if final:
+        reviews = await database.list_benchmark_reviews(campaign["id"])
+        result_candidates = {row["id"]: row["candidate_ref"] for row in results}
+        wins = {candidate: 0.0 for candidate in grouped}; comparisons = {candidate: 0 for candidate in grouped}
+        for review in reviews:
+            a = result_candidates.get(review.get("result_a_id")); b = result_candidates.get(review.get("result_b_id"))
+            if not a or not b: continue
+            comparisons[a] += 1; comparisons[b] += 1
+            if review.get("winner") == "a": wins[a] += 1
+            elif review.get("winner") == "b": wins[b] += 1
+            elif review.get("winner") == "tie": wins[a] += .5; wins[b] += .5
+        for row in ranking:
+            count = comparisons.get(row["candidate"], 0)
+            row["human_review_count"] = count
+            if count:
+                preference = wins[row["candidate"]] / count * 100
+                row["human_preference"] = round(preference, 3)
+                row["score"] = round(row["score"] * .9 + preference * .1, 3)
+        ranking.sort(key=lambda item: (-item["score"], item["candidate"]))
+        for index, row in enumerate(ranking, 1): row["rank"] = index
+    return ranking
+
+
+async def benchmark_cost_summary(campaign_id: str) -> dict[str, Any]:
+    totals: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}
+    priced = False
+    for result in await database.list_benchmark_results(campaign_id):
+        for usage in (((result.get("output") or {}).get("judge") or {}).get("usage") or []):
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                try: totals[key] += int(usage.get(key) or 0)
+                except (TypeError, ValueError): pass
+            try:
+                if usage.get("cost") is not None: totals["cost_usd"] += float(usage["cost"]); priced = True
+            except (TypeError, ValueError): pass
+    totals["cost_usd"] = round(totals["cost_usd"], 6) if priced else None
+    totals["enforced_limit"] = False
+    return totals
+
+
+@app.get("/admin/benchmarks")
+async def admin_benchmarks_overview(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reader(auth)
+    campaigns = await database.list_benchmark_campaigns()
+    return {"suites": public_benchmark_rows(await database.list_benchmark_suites()), "profiles": public_benchmark_rows(await database.list_benchmark_profiles()), "campaigns": public_benchmark_rows(campaigns), "retention_days": benchmarking.RAW_OUTPUT_RETENTION_DAYS}
+
+
+@app.post("/admin/benchmarks/suites")
+async def admin_benchmark_suite_create(payload: BenchmarkSuiteRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    try: definition = benchmarking.validate_suite(payload.definition)
+    except ValueError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+    row = await database.upsert_benchmark_suite({"id": definition["id"], "version": definition["version"], "display_name": definition["display_name"], "modality": definition["modality"], "definition": definition, "content_sha256": benchmarking.content_sha256(definition), "created_by": auth.subject_id})
+    return jsonable_encoder(row)
+
+
+@app.post("/admin/benchmarks/suites/{suite_id}/versions/{version}/publish")
+async def admin_benchmark_suite_publish(suite_id: str, version: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    row = await database.publish_benchmark_suite(suite_id, version)
+    if row is None: raise HTTPException(status_code=404, detail="benchmark suite not found")
+    return jsonable_encoder(row)
+
+
+async def validate_benchmark_campaign(payload: BenchmarkCampaignCreate) -> tuple[dict[str, Any], dict[str, Any]]:
+    suite = await database.get_benchmark_suite(payload.suite_id, payload.suite_version)
+    profile = await database.get_benchmark_profile(payload.profile_id, payload.profile_version)
+    if suite is None or suite.get("status") != "published": raise HTTPException(status_code=422, detail="published benchmark suite not found")
+    if profile is None or profile.get("status") != "published": raise HTTPException(status_code=422, detail="published benchmark profile not found")
+    refs = [str(item.get("ref") or "") for item in payload.candidates]
+    if any(not ref for ref in refs) or len(refs) != len(set(refs)): raise HTTPException(status_code=422, detail="candidate refs must be non-empty and unique")
+    return suite, profile
+
+
+@app.post("/admin/benchmarks/campaigns/preview")
+async def admin_benchmark_campaign_preview(payload: BenchmarkCampaignCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    suite, _ = await validate_benchmark_campaign(payload)
+    case_count = len((suite.get("definition") or {}).get("cases") or [])
+    return {"valid": True, "runs": case_count * len(payload.candidates), "cases": case_count, "candidates": len(payload.candidates), "device_groups": sorted(set(payload.device_groups)), "external_judging": bool((await database.get_benchmark_judge_policy() or {}).get("top_models")), "cost_limit_enforced": False}
+
+
+@app.get("/admin/benchmarks/campaigns")
+async def admin_benchmark_campaigns(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reader(auth)
+    return {"object": "list", "data": public_benchmark_rows(await database.list_benchmark_campaigns())}
+
+
+@app.post("/admin/benchmarks/campaigns")
+async def admin_benchmark_campaign_create(payload: BenchmarkCampaignCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth); await validate_benchmark_campaign(payload)
+    policy = await database.get_benchmark_judge_policy() or {}
+    row = await database.insert_benchmark_campaign({"id": f"bench_{uuid.uuid4().hex}", "owner_id": auth.subject_id, "suite_id": payload.suite_id, "suite_version": payload.suite_version, "profile_id": payload.profile_id, "profile_version": payload.profile_version, "candidates": payload.candidates, "device_groups": sorted(set(payload.device_groups)), "judge_snapshot": {key: policy.get(key) for key in ("top_models", "codex_model", "overrides", "catalog_snapshot")}, "raw_expires_at": benchmarking.raw_expires_at()})
+    return jsonable_encoder(row)
+
+
+@app.post("/admin/benchmarks/campaigns/{campaign_id}/start")
+async def admin_benchmark_campaign_start(campaign_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: raise HTTPException(status_code=404, detail="benchmark campaign not found")
+    if campaign.get("status") not in {"draft", "queued"}: raise HTTPException(status_code=409, detail="campaign cannot be started from its current state")
+    try: await database.acquire_benchmark_device_locks(campaign_id, auth.subject_id, campaign.get("device_groups") or [], datetime.now(tz=UTC) + timedelta(hours=8))
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    suite = await database.get_benchmark_suite(campaign["suite_id"], campaign["suite_version"])
+    suite_modality = (suite or {}).get("modality")
+    automatic = suite_modality in {"text", "image", "video"}
+    row = await database.update_benchmark_campaign(campaign_id, status="running", stage="starting-local-runs" if automatic else "awaiting-media-results", progress=5, started_at=datetime.now(tz=UTC))
+    if automatic:
+        runner = run_text_benchmark_campaign(campaign_id) if suite_modality == "text" else run_media_benchmark_campaign(campaign_id)
+        job_runner_tasks.append(asyncio.create_task(runner, name=f"b1-benchmark-{campaign_id}"))
+    return jsonable_encoder(row)
+
+
+@app.post("/admin/benchmarks/campaigns/{campaign_id}/results")
+async def admin_benchmark_result_add(campaign_id: str, payload: BenchmarkResultCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: raise HTTPException(status_code=404, detail="benchmark campaign not found")
+    allowed = {str(item.get("ref")) for item in campaign.get("candidates") or []}
+    suite = await database.get_benchmark_suite(campaign["suite_id"], campaign["suite_version"])
+    cases = {str(item.get("id")) for item in (suite or {}).get("definition", {}).get("cases", [])}
+    if payload.candidate_ref not in allowed or payload.case_id not in cases: raise HTTPException(status_code=422, detail="candidate or case is not part of this campaign")
+    row = await database.insert_benchmark_result({"id": f"bres_{uuid.uuid4().hex}", "campaign_id": campaign_id, **payload.model_dump()})
+    ranking = await benchmark_ranking(campaign)
+    expected = max(1, len(allowed) * len(cases)); count = len(await database.list_benchmark_results(campaign_id)); progress = min(90, 5 + int(85 * count / expected))
+    status, stage = ("review", "human-review") if count >= expected else ("running", "awaiting-results")
+    await database.update_benchmark_campaign(campaign_id, status=status, stage=stage, progress=progress, summary={"ranking": ranking, "result_count": count, "expected_results": expected, "cost": await benchmark_cost_summary(campaign_id)})
+    return {"result": jsonable_encoder(row), "ranking": ranking, "progress": progress}
+
+
+@app.get("/admin/benchmarks/campaigns/{campaign_id}")
+async def admin_benchmark_campaign_get(campaign_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reader(auth)
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: raise HTTPException(status_code=404, detail="benchmark campaign not found")
+    return {"campaign": jsonable_encoder(campaign), "results": public_benchmark_rows(await database.list_benchmark_results(campaign_id)), "ranking": await benchmark_ranking(campaign, final=campaign.get("status") == "completed"), "reviews": public_benchmark_rows(await database.list_benchmark_reviews(campaign_id)), "reports": public_benchmark_rows(await database.list_benchmark_reports(campaign_id))}
+
+
+@app.get("/admin/benchmarks/campaigns/{campaign_id}/review-queue")
+async def admin_benchmark_review_queue(campaign_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reviewer(auth)
+    results = [row for row in await database.list_benchmark_results(campaign_id) if row.get("status") == "completed"]
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for row in results: by_case.setdefault(row["case_id"], []).append(row)
+    pairs: list[dict[str, Any]] = []
+    for case_id, rows in by_case.items():
+        rows = sorted(rows, key=lambda row: hashlib.sha256(f"{auth.subject_id}:{row['id']}".encode()).hexdigest())
+        for index in range(0, len(rows) - 1, 2):
+            a, b = rows[index], rows[index + 1]; token = hashlib.sha256(f"{campaign_id}:{auth.subject_id}:{a['id']}:{b['id']}".encode()).hexdigest()[:32]
+            pairs.append({"blind_token": token, "case_id": case_id, "result_a_id": a["id"], "result_b_id": b["id"], "a": a.get("output") or {}, "b": b.get("output") or {}})
+    completed = {row.get("blind_token") for row in await database.list_benchmark_reviews(campaign_id) if row.get("reviewer_id") == auth.subject_id}
+    return {"object": "list", "data": [pair for pair in pairs if pair["blind_token"] not in completed]}
+
+
+@app.post("/admin/benchmarks/campaigns/{campaign_id}/reviews")
+async def admin_benchmark_review_create(campaign_id: str, payload: BenchmarkReviewCreate, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reviewer(auth)
+    result_ids = {row["id"] for row in await database.list_benchmark_results(campaign_id)}
+    if payload.result_a_id not in result_ids or payload.result_b_id not in result_ids: raise HTTPException(status_code=422, detail="review results do not belong to this campaign")
+    try: row = await database.insert_benchmark_review({"id": f"brev_{uuid.uuid4().hex}", "campaign_id": campaign_id, "reviewer_id": auth.subject_id, **payload.model_dump()})
+    except IntegrityError as exc: raise HTTPException(status_code=409, detail="this blinded comparison was already reviewed") from exc
+    return jsonable_encoder(row)
+
+
+@app.post("/admin/benchmarks/campaigns/{campaign_id}/finalize")
+async def admin_benchmark_campaign_finalize(campaign_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: raise HTTPException(status_code=404, detail="benchmark campaign not found")
+    ranking = await benchmark_ranking(campaign, final=True); report_id = f"brep_{uuid.uuid4().hex}"
+    report = {"id": report_id, "title": f"Benchmark {campaign_id}", "campaign": jsonable_encoder(campaign), "ranking": ranking, "generated_at": now_iso()}
+    files = benchmarking.write_report_bundle(Path(settings.artifact_root) / "benchmarks" / "reports", report_id, report)
+    report_row = await database.insert_benchmark_report({"id": report_id, "campaign_id": campaign_id, "status": "final", "summary": {"ranking": ranking}, "files": files, "created_by": auth.subject_id})
+    await database.update_benchmark_campaign(campaign_id, status="completed", stage="completed", progress=100, completed_at=datetime.now(tz=UTC), summary={**(campaign.get("summary") or {}), "ranking": ranking, "report_id": report_id, "cost": await benchmark_cost_summary(campaign_id)})
+    await database.release_benchmark_device_locks(campaign_id)
+    return jsonable_encoder(report_row)
+
+
+@app.post("/admin/benchmarks/campaigns/{campaign_id}/cancel")
+async def admin_benchmark_campaign_cancel(campaign_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_writer(auth)
+    campaign = await database.get_benchmark_campaign(campaign_id)
+    if campaign is None: raise HTTPException(status_code=404, detail="benchmark campaign not found")
+    await database.release_benchmark_device_locks(campaign_id)
+    return jsonable_encoder(await database.update_benchmark_campaign(campaign_id, status="cancelled", stage="cancelled", completed_at=datetime.now(tz=UTC)))
+
+
+@app.get("/admin/benchmarks/reports/{report_id}/files/{file_name}")
+async def admin_benchmark_report_file(report_id: str, file_name: Literal["report.json", "report.md", "ranking.csv", "report.html", "report.pdf", "SHA256SUMS"], authorization: str | None = Header(default=None)) -> Response:
+    auth = await authenticate(authorization); require_benchmark_reader(auth)
+    report = await database.get_benchmark_report(report_id)
+    if report is None: raise HTTPException(status_code=404, detail="benchmark report not found")
+    raw_path = (report.get("files") or {}).get(file_name)
+    if not isinstance(raw_path, str): raise HTTPException(status_code=404, detail="benchmark report file not found")
+    root = (Path(settings.artifact_root) / "benchmarks" / "reports").resolve(); path = Path(raw_path).resolve()
+    if root not in path.parents or not path.is_file() or path.is_symlink(): raise HTTPException(status_code=404, detail="benchmark report file not found")
+    return FileResponse(path, filename=f"{report_id}-{file_name}")
+
+
+@app.get("/admin/benchmarks/judges/policy")
+async def admin_benchmark_judge_policy(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_benchmark_reader(auth)
+    return jsonable_encoder(await database.get_benchmark_judge_policy() or {"id": "default", "top_models": [], "codex_model": None, "overrides": {}})
+
+
+@app.put("/admin/benchmarks/judges/policy")
+async def admin_benchmark_judge_policy_update(payload: BenchmarkJudgePolicyRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_administrator(auth, "benchmark judge configuration requires administrator role")
+    return jsonable_encoder(await database.upsert_benchmark_judge_policy({**payload.model_dump(), "updated_by": auth.subject_id}))
+
+
+@app.post("/admin/benchmarks/judges/refresh")
+async def admin_benchmark_judges_refresh(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    auth = await authenticate(authorization); require_administrator(auth, "benchmark judge configuration requires administrator role")
+    policy = await database.get_benchmark_judge_policy() or {}
+    secret_name = str(policy.get("secret_name") or "")
+    secret_row = await database.get_encrypted_secret(secret_name) if secret_name else None
+    if secret_row is None: raise HTTPException(status_code=409, detail="configure an encrypted OpenRouter secret first")
+    try: api_key = secret_store.decrypt_value(require_master_encryption_key(), secret_name, secret_row.get("secret_envelope") or {})
+    except secret_store.SecretStoreError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        account_response, public_response = await asyncio.gather(client.get("https://openrouter.ai/api/v1/models/user", headers=headers), client.get("https://openrouter.ai/api/v1/models", params={"sort": "intelligence-high-to-low"}, headers=headers))
+    try: account_response.raise_for_status(); public_response.raise_for_status()
+    except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail="OpenRouter model catalog refresh failed") from exc
+    account_models = account_response.json().get("data") or []; public_models = public_response.json().get("data") or []
+    selected = benchmarking.select_openrouter_judges(account_models, public_models)
+    snapshot = {"refreshed_at": now_iso(), "available_count": len(account_models), "public_count": len(public_models), "source": "openrouter"}
+    return jsonable_encoder(await database.upsert_benchmark_judge_policy({"secret_name": secret_name, "top_models": selected, "codex_model": policy.get("codex_model"), "overrides": policy.get("overrides") or {}, "catalog_snapshot": snapshot, "updated_by": auth.subject_id}))
+
+
 @app.get("/admin/models")
 async def admin_models(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     auth = await authenticate(authorization)
@@ -11853,6 +14497,84 @@ async def admin_models(authorization: str | None = Header(default=None)) -> dict
         "alias_policies": [public_model_alias_policy(row) for row in await database.list_model_alias_policies()],
         "records": records,
         "acceptance_model_measurements": acceptance_model_measurement_coverage(aliases, records),
+    }
+
+
+@app.post("/admin/models/adopt-lan-worker")
+async def admin_model_adopt_lan_worker(
+    payload: LanWorkerModelAdoptionRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "models:write")
+    require_model_admin(auth)
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="confirm=true is required before adopting a LAN worker model")
+    try:
+        manifest = model_lifecycle.parse_uploaded_manifest(payload.manifest)
+    except (CatalogError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    require_manifest_role_action(manifest, auth, "install")
+    require_lan_worker_only_manifest(manifest)
+    if manifest.license.acceptance_required and not payload.accept_license:
+        raise HTTPException(status_code=409, detail="explicit license acceptance is required before adopting this model")
+    existing = await database.get_model_record(manifest.id, manifest.version)
+    if existing is not None:
+        try:
+            existing_manifest = model_lifecycle.parse_uploaded_manifest(existing["manifest"])
+        except (CatalogError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=f"existing immutable model record is invalid: {exc}") from exc
+        if lan_worker_manifest_identity(existing_manifest) != lan_worker_manifest_identity(manifest):
+            raise HTTPException(status_code=409, detail="an immutable model record already exists with different artifact identity")
+    alias_conflicts = await installed_model_alias_conflicts(manifest)
+    if alias_conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "one or more LAN worker aliases are already assigned", "alias_conflicts": alias_conflicts},
+        )
+    attestation = await attest_lan_worker_manifest(manifest)
+    installed_manifest = manifest_with_lan_worker_attestation(manifest, attestation)
+    decision = classify_resource_fit(
+        resource_policy(),
+        installed_manifest.resource_estimate.to_scheduler_estimate(requires_gpu=True),
+    )
+    row = await database.upsert_model_record(
+        {
+            "id": installed_manifest.id,
+            "version": installed_manifest.version,
+            "display_name": installed_manifest.display_name,
+            "modality": installed_manifest.modality,
+            "preferred_runtime": installed_manifest.preferred_runtime,
+            "status": "installed",
+            "resource_label": decision.label,
+            "manifest": installed_manifest.to_dict(),
+        }
+    )
+    await refresh_catalog_cache()
+    workflows = await refresh_workflow_dependency_statuses()
+    await record_audit_event(
+        auth,
+        "model.lan_worker_adopted",
+        target_type="model",
+        target_id=f"{installed_manifest.id}@{installed_manifest.version}",
+        summary=f"Adopted attested LAN worker model {installed_manifest.id}@{installed_manifest.version}",
+        metadata={
+            "aliases": installed_manifest.aliases,
+            "runtime": installed_manifest.preferred_runtime,
+            "resource_label": decision.label,
+            "license_accepted": bool(payload.accept_license),
+            "llama_commit": attestation["llama_commit"],
+            "image_digest": attestation["image_digest"],
+            "profiles_sha256": attestation["profiles_sha256"],
+            "files": attestation["files"],
+            "workflow_dependencies_refreshed": workflows["count"],
+        },
+    )
+    return {
+        "model": public_model_record(row),
+        "attestation": attestation,
+        "runtime_views": [],
+        "workflow_refresh": workflows,
     }
 
 
@@ -11913,6 +14635,7 @@ async def admin_model_alias_policy_update(
             "preferred_runtime": row.get("preferred_runtime"),
             "status": row.get("status"),
             "idle_timeout_seconds": row.get("idle_timeout_seconds"),
+            "reasoning_effort": row.get("reasoning_effort"),
             "visibility_roles": row.get("visibility_roles") or [],
         },
     )
@@ -12578,22 +15301,67 @@ async def admin_model_tool_definition_delete(name: str, authorization: str | Non
     return {"deleted": public_model_tool_definition(row), "registry": await public_model_tool_registry(auth, include_disabled_custom=True)}
 
 
+@app.post("/v1/open-webui/chat/cancel")
+async def cancel_open_webui_chat(
+    payload: OpenWebUIChatCancelRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth = await authenticate(authorization)
+    require_scope(auth, "inference:write")
+    if auth.subject_id != OPEN_WEBUI_CLIENT_ID:
+        raise HTTPException(status_code=403, detail="Open WebUI internal client authentication is required")
+    conversation_key = trusted_open_webui_conversation_key(payload.chat_id, auth)
+    if conversation_key is None:  # Defensive: the internal-client check above should make this unreachable.
+        raise HTTPException(status_code=403, detail="Open WebUI internal client authentication is required")
+    return await request_open_webui_stream_cancel(conversation_key)
+
+
 @app.post("/v1/chat/completions")
-async def chat_completions(payload: ChatCompletionRequest, authorization: str | None = Header(default=None)) -> Response:
+async def chat_completions(
+    payload: ChatCompletionRequest,
+    authorization: str | None = Header(default=None),
+    agent_conversation: str | None = Header(default=None, alias="X-B1-Agent-Conversation"),
+    open_webui_chat_id: str | None = Header(default=None, alias="X-B1-OpenWebUI-Chat-Id"),
+) -> Response:
     auth = await authenticate(authorization)
     require_scope(auth, "inference:write")
     require_not_in_maintenance("chat/completions")
+    open_webui_conversation_key = trusted_open_webui_conversation_key(open_webui_chat_id, auth)
     resolution = resolve_catalog_alias_for_modalities_auth(payload.model, {"llm", "vlm"}, auth, payload.runtime_policy, operation="chat")
     require_openai_forwarding(resolution, "chat")
-    runtime_payload = strip_b1_chat_fields(payload.model_dump(exclude_none=True))
+    runtime_payload = strip_b1_chat_fields(
+        payload.model_dump(exclude_none=True),
+        preserve_client_tools=auth.subject_id != OPEN_WEBUI_CLIENT_ID,
+    )
+    conversation_id = validate_agent_conversation_id(agent_conversation)
+    transcript = await load_agent_transcript(conversation_id, auth.subject_id, resolution.public_alias)
+    runtime_payload = prepend_agent_transcript(runtime_payload, transcript)
+    runtime_payload = inject_gpt_oss_reasoning_effort(runtime_payload, await gpt_oss_reasoning_effort(payload, resolution))
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
+    # Open WebUI cannot add B1's private `b1_tools` field itself. Enable the
+    # LAN-managed search tools only for clear requests for fresh information,
+    # not for every ordinary chat turn.
+    if (
+        not requested_tools
+        and not chat_request_has_explicit_b1_tools(payload)
+        and auth.subject_id == OPEN_WEBUI_CLIENT_ID
+        and chat_request_requests_current_information(payload)
+    ):
+        tool_registry = await model_tool_registry_for_auth(auth)
+        requested_tools = [name for name in ("web_search", "web_fetch") if name in tool_registry.tool_names()]
     if chat_request_explicit_b1_tool_names(payload) and not requested_tools:
         raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
+    if set(requested_tools).intersection({"web_search", "web_fetch"}) and chat_request_asks_about_internet_capability(payload):
+        capability_response = b1_internet_capability_response(payload, resolution, requested_tools)
+        return chat_tool_response_to_stream(capability_response) if payload.stream else capability_response
     if requested_tools:
         tool_loop_payload = dict(runtime_payload)
         # Intermediate tool calls must be complete JSON messages. The public
         # response is converted to SSE after the loop finishes.
         tool_loop_payload["stream"] = False
+        async def write_transcript(messages: list[dict[str, Any]]) -> None:
+            await persist_agent_transcript(conversation_id, auth.subject_id, resolution.public_alias, messages)
+
         tool_response = await call_chat_with_b1_tools(
             payload,
             tool_loop_payload,
@@ -12601,9 +15369,21 @@ async def chat_completions(payload: ChatCompletionRequest, authorization: str | 
             requested_tools,
             tool_registry,
             owner_id=auth.subject_id,
+            transcript_writer=write_transcript if conversation_id is not None else None,
         )
+        if conversation_id is not None:
+            tool_response.headers["X-B1-Agent-Conversation"] = conversation_id
         return chat_tool_response_to_stream(tool_response) if payload.stream else tool_response
     if payload.stream:
+        if open_webui_conversation_key is not None:
+            return await call_open_webui_runtime_stream(
+                "/v1/chat/completions",
+                runtime_payload,
+                resolution,
+                "chat",
+                conversation_key=open_webui_conversation_key,
+                owner_id=auth.subject_id,
+            )
         proxied_stream = await call_openai_runtime_stream("/v1/chat/completions", runtime_payload, resolution, "chat", owner_id=auth.subject_id)
         if proxied_stream is not None:
             return proxied_stream
@@ -12622,6 +15402,7 @@ async def responses(payload: dict[str, Any], authorization: str | None = Header(
     model = payload.get("model", "chat-default")
     resolution = resolve_catalog_alias_for_modalities_auth(model, {"llm", "vlm"}, auth, payload.get("runtime_policy", "any"), operation="responses")
     require_openai_forwarding(resolution, "responses")
+    stream_requested = payload.get("stream") is True
     if payload.get("b1_tools") or ("b1_tools" not in payload and auth.default_b1_tools):
         chat_payload = responses_payload_to_chat_request_payload({"model": model, **payload})
         chat_request = ChatCompletionRequest(**chat_payload)
@@ -12629,6 +15410,17 @@ async def responses(payload: dict[str, Any], authorization: str | None = Header(
         if chat_request_explicit_b1_tool_names(chat_request) and not requested_tools:
             raise HTTPException(status_code=422, detail="no requested B1 model tools are enabled")
         if not requested_tools:
+            if stream_requested:
+                proxied_stream = await call_openai_runtime_stream(
+                    "/v1/responses",
+                    strip_b1_response_fields({"model": model, **payload}),
+                    resolution,
+                    "responses",
+                    owner_id=auth.subject_id,
+                )
+                if proxied_stream is not None:
+                    return proxied_stream
+                raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied responses stream")
             proxied = await call_openai_runtime_json(
                 "/v1/responses",
                 strip_b1_response_fields({"model": model, **payload}),
@@ -12650,6 +15442,17 @@ async def responses(payload: dict[str, Any], authorization: str | None = Header(
             owner_id=auth.subject_id,
         )
         return chat_tool_response_to_responses_response(payload, chat_response)
+    if stream_requested:
+        proxied_stream = await call_openai_runtime_stream(
+            "/v1/responses",
+            strip_b1_response_fields({"model": model, **payload}),
+            resolution,
+            "responses",
+            owner_id=auth.subject_id,
+        )
+        if proxied_stream is not None:
+            return proxied_stream
+        raise HTTPException(status_code=502, detail=f"runtime {resolution.runtime} did not produce a proxied responses stream")
     proxied = await call_openai_runtime_json(
         "/v1/responses",
         strip_b1_response_fields({"model": model, **payload}),
@@ -12692,6 +15495,8 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     model = explicit_model or (str(voice_profile.get("model_alias") or "") if voice_profile else "") or "tts-fast"
     runtime_policy = body.get("runtime_policy") if isinstance(body.get("runtime_policy"), str) else "any"
     resolution = resolve_catalog_alias_for_auth(model, "tts", auth, runtime_policy, operation="text-to-speech")
+    if voice_profile is None:
+        voice_profile = await default_voice_profile_for_resolution(body, auth, resolution)
     enforce_voice_profile_matches_resolution(voice_profile, resolution)
     forwarded = {key: value for key, value in body.items() if key != "runtime_policy" and not key.startswith("b1_") and value is not None}
     forwarded["model"] = resolution.model_id
@@ -12715,7 +15520,11 @@ async def audio_speech(request: Request, authorization: str | None = Header(defa
     lease_owner = await acquire_inference_lease(resolution, "audio-speech", owner_id=auth.subject_id)
     prepared = False
     try:
-        prepared = await prepare_sync_gpu_runtime(resolution, "audio-speech")
+        prepared = await await_with_inference_lease_renewal(
+            lease_owner,
+            "audio-speech",
+            prepare_sync_gpu_runtime(resolution, "audio-speech"),
+        )
         if adapter is not None and adapter.openai_compatible:
             return await await_with_inference_lease_renewal(
                 lease_owner,
@@ -12793,14 +15602,15 @@ async def image_generations(
         priority=priority,
         runtime_policy=runtime_policy,
     )
+    require_not_in_maintenance("images/generations")
+    resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-generation")
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
         if existing is not None:
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
-    require_not_in_maintenance("images/generations")
-    resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-generation")
     job = await create_job_record(
         auth.subject_id,
         job_payload,
@@ -12830,9 +15640,14 @@ async def image_edits(
     runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
     priority = media_job_string_extension(payload, "priority", "single_image")
     resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-edit")
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(
+        auth,
+        MediaJobCreate(modality="image", operation="edit", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
+        resolution,
+    )
     job = await create_job_record(
         auth.subject_id,
-        MediaJobCreate(modality="image", operation="edit", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
+        job_payload,
         idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )
@@ -12858,14 +15673,15 @@ async def video_generations(
         priority=priority,
         runtime_policy=runtime_policy,
     )
+    require_not_in_maintenance("videos/generations")
+    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="text-to-video")
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
         if existing is not None:
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
-    require_not_in_maintenance("videos/generations")
-    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="text-to-video")
     job = await create_job_record(
         auth.subject_id,
         job_payload,
@@ -12895,16 +15711,52 @@ async def image_to_video(
     runtime_policy = payload.get("runtime_policy") if isinstance(payload.get("runtime_policy"), str) else "any"
     priority = media_job_string_extension(payload, "priority", "video")
     resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="image-to-video")
+    # This convenience endpoint stages a directly uploaded image.  Convert it
+    # into the same internal representation used by the managed upload-ID API.
+    staged_source = payload.get("image")
+    if model == "video-image" and isinstance(staged_source, dict) and staged_source.get("source") == "staged_upload":
+        payload = dict(payload)
+        payload.pop("image", None)
+        payload["source_image"] = staged_source
+    media_payload = resolve_managed_video_image_source(
+        auth,
+        MediaJobCreate(modality="video", operation="image-to-video", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
+        allow_internal_staged_source=True,
+    )
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(
+        auth,
+        media_payload,
+        resolution,
+    )
     job = await create_job_record(
         auth.subject_id,
-        MediaJobCreate(modality="video", operation="image-to-video", model=model, input=payload, priority=priority, runtime_policy=runtime_policy),
+        job_payload,
         idempotency_key=normalized_idempotency_key,
         resolution=resolution,
     )
     return openai_image_job_response(job)
 
 
-@app.post("/v1/media/uploads")
+@app.post(
+    "/v1/media/uploads",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+                "image/webp": {"schema": {"type": "string", "format": "binary"}},
+                "audio/wav": {"schema": {"type": "string", "format": "binary"}},
+                "audio/x-wav": {"schema": {"type": "string", "format": "binary"}},
+                "audio/mpeg": {"schema": {"type": "string", "format": "binary"}},
+                "audio/ogg": {"schema": {"type": "string", "format": "binary"}},
+                "video/mp4": {"schema": {"type": "string", "format": "binary"}},
+                "video/webm": {"schema": {"type": "string", "format": "binary"}},
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
+            },
+        }
+    },
+)
 async def media_upload_create(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -12929,23 +15781,41 @@ async def media_upload_create(
 async def media_job_create(
     payload: MediaJobCreate,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    benchmark_campaign: str | None = Header(default=None, alias="X-B1-Benchmark-Campaign"),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:write")
-    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
-    if normalized_idempotency_key:
-        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
-        if existing is not None:
-            ensure_idempotent_job_matches(existing, payload)
-            return public_job(existing)
     require_not_in_maintenance("media/jobs")
+    payload = validate_studio_seated_character_request(payload)
+    payload = validate_talking_head_lipsync_job_request(payload)
+    payload = resolve_studio_seated_character_inputs(auth, payload)
+    payload = resolve_studio_panel_shot_inputs(auth, payload)
+    payload = resolve_talking_head_private_uploads(auth, payload)
+    await validate_studio_panel_seated_references(auth, payload)
+    await validate_scene_conditioned_panel_reference(auth, payload)
+    payload = resolve_managed_video_image_source(auth, payload)
     workflow = await enforce_workflow_backed_media_job(auth, payload)
     resolution = resolve_catalog_alias_for_auth(payload.model, payload.modality, auth, payload.runtime_policy, operation=payload.operation)
+    if workflow is None:
+        payload, workflow = await attach_default_comfyui_workflow_if_needed(auth, payload, resolution)
     enforce_workflow_backend_policy(workflow, resolution)
     if payload.modality == "tts" and payload.operation in {"speech", "text-to-speech", "tts"}:
-        enforce_voice_profile_matches_resolution(await voice_profile_for_inference(payload.input, auth), resolution)
-    job = await create_job_record(auth.subject_id, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
+        payload, _ = await attach_default_voice_profile_if_needed(auth, payload, resolution)
+    job_owner = auth.subject_id
+    if benchmark_campaign:
+        require_benchmark_writer(auth)
+        campaign = await database.get_benchmark_campaign(benchmark_campaign)
+        if campaign is None or campaign.get("status") != "running": raise HTTPException(status_code=409, detail="active benchmark campaign not found")
+        if not auth.has_scope("*") and campaign.get("owner_id") != auth.subject_id: raise HTTPException(status_code=403, detail="benchmark campaign belongs to another owner")
+        job_owner = f"benchmark:{benchmark_campaign}"
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key:
+        existing = await database.get_job_by_idempotency_key(job_owner, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, payload, resolution)
+            return public_job(existing)
+    job = await create_job_record(job_owner, payload, idempotency_key=normalized_idempotency_key, resolution=resolution)
     return public_job(job)
 
 
@@ -13141,19 +16011,6 @@ async def runtime_reservation_create(
     if adapter.external and not settings.allow_external_providers:
         raise HTTPException(status_code=422, detail=f"runtime {runtime} is external and external providers are disabled")
     resolved_model_version = f"{alias.manifest.id}@{alias.manifest.version}"
-    await enforce_gpu_hardware_admission(
-        RuntimeResolution(
-            public_alias=model_alias,
-            model_id=alias.manifest.id,
-            model_version=alias.manifest.version,
-            resolved_model_version=resolved_model_version,
-            runtime=runtime,
-            preferred_runtime=getattr(alias, "preferred_runtime", runtime),
-            requires_gpu=True,
-            resource_label=getattr(getattr(alias, "decision", None), "label", "unknown"),
-            runtime_policy="reservation",
-        )
-    )
     gate = await database.runtime_reservation_gate(auth.subject_id, runtime, resolved_model_version, GPU_RUNTIMES)
     if not gate.get("allowed"):
         active = gate.get("active_reservation") or {}

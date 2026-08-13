@@ -34,6 +34,14 @@ import "./styles.css";
 
 type RuntimeMap = Record<string, string>;
 
+type BenchmarkSuite = { id: string; version: string; display_name: string; modality: string; status: string; definition?: { cases?: { id: string }[] } };
+type BenchmarkProfile = { id: string; version: string; display_name: string; status: string };
+type BenchmarkRank = { rank: number; candidate: string; score: number; coverage: number; rank_status: string; confidence_interval?: number[] | null };
+type BenchmarkCampaign = { id: string; suite_id: string; profile_id: string; status: string; stage: string; progress: number; candidates: { ref: string }[]; device_groups: string[]; summary?: { ranking?: BenchmarkRank[]; result_count?: number; expected_results?: number; report_id?: string; cost?: { cost_usd?: number | null; total_tokens?: number; enforced_limit?: boolean } } };
+type BenchmarkOverview = { suites: BenchmarkSuite[]; profiles: BenchmarkProfile[]; campaigns: BenchmarkCampaign[]; retention_days: number };
+type BenchmarkJudgePolicy = { secret_name?: string | null; top_models?: string[]; codex_model?: string | null; catalog_snapshot?: { refreshed_at?: string; available_count?: number } };
+type BenchmarkReviewPair = { blind_token: string; case_id: string; result_a_id: string; result_b_id: string; a: Record<string, unknown>; b: Record<string, unknown> };
+
 type SchedulerLease = {
   owner?: string;
   lease_expires_at?: string;
@@ -924,6 +932,7 @@ type ModelAlias = {
   preferred_runtime_override?: string | null;
   runtimes?: string[];
   idle_timeout_seconds?: number | null;
+  reasoning_effort?: "low" | "medium" | "high" | null;
   visibility_roles?: string[];
   alias_policy_source?: string;
   notes?: string;
@@ -938,6 +947,7 @@ type ModelAliasPolicyForm = {
   enabled: boolean;
   preferred_runtime: string;
   idle_timeout_seconds: string;
+  reasoning_effort: string;
   visibility_roles: string[];
   notes: string;
 };
@@ -1185,7 +1195,7 @@ type CatalogModel = {
   resource_label: string;
   downloadable?: boolean;
   execution_modes?: string[];
-  license?: { name: string; redistribution: string };
+  license?: { name: string; redistribution: string; acceptance_required?: boolean };
   runtime_smoke_summary?: RuntimeSmokeSummary | null;
   runtime_smoke?: unknown;
 };
@@ -2309,8 +2319,9 @@ function Models() {
   const [newAliasRuntime, setNewAliasRuntime] = useState("localai");
   const [draftManifest, setDraftManifest] = useState<ModelManifestDraft | null>(null);
   const [acceptModelLicense, setAcceptModelLicense] = useState(false);
-  const [allowResourceOverride, setAllowResourceOverride] = useState(false);
-  const [allowDownloadOverride, setAllowDownloadOverride] = useState(false);
+  // This appliance permits operator-selected models despite conservative estimates.
+  const [allowResourceOverride, setAllowResourceOverride] = useState(true);
+  const [allowDownloadOverride, setAllowDownloadOverride] = useState(true);
   const [plan, setPlan] = useState<ModelInstallPlan | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [removalPlan, setRemovalPlan] = useState<ModelRemovalPlan | null>(null);
@@ -2334,6 +2345,7 @@ function Models() {
     enabled: alias.enabled ?? alias.status !== "disabled",
     preferred_runtime: alias.preferred_runtime_override ?? (alias.alias_policy_source === "database-custom" ? alias.preferred_runtime : ""),
     idle_timeout_seconds: alias.idle_timeout_seconds ? String(alias.idle_timeout_seconds) : "",
+    reasoning_effort: alias.reasoning_effort ?? "",
     visibility_roles: alias.visibility_roles ?? [],
     notes: alias.notes ?? ""
   });
@@ -2376,7 +2388,7 @@ function Models() {
     setAliasForms((current) => ({
       ...current,
       [aliasId]: {
-        ...(current[aliasId] ?? { enabled: true, preferred_runtime: "", idle_timeout_seconds: "", visibility_roles: [], notes: "" }),
+        ...(current[aliasId] ?? { enabled: true, preferred_runtime: "", idle_timeout_seconds: "", reasoning_effort: "", visibility_roles: [], notes: "" }),
         [key]: value
       }
     }));
@@ -2403,6 +2415,7 @@ function Models() {
         enabled: form.enabled,
         preferred_runtime: form.preferred_runtime || null,
         idle_timeout_seconds: form.idle_timeout_seconds ? Number(form.idle_timeout_seconds) : null,
+        reasoning_effort: form.reasoning_effort || null,
         visibility_roles: form.visibility_roles,
         notes: form.notes
       })
@@ -3090,6 +3103,14 @@ function Models() {
                       value={form.idle_timeout_seconds}
                       onChange={(event) => updateAliasForm(alias.id, "idle_timeout_seconds", event.target.value)}
                     />
+                    {alias.resolved_model?.id.includes("gpt-oss") && (
+                      <select value={form.reasoning_effort} onChange={(event) => updateAliasForm(alias.id, "reasoning_effort", event.target.value)}>
+                        <option value="">model default</option>
+                        <option value="low">reasoning low</option>
+                        <option value="medium">reasoning medium</option>
+                        <option value="high">reasoning high</option>
+                      </select>
+                    )}
                     <input
                       className="compact-text"
                       placeholder="operator notes"
@@ -3177,13 +3198,15 @@ function Models() {
               <td>{model.status}<small>{model.modality}{model.operations?.length ? ` / ${model.operations.join(", ")}` : ""}</small></td>
               <td>{model.preferred_runtime}</td>
               <td>{runtimeSmokeLine(model)}</td>
-              <td>{model.resource_label}<small>{model.license?.name ?? "licence unknown"} / {model.license?.redistribution ?? "redistribution unknown"}</small></td>
+              <td>
+                {model.resource_label}
+                <small>{model.license?.name ?? "licence unknown"} / {model.license?.redistribution ?? "redistribution unknown"}</small>
+                {model.status !== "installed" && <small>{model.license?.acceptance_required ? (acceptModelLicense ? "licence accepted: queue download" : "accept licence above, then queue download") : "queue download"}</small>}
+              </td>
               <td>
                 <div className="table-actions">
-                  <button title={`Plan install for ${model.display_name}`} onClick={() => planInstall(model.id)} disabled={busy || model.status === "installed"}><ListChecks size={16} /></button>
-                  <button title={`Install ${model.display_name}`} onClick={() => installModel(model.id)} disabled={busy || model.status === "installed"}><Archive size={16} /></button>
-                  <button title={`Plan download for ${model.display_name}`} onClick={() => planDownload(model.id)} disabled={busy || model.status === "installed"}><Download size={16} /></button>
-                  <button title={`Queue download for ${model.display_name}`} onClick={() => queueDownload(model.id)} disabled={busy || model.status === "installed"}><Download size={16} /></button>
+                  <button title={`Accept the licence, download, and prepare ${model.display_name} for installation`} onClick={() => queueDownload(model.id)} disabled={busy || model.status === "installed"}>Make available</button>
+                  <button title={`Inspect the installation plan for ${model.display_name}`} onClick={() => planDownload(model.id)} disabled={busy || model.status === "installed"}><ListChecks size={16} /></button>
                 </div>
               </td>
             </tr>
@@ -3240,7 +3263,7 @@ function Models() {
                 <button title={`Pause ${download.id}`} onClick={() => pauseDownload(download)} disabled={busy || !["queued", "running"].includes(download.status)}><PauseCircle size={16} /></button>
                 <button title={`Resume ${download.id}`} onClick={() => resumeDownload(download)} disabled={busy || download.status !== "paused"}><PlayCircle size={16} /></button>
                 <button title={`Retry ${download.id}`} onClick={() => retryDownload(download)} disabled={busy || !["failed", "cancelled"].includes(download.status)}><RotateCcw size={16} /></button>
-                <button title={`Install ${download.model_ref ?? `${download.model_id}@${download.model_version}`}`} onClick={() => installDownloadedModel(download)} disabled={busy || !download.install_ready}><CheckCircle2 size={16} /></button>
+                <button title={`Create the read-only runtime view and enable ${download.model_ref ?? `${download.model_id}@${download.model_version}`}`} onClick={() => installDownloadedModel(download)} disabled={busy || !download.install_ready}>Finish availability</button>
                 <button title={`Cancel ${download.id}`} onClick={() => cancelDownload(download)} disabled={busy || ["completed", "failed", "cancelled"].includes(download.status)}><Trash2 size={16} /></button>
               </div></td>
             </tr>
@@ -4822,6 +4845,120 @@ function modelToolDefinitionFormFromPayload(tool: ModelToolDefinitionPayload): M
     visibility_roles: (tool.visibility_roles ?? []).join(", "),
     notes: tool.notes ?? ""
   };
+}
+
+function Benchmarks({ auth }: { auth: AuthStatus }) {
+  const [overview, setOverview] = useState<BenchmarkOverview | null>(null);
+  const [policy, setPolicy] = useState<BenchmarkJudgePolicy>({});
+  const [suite, setSuite] = useState("llm-general@1");
+  const [profile, setProfile] = useState("assistant@1");
+  const [candidateText, setCandidateText] = useState("chat-default");
+  const [devices, setDevices] = useState<string[]>(["p40-gpu"]);
+  const [secretName, setSecretName] = useState("");
+  const [codexModel, setCodexModel] = useState("");
+  const [suiteDefinition, setSuiteDefinition] = useState('{"id":"custom-suite","version":"1","display_name":"Custom Suite","modality":"text","cases":[{"id":"case-1","prompt":"Describe the task","metrics":["quality","instruction"]}]}');
+  const [reviewCampaign, setReviewCampaign] = useState("");
+  const [reviewPairs, setReviewPairs] = useState<BenchmarkReviewPair[]>([]);
+  const [message, setMessage] = useState("loading benchmark lab");
+  const canWrite = auth.scopes?.includes("*") || auth.scopes?.includes("benchmarks:write");
+  const isAdmin = auth.role === "admin";
+
+  const load = () => {
+    Promise.all([
+      apiJson<BenchmarkOverview>("/admin/benchmarks"),
+      apiJson<BenchmarkJudgePolicy>("/admin/benchmarks/judges/policy")
+    ]).then(([nextOverview, nextPolicy]) => {
+      setOverview(nextOverview); setPolicy(nextPolicy); setSecretName(nextPolicy.secret_name ?? ""); setCodexModel(nextPolicy.codex_model ?? ""); setMessage("benchmark data current");
+    }).catch((error: Error) => setMessage(error.message));
+  };
+  useEffect(load, []);
+
+  const splitRef = (value: string) => { const [id, version = "1"] = value.split("@"); return [id, version] as const; };
+  const createCampaign = async () => {
+    let candidates: { ref: string; [key: string]: unknown }[];
+    try { candidates = candidateText.trim().startsWith("[") ? JSON.parse(candidateText) : candidateText.split(/[\n,]/).map((ref) => ref.trim()).filter(Boolean).map((ref) => ({ ref })); }
+    catch { setMessage("candidate JSON is invalid"); return; }
+    const [suiteId, suiteVersion] = splitRef(suite); const [profileId, profileVersion] = splitRef(profile);
+    setMessage("validating campaign");
+    try {
+      const body = { suite_id: suiteId, suite_version: suiteVersion, profile_id: profileId, profile_version: profileVersion, candidates, device_groups: devices };
+      const preview = await apiJson<{ runs: number }>("/admin/benchmarks/campaigns/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const campaign = await apiJson<BenchmarkCampaign>("/admin/benchmarks/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      setMessage(`created ${campaign.id}: ${preview.runs} planned runs`); load();
+    } catch (error) { setMessage((error as Error).message); }
+  };
+  const action = async (id: string, name: "start" | "cancel" | "finalize") => {
+    setMessage(`${name} ${id}`);
+    try { await apiJson(`/admin/benchmarks/campaigns/${encodeURIComponent(id)}/${name}`, { method: "POST" }); setMessage(`${id} ${name} complete`); load(); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+  const saveJudges = async (refresh = false) => {
+    try {
+      if (!refresh) await apiJson("/admin/benchmarks/judges/policy", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret_name: secretName || null, top_models: policy.top_models ?? [], codex_model: codexModel || null, overrides: {} }) });
+      else await apiJson("/admin/benchmarks/judges/refresh", { method: "POST" });
+      setMessage(refresh ? "OpenRouter judge catalog refreshed" : "judge policy saved"); load();
+    } catch (error) { setMessage((error as Error).message); }
+  };
+  const toggleDevice = (device: string) => setDevices((current) => current.includes(device) ? current.filter((item) => item !== device) : [...current, device]);
+  const saveSuite = async () => {
+    try { await apiJson("/admin/benchmarks/suites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ definition: JSON.parse(suiteDefinition) }) }); setMessage("custom suite saved as draft"); load(); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+  const publishSuite = async (item: BenchmarkSuite) => {
+    try { await apiJson(`/admin/benchmarks/suites/${encodeURIComponent(item.id)}/versions/${encodeURIComponent(item.version)}/publish`, { method: "POST" }); setMessage(`${item.id}@${item.version} published`); load(); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+  const loadReviews = async (campaignId = reviewCampaign) => {
+    if (!campaignId) return;
+    try { const payload = await apiJson<{ data: BenchmarkReviewPair[] }>(`/admin/benchmarks/campaigns/${encodeURIComponent(campaignId)}/review-queue`); setReviewPairs(payload.data); setMessage(`${payload.data.length} blinded comparisons pending`); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+  const review = async (pair: BenchmarkReviewPair, winner: "a" | "b" | "tie") => {
+    try { await apiJson(`/admin/benchmarks/campaigns/${encodeURIComponent(reviewCampaign)}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blind_token: pair.blind_token, result_a_id: pair.result_a_id, result_b_id: pair.result_b_id, winner, scores: {} }) }); await loadReviews(); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+
+  return <section className="content-grid">
+    <article className="panel span-2">
+      <SectionTitle icon={<Gauge size={18} />} title="Model Benchmark Lab" />
+      <p>Versioned local evaluation suites with application-specific rankings. Raw outputs expire after {overview?.retention_days ?? 14} days; scores and reports remain.</p>
+      <div className="toolbar">
+        <select value={suite} onChange={(event) => setSuite(event.target.value)}>{overview?.suites.filter((item) => item.status === "published").map((item) => <option key={`${item.id}@${item.version}`} value={`${item.id}@${item.version}`}>{item.display_name} · {item.modality}</option>)}</select>
+        <select value={profile} onChange={(event) => setProfile(event.target.value)}>{overview?.profiles.filter((item) => item.status === "published").map((item) => <option key={`${item.id}@${item.version}`} value={`${item.id}@${item.version}`}>{item.display_name}</option>)}</select>
+        <input aria-label="Candidate model refs" value={candidateText} onChange={(event) => setCandidateText(event.target.value)} placeholder="chat-default, another-model" />
+        <label><input type="checkbox" checked={devices.includes("b1-gpu")} onChange={() => toggleDevice("b1-gpu")} /> B1 GPU exclusive</label>
+        <label><input type="checkbox" checked={devices.includes("p40-gpu")} onChange={() => toggleDevice("p40-gpu")} /> P40 exclusive</label>
+        <button disabled={!canWrite || !candidateText.trim()} onClick={createCampaign}><PlayCircle size={16} /> Create</button>
+        <button onClick={load}><RefreshCw size={16} /> Refresh</button>
+      </div>
+      <span className="toolbar-status">{message}</span>
+    </article>
+    <article className="panel span-2">
+      <SectionTitle icon={<Pencil size={18} />} title="Custom Versioned Suite" />
+      <p>Fixtures created here are benchmark-only data and may be used by configured external judges. Media cases can include an <code>input</code> object with reference assets.</p>
+      <textarea rows={8} value={suiteDefinition} onChange={(event) => setSuiteDefinition(event.target.value)} />
+      <div className="toolbar"><button disabled={!canWrite} onClick={saveSuite}>Save draft</button>{overview?.suites.filter((item) => item.status === "draft").map((item) => <button key={`${item.id}@${item.version}`} disabled={!canWrite} onClick={() => publishSuite(item)}>Publish {item.id}@{item.version}</button>)}</div>
+    </article>
+    <article className="panel span-2">
+      <SectionTitle icon={<ListChecks size={18} />} title="Campaigns & Rankings" />
+      <div className="table-wrap"><table><thead><tr><th>Campaign</th><th>Suite / Profile</th><th>Status</th><th>Progress</th><th>Ranking</th><th>Actions</th></tr></thead><tbody>
+        {overview?.campaigns.map((campaign) => <tr key={campaign.id}><td><code>{campaign.id}</code><br /><small>{campaign.device_groups?.join(", ") || "no exclusive device"}</small></td><td>{campaign.suite_id}<br /><small>{campaign.profile_id}</small></td><td>{campaign.status}<br /><small>{campaign.stage}</small></td><td>{campaign.progress}%<br /><small>{campaign.summary?.cost?.cost_usd == null ? `${campaign.summary?.cost?.total_tokens ?? 0} judge tokens` : `$${campaign.summary.cost.cost_usd.toFixed(6)} · ${campaign.summary.cost.total_tokens ?? 0} tokens`} · display only</small></td><td>{campaign.summary?.ranking?.map((row) => <div key={row.candidate}>#{row.rank} {row.candidate}: {row.score} <small>({row.rank_status})</small></div>) ?? "—"}</td><td><div className="button-row"><button disabled={!canWrite || campaign.status !== "draft"} onClick={() => action(campaign.id, "start")}>Start</button><button disabled={!canWrite || !["running", "review"].includes(campaign.status)} onClick={() => action(campaign.id, "finalize")}>Finalize</button><button disabled={!canWrite || ["completed", "cancelled"].includes(campaign.status)} onClick={() => action(campaign.id, "cancel")}>Cancel</button>{campaign.summary?.report_id && <a href={`/admin/benchmarks/reports/${campaign.summary.report_id}/files/report.html`} target="_blank" rel="noreferrer">Report</a>}</div></td></tr>)}
+        {!overview?.campaigns.length && <tr><td colSpan={6}>No campaigns yet.</td></tr>}
+      </tbody></table></div>
+    </article>
+    <article className="panel span-2">
+      <SectionTitle icon={<Globe2 size={18} />} title="External Judge Policy" />
+      <p>Only benchmark-module fixtures and outputs may be sent externally. Production conversations and regular uploads are excluded.</p>
+      <div className="toolbar"><input value={secretName} onChange={(event) => setSecretName(event.target.value)} placeholder="encrypted secret name" /><input value={codexModel} onChange={(event) => setCodexModel(event.target.value)} placeholder="Codex judge model (fourth)" /><button disabled={!isAdmin} onClick={() => saveJudges(false)}>Save</button><button disabled={!isAdmin || !secretName} onClick={() => saveJudges(true)}>Refresh top 3</button></div>
+      <p>Selected non-Codex judges: {(policy.top_models ?? []).join(", ") || "not configured"}. Codex: {policy.codex_model || "not configured"}.</p>
+    </article>
+    <article className="panel span-2">
+      <SectionTitle icon={<Eye size={18} />} title="Blinded Human Review" />
+      <div className="toolbar"><select value={reviewCampaign} onChange={(event) => setReviewCampaign(event.target.value)}><option value="">Select review campaign</option>{overview?.campaigns.filter((item) => item.status === "review").map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select><button disabled={!reviewCampaign} onClick={() => loadReviews()}>Load pairs</button></div>
+      {reviewPairs.map((pair) => <div className="comparison-grid" key={pair.blind_token}><div><strong>A · {pair.case_id}</strong><pre>{JSON.stringify(pair.a, null, 2)}</pre></div><div><strong>B · {pair.case_id}</strong><pre>{JSON.stringify(pair.b, null, 2)}</pre></div><div className="button-row"><button onClick={() => review(pair, "a")}>A wins</button><button onClick={() => review(pair, "tie")}>Tie</button><button onClick={() => review(pair, "b")}>B wins</button></div></div>)}
+      {!reviewPairs.length && <p>No blinded pairs loaded.</p>}
+    </article>
+  </section>;
 }
 
 function ExternalAccess() {
@@ -8155,7 +8292,7 @@ function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () =
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [error, setError] = useState<string>("");
-  const tabs = useMemo(() => ["dashboard", "models", "runtimes", "jobs", "workflows", "external", "storage", "system"], []);
+  const tabs = useMemo(() => ["dashboard", "models", "benchmarks", "runtimes", "jobs", "workflows", "external", "storage", "system"], []);
 
   useEffect(() => {
     apiFetch(`/admin/status`)
@@ -8187,6 +8324,7 @@ function ControlCenterApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () =
         </Tabs.List>
         <Tabs.Content value="dashboard"><Dashboard status={status} metrics={metrics} /></Tabs.Content>
         <Tabs.Content value="models"><Models /></Tabs.Content>
+        <Tabs.Content value="benchmarks"><Benchmarks auth={auth} /></Tabs.Content>
         <Tabs.Content value="runtimes"><Runtimes /></Tabs.Content>
         <Tabs.Content value="jobs"><Jobs /></Tabs.Content>
         <Tabs.Content value="workflows"><Workflows /></Tabs.Content>

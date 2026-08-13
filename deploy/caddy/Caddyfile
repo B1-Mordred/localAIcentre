@@ -38,6 +38,27 @@
 	}
 }
 
+http://{$B1_HOST_CHAT:ai.b1.germering} {
+	@caddy_root path /b1-caddy-root.crt
+	handle @caddy_root {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header {
+			Content-Type application/x-x509-ca-cert
+			Content-Disposition "attachment; filename=b1-caddy-root.crt"
+			Cache-Control "no-store"
+			X-Content-Type-Options "nosniff"
+			X-B1-CA-SHA256 "326339ee673c53ecca71b7006b177996dbec2c5166b94b2e3cfd56060612bb0c"
+			-Server
+		}
+		file_server
+	}
+
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}
+
 {$B1_HOST_CHAT:ai.b1.germering} {
 	import b1_tls
 	import media_capture_security_headers

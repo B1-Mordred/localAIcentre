@@ -124,6 +124,65 @@ def validate_external_runtime_base_url(value: str, *, resolver: HostnameResolver
     return urlunparse((parsed.scheme.lower(), netloc, path, "", "", "")), None
 
 
+def validate_lan_runtime_base_url(
+    value: str,
+    *,
+    approved_hostname: str,
+    approved_cidrs: tuple[str, ...],
+    approved_path: str = "",
+    resolver: HostnameResolver | None = None,
+) -> tuple[str, str | None]:
+    raw = value.strip()
+    hostname_policy = approved_hostname.strip().lower().rstrip(".")
+    if not raw:
+        return "", "LAN runtime base URL is not configured"
+    if not hostname_policy:
+        return "", "LAN runtime approved hostname is not configured"
+    try:
+        networks = tuple(ipaddress.ip_network(value, strict=False) for value in approved_cidrs)
+    except ValueError:
+        return "", "LAN runtime approved CIDR policy is invalid"
+    if not networks:
+        return "", "LAN runtime approved CIDR policy is not configured"
+
+    parsed = urlparse(raw)
+    if parsed.scheme != "https":
+        return "", "LAN runtime base URL must use https"
+    if parsed.username or parsed.password:
+        return "", "LAN runtime base URL must not contain credentials"
+    if parsed.query or parsed.fragment:
+        return "", "LAN runtime base URL must not contain query or fragment components"
+    path_policy = approved_path.rstrip("/")
+    parsed_path = parsed.path.rstrip("/")
+    if parsed_path != path_policy:
+        return "", "LAN runtime base URL path does not match the administrator-approved path"
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if hostname != hostname_policy:
+        return "", "LAN runtime hostname does not match the administrator-approved hostname"
+    try:
+        port = parsed.port
+    except ValueError:
+        return "", "LAN runtime base URL has an invalid port"
+
+    resolver = resolver or resolve_hostname_addresses
+    try:
+        addresses = resolver(hostname, port)
+    except OSError:
+        return "", "LAN runtime hostname could not be resolved"
+    if not addresses:
+        return "", "LAN runtime hostname could not be resolved"
+    for address in addresses:
+        try:
+            resolved_ip = ipaddress.ip_address(address)
+        except ValueError:
+            return "", "LAN runtime hostname resolved to an invalid address"
+        if not any(resolved_ip in network for network in networks):
+            return "", "LAN runtime hostname resolved outside the administrator-approved CIDRs"
+
+    netloc = hostname if port is None else f"{hostname}:{port}"
+    return urlunparse(("https", netloc, path_policy, "", "", "")), None
+
+
 @dataclass(frozen=True)
 class RuntimeAdapter:
     name: str
@@ -138,6 +197,11 @@ class RuntimeAdapter:
     configured: bool = True
     configuration_error: str | None = None
     api_key: str = ""
+    tls_ca_file: str = ""
+    private_lan: bool = False
+    approved_hostname: str = ""
+    approved_cidrs: tuple[str, ...] = ()
+    approved_path: str = ""
 
     def supports(self, alias: CatalogAlias, operation: str | None = None) -> bool:
         if not self.configured:
@@ -154,6 +218,15 @@ class RuntimeAdapter:
         if not self.configured:
             raise RuntimeResolutionError(f"runtime {self.name} is not configured: {self.configuration_error or 'missing configuration'}")
         base = self.base_url.rstrip("/")
+        if self.private_lan:
+            base, error = validate_lan_runtime_base_url(
+                base,
+                approved_hostname=self.approved_hostname,
+                approved_cidrs=self.approved_cidrs,
+                approved_path=self.approved_path,
+            )
+            if error:
+                raise RuntimeResolutionError(f"runtime {self.name} endpoint policy failed: {error}")
         suffix = path.lstrip("/")
         if base.endswith("/v1") and suffix.startswith("v1/"):
             suffix = suffix[3:]
@@ -164,9 +237,22 @@ class RuntimeAdapter:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
 
+    def httpx_client_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"trust_env": False} if self.private_lan else {}
+        if self.tls_ca_file:
+            kwargs["verify"] = self.tls_ca_file
+        return kwargs
+
     async def health(self, timeout_seconds: float = 3.0) -> dict[str, Any]:
         import httpx
 
+        if self.name == "panel-cpu":
+            return {
+                "name": self.name,
+                "status": "ok",
+                "details": {"status": "ok", "backend": "in-process-pillow-compositor"},
+                **self.public_dict(),
+            }
         if not self.configured:
             return {
                 "name": self.name,
@@ -176,7 +262,7 @@ class RuntimeAdapter:
             }
         url = self.url_for(self.health_path)
         try:
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds, **self.httpx_client_kwargs()) as client:
                 headers = self.request_headers()
                 response = await client.get(url, headers=headers) if headers else await client.get(url)
             details: Any
@@ -197,6 +283,9 @@ class RuntimeAdapter:
         data = asdict(self)
         data.pop("base_url")
         data.pop("api_key")
+        data.pop("tls_ca_file")
+        data.pop("approved_hostname")
+        data.pop("approved_cidrs")
         data["capabilities"] = self.capability_discovery()
         data["adapter_contract"] = self.adapter_contract()
         return data
@@ -210,6 +299,7 @@ class RuntimeAdapter:
             "native_api": self.native_api,
             "openai_compatible": self.openai_compatible,
             "configured": self.configured,
+            "private_lan": self.private_lan,
         }
 
     def adapter_contract(self) -> dict[str, Any]:
@@ -222,8 +312,15 @@ class RuntimeAdapter:
             submit_surface = "reserved-generic-http"
         else:
             submit_surface = "control-plane-managed"
-        runtime_control = "runtime-agent-predefined-actions" if not self.external else "not-available-for-external-runtime"
-        lifecycle = "b1-runtime-hooks" if not self.external else "not-available-for-external-runtime"
+        if self.name == "panel-cpu":
+            runtime_control = "in-process-no-gpu-lifecycle"
+            lifecycle = "in-process-no-gpu-lifecycle"
+        elif self.private_lan:
+            runtime_control = "authenticated-lan-runtime-hooks"
+            lifecycle = "authenticated-lan-runtime-hooks"
+        else:
+            runtime_control = "runtime-agent-predefined-actions" if not self.external else "not-available-for-external-runtime"
+            lifecycle = "b1-runtime-hooks" if not self.external else "not-available-for-external-runtime"
         events = "native-websocket-bridge" if self.native_api else "job-sse"
         return {
             "version": ADAPTER_CONTRACT_VERSION,
@@ -246,7 +343,7 @@ class RuntimeAdapter:
                 "cancel_interrupt": "native-proxy-or-job-state",
                 "unload_free_memory": runtime_control,
                 "active_queued_work_discovery": "runtime-state-and-native-queue",
-                "metrics": "runtime-agent-metrics" if not self.external else "health-endpoint-only",
+                "metrics": "authenticated-lan-runtime-metrics" if self.private_lan else ("runtime-agent-metrics" if not self.external else "health-endpoint-only"),
                 "failure_classification": "implemented",
                 "graceful_forced_recovery": runtime_control,
             },
@@ -273,11 +370,16 @@ class RuntimeAdapter:
                 forwarded["b1_cpu_residency_allowed"] = resolution.cpu_resident_allowed
         return forwarded
 
-    async def post_openai_json(self, path: str, payload: dict[str, Any], timeout_seconds: float = 120.0) -> tuple[int, dict[str, str], Any]:
+    async def post_openai_json(self, path: str, payload: dict[str, Any], timeout_seconds: float | None = None) -> tuple[int, dict[str, str], Any]:
         import httpx
 
         headers = {"Accept": "application/json", **self.request_headers()}
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        # Managed Laguna permits an inference request to run for up to one
+        # hour.  A shorter client read timeout abandons a request that the
+        # parallel-one worker may already be processing and must not be
+        # replayed.  Other runtimes retain the bounded compatibility timeout.
+        request_timeout_seconds = timeout_seconds if timeout_seconds is not None else (3700.0 if self.private_lan else 120.0)
+        async with httpx.AsyncClient(timeout=request_timeout_seconds, **self.httpx_client_kwargs()) as client:
             response = await client.post(self.openai_url(path), json=payload, headers=headers)
         response_headers = {
             key: value
@@ -381,9 +483,46 @@ def build_runtime_registry(
     openai_compatible_configuration_error: str | None = None,
     generic_http_base_url: str = "",
     generic_http_configuration_error: str | None = None,
+    lan_localai_worker_url: str = "",
+    lan_localai_worker_hostname: str = "",
+    lan_localai_worker_allowed_cidrs: tuple[str, ...] = (),
+    lan_localai_worker_tls_ca_file: str = "",
+    lan_localai_worker_api_key: str = "",
+    lan_deepseek_worker_url: str = "",
+    lan_deepseek_worker_hostname: str = "",
+    lan_deepseek_worker_allowed_cidrs: tuple[str, ...] = (),
+    lan_deepseek_worker_tls_ca_file: str = "",
+    lan_deepseek_worker_api_key: str = "",
+    lan_p40_media_url: str = "",
+    lan_p40_media_hostname: str = "",
+    lan_p40_media_allowed_cidrs: tuple[str, ...] = (),
+    lan_p40_media_tls_ca_file: str = "",
+    lan_p40_media_api_key: str = "",
 ) -> RuntimeRegistry:
     openai_url, openai_error = validate_external_runtime_base_url(openai_compatible_base_url)
     generic_url, generic_error = validate_external_runtime_base_url(generic_http_base_url)
+    lan_worker_url, lan_worker_error = validate_lan_runtime_base_url(
+        lan_localai_worker_url,
+        approved_hostname=lan_localai_worker_hostname,
+        approved_cidrs=lan_localai_worker_allowed_cidrs,
+    )
+    if not lan_localai_worker_tls_ca_file.strip():
+        lan_worker_error = lan_worker_error or "LAN runtime CA file is not configured"
+    lan_deepseek_url, lan_deepseek_error = validate_lan_runtime_base_url(
+        lan_deepseek_worker_url,
+        approved_hostname=lan_deepseek_worker_hostname,
+        approved_cidrs=lan_deepseek_worker_allowed_cidrs,
+        approved_path="/deepseek",
+    )
+    if not lan_deepseek_worker_tls_ca_file.strip():
+        lan_deepseek_error = lan_deepseek_error or "LAN runtime CA file is not configured"
+    lan_media_url, lan_media_error = validate_lan_runtime_base_url(
+        lan_p40_media_url,
+        approved_hostname=lan_p40_media_hostname,
+        approved_cidrs=lan_p40_media_allowed_cidrs,
+    )
+    if not lan_p40_media_tls_ca_file.strip():
+        lan_media_error = lan_media_error or "LAN runtime CA file is not configured"
     if openai_compatible_configuration_error:
         openai_error = openai_compatible_configuration_error
     if generic_http_configuration_error:
@@ -410,6 +549,39 @@ def build_runtime_registry(
                 openai_compatible=True,
             ),
             RuntimeAdapter(
+                name="lan-localai-worker",
+                base_url=lan_worker_url,
+                modalities=("llm", "vlm", "embedding"),
+                operations=("chat", "responses", "embedding"),
+                requires_gpu=True,
+                health_path="/healthz",
+                openai_compatible=True,
+                configured=lan_worker_error is None,
+                configuration_error=lan_worker_error,
+                api_key=lan_localai_worker_api_key.strip(),
+                tls_ca_file=lan_localai_worker_tls_ca_file.strip(),
+                private_lan=True,
+                approved_hostname=lan_localai_worker_hostname.strip().lower().rstrip("."),
+                approved_cidrs=tuple(lan_localai_worker_allowed_cidrs),
+            ),
+            RuntimeAdapter(
+                name="lan-deepseek-worker",
+                base_url=lan_deepseek_url,
+                modalities=("llm",),
+                operations=("chat", "responses"),
+                requires_gpu=True,
+                health_path="/readyz",
+                openai_compatible=True,
+                configured=lan_deepseek_error is None,
+                configuration_error=lan_deepseek_error,
+                api_key=lan_deepseek_worker_api_key.strip(),
+                tls_ca_file=lan_deepseek_worker_tls_ca_file.strip(),
+                private_lan=True,
+                approved_hostname=lan_deepseek_worker_hostname.strip().lower().rstrip("."),
+                approved_cidrs=tuple(lan_deepseek_worker_allowed_cidrs),
+                approved_path="/deepseek",
+            ),
+            RuntimeAdapter(
                 name="comfyui",
                 base_url=comfyui_url,
                 modalities=("image", "video", "workflow"),
@@ -420,13 +592,44 @@ def build_runtime_registry(
                     "image-edit",
                     "background-removal",
                     "upscaling",
+                    "studio-panel-shot",
+                    "studio-seated-character",
                     "video-generation",
                     "image-to-video",
                     "frame-interpolation",
+                    "talking-head-lipsync",
                 ),
                 requires_gpu=True,
                 native_api=True,
                 health_path="/system_stats",
+            ),
+            RuntimeAdapter(
+                name="lan-p40-media",
+                base_url=lan_media_url,
+                modalities=("image", "video", "workflow"),
+                operations=(
+                    "comfyui-prompt",
+                    "workflow",
+                    "image-generation",
+                    "image-edit",
+                    "background-removal",
+                    "upscaling",
+                    "studio-seated-character",
+                    "video-generation",
+                    "image-to-video",
+                    "frame-interpolation",
+                    "talking-head-lipsync",
+                ),
+                requires_gpu=True,
+                native_api=True,
+                health_path="/media/healthz",
+                configured=lan_media_error is None,
+                configuration_error=lan_media_error,
+                api_key=lan_p40_media_api_key.strip(),
+                tls_ca_file=lan_p40_media_tls_ca_file.strip(),
+                private_lan=True,
+                approved_hostname=lan_p40_media_hostname.strip().lower().rstrip("."),
+                approved_cidrs=tuple(lan_p40_media_allowed_cidrs),
             ),
             RuntimeAdapter(
                 name="voicebox",
@@ -444,6 +647,14 @@ def build_runtime_registry(
                 operations=("embedding", "text-to-speech", "transcription"),
                 requires_gpu=False,
                 openai_compatible=True,
+            ),
+            RuntimeAdapter(
+                name="panel-cpu",
+                base_url="",
+                modalities=("image",),
+                operations=("studio-panel-shot",),
+                requires_gpu=False,
+                health_path="in-process",
             ),
             RuntimeAdapter(
                 name="openai-compatible",

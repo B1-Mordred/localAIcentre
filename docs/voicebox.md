@@ -39,6 +39,8 @@ Current implementation status:
 - for `/v1/audio/speech`, that proxy consumes the B1 profile envelope, strips B1-only fields, maps safe upstream selector metadata such as `upstream_voice`, and translates validated `/artifacts/voicebox/...` sample references to read-only in-container paths for engines that support reference or cloned voices
 - Chatterbox voice cloning is exposed through the same path: a B1 profile with `engine: "chatterbox"`, `profile_type: "clone"`, and one or more sample artifacts is provisioned as a native Voicebox cloned profile and rendered via upstream `/generate/stream`
 - the native profile mapping is kept in `$B1_DATA_ROOT/data/voicebox/b1-profile-map.json`, so remote Voicebox clients can also see and use the generated native cloned profile through `https://voice.ai.b1.germering/`
+- native `POST /generate/stream` requests are serialized by the B1 proxy for Chatterbox stability; all six tested talkshow profiles return `200 audio/wav` under parallel caller load after proxy-side serialization
+- native `POST /generate/stream` requests with `normalize: true` and `Accept: audio/wav` are post-processed by the B1 proxy into broadcast-ready mono PCM WAV by default: `48000` Hz, EBU R128 loudness normalization, and a true-peak limiter at or below `-1.5 dBTP`; `normalize: false` preserves the raw upstream Voicebox output
 - target-host WebSocket and engine-specific speech compatibility are covered by the opt-in compatibility harness and must either pass against the pinned upstream route or record an explicit pinned-upstream limitation
 
 The production override builds Jamie Pine Voicebox `v0.5.0` at commit `2bcb98d1a8b6fe05e15fbc1559e3085669e4035d`, exposes the B1 proxy on the internal native port `17493`, starts upstream Voicebox on loopback `127.0.0.1:17494`, and maps voice data/cache/model views plus the read-only Voicebox artifact namespace into B1-managed paths. The default Compose file still keeps the lightweight placeholder so `docker compose up -d` remains small. Runtime model downloads are disabled by default with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`; Model Hub must prepare compatible runtime views before enabling a Voicebox engine/profile.
@@ -46,6 +48,121 @@ The production override builds Jamie Pine Voicebox `v0.5.0` at commit `2bcb98d1a
 The production image includes Debian `build-essential` because the pinned Chatterbox stack uses Triton and compiles CUDA helper modules on the first GPU generation. The compiler is present only inside the non-root Voicebox runtime image; user-facing APIs still cannot execute arbitrary shell commands, install packages, or mount host paths.
 
 The B1 image also patches Chatterbox's Cangjie mapping lookup to prefer the verified local snapshot file before falling back to Hugging Face cache resolution. This keeps multilingual tokenizer startup offline when the runtime view contains `Cangjie5_TC.json`.
+
+## Native Broadcast Audio
+
+External Voicebox-compatible clients may keep using the native endpoint:
+
+```http
+POST https://voice.ai.b1.germering/generate/stream
+Accept: audio/wav
+Content-Type: application/json
+Authorization: Bearer ...
+```
+
+The B1 proxy preserves native profile UUIDs, `engine: "chatterbox"`, and the normal `audio/wav` response. For production media, send:
+
+```json
+{
+  "profile_id": "bd4e9bf1-482b-4900-97c1-48275d1ba28c",
+  "text": "Kurzer DialectiCore Broadcast-Audio-Test.",
+  "language": "de",
+  "engine": "chatterbox",
+  "normalize": true,
+  "effects_chain": []
+}
+```
+
+Accepted B1 broadcast fields:
+
+- `normalize`: boolean. When `true`, B1 performs broadcast post-processing after upstream Voicebox generation. This includes resampling, loudness normalization, and true-peak limiting. When `false`, B1 preserves raw upstream audio; upstream Voicebox may still interpret the field internally.
+- `b1_broadcast_audio`: optional boolean. Overrides the B1 policy. `true` enables broadcast post-processing even if `normalize` is absent; `false` disables B1 post-processing.
+- `b1_audio_sample_rate`: optional integer, default `48000`. B1 writes mono PCM WAV at this sample rate when broadcast post-processing is enabled.
+- `b1_loudness_lufs`: optional number, default `-18.0`. This is passed to `ffmpeg loudnorm` as integrated loudness target.
+- `b1_loudness_range_lu`: optional number, default `11.0`. This is passed to `ffmpeg loudnorm` as loudness range target.
+- `b1_true_peak_dbtp`: optional number. B1 clamps this to the configured ceiling, default `-1.5`, so callers cannot request a hotter broadcast output than the appliance policy permits.
+
+Implementation details:
+
+- The proxy uses container-local `ffmpeg` with `aresample`, `loudnorm`, and `alimiter`.
+- The response includes `x-b1-audio-policy: broadcast`, `x-b1-audio-sample-rate`, `x-b1-audio-channels`, `x-b1-audio-loudness-lufs`, and `x-b1-audio-true-peak-dbtp` when B1 post-processing is applied.
+- When the final response body is a valid WAV, the response also includes `x-b1-generation-id`, `x-b1-audio-sha256`, and `x-b1-timing-url` so a client can retrieve timing metadata for the exact emitted bytes.
+- If post-processing fails, B1 returns structured JSON with `reason: "broadcast_audio_postprocess_failed"` instead of returning raw non-conforming audio.
+- Set `B1_VOICEBOX_BROADCAST_AUDIO_ENABLED=false` only for diagnostics. The production default is enabled.
+
+## Native Timing Metadata
+
+The existing audio-only route remains unchanged:
+
+```http
+POST https://voice.ai.b1.germering/generate/stream
+Accept: audio/wav
+Content-Type: application/json
+Authorization: Bearer ...
+```
+
+For a successful WAV response, B1 stores timing metadata keyed by `x-b1-generation-id` and `x-b1-audio-sha256`. Retrieve it with either identifier:
+
+```bash
+curl --fail --cacert b1-ai-hub-caddy-root.crt \
+  -H "Authorization: Bearer $B1_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"generation_id":"gen_..."}' \
+  https://voice.ai.b1.germering/generate/timing
+```
+
+`GET /generate/timing/{generation_id}` is also available for clients that prefer the URL returned in `x-b1-timing-url`.
+
+The timing payload schema is `b1_voice_timing.v1`:
+
+```json
+{
+  "schema_version": "b1_voice_timing.v1",
+  "generation_id": "gen_...",
+  "audio_sha256": "...",
+  "audio_bytes": 123456,
+  "audio_sample_rate": 48000,
+  "audio_channels": 1,
+  "profile_id": "bd4e9bf1-482b-4900-97c1-48275d1ba28c",
+  "engine": "chatterbox",
+  "language": "de",
+  "duration_ms": 13580,
+  "phoneme_alphabet": "ipa",
+  "timing_method": "torchaudio-mms-fa",
+  "timing_precision": "word-forced-aligned_phoneme-estimated",
+  "alignment_model": "torchaudio.pipelines.MMS_FA",
+  "alignment_device": "cpu",
+  "word_timestamps": [
+    {"word": "Guten", "start_ms": 120, "end_ms": 430, "confidence": 0.91}
+  ],
+  "character_timestamps": [
+    {"character": "g", "start_ms": 120, "end_ms": 160, "word_index": 0, "confidence": 0.90}
+  ],
+  "phoneme_timestamps": [
+    {"phoneme": "ɡ", "start_ms": 120, "end_ms": 160, "word_index": 0, "confidence": 0.50}
+  ]
+}
+```
+
+The checksum is computed over the exact bytes emitted by B1 after broadcast post-processing. With `normalize: true`, this means the metadata belongs to the 48 kHz broadcast WAV, not the raw upstream Voicebox audio.
+
+B1 uses TorchAudio's multilingual `MMS_FA` forced-alignment bundle when its acoustic checkpoint is available in the Voicebox Torch cache. The aligner runs on CPU by default (`B1_VOICEBOX_TIMING_MMS_ALIGNER_DEVICE=cpu`) to avoid taking additional VRAM from Chatterbox on the 6 GB GPU. Set `B1_VOICEBOX_TIMING_MMS_ALIGNER_ENABLED=false` to disable it, or `B1_VOICEBOX_TIMING_MMS_ALIGNER_DEVICE=cuda` only after GPU memory has been measured.
+
+With MMS_FA enabled, `word_timestamps` and `character_timestamps` are CTC forced-aligned to the final WAV. The `phoneme_timestamps` remain IPA values from eSpeak/phonemizer distributed inside each aligned word window, because the pinned Chatterbox/Voicebox stack does not expose native acoustic phoneme alignment. If the MMS_FA model is missing or alignment fails, B1 falls back to `timing_method: "b1-proportional-ipa-estimate"` and `timing_precision: "estimated"`.
+
+The MMS_FA checkpoint is downloaded from TorchAudio's configured public URL and should be staged into the persistent Voicebox Torch cache before production use:
+
+```bash
+install -d /srv/b1-ai-hub/cache/voicebox/xdg/torch/hub/checkpoints
+curl --fail --location \
+  https://dl.fbaipublicfiles.com/mms/torchaudio/ctc_alignment_mling_uroman/model.pt \
+  --output /srv/b1-ai-hub/cache/voicebox/xdg/torch/hub/checkpoints/model.pt
+sha256sum /srv/b1-ai-hub/cache/voicebox/xdg/torch/hub/checkpoints/model.pt
+```
+
+Validated checkpoint SHA-256 on 2026-07-30: `20ef12963ab4924bef49ac4fc7f58ad5da2ee43b2c11bc8c853c9b90ecdbc680`.
+
+This is a local runtime model, not a cloud API. Once cached, timing generation does not send audio or text outside the LAN.
 
 For the pinned Chatterbox backend, cache the required `ResembleAI/chatterbox` files under the Voicebox Hugging Face cache before first use:
 

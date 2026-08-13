@@ -215,6 +215,20 @@ def is_gemma4_e4b(manifest: dict[str, Any], relative_file: str, prompt_family: s
     return "gemma-4-e4b" in hint or "gemma4-e4b" in hint or "e4b" in hint
 
 
+def is_gemma4_12b(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
+    if prompt_family != "gemma4":
+        return False
+    hint = model_hint_text(manifest, relative_file)
+    return "gemma-4-12b" in hint or "gemma4-12b" in hint or "gemma 4 12b" in hint
+
+
+def is_gpt_oss_20b(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
+    if prompt_family != "gpt-oss":
+        return False
+    hint = model_hint_text(manifest, relative_file)
+    return "gpt-oss-20b" in hint or "gpt oss 20b" in hint
+
+
 def is_laguna_xs21(manifest: dict[str, Any], relative_file: str, prompt_family: str | None) -> bool:
     if prompt_family != "laguna-xs-2.1":
         return False
@@ -232,6 +246,13 @@ def manifest_context_size(manifest: dict[str, Any], relative_file: str, prompt_f
     declared = estimate.get("context_tokens")
     if not isinstance(declared, int) or declared <= 0:
         declared = env_int("B1_LOCALAI_MANAGED_DEFAULT_CONTEXT_SIZE", 2048)
+    # This large model is deliberately CPU-offload-first. Its tested operator
+    # profile may exceed the conservative catalog estimate without affecting
+    # ordinary managed models.
+    if is_gemma4_12b(manifest, relative_file, prompt_family):
+        return max(512, env_int("B1_LOCALAI_MANAGED_GEMMA4_12B_CONTEXT_SIZE", 8192))
+    if is_gpt_oss_20b(manifest, relative_file, prompt_family):
+        return max(512, env_int("B1_LOCALAI_MANAGED_GPT_OSS_20B_CONTEXT_SIZE", 8192))
     maximum = max(512, env_int("B1_LOCALAI_MANAGED_MAX_CONTEXT_SIZE", 4096))
     if is_gemma4_e4b(manifest, relative_file, prompt_family):
         maximum = max(512, env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE", 4096))
@@ -261,6 +282,10 @@ def managed_gpu_layers(manifest: dict[str, Any], view_root: Path, relative_file:
         return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GPU_LAYERS", 0), allow_auto_fit=True)
     if is_gemma4_e4b(manifest, relative_file, prompt_family):
         return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS", 32))
+    if is_gemma4_12b(manifest, relative_file, prompt_family):
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GEMMA4_12B_GPU_LAYERS", 16))
+    if is_gpt_oss_20b(manifest, relative_file, prompt_family):
+        return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_GPT_OSS_20B_GPU_LAYERS", 8))
     if is_laguna_xs21(manifest, relative_file, prompt_family):
         return clamp_gpu_layers(env_int("B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS", -1), allow_auto_fit=True)
     size_gib = manifest_file_size_gib(manifest, view_root, relative_file)
@@ -279,11 +304,15 @@ def localai_prompt_family(manifest: dict[str, Any], view_root: Path, relative_fi
     architecture = str(metadata.get("general.architecture") or "").strip().lower()
     if architecture == "gemma4":
         return "gemma4"
+    if architecture in {"gptoss", "gpt-oss"}:
+        return "gpt-oss"
     if architecture == "laguna":
         return "laguna-xs-2.1"
     model_hint = model_hint_text(manifest, relative_file)
     if "gemma-4" in model_hint or "gemma4" in model_hint:
         return "gemma4"
+    if "gpt-oss" in model_hint or "gpt oss" in model_hint:
+        return "gpt-oss"
     if "laguna-xs-2.1" in model_hint or "laguna-xs-21" in model_hint:
         return "laguna-xs-2.1"
     return None
@@ -294,12 +323,18 @@ def localai_parameter_defaults(prompt_family: str | None) -> dict[str, Any]:
         return {"temperature": 1.0, "top_p": 0.95, "top_k": 64}
     if prompt_family == "laguna-xs-2.1":
         return {"temperature": 1.0, "top_p": 1.0, "top_k": 20}
+    if prompt_family == "gpt-oss":
+        return {"temperature": 1.0, "top_p": 1.0}
     return {"temperature": 0.2}
 
 
 def localai_template_lines(prompt_family: str | None) -> list[str]:
     if prompt_family == "gemma4":
         return ["template:", *GEMMA4_CHAT_TEMPLATE.rstrip("\n").splitlines()]
+    if prompt_family in {"gpt-oss", "laguna-xs-2.1"}:
+        # use_jinja enables Jinja in llama.cpp, while this flag makes LocalAI
+        # forward structured messages to that embedded tokenizer template.
+        return ["template:", "  use_tokenizer_template: true"]
     return []
 
 
@@ -353,11 +388,16 @@ def localai_extra_config_lines(prompt_family: str | None) -> list[str]:
 
 
 def localai_extra_options(prompt_family: str | None) -> list[str]:
+    if prompt_family == "gpt-oss":
+        return ["reasoning_format:auto"]
     if prompt_family != "laguna-xs-2.1":
         return []
     options = [
         f"cache_ram:{max(0, env_int('B1_LOCALAI_MANAGED_LAGUNA_XS_CACHE_RAM_MIB', 1024))}",
-        f"--ubatch-size:{max(1, env_int('B1_LOCALAI_MANAGED_LAGUNA_XS_UBATCH_SIZE', 256))}",
+        # LocalAI's llama-cpp gRPC adapter maps its ``ubatch`` option to
+        # llama.cpp's ``--ubatch-size``. Passing the raw CLI flag is ignored
+        # by the adapter's option parser.
+        f"ubatch:{max(1, env_int('B1_LOCALAI_MANAGED_LAGUNA_XS_UBATCH_SIZE', 256))}",
     ]
     if env_bool("B1_LOCALAI_MANAGED_LAGUNA_XS_CPU_MOE", True):
         options.append("--cpu-moe")

@@ -1289,7 +1289,77 @@ def base64_audio_from_payload(payload: dict[str, Any], *, max_audio_bytes: int) 
     return content, declared_mime_type or payload.get("audio_mime_type")
 
 
-def pcm16_mono_wav_from_bytes(content: bytes, *, max_audio_seconds: int) -> tuple[bytes, int, float]:
+def mp3_to_pcm16_mono_wav(content: bytes, *, max_audio_seconds: int) -> bytes:
+    """Decode a bounded MP3 upload without exposing a shell or host path."""
+    max_output_bytes = 44 + max_audio_seconds * 16000 * 2
+    try:
+        completed = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-nostdin", "-i", "pipe:0", "-map_metadata", "-1",
+                "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+            ],
+            input=content,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=min(120, max(15, max_audio_seconds // 4)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AudioCpuError("transcription MP3 decode timed out", code="b1_audio_cpu_mp3_decode_timeout", status_code=422) from exc
+    except OSError as exc:
+        raise AudioCpuError("transcription MP3 decoder is unavailable", code="b1_audio_cpu_mp3_decoder_unavailable") from exc
+    if completed.returncode != 0 or not completed.stdout:
+        raise AudioCpuError("transcription audio/mpeg input could not be decoded", code="b1_audio_cpu_mp3_invalid", status_code=415)
+    if len(completed.stdout) + 44 > max_output_bytes:
+        raise AudioCpuError(f"transcription audio exceeds {max_audio_seconds} seconds", code="b1_audio_cpu_audio_duration_too_large", status_code=413)
+    pcm = completed.stdout
+    return (
+        b"RIFF"
+        + (36 + len(pcm)).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (1).to_bytes(2, "little")
+        + (16000).to_bytes(4, "little")
+        + (32000).to_bytes(4, "little")
+        + (2).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + len(pcm).to_bytes(4, "little")
+        + pcm
+    )
+
+
+def normalize_streaming_wav_sizes(content: bytes) -> bytes:
+    """Replace streaming RIFF/data length sentinels with bounded input lengths."""
+    if len(content) < 12 or content[:4] != b"RIFF" or content[8:12] != b"WAVE":
+        return content
+    normalized = bytearray(content)
+    if normalized[4:8] == b"\xff\xff\xff\xff":
+        normalized[4:8] = (len(normalized) - 8).to_bytes(4, "little")
+    offset = 12
+    while offset + 8 <= len(normalized):
+        chunk_type = bytes(normalized[offset : offset + 4])
+        chunk_size = int.from_bytes(normalized[offset + 4 : offset + 8], "little")
+        data_start = offset + 8
+        if chunk_type == b"data" and chunk_size == 0xFFFFFFFF:
+            if data_start >= len(normalized):
+                return content
+            normalized[offset + 4 : offset + 8] = (len(normalized) - data_start).to_bytes(4, "little")
+            return bytes(normalized)
+        data_end = data_start + chunk_size
+        if data_end > len(normalized):
+            return content
+        offset = data_end + (chunk_size % 2)
+    return bytes(normalized)
+
+
+def pcm16_mono_wav_from_bytes(content: bytes, *, max_audio_seconds: int, mime_type: str | None = None) -> tuple[bytes, int, float]:
+    normalized_mime_type = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized_mime_type == "audio/mpeg":
+        content = mp3_to_pcm16_mono_wav(content, max_audio_seconds=max_audio_seconds)
+    elif normalized_mime_type in {"audio/wav", "audio/x-wav", ""}:
+        content = normalize_streaming_wav_sizes(content)
     try:
         with wave.open(io.BytesIO(content), "rb") as wav:
             channels = wav.getnchannels()
@@ -1370,7 +1440,11 @@ def vosk_transcription(payload: dict[str, Any]) -> dict[str, Any]:
     if not status["available"]:
         raise AudioCpuError(f"Vosk STT is not configured: {status.get('reason') or 'unknown'}")
     audio_bytes, mime_type = base64_audio_from_payload(payload, max_audio_bytes=int(status["max_audio_bytes"]))
-    pcm, sample_rate, duration_seconds = pcm16_mono_wav_from_bytes(audio_bytes, max_audio_seconds=int(status["max_audio_seconds"]))
+    pcm, sample_rate, duration_seconds = pcm16_mono_wav_from_bytes(
+        audio_bytes,
+        max_audio_seconds=int(status["max_audio_seconds"]),
+        mime_type=mime_type,
+    )
     try:
         from vosk import KaldiRecognizer
     except ModuleNotFoundError as exc:

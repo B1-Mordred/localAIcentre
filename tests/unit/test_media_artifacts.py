@@ -111,6 +111,41 @@ class MediaArtifactTests(unittest.TestCase):
             self.assertEqual(mime_type, "image/png")
             self.assertEqual(filename, "input.png")
 
+    def test_staged_upload_id_resolves_to_private_owner_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = media_artifacts.write_staged_input_bytes(
+                root,
+                owner_id="client",
+                field_name="portrait",
+                filename="face.png",
+                declared_mime_type="image/png",
+                content=PNG_BYTES,
+            )
+
+            resolved = media_artifacts.staged_input_reference_for_upload_id(root, owner_id="client", upload_id=reference["id"])
+
+            self.assertEqual(resolved["source"], "staged_upload")
+            self.assertEqual(resolved["id"], reference["id"])
+            self.assertEqual(resolved["kind"], "image")
+            self.assertEqual(resolved["mime_type"], "image/png")
+            self.assertEqual(resolved["sha256"], hashlib.sha256(PNG_BYTES).hexdigest())
+            self.assertEqual(media_artifacts.read_staged_input_bytes(root, resolved)[0], PNG_BYTES)
+
+    def test_staged_upload_id_resolver_rejects_other_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = media_artifacts.write_staged_input_bytes(
+                root,
+                owner_id="client",
+                field_name="audio",
+                declared_mime_type="audio/wav",
+                content=WAV_BYTES,
+            )
+
+            with self.assertRaises(FileNotFoundError):
+                media_artifacts.staged_input_reference_for_upload_id(root, owner_id="other-client", upload_id=reference["id"])
+
     def test_staged_input_rejects_unknown_media_and_oversize_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

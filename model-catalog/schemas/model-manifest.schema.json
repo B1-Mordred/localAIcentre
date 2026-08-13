@@ -115,7 +115,7 @@
     },
     "runtimes": {
       "type": "array",
-      "items": { "type": "string", "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+      "items": { "type": "string", "enum": ["localai", "lan-localai-worker", "lan-deepseek-worker", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
       "minItems": 1,
       "uniqueItems": true
     },
@@ -150,6 +150,29 @@
       "items": { "type": "string", "enum": ["hosted-inference", "downloadable", "network-share"] },
       "minItems": 1,
       "uniqueItems": true
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["schema"],
+      "properties": {
+        "schema": { "type": "string", "const": "b1-ai-hub-model-capabilities/v1" },
+        "chat_template": { "type": "string", "minLength": 1 },
+        "streaming": { "type": "boolean" },
+        "thinking": { "type": "boolean" },
+        "reasoning_content": { "type": "boolean" },
+        "tool_calls": { "type": "boolean" },
+        "json_tool_arguments": { "type": "boolean" },
+        "sequential_tool_calls": { "type": "boolean" },
+        "reasoning_between_tool_calls": { "type": "boolean" },
+        "speculative_decoding": { "type": "string", "enum": ["disabled", "experimental", "enabled"] },
+        "speculative_draft_model": { "type": "string", "minLength": 1 },
+        "validated_context_tokens": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
     },
     "installation_status": {
       "type": "string",
@@ -193,7 +216,7 @@
     },
     "runtime_adapter_versions": {
       "type": "object",
-      "propertyNames": { "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+      "propertyNames": { "enum": ["localai", "lan-localai-worker", "lan-deepseek-worker", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
       "additionalProperties": { "type": "string", "minLength": 1 }
     },
     "companion_files": {
@@ -232,6 +255,8 @@
         "schema": { "type": "string", "enum": ["b1-ai-hub-runtime-smoke/v1"] },
         "description": { "type": "string", "minLength": 1 },
         "localai": { "$ref": "#/$defs/runtimeSmokeRuntimeConfig" },
+        "lan-localai-worker": { "$ref": "#/$defs/runtimeSmokeRuntimeConfig" },
+        "lan-deepseek-worker": { "$ref": "#/$defs/runtimeSmokeRuntimeConfig" },
         "comfyui": {
           "allOf": [
             { "$ref": "#/$defs/runtimeSmokeRuntimeConfig" },
@@ -245,6 +270,8 @@
       },
       "anyOf": [
         { "required": ["localai"] },
+        { "required": ["lan-localai-worker"] },
+        { "required": ["lan-deepseek-worker"] },
         { "required": ["comfyui"] },
         { "required": ["voicebox"] },
         { "required": ["audio-cpu"] },
@@ -304,7 +331,7 @@
               "id": { "type": "string", "minLength": 1 },
               "type": { "type": "string", "minLength": 1 },
               "status": { "type": "string", "enum": ["ok", "warning", "failed", "skipped", "unconfirmed"] },
-              "runtime": { "type": "string", "enum": ["localai", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
+              "runtime": { "type": "string", "enum": ["localai", "lan-localai-worker", "lan-deepseek-worker", "comfyui", "voicebox", "audio-cpu", "openai-compatible", "generic-http"] },
               "model_alias": { "type": "string", "minLength": 1 },
               "resolved_model_version": { "type": "string", "minLength": 1 },
               "started_at": { "type": "string", "format": "date-time" },

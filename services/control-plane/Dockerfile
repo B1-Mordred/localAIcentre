@@ -10,6 +10,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        ffmpeg \
         libgnutls30 \
         libldap-2.5-0 \
         libpq5 \

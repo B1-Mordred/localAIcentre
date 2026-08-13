@@ -6,10 +6,13 @@ import inspect
 import json
 import re
 import socket
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urljoin, urlparse, urlunparse
+from xml.etree import ElementTree
 
 import httpx
 
@@ -29,9 +32,18 @@ PRIVATE_TOOL_NETS = [
 BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 WHITESPACE_RE = re.compile(r"\s+")
 SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1>")
+BLOCK_TAG_RE = re.compile(r"(?is)</?(?:article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|th|thead|tr|ul)\b[^>]*>")
 TAG_RE = re.compile(r"(?s)<[^>]+>")
+WORD_RE = re.compile(r"[\w-]{2,}", re.UNICODE)
 HostnameResolver = Callable[[str, int | None], list[str]]
 ToolHeaderProvider = Callable[["ModelToolDefinition"], Awaitable[dict[str, str]] | dict[str, str]]
+INTERNAL_SEARCH_HOSTS = {"tool-search"}
+DEFAULT_WEB_FETCH_CHARS = 5000
+WEB_FETCH_CACHE_TTL_SECONDS = 900.0
+WEB_FETCH_CACHE_MAX_ENTRIES = 32
+WEB_FETCH_CLEAN_TEXT_MAX_CHARS = 200000
+WEB_FETCH_STOP_WORDS = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was", "what", "when", "where", "which", "who", "with"}
+WEB_FETCH_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 
 
 class ModelToolError(ValueError):
@@ -134,6 +146,90 @@ def html_to_text(value: str, *, max_chars: int) -> str:
     return text[:max_chars]
 
 
+def html_to_structured_text(value: str, *, max_chars: int = WEB_FETCH_CLEAN_TEXT_MAX_CHARS) -> str:
+    stripped = SCRIPT_STYLE_RE.sub(" ", value)
+    stripped = BLOCK_TAG_RE.sub("\n", stripped)
+    stripped = TAG_RE.sub(" ", stripped)
+    decoded = html.unescape(stripped).replace("\r", "\n")
+    lines = [WHITESPACE_RE.sub(" ", line).strip() for line in decoded.split("\n")]
+    return "\n".join(line for line in lines if line)[:max_chars]
+
+
+def text_passages(value: str, *, target_chars: int = 700) -> list[str]:
+    passages: list[str] = []
+    for block in (line.strip() for line in value.splitlines()):
+        if not block:
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", block) if len(block) > target_chars * 2 else [block]
+        current: list[str] = []
+        current_chars = 0
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if current and current_chars + len(sentence) + 1 > target_chars:
+                passages.append(" ".join(current))
+                current = []
+                current_chars = 0
+            current.append(sentence)
+            current_chars += len(sentence) + 1
+        if current:
+            passages.append(" ".join(current))
+    return passages
+
+
+def query_terms(value: str) -> set[str]:
+    return {term.casefold() for term in WORD_RE.findall(value) if term.casefold() not in WEB_FETCH_STOP_WORDS}
+
+
+def select_relevant_passages(value: str, query: str, *, max_chars: int) -> tuple[str, int, int]:
+    passages = text_passages(value)
+    if not passages:
+        return value[:max_chars], 0, 0
+    terms = query_terms(query)
+    if terms:
+        ranked: list[tuple[float, int]] = []
+        for index, passage in enumerate(passages):
+            words = [word.casefold() for word in WORD_RE.findall(passage)]
+            overlap = terms & set(words)
+            score = len(overlap) * 3.0 + sum(words.count(term) for term in overlap) * 20.0 / max(1, len(words))
+            ranked.append((score, index))
+        selected_indexes = [index for score, index in sorted(ranked, key=lambda item: (-item[0], item[1])) if score > 0]
+    else:
+        selected_indexes = []
+    if not selected_indexes:
+        selected_indexes = list(range(len(passages)))
+    selected: list[str] = []
+    used = 0
+    for index in selected_indexes:
+        passage = passages[index]
+        remaining = max_chars - used - (2 if selected else 0)
+        if remaining <= 0:
+            break
+        selected.append(passage[:remaining])
+        used += min(len(passage), remaining) + (2 if len(selected) > 1 else 0)
+    return "\n\n".join(selected), len(selected), len(passages)
+
+
+def cached_web_page(url: str) -> dict[str, Any] | None:
+    entry = WEB_FETCH_CACHE.get(url)
+    if entry is None:
+        return None
+    stored_at, page = entry
+    if time.monotonic() - stored_at > WEB_FETCH_CACHE_TTL_SECONDS:
+        WEB_FETCH_CACHE.pop(url, None)
+        return None
+    WEB_FETCH_CACHE.move_to_end(url)
+    return dict(page)
+
+
+def store_cached_web_page(url: str, page: dict[str, Any]) -> None:
+    WEB_FETCH_CACHE[url] = (time.monotonic(), dict(page))
+    WEB_FETCH_CACHE.move_to_end(url)
+    while len(WEB_FETCH_CACHE) > WEB_FETCH_CACHE_MAX_ENTRIES:
+        WEB_FETCH_CACHE.popitem(last=False)
+
+
 class SearchResultParser(HTMLParser):
     def __init__(self, base_url: str) -> None:
         super().__init__()
@@ -208,6 +304,44 @@ def unwrap_search_result_url(value: str) -> str:
     return value
 
 
+def search_result_is_provider_navigation(result_url: str, search_url: str) -> bool:
+    result_host = (urlparse(result_url).hostname or "").lower().rstrip(".")
+    search_host = (urlparse(search_url).hostname or "").lower().rstrip(".")
+    return bool(result_host and search_host and result_host == search_host)
+
+
+def parse_google_news_rss(value: bytes, *, max_results: int) -> list[dict[str, str]]:
+    try:
+        root = ElementTree.fromstring(value)
+    except ElementTree.ParseError:
+        return []
+    results: list[dict[str, str]] = []
+    for item in root.findall("./channel/item"):
+        title = WHITESPACE_RE.sub(" ", str(item.findtext("title") or "")).strip()
+        link = str(item.findtext("link") or "").strip()
+        if title and link.startswith(("http://", "https://")):
+            results.append({"title": title[:240], "url": link})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def parse_json_search_results(value: Any, *, max_results: int) -> list[dict[str, str]]:
+    if not isinstance(value, dict) or not isinstance(value.get("results"), list):
+        return []
+    results: list[dict[str, str]] = []
+    for item in value["results"]:
+        if not isinstance(item, dict):
+            continue
+        title = WHITESPACE_RE.sub(" ", str(item.get("title") or "")).strip()
+        url = str(item.get("url") or "").strip()
+        if title and url.startswith(("http://", "https://")):
+            results.append({"title": title[:240], "url": url})
+        if len(results) >= max_results:
+            break
+    return results
+
+
 @dataclass(frozen=True)
 class ModelToolSettings:
     enabled: bool = True
@@ -246,7 +380,7 @@ def builtin_tool_definition(name: str, settings: ModelToolSettings) -> dict[str,
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the public web for current information. Use this before answering time-sensitive factual questions.",
+                "description": "Search the public web for current information. Use this first for news or other time-sensitive questions; pass a plain-language query, not a search-engine URL.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -263,11 +397,12 @@ def builtin_tool_definition(name: str, settings: ModelToolSettings) -> dict[str,
             "type": "function",
             "function": {
                 "name": "web_fetch",
-                "description": "Fetch and extract readable text from a public HTTP or HTTPS URL.",
+                "description": "Fetch relevant readable passages from a public source URL. Include query with the user's information need so B1 can select the best passages. Omit max_chars for the fast default; request more only if the first extract is insufficient.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "Public URL to retrieve."},
+                        "query": {"type": "string", "description": "The user's question or the facts to extract from the page."},
                         "max_chars": {"type": "integer", "minimum": 256, "maximum": settings.max_result_chars},
                     },
                     "required": ["url"],
@@ -446,30 +581,47 @@ class ModelToolRegistry:
             allowed_hosts=set(self.settings.allowed_hosts),
             resolver=self.resolver,
         )
-        max_chars = int(arguments.get("max_chars") or self.settings.max_result_chars)
+        parsed_url = urlparse(url)
+        if parsed_url.hostname in {"duckduckgo.com", "html.duckduckgo.com", "lite.duckduckgo.com"}:
+            raise ModelToolError("search-result pages must be queried with web_search, not web_fetch")
+        query = str(arguments.get("query") or "").strip()[:1000]
+        max_chars = int(arguments.get("max_chars") or min(DEFAULT_WEB_FETCH_CHARS, self.settings.max_result_chars))
         max_chars = max(256, min(max_chars, self.settings.max_result_chars))
-        async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
-            response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "")
-        text = response.text
-        title = ""
-        if "html" in content_type.lower() or "<html" in text[:500].lower():
-            title = html_title(text)
-            text = html_to_text(text, max_chars=max_chars)
-        else:
-            text = WHITESPACE_RE.sub(" ", text).strip()[:max_chars]
+        page = cached_web_page(url)
+        cache_hit = page is not None
+        if page is None:
+            async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+                response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.2"})
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            raw_text = response.text
+            is_html = "html" in content_type.lower() or "<html" in raw_text[:500].lower()
+            page = {
+                "url": str(response.url),
+                "content_type": content_type,
+                "status_code": response.status_code,
+                "title": html_title(raw_text) if is_html else "",
+                "clean_text": html_to_structured_text(raw_text) if is_html else WHITESPACE_RE.sub(" ", raw_text).strip()[:WEB_FETCH_CLEAN_TEXT_MAX_CHARS],
+            }
+            store_cached_web_page(url, page)
+        text, selected_count, passage_count = select_relevant_passages(str(page["clean_text"]), query, max_chars=max_chars)
         result = {
             "ok": True,
             "tool": "web_fetch",
-            "url": str(response.url),
-            "content_type": content_type,
-            "status_code": response.status_code,
+            "url": str(page["url"]),
+            "content_type": str(page["content_type"]),
+            "status_code": int(page["status_code"]),
             "text": text,
-            "truncated": len(text) >= max_chars,
+            "truncated": len(str(page["clean_text"])) > len(text),
+            "query": query,
+            "extraction": "query_passages" if query else "progressive_start",
+            "selected_passages": selected_count,
+            "total_passages": passage_count,
+            "max_chars": max_chars,
+            "cache_hit": cache_hit,
         }
-        if title:
-            result["title"] = title
+        if page.get("title"):
+            result["title"] = str(page["title"])
         return result
 
     async def web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -479,21 +631,30 @@ class ModelToolRegistry:
         max_results = int(arguments.get("max_results") or self.settings.max_search_results)
         max_results = max(1, min(max_results, self.settings.max_search_results))
         endpoint = self.settings.search_endpoint_template.replace("{query}", quote_plus(query))
+        endpoint_host = (urlparse(endpoint).hostname or "").lower().rstrip(".")
         url = validate_tool_url(
             endpoint,
-            allow_private_network=self.settings.allow_private_network,
+            allow_private_network=self.settings.allow_private_network or endpoint_host in INTERNAL_SEARCH_HOSTS,
             allowed_hosts=set(self.settings.allowed_hosts),
             resolver=self.resolver,
         )
         async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
             response = await client.get(url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
         response.raise_for_status()
-        parser = SearchResultParser(str(response.url))
-        parser.feed(response.text)
+        try:
+            raw_results = parse_json_search_results(response.json(), max_results=max_results)
+        except ValueError:
+            raw_results = []
+        if not raw_results:
+            parser = SearchResultParser(str(response.url))
+            parser.feed(response.text)
+            raw_results = parser.results
         deduped: list[dict[str, str]] = []
         seen: set[str] = set()
-        for result in parser.results:
+        for result in raw_results:
             result_url = unwrap_search_result_url(result["url"])
+            if search_result_is_provider_navigation(result_url, str(response.url)):
+                continue
             try:
                 safe_url = validate_tool_url(
                     result_url,
@@ -509,13 +670,43 @@ class ModelToolRegistry:
             deduped.append({"title": result["title"], "url": safe_url})
             if len(deduped) >= max_results:
                 break
+        source = str(response.url)
+        if not deduped:
+            fallback_endpoint = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=de&gl=DE&ceid=DE:de"
+            fallback_url = validate_tool_url(
+                fallback_endpoint,
+                allow_private_network=self.settings.allow_private_network,
+                allowed_hosts=set(self.settings.allowed_hosts),
+                resolver=self.resolver,
+            )
+            async with httpx.AsyncClient(timeout=self.settings.timeout_seconds, follow_redirects=True, transport=self.transport) as client:
+                fallback_response = await client.get(fallback_url, headers={"User-Agent": "B1-AI-Hub-ModelTools/0.1"})
+            if fallback_response.status_code < 400:
+                for result in parse_google_news_rss(fallback_response.content, max_results=max_results):
+                    try:
+                        safe_url = validate_tool_url(
+                            result["url"],
+                            allow_private_network=self.settings.allow_private_network,
+                            allowed_hosts=set(self.settings.allowed_hosts),
+                            resolver=self.resolver,
+                        )
+                    except ModelToolError:
+                        continue
+                    if safe_url in seen:
+                        continue
+                    seen.add(safe_url)
+                    deduped.append({"title": result["title"], "url": safe_url})
+                    if len(deduped) >= max_results:
+                        break
+                if deduped:
+                    source = str(fallback_response.url)
         return {
             "ok": True,
             "tool": "web_search",
             "query": query,
             "results": deduped,
             "result_count": len(deduped),
-            "source": str(response.url),
+            "source": source,
         }
 
     async def http_json_tool(self, definition: ModelToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import http.client
+import csv
 import hmac
 import json
 import os
+import signal
+import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterable
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -37,10 +42,12 @@ VIDEO_GENERATION_OPERATIONS = {"generation", "video-generation", "text-to-video"
 VIDEO_IMAGE_OPERATIONS = {"image-to-video", "video-image", "image-video"}
 TTS_OPERATIONS = {"speech", "text-to-speech", "tts"}
 STT_OPERATIONS = {"transcription", "speech-to-text", "stt"}
-LOCALAI_PROXY_VERSION = "b1-localai-proxy/v0.2.0"
-LOCALAI_LIFECYCLE_ACTIONS = ["status", "build-info", "load", "warm", "smoke", "unload"]
+LOCALAI_PROXY_VERSION = "b1-localai-proxy/v0.3.1"
+LOCALAI_LIFECYCLE_ACTIONS = ["status", "build-info", "metrics", "load", "warm", "smoke", "cancel", "unload", "recover"]
 LAST_CONFIG_SYNC_AT = 0.0
 LAST_CONFIG_SYNC: dict[str, Any] = {"status": "unknown"}
+ACTIVE_PROXY_REQUESTS = 0
+ACTIVE_PROXY_REQUESTS_LOCK = threading.Lock()
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -134,6 +141,17 @@ def runtime_control_auth_failure(headers: Any) -> tuple[int, dict[str, Any]] | N
     return None
 
 
+def forwarded_request_headers(headers: Any) -> dict[str, str]:
+    if not hasattr(headers, "items"):
+        return {}
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS
+        and key.lower() not in {"authorization", "host"}
+    }
+
+
 def json_response(status: str, action: str, **extra: Any) -> dict[str, Any]:
     payload = {"status": status, "runtime": "localai", "action": action}
     payload.update(extra)
@@ -183,6 +201,168 @@ def guardrail_status() -> dict[str, Any]:
     }
 
 
+def update_active_requests(delta: int) -> None:
+    global ACTIVE_PROXY_REQUESTS
+    with ACTIVE_PROXY_REQUESTS_LOCK:
+        ACTIVE_PROXY_REQUESTS = max(0, ACTIVE_PROXY_REQUESTS + delta)
+
+
+def active_work_snapshot() -> dict[str, int]:
+    with ACTIVE_PROXY_REQUESTS_LOCK:
+        return {"active_requests": ACTIVE_PROXY_REQUESTS, "queued_requests": 0}
+
+
+def gpu_metrics_response() -> dict[str, Any]:
+    fields = [
+        "uuid",
+        "name",
+        "memory.total",
+        "memory.used",
+        "memory.free",
+        "utilization.gpu",
+        "temperature.gpu",
+        "power.draw",
+        "power.limit",
+        "pstate",
+    ]
+    command = [
+        "nvidia-smi",
+        f"--query-gpu={','.join(fields)}",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return json_response(
+            "degraded",
+            "metrics",
+            gpu={"available": False, "devices": [], "error": exc.__class__.__name__},
+            work=active_work_snapshot(),
+        )
+
+    devices: list[dict[str, Any]] = []
+    for row in csv.reader(result.stdout.splitlines(), skipinitialspace=True):
+        if len(row) != len(fields):
+            continue
+        values = dict(zip(fields, (value.strip() for value in row), strict=True))
+        try:
+            devices.append(
+                {
+                    "uuid": values["uuid"],
+                    "name": values["name"],
+                    "memory_total_mib": int(float(values["memory.total"])),
+                    "memory_used_mib": int(float(values["memory.used"])),
+                    "memory_free_mib": int(float(values["memory.free"])),
+                    "utilization_gpu_percent": int(float(values["utilization.gpu"])),
+                    "temperature_c": int(float(values["temperature.gpu"])),
+                    "power_draw_w": float(values["power.draw"]),
+                    "power_limit_w": float(values["power.limit"]),
+                    "performance_state": values["pstate"],
+                }
+            )
+        except ValueError:
+            continue
+    return json_response(
+        "ok" if devices else "degraded",
+        "metrics",
+        gpu={"available": bool(devices), "devices": devices},
+        work=active_work_snapshot(),
+    )
+
+
+def gpu_memory_is_idle() -> bool:
+    metrics = gpu_metrics_response()
+    devices = (metrics.get("gpu") or {}).get("devices") or []
+    used_values = [device.get("memory_used_mib") for device in devices if isinstance(device.get("memory_used_mib"), int)]
+    idle_limit = max(0, env_int("B1_LOCALAI_IDLE_GPU_MEMORY_MIB", 256))
+    return bool(used_values) and max(used_values) <= idle_limit
+
+
+def gpu_runtime_is_idle() -> bool:
+    return gpu_memory_is_idle() and active_work_snapshot()["active_requests"] == 0
+
+
+def localai_backend_process_ids() -> list[int]:
+    process_ids: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        process_id = int(entry.name)
+        if process_id == os.getpid():
+            continue
+        try:
+            command = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if "/opt/b1/localai/backends/" in command and "b1_localai_proxy.py" not in command:
+            process_ids.append(process_id)
+    return sorted(process_ids)
+
+
+def process_is_alive(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def force_stop_localai_backends() -> dict[str, Any]:
+    process_ids = localai_backend_process_ids()
+    if not process_ids:
+        return {"status": "failed", "reason": "backend_process_not_found", "terminated_processes": 0}
+
+    for process_id in process_ids:
+        with suppress(ProcessLookupError):
+            os.kill(process_id, signal.SIGTERM)
+    timeout_seconds = max(1.0, env_float("B1_LOCALAI_FORCE_CANCEL_TIMEOUT_SECONDS", 10.0))
+    deadline = time.monotonic() + timeout_seconds
+    remaining = process_ids
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.1)
+        remaining = [process_id for process_id in remaining if process_is_alive(process_id)]
+
+    escalated = bool(remaining)
+    for process_id in remaining:
+        with suppress(ProcessLookupError):
+            os.kill(process_id, signal.SIGKILL)
+    kill_deadline = time.monotonic() + min(5.0, timeout_seconds)
+    while remaining and time.monotonic() < kill_deadline:
+        time.sleep(0.1)
+        remaining = [process_id for process_id in remaining if process_is_alive(process_id)]
+
+    memory_deadline = time.monotonic() + min(10.0, timeout_seconds)
+    while not remaining and time.monotonic() < memory_deadline:
+        if gpu_memory_is_idle():
+            return {
+                "status": "ok",
+                "reason": "backend_process_terminated",
+                "terminated_processes": len(process_ids),
+                "escalated": escalated,
+            }
+        time.sleep(0.2)
+    return {
+        "status": "failed",
+        "reason": "backend_process_or_vram_remained",
+        "terminated_processes": len(process_ids) - len(remaining),
+        "escalated": escalated,
+    }
+
+
+def worker_ready_response() -> dict[str, Any]:
+    try:
+        upstream_status, _ = hook_timeout_client().request_json("GET", "/readyz")
+    except OSError as exc:
+        return json_response("degraded", "ready", reason="upstream_unreachable", error=exc.__class__.__name__)
+    if upstream_status >= 400:
+        return json_response("degraded", "ready", reason="upstream_not_ready", upstream_status=upstream_status)
+    metrics = gpu_metrics_response()
+    devices = (metrics.get("gpu") or {}).get("devices") or []
+    if metrics.get("status") != "ok" or not devices:
+        return json_response("degraded", "ready", reason="gpu_metrics_unavailable", upstream_status=upstream_status)
+    return json_response("ok", "ready", upstream_status=upstream_status, gpu_count=len(devices))
+
+
 def status_response() -> dict[str, Any]:
     config_sync = sync_managed_configs_if_needed()
     guardrails = guardrail_status()
@@ -216,6 +396,7 @@ def status_response() -> dict[str, Any]:
         guardrails=guardrails,
         model_probe=model_probe,
         model_config_sync=config_sync,
+        work=active_work_snapshot(),
         capabilities={"actions": LOCALAI_LIFECYCLE_ACTIONS},
         build_info=build_info_response(),
     )
@@ -490,7 +671,9 @@ def run_smoke_request(client: LocalAIClient, payload: dict[str, Any], action: st
 def handle_unload(payload: dict[str, Any]) -> dict[str, Any]:
     candidates = payload_model_candidates(payload)
     if not candidates:
-        return json_response("unconfirmed", "unload", reason="model_missing")
+        if gpu_runtime_is_idle():
+            return json_response("ok", "unload", strategy="backend_already_idle")
+        return handle_backend_stop(payload, "unload")
     client = hook_timeout_client()
     try:
         status, body = client.request_json("POST", "/backend/shutdown", {"model": candidates[0]})
@@ -499,8 +682,49 @@ def handle_unload(payload: dict[str, Any]) -> dict[str, Any]:
     if status in {404, 405}:
         return json_response("unsupported", "unload", reason=f"http_{status}")
     if status >= 400:
+        if gpu_runtime_is_idle():
+            return json_response("ok", "unload", strategy="backend_already_idle", upstream_status=status)
         return json_response("failed", "unload", reason="shutdown_rejected", upstream_status=status)
     return json_response("ok", "unload", strategy="backend_shutdown", upstream_status=status, response_observed=body is not None)
+
+
+def handle_backend_stop(payload: dict[str, Any], action: str) -> dict[str, Any]:
+    candidates = payload_model_candidates(payload)
+    body = {"model": candidates[0]} if candidates else {}
+    try:
+        status, response_body = hook_timeout_client().request_json("POST", "/backend/shutdown", body)
+    except OSError as exc:
+        return json_response("unsupported", action, reason="shutdown_unreachable", error=exc.__class__.__name__)
+    if status in {404, 405}:
+        return json_response("unsupported", action, reason=f"http_{status}")
+    if status >= 400:
+        if gpu_runtime_is_idle():
+            return json_response("ok", action, strategy="backend_already_idle", upstream_status=status)
+        if action in {"cancel", "recover"}:
+            forced = force_stop_localai_backends()
+            if forced.get("status") == "ok":
+                return json_response(
+                    "ok",
+                    action,
+                    strategy="backend_process_terminated",
+                    upstream_status=status,
+                    terminated_processes=forced.get("terminated_processes"),
+                    escalated=bool(forced.get("escalated")),
+                )
+            return json_response(
+                "failed",
+                action,
+                reason=str(forced.get("reason") or "shutdown_rejected"),
+                upstream_status=status,
+            )
+        return json_response("failed", action, reason="shutdown_rejected", upstream_status=status)
+    return json_response(
+        "ok",
+        action,
+        strategy="backend_shutdown",
+        upstream_status=status,
+        response_observed=response_body is not None,
+    )
 
 
 def handle_runtime_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -516,6 +740,8 @@ def handle_runtime_action(action: str, payload: dict[str, Any]) -> dict[str, Any
         return handle_smoke(payload)
     if action == "unload":
         return handle_unload(payload)
+    if action in {"cancel", "recover"}:
+        return handle_backend_stop(payload, action)
     if action == "health":
         return json_response("unsupported", action, reason="post_only")
     return json_response("unsupported", action, reason="unknown_action")
@@ -537,6 +763,10 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
         print(json.dumps(record, separators=(",", ":")), file=sys.stderr, flush=True)
 
     def do_GET(self) -> None:
+        if self.path.split("?", 1)[0].rstrip("/") == "/readyz":
+            result = worker_ready_response()
+            self.write_json(result, status=200 if result.get("status") == "ok" else 503)
+            return
         if self.path.rstrip("/") == "/b1/runtime/health":
             auth_failure = runtime_control_auth_failure(self.headers)
             if auth_failure is not None:
@@ -549,13 +779,14 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
         prefix = "/b1/runtime/"
         if path.startswith(prefix):
             action = path[len(prefix) :]
-            if action in {"status", "build-info"}:
+            if action in {"status", "build-info", "metrics"}:
                 auth_failure = runtime_control_auth_failure(self.headers)
                 if auth_failure is not None:
                     status, payload = auth_failure
                     self.write_json(payload, status=status)
                     return
-                self.write_json(handle_runtime_action(action, {}))
+                result = gpu_metrics_response() if action == "metrics" else handle_runtime_action(action, {})
+                self.write_json(result)
                 return
         self.proxy_request()
 
@@ -613,34 +844,44 @@ class B1LocalAIProxy(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def proxy_request(self, send_body: bool = True) -> None:
+        auth_failure = runtime_control_auth_failure(self.headers)
+        if auth_failure is not None:
+            status, payload = auth_failure
+            self.write_json(payload, status=status)
+            return
         length = int(self.headers.get("Content-Length") or "0")
         body = self.rfile.read(length) if length else None
-        headers = {
-            key: value
-            for key, value in self.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
-        }
+        headers = forwarded_request_headers(self.headers)
+        tracked = self.command == "POST"
+        if tracked:
+            update_active_requests(1)
         try:
             client = load_client()
             response = client.request(self.command, self.path, body, headers)
         except (OSError, ValueError) as exc:
             self.write_json(json_response("unhealthy", "proxy", reason="upstream_unreachable", error=exc.__class__.__name__), status=503)
+            if tracked:
+                update_active_requests(-1)
             return
-        self.send_response(response.status, response.reason)
-        for key, value in response.getheaders():
-            if key.lower() in HOP_BY_HOP_HEADERS:
-                continue
-            self.send_header(key, value)
-        self.end_headers()
-        if not send_body or self.command == "HEAD":
-            response.read()
-            return
-        while True:
-            chunk = response.read(65536)
-            if not chunk:
-                break
-            self.wfile.write(chunk)
-            self.wfile.flush()
+        try:
+            self.send_response(response.status, response.reason)
+            for key, value in response.getheaders():
+                if key.lower() in HOP_BY_HOP_HEADERS:
+                    continue
+                self.send_header(key, value)
+            self.end_headers()
+            if not send_body or self.command == "HEAD":
+                response.read()
+                return
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        finally:
+            if tracked:
+                update_active_requests(-1)
 
 
 def main() -> None:

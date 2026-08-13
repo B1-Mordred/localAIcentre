@@ -1,0 +1,98 @@
+name: ${B1_P40_WORKER_PROJECT:-b1-p40-worker}
+
+services:
+  gateway:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    environment:
+      B1_P40_ALLOWED_REMOTE_IPS: ${B1_P40_ALLOWED_REMOTE_IPS:-192.168.2.2/32 192.168.2.0/24 127.0.0.1/32 ::1/128}
+      B1_P40_WORKER_HOSTNAME: ${B1_P40_WORKER_HOSTNAME:-p40-worker.b1.germering}
+    ports:
+      - "${B1_P40_WORKER_HTTPS_BIND:-0.0.0.0:9443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/data/caddy:/data
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/cache/caddy:/config
+    depends_on:
+      localai-worker:
+        condition: service_healthy
+    networks:
+      - worker
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+  localai-worker:
+    build:
+      context: ${B1_P40_LOCALAI_BUILD_CONTEXT:-./deploy/localai}
+      dockerfile: Dockerfile
+    image: ${B1_P40_LOCALAI_IMAGE:-b1-ai-hub/localai:v4.7.1-laguna-b1}
+    restart: unless-stopped
+    gpus: all
+    read_only: true
+    user: "0:0"
+    environment:
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: "true"
+      B1_LOCALAI_UID: "999"
+      B1_LOCALAI_GID: "999"
+      LOCALAI_MODELS_PATH: /models
+      LOCALAI_CONFIG_DIR: /configuration
+      LOCALAI_MODELS_CONFIG_FILE: /configuration/b1-managed-models.yaml
+      LOCALAI_BACKENDS_PATH: /backends
+      LOCALAI_DATA_PATH: /data
+      NVIDIA_VISIBLE_DEVICES: ${B1_P40_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      LOCALAI_MAX_ACTIVE_BACKENDS: ${LOCALAI_MAX_ACTIVE_BACKENDS:-1}
+      LOCALAI_WATCHDOG_IDLE: ${LOCALAI_WATCHDOG_IDLE:-true}
+      LOCALAI_WATCHDOG_IDLE_TIMEOUT: ${LOCALAI_WATCHDOG_IDLE_TIMEOUT:-5m}
+      LOCALAI_WATCHDOG_INTERVAL: ${LOCALAI_WATCHDOG_INTERVAL:-1s}
+      LOCALAI_FORCE_EVICTION_WHEN_BUSY: ${LOCALAI_FORCE_EVICTION_WHEN_BUSY:-false}
+      B1_LOCALAI_MANAGED_GPU_LAYERS: ${B1_LOCALAI_MANAGED_GPU_LAYERS:--1}
+      B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS: ${B1_LOCALAI_MANAGED_LARGE_GPU_LAYERS:--1}
+      B1_LOCALAI_MANAGED_GEMMA4_12B_CONTEXT_SIZE: ${B1_LOCALAI_MANAGED_GEMMA4_12B_CONTEXT_SIZE:-16384}
+      B1_LOCALAI_MANAGED_GEMMA4_12B_GPU_LAYERS: ${B1_LOCALAI_MANAGED_GEMMA4_12B_GPU_LAYERS:--1}
+      B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE: ${B1_LOCALAI_MANAGED_GEMMA4_E4B_CONTEXT_SIZE:-16384}
+      B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS: ${B1_LOCALAI_MANAGED_GEMMA4_E4B_GPU_LAYERS:--1}
+      B1_LOCALAI_MANAGED_LAGUNA_XS_CONTEXT_SIZE: ${B1_LOCALAI_MANAGED_LAGUNA_XS_CONTEXT_SIZE:-32768}
+      B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS: ${B1_LOCALAI_MANAGED_LAGUNA_XS_GPU_LAYERS:--1}
+      B1_LOCALAI_MANAGED_GPT_OSS_20B_CONTEXT_SIZE: ${B1_LOCALAI_MANAGED_GPT_OSS_20B_CONTEXT_SIZE:-32768}
+      B1_LOCALAI_MANAGED_GPT_OSS_20B_GPU_LAYERS: ${B1_LOCALAI_MANAGED_GPT_OSS_20B_GPU_LAYERS:--1}
+    ports:
+      - "127.0.0.1:${B1_P40_LOCALAI_DEBUG_PORT:-18080}:8080"
+    volumes:
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/models:/models:ro
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/data/localai/configuration:/configuration
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/data/localai/backends:/backends
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/data/localai/data:/data
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/cache/localai:/srv/b1-ai-hub/cache
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/logs/localai:/srv/b1-ai-hub/logs/localai
+      - ${B1_P40_WORKER_ROOT:-/srv/b1-p40-worker}/secrets:/run/secrets:ro
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+      - /run:size=64m,mode=755
+    networks:
+      - worker
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5).read()\""
+      interval: 20s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+networks:
+  worker:
+    driver: bridge
+    internal: false

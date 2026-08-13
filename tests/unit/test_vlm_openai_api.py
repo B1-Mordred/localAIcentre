@@ -159,6 +159,40 @@ class VlmOpenAiApiTests(unittest.TestCase):
         self.assertEqual(calls[1]["payload"]["model"], "vision-default")
         self.assertEqual(calls[1]["runtime"], "localai")
 
+    def test_responses_stream_uses_scheduler_aware_stream_proxy(self) -> None:
+        self.patch_auth()
+        calls: list[dict[str, Any]] = []
+        resolution = self.resolution()
+
+        def resolve_catalog_alias_for_modalities(*_args: Any, **_kwargs: Any) -> Any:
+            return resolution
+
+        async def call_openai_runtime_stream(path: str, payload: dict[str, Any], selected: Any, operation: str, owner_id: str | None = None) -> Any:
+            calls.append({"path": path, "payload": payload, "runtime": selected.runtime, "operation": operation, "owner_id": owner_id})
+
+            async def events():
+                yield 'data: {"type":"response.completed"}\n\n'
+
+            return main.StreamingResponse(events(), media_type="text/event-stream")
+
+        async def call_openai_runtime_json(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("streaming Responses must not use the JSON proxy")
+
+        self.patch_attr("resolve_catalog_alias_for_modalities_auth", resolve_catalog_alias_for_modalities)
+        self.patch_attr("call_openai_runtime_stream", call_openai_runtime_stream)
+        self.patch_attr("call_openai_runtime_json", call_openai_runtime_json)
+
+        response = asyncio.run(main.responses({"model": "vision-default", "input": "hello", "stream": True}, authorization="Bearer key"))
+
+        self.assertIsInstance(response, main.StreamingResponse)
+        self.assertEqual(calls, [{
+            "path": "/v1/responses",
+            "payload": {"model": "vision-default", "input": "hello", "stream": True},
+            "runtime": "localai",
+            "operation": "responses",
+            "owner_id": "client_1",
+        }])
+
     def test_embeddings_proxy_to_audio_cpu_runtime(self) -> None:
         self.patch_auth()
         calls: list[dict[str, Any]] = []

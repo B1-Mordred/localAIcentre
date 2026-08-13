@@ -1,0 +1,110 @@
+{
+  "id": "b1-openai-gpt-oss-20b-mxfp4-localai",
+  "version": "b97cbb20d1995efd41dce8c4dd1ddf86e8db375b",
+  "display_name": "GPT-OSS 20B MXFP4 GGUF",
+  "description": "Pinned ggml-org llama.cpp conversion of OpenAI GPT-OSS 20B in its native MXFP4 format. The B1 profile preserves the embedded Harmony chat template and routes quality inference to the dedicated 24 GB P40 LAN worker.",
+  "modality": "llm",
+  "operations": ["chat"],
+  "source": {
+    "type": "huggingface",
+    "url": "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF",
+    "revision": "b97cbb20d1995efd41dce8c4dd1ddf86e8db375b"
+  },
+  "files": [
+    {
+      "path": "gpt-oss-20b-MXFP4.gguf",
+      "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+      "size_bytes": 12109566624,
+      "format": "gguf",
+      "quantization": "MXFP4"
+    }
+  ],
+  "runtimes": ["lan-localai-worker", "localai"],
+  "preferred_runtime": "lan-localai-worker",
+  "resource_estimate": {
+    "vram_gib": 12.0,
+    "ram_gib": 24.0,
+    "disk_gib": 11.3,
+    "context_tokens": 8192
+  },
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://huggingface.co/openai/gpt-oss-20b",
+    "redistribution": "downloadable",
+    "attribution": "OpenAI GPT-OSS 20B; ggml-org GPT-OSS 20B GGUF MXFP4 conversion",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["chat-quality", "gpt-oss-20b", "gpt-oss-reasoning"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "runtime_adapter_versions": {
+    "lan-localai-worker": "b1-runtime-adapter/v1alpha1",
+    "localai": "b1-runtime-adapter/v1alpha1"
+  },
+  "runtime_smoke": {
+    "schema": "b1-ai-hub-runtime-smoke/v1",
+    "description": "Bounded non-streaming GPT-OSS Harmony-template LocalAI chat completion through the scheduler.",
+    "localai": {
+      "request": {
+        "path": "/v1/chat/completions",
+        "method": "POST"
+      },
+      "timeout_seconds": 900
+    },
+    "lan-localai-worker": {
+      "request": {
+        "path": "/v1/chat/completions",
+        "method": "POST"
+      },
+      "timeout_seconds": 900
+    }
+  },
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-08-08T00:00:00+00:00",
+    "source": "Pinned ggml-org GPT-OSS 20B MXFP4 conversion plus a live managed-worker P40 generation on 2026-08-08.",
+    "original_resource_estimate": {
+      "vram_gib": 12.0,
+      "ram_gib": 24.0,
+      "disk_gib": 11.3,
+      "context_tokens": 8192
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 5.0,
+      "ram_gib": 24.0,
+      "disk_gib": 11.3,
+      "context_tokens": 8192
+    },
+    "runs": [
+      {
+        "id": "gpt-oss-20b-mxfp4-catalog-metadata-20260729",
+        "type": "catalog-metadata",
+        "status": "ok",
+        "runtime": "localai",
+        "model_alias": "chat-quality",
+        "resolved_model_version": "b1-openai-gpt-oss-20b-mxfp4-localai@b97cbb20d1995efd41dce8c4dd1ddf86e8db375b",
+        "peak_vram_mib": 5120,
+        "peak_ram_mib": 24576,
+        "hook": {
+          "status": "unconfirmed",
+          "reason": "catalog_metadata_not_runtime_smoke"
+        }
+      },
+      {
+        "id": "gpt-oss-20b-mxfp4-p40-worker-20260808",
+        "type": "runtime-smoke",
+        "status": "ok",
+        "runtime": "lan-localai-worker",
+        "model_alias": "chat-quality",
+        "resolved_model_version": "b1-openai-gpt-oss-20b-mxfp4-localai@b97cbb20d1995efd41dce8c4dd1ddf86e8db375b",
+        "peak_vram_mib": 11433,
+        "peak_ram_mib": 24576,
+        "hook": {
+          "status": "ok",
+          "reason": "live_p40_inference"
+        }
+      }
+    ]
+  }
+}

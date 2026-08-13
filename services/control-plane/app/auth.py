@@ -21,6 +21,7 @@ ROLE_SCOPES: dict[Role, set[str]] = {
     Role.ADMIN: {"*"},
     Role.OPERATOR: {
         "admin:read",
+        "inference:write",
         "jobs:read",
         "jobs:write",
         "models:read",
@@ -31,6 +32,9 @@ ROLE_SCOPES: dict[Role, set[str]] = {
         "storage:write",
         "workflows:read",
         "workflows:write",
+        "benchmarks:read",
+        "benchmarks:write",
+        "benchmarks:review",
     },
     Role.CREATOR: {
         "jobs:read",
@@ -38,6 +42,8 @@ ROLE_SCOPES: dict[Role, set[str]] = {
         "models:read",
         "workflows:read",
         "workflows:write",
+        "benchmarks:read",
+        "benchmarks:review",
     },
     Role.USER: {
         "jobs:read",

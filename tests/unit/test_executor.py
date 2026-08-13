@@ -50,6 +50,29 @@ WAV_BYTES = (
 )
 
 
+def pcm_wav_bytes(duration_ms: int = 500, sample_rate: int = 16000) -> bytes:
+    sample_count = max(1, int(sample_rate * duration_ms / 1000))
+    data = b"\x00\x00" * sample_count
+    byte_rate = sample_rate * 2
+    block_align = 2
+    return (
+        b"RIFF"
+        + (36 + len(data)).to_bytes(4, "little")
+        + b"WAVE"
+        + b"fmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (1).to_bytes(2, "little")
+        + sample_rate.to_bytes(4, "little")
+        + byte_rate.to_bytes(4, "little")
+        + block_align.to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + len(data).to_bytes(4, "little")
+        + data
+    )
+
+
 class FakeDatabase:
     def __init__(self, lease_acquired: bool = True, runtime: str = "voicebox", claim_job: bool = True) -> None:
         self.lease_acquired = lease_acquired
@@ -186,6 +209,65 @@ class FakeDatabase:
 
 @unittest.skipIf(executor is None, "SQLAlchemy is not installed in this lightweight test environment")
 class ExecutorTests(unittest.TestCase):
+    def test_p40_seated_alias_uses_managed_seated_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+
+        self.assertTrue(
+            runner.is_studio_seated_character_job(
+                {
+                    "modality": "image",
+                    "operation": "studio-seated-character",
+                    "model_alias": "studio-seated-character-p40",
+                    "runtime": "lan-p40-media",
+                }
+            )
+        )
+
+    def test_gpu_runner_does_not_claim_new_media_while_interactive_chat_waits(self) -> None:
+        fake = FakeDatabase(runtime="lan-p40-media")
+
+        async def has_interactive_gpu_waiter() -> bool:
+            return True
+
+        fake.has_interactive_gpu_waiter = has_interactive_gpu_waiter  # type: ignore[attr-defined]
+        self.patch_database(fake)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertFalse(processed)
+        self.assertEqual(fake.claims, [])
+        self.assertEqual(fake.releases, [])
+
+    def test_p40_media_jobs_use_remote_authenticated_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(
+                Path(tmp),
+                runtime_control_token="secret-token",
+                runtime_urls={
+                    "comfyui": "http://comfyui:8000",
+                    "lipsync": "http://lipsync:8000",
+                    "lan-p40-media": "https://p40-worker.b1.germering:9443/media",
+                },
+                runtime_tls_ca_files={"lan-p40-media": "/run/secrets/p40-ca.crt"},
+            )
+
+        remote_job = {"runtime": "lan-p40-media"}
+        local_job = {"runtime": "comfyui"}
+        self.assertEqual(runner.comfyui_url_for_job(remote_job), "https://p40-worker.b1.germering:9443/media/comfyui")
+        self.assertEqual(runner.lipsync_url_for_job(remote_job), "https://p40-worker.b1.germering:9443/media/lipsync")
+        self.assertEqual(runner.media_runtime_headers(remote_job), {"Authorization": "Bearer secret-token"})
+        self.assertEqual(
+            runner.lipsync_runtime_headers(remote_job),
+            {"Authorization": "Bearer secret-token", "X-B1-Runtime-Token": "secret-token"},
+        )
+        self.assertEqual(runner.media_runtime_client_kwargs(remote_job), {"trust_env": False, "verify": "/run/secrets/p40-ca.crt"})
+        self.assertEqual(runner.comfyui_url_for_job(local_job), "http://comfyui:8000")
+        self.assertEqual(runner.lipsync_url_for_job(local_job), "http://lipsync:8000")
+        self.assertEqual(runner.media_runtime_headers(local_job), {})
+        self.assertEqual(runner.lipsync_runtime_headers(local_job), {"X-B1-Runtime-Token": "secret-token"})
+
     def setUp(self) -> None:
         original_resolver = security.resolve_hostname_addresses
         security.resolve_hostname_addresses = lambda hostname, port: ["93.184.216.34"]
@@ -195,6 +277,103 @@ class ExecutorTests(unittest.TestCase):
         original = executor.database
         executor.database = fake
         self.addCleanup(lambda: setattr(executor, "database", original))
+
+    def test_native_scene_camera_plans_detail_sufficient_two_shot(self) -> None:
+        regions = [
+            {"participant_id": "grok", "seat": 5, "face_region": {"x": 0.589, "y": 0.455, "width": 0.072, "height": 0.145}},
+            {"participant_id": "mistral", "seat": 6, "face_region": {"x": 0.674, "y": 0.455, "width": 0.072, "height": 0.145}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            plan = runner.native_scene_camera_plan(
+                scene_width=1280,
+                scene_height=720,
+                output_width=1024,
+                output_height=576,
+                payload={
+                    "camera_view": "panel_two_shot",
+                    "speaker_participant_id": "grok",
+                    "framed_participant_ids": ["grok", "mistral"],
+                    "face_regions": regions,
+                },
+                speaker_region=regions[0],
+            )
+
+        self.assertEqual(plan["view"], "panel_two_shot")
+        self.assertEqual(plan["framed_participant_ids"], ["grok", "mistral"])
+        self.assertGreaterEqual(plan["speaker_face_height_px"], 110)
+        self.assertGreater(plan["wall_screen"]["width"], 0)
+
+    def test_native_scene_camera_rejects_low_resolution_master(self) -> None:
+        region = {"participant_id": "grok", "seat": 5, "face_region": {"x": 0.589, "y": 0.455, "width": 0.072, "height": 0.145}}
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            with self.assertRaises(executor.CameraCoverageError):
+                runner.native_scene_camera_plan(
+                    scene_width=512,
+                    scene_height=288,
+                    output_width=1024,
+                    output_height=576,
+                    payload={"camera_view": "speaker_medium", "speaker_participant_id": "grok", "face_regions": [region]},
+                    speaker_region=region,
+                )
+
+    def test_seated_plate_anatomy_metrics_detects_spread_disconnected_legs(self) -> None:
+        alpha = executor.Image.new("L", (200, 300), 0)
+        draw = executor.ImageDraw.Draw(alpha)
+        draw.ellipse((70, 15, 130, 100), fill=255)
+        draw.rectangle((55, 85, 145, 165), fill=255)
+        # The historic failure mode: broad separate legs with a large gap.
+        draw.rectangle((20, 160, 75, 230), fill=255)
+        draw.rectangle((125, 160, 180, 230), fill=255)
+
+        metrics = executor.GpuJobRunner.seated_plate_anatomy_metrics(alpha)
+
+        self.assertGreater(metrics["lower_body_width_ratio"], 0.66)
+        self.assertGreater(metrics["lower_body_gap_ratio"], 0.18)
+
+    def test_seated_plate_anatomy_metrics_allows_narrow_desk_occluded_pose(self) -> None:
+        alpha = executor.Image.new("L", (200, 300), 0)
+        draw = executor.ImageDraw.Draw(alpha)
+        draw.ellipse((72, 15, 128, 100), fill=255)
+        draw.rectangle((55, 85, 145, 190), fill=255)
+        draw.rectangle((62, 165, 138, 220), fill=255)
+
+        metrics = executor.GpuJobRunner.seated_plate_anatomy_metrics(alpha)
+
+        self.assertLess(metrics["head_width_ratio"], 0.35)
+        self.assertLess(metrics["head_max_width_ratio"], 0.35)
+        self.assertLess(metrics["lower_body_width_ratio"], 0.66)
+        self.assertLess(metrics["lower_body_gap_ratio"], 0.18)
+
+    def test_seated_plate_halo_metrics_detects_opaque_source_card(self) -> None:
+        alpha = executor.Image.new("L", (200, 300), 0)
+        draw = executor.ImageDraw.Draw(alpha)
+        draw.polygon([(60, 18), (140, 18), (168, 180), (32, 180)], fill=180)
+        draw.ellipse((78, 24, 122, 100), fill=255)
+
+        metrics = executor.GpuJobRunner.seated_plate_halo_metrics(alpha)
+
+        self.assertGreater(metrics["matte_halo_max_alpha"], 8)
+
+    def test_seated_plate_halo_metrics_allows_isolated_robot_silhouette(self) -> None:
+        alpha = executor.Image.new("L", (200, 300), 0)
+        draw = executor.ImageDraw.Draw(alpha)
+        draw.ellipse((90, 24, 110, 100), fill=255)
+        draw.rectangle((72, 88, 128, 190), fill=255)
+
+        metrics = executor.GpuJobRunner.seated_plate_halo_metrics(alpha)
+
+        self.assertEqual(metrics["matte_halo_max_alpha"], 0)
+
+    def test_seated_general_matte_uses_pinned_content_addressed_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp) / "artifacts")
+
+            self.assertEqual(
+                runner.seated_general_matte_model_path(),
+                Path(tmp) / "models" / "blobs" / executor.SEATED_GENERAL_MATTE_SHA256,
+            )
 
     def test_runtime_control_payload_carries_selected_runtime_smoke_config(self) -> None:
         prompt = {"1": {"class_type": "B1RuntimeTinyImage", "inputs": {}}}
@@ -231,6 +410,37 @@ class ExecutorTests(unittest.TestCase):
 
         self.assertFalse(processed)
         self.assertEqual(fake.claims, [])
+
+    def test_panel_cpu_runner_claims_compositor_without_gpu_lease(self) -> None:
+        fake = FakeDatabase(runtime="panel-cpu")
+        fake.job.update(
+            {
+                "model_alias": "studio-panel-shot",
+                "resolved_model_version": "b1-studio-panel-shot-compositor@20260809.1",
+                "modality": "image",
+                "operation": "studio-panel-shot",
+            }
+        )
+        self.patch_database(fake)
+
+        class PanelRunner(executor.CpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(artifact_root)
+                self.panel_jobs: list[str] = []
+
+            async def run_panel_cpu_job(self, job: dict[str, Any]) -> bool:
+                self.panel_jobs.append(str(job["id"]))
+                await executor.database.update_job(job["id"], state="completed", stage="completed", progress=100)
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = PanelRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertTrue(processed)
+        self.assertEqual(runner.panel_jobs, ["job_gpu"])
+        self.assertIn("panel-cpu", fake.claims[0]["runtime_names"])
+        self.assertEqual(fake.releases, [])
 
     def test_gpu_runner_async_pause_hook_skips_claiming_work(self) -> None:
         fake = FakeDatabase(runtime="localai")
@@ -593,7 +803,7 @@ class ExecutorTests(unittest.TestCase):
                 self.posts: list[tuple[str, dict[str, Any]]] = []
 
             async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
-                return None
+                return {"gpu": {"available": True, "devices": [{"memory_used_mib": 0}]}}
 
             async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
                 self.posts.append((path, payload))
@@ -655,6 +865,9 @@ class ExecutorTests(unittest.TestCase):
                 self.controls.append((runtime, action, payload))
                 return {"status": "ok", "runtime": runtime, "action": action, "strategy": "backend_shutdown"}
 
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                return {"gpu": {"available": True, "devices": [{"memory_used_mib": 0}]}}
+
             async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
                 self.posts.append((path, payload))
                 return {"status": "ok", "action": "unload"}
@@ -671,6 +884,153 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(fake.runtime_states["comfyui"]["status"], "unload_ok")
         self.assertEqual(fake.runtime_states["comfyui"]["details"]["hook"]["strategy"], "backend_shutdown")
         self.assertEqual(fake.runtime_states["voicebox"]["status"], "unload_ok")
+
+    def test_gpu_runner_skips_explicitly_unloaded_runtimes_on_warm_reuse(self) -> None:
+        fake = FakeDatabase(runtime="lan-localai-worker")
+        now = datetime.now(tz=UTC)
+        fake.runtime_states.update(
+            {
+                "lan-localai-worker": {
+                    "runtime": "lan-localai-worker",
+                    "status": "idle",
+                    "stage": "idle",
+                    "active_model": "laguna-current",
+                    "model_alias": "laguna-s-quality",
+                    "resolved_model_version": "laguna-current@1",
+                    "updated_at": now,
+                },
+                "lan-p40-media": {
+                    "runtime": "lan-p40-media",
+                    "status": "unload_ok",
+                    "stage": "unloading",
+                    "active_model": None,
+                    "model_alias": None,
+                    "resolved_model_version": None,
+                    "updated_at": now,
+                },
+                "comfyui": {
+                    "runtime": "comfyui",
+                    "status": "unload_ok",
+                    "stage": "unloading",
+                    "active_model": None,
+                    "model_alias": None,
+                    "resolved_model_version": None,
+                    "updated_at": now,
+                },
+                "localai": {
+                    "runtime": "localai",
+                    "status": "unload_ok",
+                    "stage": "unloading",
+                    "active_model": None,
+                    "model_alias": None,
+                    "resolved_model_version": None,
+                    "updated_at": now,
+                },
+                "voicebox": {
+                    "runtime": "voicebox",
+                    "status": "unload_ok",
+                    "stage": "unloading",
+                    "active_model": None,
+                    "model_alias": None,
+                    "resolved_model_version": None,
+                    "updated_at": now,
+                },
+            }
+        )
+        self.patch_database(fake)
+
+        class WarmReuseRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_urls={
+                        "lan-localai-worker": "https://p40-worker.example/localai",
+                        "lan-p40-media": "https://p40-worker.example/media",
+                        "comfyui": "http://comfyui",
+                    },
+                )
+                self.controls: list[tuple[str, str]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action))
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+        job = {
+            "id": "sync_chat_warm",
+            "runtime": "lan-localai-worker",
+            "model_alias": "laguna-s-quality",
+            "resolved_model_version": "laguna-current@1",
+            "modality": "llm",
+            "operation": "chat",
+            "request_params": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = WarmReuseRunner(Path(tmp))
+            results = asyncio.run(runner.unload_other_gpu_runtimes(job))
+
+        self.assertEqual(results, [])
+        self.assertEqual(runner.controls, [])
+
+    def test_gpu_runner_restarts_runtime_when_graceful_unload_leaves_vram_resident(self) -> None:
+        fake = FakeDatabase(runtime="localai")
+        fake.runtime_states["voicebox"] = {
+            "runtime": "voicebox",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "voicebox-quality",
+            "model_alias": "tts-quality",
+            "resolved_model_version": "voicebox-quality@1",
+            "job_id": "job_voice",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC),
+        }
+        self.patch_database(fake)
+
+        class StaleVramRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    runtime_urls={"voicebox": "http://voicebox"},
+                    reserve_vram_gib=1.0,
+                )
+                self.controls: list[tuple[str, str, dict[str, Any]]] = []
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+                self.metrics = [5632, 128]
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action, payload))
+                return {"status": "ok", "runtime": runtime, "action": action, "strategy": "backend_shutdown"}
+
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                used = self.metrics.pop(0)
+                return {"gpu": {"available": True, "devices": [{"memory_used_mib": used}]}}
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "runtime": "voicebox", "action": "unload", "strategy": "restart_service"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = StaleVramRunner(Path(tmp))
+            result = asyncio.run(runner.unload_target_runtime_for_model_switch(
+                {
+                    "id": "job_voice_switch",
+                    "runtime": "voicebox",
+                    "model_alias": "tts-other",
+                    "resolved_model_version": "voicebox-other@1",
+                    "modality": "tts",
+                    "operation": "speech",
+                    "request_params": {},
+                }
+            ))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([(runtime, action) for runtime, action, _ in runner.controls], [("voicebox", "unload")])
+        self.assertEqual([path for path, _ in runner.posts], ["/v1/runtime-actions/voicebox/unload"])
+        state = fake.runtime_states["voicebox"]
+        self.assertEqual(state["status"], "unload_ok")
+        self.assertEqual(state["details"]["graceful_vram_failure"]["memory_used_mib"], 5632)
+        self.assertEqual(state["details"]["restart_vram_verification"]["memory_used_mib"], 128)
 
     def test_gpu_runner_unloads_target_runtime_when_model_changes(self) -> None:
         fake = FakeDatabase(runtime="comfyui")
@@ -844,6 +1204,115 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")
         self.assertFalse(FakeAsyncClient.calls[0]["client_kwargs"]["trust_env"])
 
+    def test_lan_worker_control_and_metrics_use_pinned_ca_and_bearer_token(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b'{"status":"ok"}'
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "gpu": {"available": True, "devices": [{"memory_used_mib": 0}]},
+                }
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                self.calls.append({"method": "GET", "url": url, "headers": dict(headers), "client_kwargs": dict(self.kwargs)})
+                return FakeResponse()
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.calls.append({"method": "POST", "url": url, "headers": dict(headers), "client_kwargs": dict(self.kwargs)})
+                return FakeResponse()
+
+        original_client = executor.httpx.AsyncClient
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(
+                Path(tmp),
+                runtime_urls={
+                    "lan-localai-worker": "https://p40-worker.b1.germering:9443",
+                    "lan-deepseek-worker": "https://p40-worker.b1.germering:9443/deepseek",
+                },
+                runtime_tls_ca_files={
+                    "lan-localai-worker": "/run/trust/p40-worker.crt",
+                    "lan-deepseek-worker": "/run/trust/p40-worker.crt",
+                },
+                runtime_control_token="hook-token",
+            )
+            control = asyncio.run(runner.post_runtime_control("lan-localai-worker", "load", {"model": "chat-quality"}))
+            deepseek_control = asyncio.run(runner.post_runtime_control("lan-deepseek-worker", "load", {"model": "deepseek-main"}))
+            released, verification = asyncio.run(runner.unload_vram_release_check("lan-localai-worker"))
+            deepseek_released, deepseek_verification = asyncio.run(runner.unload_vram_release_check("lan-deepseek-worker"))
+
+        self.assertEqual(control["status"], "ok")
+        self.assertEqual(deepseek_control["status"], "ok")
+        self.assertTrue(released)
+        self.assertTrue(deepseek_released)
+        self.assertEqual(verification["memory_used_mib"], 0)
+        self.assertEqual(deepseek_verification["memory_used_mib"], 0)
+        self.assertEqual([call["method"] for call in FakeAsyncClient.calls], ["POST", "POST", "GET", "GET"])
+        self.assertEqual(FakeAsyncClient.calls[1]["url"], "https://p40-worker.b1.germering:9443/deepseek/b1/runtime/load")
+        for call in FakeAsyncClient.calls:
+            self.assertEqual(call["headers"]["Authorization"], "Bearer hook-token")
+            self.assertEqual(call["client_kwargs"]["verify"], "/run/trust/p40-worker.crt")
+            self.assertFalse(call["client_kwargs"]["trust_env"])
+
+    def test_lipsync_runtime_control_uses_internal_runtime_token_header(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b'{"status":"ready"}'
+
+            def json(self) -> dict[str, str]:
+                return {"status": "ready"}
+
+        class FakeAsyncClient:
+            calls: list[dict[str, Any]] = []
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.calls.append({"url": url, "json": dict(json), "headers": dict(headers)})
+                return FakeResponse()
+
+        original_client = executor.httpx.AsyncClient
+        FakeAsyncClient.calls = []
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(
+                Path(tmp),
+                runtime_urls={"lipsync": "http://lipsync:8000"},
+                runtime_control_token="hook-token",
+            )
+            result = asyncio.run(runner.post_runtime_control("lipsync", "warm", {"model": "talking-head-lipsync"}))
+
+        self.assertEqual(result, {"status": "ready"})
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://lipsync:8000/b1/runtime/warm")
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["X-B1-Runtime-Token"], "hook-token")
+        self.assertNotIn("Authorization", FakeAsyncClient.calls[0]["headers"])
+
     def test_gpu_runner_fails_before_submission_when_load_hook_reports_failure(self) -> None:
         fake = FakeDatabase(runtime="voicebox")
         fake.job.update(
@@ -943,6 +1412,9 @@ class ExecutorTests(unittest.TestCase):
                 self.posts.append((path, payload))
                 return {"status": "ok", "service": "localai", "action": "unload"}
 
+            async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
+                return {"gpu": {"available": True, "devices": [{"memory_used_mib": 0}]}}
+
         with tempfile.TemporaryDirectory() as tmp:
             runner = IdleRunner(Path(tmp))
             processed = asyncio.run(runner.run_once())
@@ -992,6 +1464,52 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(fake.releases, [])
         self.assertEqual(fake.runtime_states["localai"]["active_model"], "image-model")
 
+    def test_gpu_runner_revalidates_idle_candidate_after_acquiring_lease(self) -> None:
+        fake = FakeDatabase(runtime="localai", claim_job=False)
+        fake.runtime_states["localai"] = {
+            "runtime": "localai",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "image-model",
+            "model_alias": "image-default",
+            "resolved_model_version": "image-model@1",
+            "job_id": "job_old",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC) - timedelta(seconds=61),
+        }
+        original_acquire = fake.acquire_scheduler_owner
+
+        async def acquire_after_interactive_refresh(owner: str, ttl_seconds: int) -> dict[str, Any]:
+            # Simulate an interactive request that held the lease, reloaded the
+            # model, and marked it idle immediately before the runner acquired.
+            fake.runtime_states["localai"]["updated_at"] = datetime.now(tz=UTC)
+            return await original_acquire(owner, ttl_seconds)
+
+        fake.acquire_scheduler_owner = acquire_after_interactive_refresh  # type: ignore[method-assign]
+        self.patch_database(fake)
+
+        class IdleRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_agent_url="http://runtime-agent",
+                    default_idle_timeout_seconds=60,
+                )
+                self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+                self.posts.append((path, payload))
+                return {"status": "ok", "service": "localai", "action": "unload"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = IdleRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertFalse(processed)
+        self.assertEqual(runner.posts, [])
+        self.assertEqual(fake.runtime_states["localai"]["active_model"], "image-model")
+        self.assertEqual(fake.releases, [runner.lease_owner])
+
     def test_gpu_runner_submits_comfyui_prompt_and_ingests_history_outputs(self) -> None:
         fake = FakeDatabase(runtime="comfyui")
         fake.job["request_params"] = {
@@ -1021,11 +1539,14 @@ class ExecutorTests(unittest.TestCase):
                 )
                 self.payloads: list[dict[str, Any]] = []
 
-            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+            async def submit_comfyui_prompt(self, job: dict[str, Any], payload: dict[str, Any]) -> str:
                 self.payloads.append(payload)
                 return "prompt_native_1"
 
-            async def fetch_comfyui_history(self, prompt_id: str) -> dict[str, Any] | None:
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def fetch_comfyui_history(self, job: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
                 return {
                     prompt_id: {
                         "status": {"completed": True},
@@ -1039,7 +1560,7 @@ class ExecutorTests(unittest.TestCase):
                     }
                 }
 
-            async def ingest_comfyui_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            async def ingest_comfyui_artifacts(self, job: dict[str, Any], artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 return [
                     {
                         **artifact,
@@ -1067,6 +1588,154 @@ class ExecutorTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / "temporary" / "job_gpu.json").exists())
             self.assertEqual(fake.releases, [runner.lease_owner])
 
+    def test_gpu_runner_routes_talking_head_lipsync_to_musetalk_path(self) -> None:
+        fake = FakeDatabase(runtime="comfyui")
+        audio = pcm_wav_bytes(duration_ms=500)
+        audio_sha256 = hashlib.sha256(audio).hexdigest()
+
+        class LipsyncRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    interval_seconds=1,
+                    lease_ttl_seconds=60,
+                    runtime_urls={"lipsync": "http://lipsync"},
+                )
+                self.generic_comfyui_called = False
+                self.lipsync_payloads: list[dict[str, Any]] = []
+                self.controls: list[tuple[str, str]] = []
+                self.render_attempts = 0
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append((runtime, action))
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def run_comfyui_job(self, job: dict[str, Any]) -> None:
+                self.generic_comfyui_called = True
+                raise AssertionError("talking-head-lipsync must not use generic ComfyUI image/video animation")
+
+            async def render_talking_head_lipsync_runtime(
+                self,
+                *,
+                job: dict[str, Any],
+                portrait: bytes,
+                portrait_mime_type: str,
+                audio: bytes,
+                audio_sha256: str,
+                timing_sha256: str,
+                width: int,
+                height: int,
+                fps: int,
+                duration_ms: int,
+                payload: dict[str, Any],
+            ) -> tuple[bytes, dict[str, Any]]:
+                self.render_attempts += 1
+                self.lipsync_payloads.append(
+                    {
+                        "portrait_mime_type": portrait_mime_type,
+                        "audio_sha256": audio_sha256,
+                        "timing_sha256": timing_sha256,
+                        "width": width,
+                        "height": height,
+                        "fps": fps,
+                        "duration_ms": duration_ms,
+                        "payload": dict(payload),
+                    }
+                )
+                if self.render_attempts == 1:
+                    raise executor.LipsyncRuntimeFailure(
+                        "lipsync_cuda_out_of_memory",
+                        "MuseTalk could not reserve enough CUDA memory",
+                    )
+                return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom", {
+                    "backend": "b1-musetalk-v1.5",
+                    "musetalk_commit": "test-commit",
+                    "performance": {
+                        "mode": "audio_driven_character_performance",
+                        "applied": True,
+                        "plan_sha256": "b" * 64,
+                        "variation_seed": 2104,
+                        "backend": "b1-musetalk-protected-performance-compositor/v1",
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            portrait_ref = executor.media_artifacts.write_staged_input_bytes(
+                root,
+                owner_id="client_1",
+                field_name="portrait",
+                content=PNG_BYTES,
+                declared_mime_type="image/png",
+            )
+            audio_ref = executor.media_artifacts.write_staged_input_bytes(
+                root,
+                owner_id="client_1",
+                field_name="audio",
+                content=audio,
+                declared_mime_type="audio/wav",
+            )
+            fake.job.update(
+                {
+                    "id": "job_lipsync",
+                    "owner_id": "client_1",
+                    "runtime": "comfyui",
+                    "model_alias": "talking-head-lipsync",
+                    "resolved_model_version": "tmelyralab-musetalk-v1.5-lipsync@0a89dec",
+                    "modality": "video",
+                    "operation": "talking-head-lipsync",
+                    "request_params": {
+                        "input": {
+                            "portrait_artifact_id": portrait_ref["id"],
+                            "audio_artifact_id": audio_ref["id"],
+                            "audio_sha256": audio_sha256,
+                            "width": 512,
+                            "height": 512,
+                            "fps": 12,
+                            "duration_ms": 500,
+                            "performance_plan": {
+                                "schema_version": "dialecticore.character_performance.v1",
+                                "on_camera_energy": "engaged",
+                                "gaze_style": "responsive",
+                                "head_motion": "subtle",
+                                "expression_range": "warm",
+                                "gesture_frequency": "occasional",
+                                "signature_habit": "brief attentive head tilt",
+                                "variation_seed": 2104,
+                            },
+                        }
+                    },
+                }
+            )
+            self.patch_database(fake)
+            runner = LipsyncRunner(root)
+            processed = asyncio.run(runner.run_once())
+
+            self.assertTrue(processed)
+            self.assertFalse(runner.generic_comfyui_called)
+            self.assertIn(("lipsync", "load"), runner.controls)
+            self.assertIn(("lipsync", "warm"), runner.controls)
+            self.assertIn(("lipsync", "unload"), runner.controls)
+            self.assertNotIn(("comfyui", "load"), runner.controls)
+            self.assertNotIn(("comfyui", "warm"), runner.controls)
+            self.assertEqual(runner.render_attempts, 2)
+            self.assertEqual(runner.lipsync_payloads[0]["audio_sha256"], audio_sha256)
+            self.assertEqual(runner.lipsync_payloads[0]["timing_sha256"], executor.EMPTY_TIMING_SHA256)
+            self.assertEqual(runner.lipsync_payloads[0]["width"], 512)
+            self.assertEqual(runner.lipsync_payloads[0]["height"], 512)
+            self.assertEqual(runner.lipsync_payloads[0]["fps"], 12)
+            self.assertEqual(runner.lipsync_payloads[0]["duration_ms"], 500)
+            self.assertEqual(runner.lipsync_payloads[0]["payload"]["performance_plan"]["variation_seed"], 2104)
+            self.assertEqual(fake.job["state"], "completed")
+            artifact = fake.job["artifacts"][0]
+            self.assertEqual(artifact["mime_type"], "video/mp4")
+            self.assertEqual(artifact["source"], "b1_lipsync_runtime")
+            self.assertEqual(artifact["lip_sync"]["mode"], "audio_driven")
+            self.assertEqual(artifact["lip_sync"]["backend"], "b1-musetalk-v1.5")
+            self.assertEqual(artifact["lip_sync"]["audio_sha256"], audio_sha256)
+            self.assertTrue(artifact["performance"]["applied"])
+            self.assertEqual(artifact["performance"]["variation_seed"], 2104)
+
     def test_comfyui_native_merge_prefers_stored_artifact_metadata(self) -> None:
         existing = [
             {
@@ -1090,6 +1759,28 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(merged[0]["source"], "artifact_store")
         self.assertEqual(merged[0]["bytes"], 12)
         self.assertEqual(merged[0]["sha256"], "a" * 64)
+
+    def test_comfyui_workflow_declares_staged_load_image_parameter(self) -> None:
+        manifest = {
+            "workflow_json": {
+                "13": {"class_type": "LoadImage", "inputs": {"image": "{{source_image_filename}}"}},
+                "14": {"class_type": "LoadImageMask", "inputs": {"image": "{{ignored_filename}}"}},
+            }
+        }
+        self.assertEqual(executor.comfyui_native.workflow_comfyui_staged_upload_parameters(manifest), {"source_image"})
+
+    def test_comfyui_workflow_declares_staged_load_video_parameter(self) -> None:
+        manifest = {
+            "workflow_json": {
+                "10": {"class_type": "LoadVideo", "inputs": {"file": "{{source_video_filename}}"}},
+                "11": {"class_type": "GetVideoComponents", "inputs": {"video": ["10", 0]}},
+            }
+        }
+        self.assertEqual(
+            executor.comfyui_native.workflow_comfyui_staged_upload_specs(manifest),
+            {"source_video": "video"},
+        )
+        self.assertEqual(executor.comfyui_native.workflow_comfyui_staged_upload_parameters(manifest), {"source_video"})
 
     def test_gpu_runner_renders_published_workflow_parameter_mappings_for_comfyui(self) -> None:
         fake = FakeDatabase(runtime="comfyui")
@@ -1130,11 +1821,14 @@ class ExecutorTests(unittest.TestCase):
                 )
                 self.payloads: list[dict[str, Any]] = []
 
-            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+            async def submit_comfyui_prompt(self, job: dict[str, Any], payload: dict[str, Any]) -> str:
                 self.payloads.append(payload)
                 return "prompt_mapped"
 
-            async def fetch_comfyui_history(self, prompt_id: str) -> dict[str, Any] | None:
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def fetch_comfyui_history(self, job: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
                 return {
                     prompt_id: {
                         "status": {"completed": True},
@@ -1148,7 +1842,7 @@ class ExecutorTests(unittest.TestCase):
                     }
                 }
 
-            async def ingest_comfyui_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            async def ingest_comfyui_artifacts(self, job: dict[str, Any], artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 return [
                     {
                         **artifact,
@@ -1200,13 +1894,16 @@ class ExecutorTests(unittest.TestCase):
                     comfyui_completion_timeout_seconds=30,
                 )
 
-            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+            async def submit_comfyui_prompt(self, job: dict[str, Any], payload: dict[str, Any]) -> str:
                 return "prompt_empty"
 
-            async def fetch_comfyui_history(self, prompt_id: str) -> dict[str, Any] | None:
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def fetch_comfyui_history(self, job: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
                 return {prompt_id: {"status": {"completed": True}, "outputs": {}}}
 
-            async def ingest_comfyui_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            async def ingest_comfyui_artifacts(self, job: dict[str, Any], artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 raise AssertionError("empty ComfyUI outputs should not enter artifact ingestion")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1265,10 +1962,10 @@ class ExecutorTests(unittest.TestCase):
                 self.posts.append((path, payload))
                 return {"status": "ok", "action": path.rsplit("/", 1)[-1]}
 
-            async def interrupt_comfyui(self) -> None:
+            async def interrupt_comfyui(self, job: dict[str, Any]) -> None:
                 self.interrupts += 1
 
-            async def submit_comfyui_prompt(self, payload: dict[str, Any]) -> str:
+            async def submit_comfyui_prompt(self, job: dict[str, Any], payload: dict[str, Any]) -> str:
                 try:
                     await asyncio.sleep(30)
                 except asyncio.CancelledError:
@@ -1293,6 +1990,48 @@ class ExecutorTests(unittest.TestCase):
         )
         self.assertEqual(fake.releases, [runner.lease_owner])
 
+    def test_gpu_runner_cancels_active_p40_comfyui_history_wait_and_recovers_runtime(self) -> None:
+        class CancellingDatabase(FakeDatabase):
+            async def get_job(self, job_id: str) -> dict[str, Any]:
+                self.job["state"] = "cancelling"
+                return dict(self.job)
+
+        fake = CancellingDatabase(runtime="lan-p40-media")
+        fake.job.update({"state": "running", "stage": "comfyui_waiting_history"})
+        self.patch_database(fake)
+
+        class P40CancelRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_urls={"lan-p40-media": "https://p40-worker.example/internal/media/comfyui"},
+                    comfyui_poll_seconds=0.05,
+                )
+                self.controls: list[str] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                self.controls.append(action)
+                return {"status": "ok", "runtime": runtime, "action": action}
+
+            async def interrupt_comfyui(self, job: dict[str, Any]) -> None:
+                self.controls.append("interrupt")
+
+            async def fetch_comfyui_history(self, job: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
+                raise AssertionError("cancel must be observed before another history request")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = P40CancelRunner(Path(tmp))
+            history = asyncio.run(runner.wait_for_comfyui_history(fake.job, "prompt_active"))
+
+        self.assertIsNone(history)
+        self.assertEqual(fake.job["state"], "cancelled")
+        self.assertEqual(fake.job["stage"], "cancelled")
+        self.assertEqual(runner.controls, ["interrupt", "cancel", "recover"])
+        self.assertIn(
+            ("lan-p40-media", "recover_ok", "cancel_recovery"),
+            [(row["runtime"], row["status"], row["stage"]) for row in fake.runtime_state_updates],
+        )
+
     def test_gpu_runner_submits_localai_image_generation_and_stores_b64_artifact(self) -> None:
         fake = FakeDatabase(runtime="localai")
         fake.job["request_params"] = {
@@ -1310,6 +2049,9 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
                 self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 self.posts.append((endpoint, payload))
@@ -1340,6 +2082,9 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai:8000"})
                 self.downloaded: list[str] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 return {"data": [{"url": "/generated/job_gpu.png"}]}
@@ -1382,6 +2127,9 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
                 self.posts: list[tuple[str, dict[str, Any]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 self.posts.append((endpoint, payload))
@@ -1434,6 +2182,9 @@ class ExecutorTests(unittest.TestCase):
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
                 self.multipart_posts: list[tuple[str, dict[str, str], list[tuple[str, tuple[str, bytes, str]]]]] = []
 
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
             async def post_localai_media_multipart(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 data, files = self.localai_multipart_payload_for_job(payload)
                 self.multipart_posts.append((endpoint, data, files))
@@ -1484,6 +2235,9 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
                 self.multipart_posts: list[tuple[str, dict[str, str], list[tuple[str, tuple[str, bytes, str]]]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_multipart(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 data, files = self.localai_multipart_payload_for_job(payload)
@@ -1543,6 +2297,9 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
                 self.multipart_posts: list[tuple[str, dict[str, str], list[tuple[str, tuple[str, bytes, str]]]]] = []
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_multipart(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 data, files = self.localai_multipart_payload_for_job(payload)
@@ -1614,6 +2371,9 @@ class ExecutorTests(unittest.TestCase):
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"voicebox": "http://voicebox"})
                 self.payloads: list[dict[str, Any]] = []
 
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
             async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
                 self.payloads.append(payload)
                 return b"voicebox-wav", "audio/wav"
@@ -1673,6 +2433,9 @@ class ExecutorTests(unittest.TestCase):
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"voicebox": "http://voicebox"})
                 self.payloads: list[dict[str, Any]] = []
 
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
             async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
                 self.payloads.append(payload)
                 return b"voicebox-wav", "audio/wav"
@@ -1709,6 +2472,9 @@ class ExecutorTests(unittest.TestCase):
         self.patch_database(fake)
 
         class VoiceboxRunner(executor.GpuJobRunner):
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
+
             async def post_voicebox_speech(self, payload: dict[str, Any]) -> tuple[bytes, str]:
                 return b"", "audio/wav"
 
@@ -1793,6 +2559,9 @@ class ExecutorTests(unittest.TestCase):
         class LocalAIRunner(executor.GpuJobRunner):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, interval_seconds=1, lease_ttl_seconds=60, runtime_urls={"localai": "http://localai"})
+
+            async def post_runtime_control(self, runtime: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+                return {"status": "ok", "runtime": runtime, "action": action}
 
             async def post_localai_media_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 return {"data": [{"revised_prompt": "no image bytes"}]}
@@ -1944,6 +2713,8 @@ class ExecutorTests(unittest.TestCase):
             def __init__(self, artifact_root: Path) -> None:
                 super().__init__(artifact_root, runtime_agent_url="http://runtime-agent", reserve_vram_gib=1.5)
                 self.metrics = [
+                    {"gpu": {"available": True, "devices": [{"memory_used_mib": 512}]}},
+                    {"gpu": {"available": True, "devices": [{"memory_used_mib": 512}]}},
                     {"gpu": {"available": True, "devices": [{"memory_used_mib": 4096}]}},
                     {"gpu": {"available": True, "devices": [{"memory_used_mib": 512}]}},
                     {"gpu": {"available": True, "devices": [{"memory_used_mib": 1024}]}},
@@ -1951,7 +2722,9 @@ class ExecutorTests(unittest.TestCase):
                 self.posts: list[tuple[str, dict[str, Any]]] = []
 
             async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
-                return self.metrics.pop(0)
+                if len(self.metrics) > 1:
+                    return self.metrics.pop(0)
+                return self.metrics[0]
 
             async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
                 self.posts.append((path, payload))
@@ -1990,10 +2763,13 @@ class ExecutorTests(unittest.TestCase):
                 self.metrics = [
                     {"gpu": {"available": True, "devices": [{"memory_used_mib": 4096}]}},
                     {"gpu": {"available": True, "devices": [{"memory_used_mib": 3072}]}},
+                    {"gpu": {"available": True, "devices": [{"memory_used_mib": 3072}]}},
                 ]
 
             async def runtime_agent_get(self, path: str) -> dict[str, Any] | None:
-                return self.metrics.pop(0)
+                if len(self.metrics) > 1:
+                    return self.metrics.pop(0)
+                return self.metrics[0]
 
             async def runtime_agent_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
                 return {"status": "dry_run", "action": "recover"}
@@ -2005,7 +2781,10 @@ class ExecutorTests(unittest.TestCase):
             self.assertTrue(processed)
             self.assertEqual(fake.job["state"], "failed")
             self.assertEqual(fake.job["failure_category"], "gpu_runner_error")
-            self.assertEqual(fake.job["failure_message"], "RuntimeError")
+            self.assertEqual(
+                fake.job["failure_message"],
+                "VRAM remains above reserve after recovery: 3072 MiB > 1536 MiB",
+            )
             self.assertFalse((Path(tmp) / "temporary" / "job_gpu.json").exists())
 
     def test_model_download_runner_completes_when_blob_already_verified(self) -> None:

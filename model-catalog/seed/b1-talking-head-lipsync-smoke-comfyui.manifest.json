@@ -1,0 +1,56 @@
+{
+  "id": "b1-talking-head-lipsync-smoke-comfyui",
+  "version": "20260731-smoke",
+  "display_name": "B1 Talking Head Lipsync Smoke Renderer",
+  "description": "B1-hosted audio-bound talking-head smoke renderer. It validates private uploaded portrait and WAV artifacts, binds the exact WAV SHA-256 to the job, and emits a playable static-portrait MP4 with explicit lip-sync evidence. This is a fallback smoke/proof backend and not a neural mouth-articulation model; production lipsync is provided by the pinned MuseTalk runtime.",
+  "modality": "video",
+  "operations": ["talking-head-lipsync"],
+  "source": {
+    "type": "catalog",
+    "url": "https://github.com/B1-Mordred/localAIcentre",
+    "revision": "20260731-smoke",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "files": [
+    {
+      "path": "internal/b1-talking-head-lipsync-smoke-renderer",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "format": "internal",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["comfyui"],
+  "preferred_runtime": "comfyui",
+  "resource_estimate": {
+    "vram_gib": 0.25,
+    "ram_gib": 1.0,
+    "disk_gib": 0.05,
+    "context_tokens": 0,
+    "max_resolution": "1280x720",
+    "max_frames": 240
+  },
+  "license": {
+    "name": "B1 internal smoke renderer",
+    "url": "https://github.com/B1-Mordred/localAIcentre",
+    "redistribution": "inference-only",
+    "attribution": "B1 AI Hub control-plane FFmpeg smoke renderer.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": [],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "permissions": {
+    "visible_to": ["admin", "operator", "creator", "user", "service"],
+    "installable_by": ["admin"],
+    "downloadable_by": ["admin", "operator", "service"],
+    "inference_roles": ["admin", "operator", "creator", "user", "service"]
+  },
+  "runtime_adapter_versions": {
+    "comfyui": "b1-control-plane-lipsync-runner/v0.1.0"
+  },
+  "deprecation": {
+    "status": "active"
+  }
+}

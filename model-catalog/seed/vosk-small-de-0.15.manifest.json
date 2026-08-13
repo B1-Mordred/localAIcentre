@@ -1,0 +1,73 @@
+{
+  "id": "b1-vosk-small-de-0.15",
+  "version": "0.15",
+  "display_name": "Vosk Small German 0.15",
+  "description": "Pinned offline German CPU speech-to-text model for independent Voicebox narration QC. It is a Vosk recognizer and does not use the requested text for forced alignment, so repeated spoken phrases remain observable in the transcription.",
+  "modality": "stt",
+  "operations": ["transcription"],
+  "source": {
+    "type": "direct-url",
+    "url": "https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip",
+    "revision": "0.15"
+  },
+  "files": [
+    {
+      "path": "vosk-model-small-de-0.15.zip",
+      "sha256": "b7e53c90b1f0a38456f4cd62b366ecd58803cd97cd42b06438e2c131713d5e43",
+      "size_bytes": 46499967,
+      "format": "zip",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.45,
+    "disk_gib": 0.1,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://alphacephei.com/vosk/models",
+    "redistribution": "downloadable",
+    "attribution": "Alpha Cephei Vosk small German 0.15 model.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["stt-default", "stt-german"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-08-01T10:27:00+00:00",
+    "source": "official Alpha Cephei Vosk model metadata; B1 runtime smoke is required after installation",
+    "original_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.45,
+      "disk_gib": 0.1,
+      "context_tokens": 0
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.45,
+      "disk_gib": 0.1,
+      "context_tokens": 0
+    },
+    "runs": [
+      {
+        "id": "vosk-small-de-0.15-catalog-validation-20260801",
+        "type": "catalog-validation",
+        "status": "ok",
+        "runtime": "audio-cpu",
+        "model_alias": "stt-default",
+        "resolved_model_version": "b1-vosk-small-de-0.15@0.15",
+        "peak_vram_mib": 0,
+        "hook": {
+          "source_archive_sha256_verified": true,
+          "runtime_smoke_required_after_install": true
+        }
+      }
+    ]
+  }
+}
