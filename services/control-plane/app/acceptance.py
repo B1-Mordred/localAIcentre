@@ -80,7 +80,7 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
         {
             "file": "compose.yaml",
             "service": "bootstrap",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "compose.yaml",
@@ -181,31 +181,31 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
             "file": "services/control-plane/Dockerfile",
             "component": "control-plane",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "services/runtime-agent/Dockerfile",
             "component": "runtime-agent",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "services/artifact-server/Dockerfile",
             "component": "artifact-server",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "services/audio-cpu/Dockerfile",
             "component": "audio-cpu",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "services/mock-runtime/Dockerfile",
             "component": "mock-runtime",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
         {
             "file": "web/control-center/Dockerfile",
@@ -235,7 +235,7 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
             "file": "integrations/b1-model-client/Dockerfile",
             "component": "b1-model-client",
             "stage": "final",
-            "image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
     ],
     "runtime_sources": [
@@ -269,7 +269,7 @@ BUNDLED_DEPLOYMENT_PINS: dict[str, Any] = {
             "upstream_release": "2023.11.14-2",
             "asset": "piper_linux_x86_64.tar.gz",
             "asset_sha256": "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992",
-            "base_image": "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            "base_image": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
         },
     ],
 }
