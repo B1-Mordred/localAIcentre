@@ -733,7 +733,7 @@ class ComposePolicyTests(unittest.TestCase):
             "FROM localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:b55bba84712cb1893cd59faf9ebb55fc4fd15a36df698c30a51a8ba62720b973",
             dockerfile,
         )
-        self.assertIn("USER ${B1_LOCALAI_UID}:${B1_LOCALAI_GID}", dockerfile)
+        self.assertIn("USER 0:0", dockerfile)
         self.assertIn("B1_LOCALAI_UPSTREAM_COMMIT=b224c96db6f4b87306a33a808650bfce63b12588", dockerfile)
         self.assertIn("B1_LOCALAI_UPSTREAM_IMAGE=", dockerfile)
         self.assertIn("python3 /usr/local/bin/b1_localai_proxy.py", entrypoint)
@@ -1018,7 +1018,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["B1_METRIC_PATHS"], "/srv/b1-ai-hub,/tmp")
         self.assertEqual(environment["B1_ENABLE_MUTATIONS"], "${B1_ENABLE_MUTATIONS:-false}")
         self.assertEqual(environment["B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE"], "${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}")
-        self.assertEqual(environment["B1_RUNTIME_ACTION_SERVICES"], "${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,audio-cpu}")
+        self.assertEqual(environment["B1_RUNTIME_ACTION_SERVICES"], "${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu}")
         self.assertEqual(
             environment["B1_ROLLBACK_SERVICES"],
             "${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,audio-cpu,artifact-server,open-webui,gateway}",

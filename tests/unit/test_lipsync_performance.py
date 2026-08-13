@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import sys
 import tempfile
 import unittest
@@ -9,9 +10,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "services" / "lipsync"))
-
-from app import main as lipsync  # noqa: E402
+LIPSYNC_MAIN = ROOT / "services" / "lipsync" / "app" / "main.py"
+SPEC = importlib.util.spec_from_file_location("b1_lipsync_main", LIPSYNC_MAIN)
+assert SPEC is not None and SPEC.loader is not None
+lipsync = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = lipsync
+SPEC.loader.exec_module(lipsync)
 
 
 PERFORMANCE_PLAN = {

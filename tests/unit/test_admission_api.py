@@ -172,6 +172,9 @@ class FakeAdmissionDatabase:
             return dict(self.existing)
         return None
 
+    async def list_workflows(self) -> list[dict[str, Any]]:
+        return []
+
     async def count_jobs(
         self,
         *,

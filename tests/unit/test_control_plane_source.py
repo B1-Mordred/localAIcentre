@@ -16,7 +16,7 @@ class ControlPlaneSourceTests(unittest.TestCase):
 
     def test_voicebox_native_speech_compatibility_uses_scheduler_proxy(self) -> None:
         self.assertIn("def native_voicebox_resolution() -> RuntimeResolution:", self.source)
-        self.assertIn('path.strip("/") == "v1/audio/speech"', self.source)
+        self.assertIn('path.strip("/") in {"v1/audio/speech", "generate/stream"}', self.source)
         self.assertIn('require_not_in_maintenance("voicebox/native-audio-speech")', self.source)
         self.assertRegex(
             self.source,

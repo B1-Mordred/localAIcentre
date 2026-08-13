@@ -119,7 +119,7 @@ class AlembicConfigTests(unittest.TestCase):
         self.assertEqual(config.get_main_option("sqlalchemy.url"), "postgresql+asyncpg://user:pass@postgres:5432/b1_ai_hub")
         self.assertEqual(Path(config.get_main_option("script_location")), APP_ROOT / "alembic")
         scripts = ScriptDirectory.from_config(config)
-        self.assertEqual(scripts.get_current_head(), "202607230015")
+        self.assertEqual(scripts.get_current_head(), "202608100001")
 
 
 if __name__ == "__main__":

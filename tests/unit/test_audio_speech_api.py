@@ -225,11 +225,15 @@ class AudioSpeechApiTests(unittest.TestCase):
         async def prepare_sync_gpu_runtime(resolution: Any, operation: str) -> None:
             calls.append({"prepare": "runtime", "runtime": resolution.runtime, "operation": operation})
 
+        async def default_voice_profile_for_resolution(*args: Any, **kwargs: Any) -> None:
+            return None
+
         self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
         self.patch_attr("proxy_http_bytes", proxy_http_bytes)
         self.patch_attr("acquire_inference_lease", acquire_inference_lease)
         self.patch_attr("release_inference_lease", release_inference_lease)
         self.patch_attr("prepare_sync_gpu_runtime", prepare_sync_gpu_runtime)
+        self.patch_attr("default_voice_profile_for_resolution", default_voice_profile_for_resolution)
 
         response = asyncio.run(main.audio_speech(FakeRequest({"model": "tts-quality", "input": "hello", "runtime_policy": "any"}), authorization="Bearer key"))
 

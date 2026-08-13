@@ -3236,11 +3236,12 @@ def resolve_managed_video_image_source(
                 "input.source_image",
                 "inline base64 source_image is not supported; upload the image to /v1/media/uploads and send reference.id as source_image_artifact_id",
             )
-        raise video_image_input_error(
-            "video_image_source_image_artifact_id_required",
-            "input.source_image_artifact_id",
-            "source_image_artifact_id must be the private upload_ identifier returned by POST /v1/media/uploads",
-        )
+        else:
+            raise video_image_input_error(
+                "video_image_source_image_artifact_id_required",
+                "input.source_image_artifact_id",
+                "source_image_artifact_id must be the private upload_ identifier returned by POST /v1/media/uploads",
+            )
     else:
         try:
             reference = media_artifacts.staged_input_reference_for_upload_id(
@@ -9174,6 +9175,7 @@ def runtime_control_payload_for_smoke(job: dict[str, Any]) -> dict[str, Any]:
 async def run_model_runtime_smoke(manifest: Any, auth: AuthContext, *, model_alias: str | None = None) -> dict[str, Any]:
     job = model_smoke_runtime_job(manifest, auth, model_alias=model_alias)
     resolution = model_smoke_resolution(manifest, model_alias=model_alias)
+    await enforce_gpu_hardware_admission(resolution)
     started = monotonic()
     started_at = datetime.now(tz=UTC)
     load_time_ms: int | None = None
@@ -15602,15 +15604,15 @@ async def image_generations(
         priority=priority,
         runtime_policy=runtime_policy,
     )
-    require_not_in_maintenance("images/generations")
-    resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-generation")
-    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
         if existing is not None:
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
+    require_not_in_maintenance("images/generations")
+    resolution = resolve_catalog_alias_for_auth(model, "image", auth, runtime_policy, operation="image-generation")
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     job = await create_job_record(
         auth.subject_id,
         job_payload,
@@ -15673,15 +15675,15 @@ async def video_generations(
         priority=priority,
         runtime_policy=runtime_policy,
     )
-    require_not_in_maintenance("videos/generations")
-    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="text-to-video")
-    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
         if existing is not None:
             ensure_idempotent_job_matches(existing, job_payload)
             return openai_image_job_response(existing)
+    require_not_in_maintenance("videos/generations")
+    resolution = resolve_catalog_alias_for_auth(model, "video", auth, runtime_policy, operation="text-to-video")
+    job_payload, _ = await attach_default_comfyui_workflow_if_needed(auth, job_payload, resolution)
     job = await create_job_record(
         auth.subject_id,
         job_payload,
@@ -15786,6 +15788,12 @@ async def media_job_create(
 ) -> dict[str, Any]:
     auth = await authenticate(authorization)
     require_scope(auth, "jobs:write")
+    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key and not benchmark_campaign:
+        existing = await database.get_job_by_idempotency_key(auth.subject_id, normalized_idempotency_key)
+        if existing is not None:
+            ensure_idempotent_job_matches(existing, payload)
+            return public_job(existing)
     require_not_in_maintenance("media/jobs")
     payload = validate_studio_seated_character_request(payload)
     payload = validate_talking_head_lipsync_job_request(payload)
@@ -15809,7 +15817,6 @@ async def media_job_create(
         if campaign is None or campaign.get("status") != "running": raise HTTPException(status_code=409, detail="active benchmark campaign not found")
         if not auth.has_scope("*") and campaign.get("owner_id") != auth.subject_id: raise HTTPException(status_code=403, detail="benchmark campaign belongs to another owner")
         job_owner = f"benchmark:{benchmark_campaign}"
-    normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
     if normalized_idempotency_key:
         existing = await database.get_job_by_idempotency_key(job_owner, normalized_idempotency_key)
         if existing is not None:

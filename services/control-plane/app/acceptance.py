@@ -3972,6 +3972,7 @@ DOCKERFILE_PIN_FILES = (
     ("runtime-agent", "services/runtime-agent/Dockerfile"),
     ("artifact-server", "services/artifact-server/Dockerfile"),
     ("audio-cpu", "services/audio-cpu/Dockerfile"),
+    ("lipsync", "services/lipsync/Dockerfile"),
     ("mock-runtime", "services/mock-runtime/Dockerfile"),
     ("control-center", "web/control-center/Dockerfile"),
     ("media-studio", "web/media-studio/Dockerfile"),
