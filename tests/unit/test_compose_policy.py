@@ -147,6 +147,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertIn("ghcr.io/open-webui/open-webui:v0.11.0@sha256:21a1ece1e32d1c79681c8d6b36a6f2f54abeb96d0f648965d793265dbef541f6", dockerfile)
         self.assertIn("COPY b1_cancel_bridge.py /app/backend/open_webui/b1_cancel_bridge.py", dockerfile)
         self.assertIn("python /tmp/b1-patch-open-webui-tasks.py", dockerfile)
+        self.assertIn("python /tmp/b1-patch-open-webui-managed-web-defaults.py", dockerfile)
         self.assertIn("chgrp -R 999 /app/backend/open_webui/static", dockerfile)
 
     def test_open_webui_is_local_only_by_default(self) -> None:
@@ -178,6 +179,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(environment["ENABLE_IMAGE_EDIT"], "false")
         self.assertEqual(environment["USER_PERMISSIONS_FEATURES_IMAGE_GENERATION"], "false")
         self.assertEqual(environment["ENABLE_WEB_SEARCH"], "true")
+        self.assertEqual(environment["B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS"], "true")
         self.assertEqual(environment["WEB_SEARCH_ENGINE"], "searxng")
         self.assertEqual(environment["SEARXNG_QUERY_URL"], "http://tool-search:8080/search")
         self.assertEqual(environment["WEB_SEARCH_RESULT_COUNT"], "5")

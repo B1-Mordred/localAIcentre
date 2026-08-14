@@ -5054,6 +5054,39 @@ def strip_b1_chat_fields(payload: dict[str, Any], *, preserve_client_tools: bool
     return cleaned
 
 
+OPEN_WEBUI_NATIVE_WEB_TOOL_NAMES = frozenset({"search_web", "fetch_url"})
+
+
+def trusted_open_webui_web_tools(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only OpenWebUI's built-in managed web tool definitions.
+
+    OpenWebUI may attach private note, memory, code, or user-defined tools to the
+    same request. Those remain outside the B1 runtime security boundary. Search
+    and fetch are safe to forward because OpenWebUI executes them through the
+    configured private SearXNG and Firecrawl services, not inside model runtimes.
+    """
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return []
+    trusted: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in tools:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "")
+        if name not in OPEN_WEBUI_NATIVE_WEB_TOOL_NAMES or name in seen:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        trusted.append(item)
+        seen.add(name)
+    return trusted
+
+
 AGENT_CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 AGENT_TRANSCRIPT_SCHEMA = "b1-ai-hub-agent-transcript/v1"
 AGENT_TRANSCRIPT_MAX_MESSAGES = 48
@@ -15416,19 +15449,35 @@ async def chat_completions(
     open_webui_conversation_key = trusted_open_webui_conversation_key(open_webui_chat_id, auth)
     resolution = resolve_catalog_alias_for_modalities_auth(payload.model, {"llm", "vlm"}, auth, payload.runtime_policy, operation="chat")
     require_openai_forwarding(resolution, "chat")
+    dumped_payload = payload.model_dump(exclude_none=True)
+    open_webui_web_tools = (
+        trusted_open_webui_web_tools(dumped_payload)
+        if auth.subject_id == OPEN_WEBUI_CLIENT_ID and not chat_request_has_explicit_b1_tools(payload)
+        else []
+    )
     runtime_payload = strip_b1_chat_fields(
-        payload.model_dump(exclude_none=True),
+        dumped_payload,
         preserve_client_tools=auth.subject_id != OPEN_WEBUI_CLIENT_ID,
     )
+    if open_webui_web_tools:
+        runtime_payload["tools"] = open_webui_web_tools
+        runtime_payload["tool_choice"] = "auto"
+        if isinstance(dumped_payload.get("parallel_tool_calls"), bool):
+            runtime_payload["parallel_tool_calls"] = dumped_payload["parallel_tool_calls"]
     conversation_id = validate_agent_conversation_id(agent_conversation)
     transcript = await load_agent_transcript(conversation_id, auth.subject_id, resolution.public_alias)
     runtime_payload = prepend_agent_transcript(runtime_payload, transcript)
     runtime_payload = inject_gpt_oss_reasoning_effort(runtime_payload, await gpt_oss_reasoning_effort(payload, resolution))
     runtime_payload = inject_deepseek_quality_policy(runtime_payload, payload, resolution)
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
+    if open_webui_web_tools:
+        # OpenWebUI owns the streaming-native continuation for its built-in web
+        # tools. Do not also run B1's completed-response fallback loop.
+        requested_tools = []
     if (
         auth.subject_id == OPEN_WEBUI_CLIENT_ID
         and not chat_request_has_explicit_b1_tools(payload)
+        and not open_webui_web_tools
         and not chat_request_requests_current_information(payload)
     ):
         # Open WebUI's client defaults make web tools available without
@@ -15443,6 +15492,7 @@ async def chat_completions(
         not requested_tools
         and not chat_request_has_explicit_b1_tools(payload)
         and auth.subject_id == OPEN_WEBUI_CLIENT_ID
+        and not open_webui_web_tools
         and chat_request_requests_current_information(payload)
     ):
         tool_registry = await model_tool_registry_for_auth(auth)

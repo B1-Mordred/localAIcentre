@@ -202,6 +202,7 @@ services:
       # Shared search is executed by the internal SearXNG service. Model
       # runtimes remain isolated from direct Internet access.
       ENABLE_WEB_SEARCH: "true"
+      B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS: "true"
       WEB_SEARCH_ENGINE: searxng
       SEARXNG_QUERY_URL: http://tool-search:8080/search
       WEB_SEARCH_RESULT_COUNT: "5"

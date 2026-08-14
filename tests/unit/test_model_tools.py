@@ -709,6 +709,29 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("parallel_tool_calls", payload)
         self.assertEqual(payload["messages"], [{"role": "user", "content": "Current question"}])
 
+    def test_only_open_webui_native_web_tools_cross_the_runtime_boundary(self) -> None:
+        tools = main.trusted_open_webui_web_tools(
+            {
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "search_web", "description": "Search", "parameters": {"type": "object"}},
+                    },
+                    {
+                        "type": "function",
+                        "function": {"name": "fetch_url", "description": "Fetch", "parameters": {"type": "object"}},
+                    },
+                    {
+                        "type": "function",
+                        "function": {"name": "view_note", "description": "Private UI helper", "parameters": {"type": "object"}},
+                    },
+                    {"type": "function", "function": {"name": "search_web", "parameters": "invalid"}},
+                ]
+            }
+        )
+
+        self.assertEqual([item["function"]["name"] for item in tools], ["search_web", "fetch_url"])
+
     async def test_chat_tool_response_can_be_consumed_as_openai_sse(self) -> None:
         content = "Current answer " * 100
         reasoning_content = "Inspect the requirements before answering."
@@ -1587,7 +1610,7 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions", "/v1/chat/completions"])
         self.assertEqual(calls[0]["payload"]["tools"][0]["function"]["name"], "web_fetch")
 
-    async def test_open_webui_ordinary_prompt_streams_directly_despite_default_web_tools(self) -> None:
+    async def test_open_webui_native_web_tools_stream_directly_for_every_prompt(self) -> None:
         auth = main.AuthContext(
             subject_id=main.OPEN_WEBUI_CLIENT_ID,
             role=main.Role.SERVICE,
@@ -1641,6 +1664,24 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
             model="chat-default",
             messages=[{"role": "user", "content": "Review this transaction code."}],
             stream=True,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_web",
+                        "description": "Search the managed web index",
+                        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "view_note",
+                        "description": "Private OpenWebUI helper",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ],
         )
         response = await main.chat_completions(
             request,
@@ -1650,7 +1691,11 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(response, main.StreamingResponse)
         self.assertEqual(len(stream_calls), 1)
-        self.assertNotIn("tools", stream_calls[0]["payload"])
+        self.assertEqual(
+            [item["function"]["name"] for item in stream_calls[0]["payload"]["tools"]],
+            ["search_web"],
+        )
+        self.assertEqual(stream_calls[0]["payload"]["tool_choice"], "auto")
         self.assertEqual(stream_calls[0]["owner_id"], main.OPEN_WEBUI_CLIENT_ID)
 
     async def test_explicit_empty_b1_tools_disables_api_client_defaults(self) -> None:
