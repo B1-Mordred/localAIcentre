@@ -6150,6 +6150,9 @@ def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
     first_choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
     message = first_choice.get("message") if isinstance(first_choice, dict) else {}
     message = message if isinstance(message, dict) else {}
+    reasoning_content = message.get("reasoning_content")
+    if not isinstance(reasoning_content, str):
+        reasoning_content = ""
     content = message.get("content")
     if content is None:
         text_content = ""
@@ -6174,6 +6177,25 @@ def chat_tool_response_to_stream(chat_response: JSONResponse) -> Response:
             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
         }
     ]
+    if reasoning_content:
+        # Managed tool loops complete upstream before B1 converts the result
+        # back to SSE. Preserve the provider's distinct reasoning channel so
+        # Open WebUI can render and retain it as a collapsible reasoning item.
+        chunks.append(
+            {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": reasoning_content},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
     if text_content:
         # This response is already complete, so splitting it into a burst of
         # tiny events provides no streaming benefit. Open WebUI can fall behind

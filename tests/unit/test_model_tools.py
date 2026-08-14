@@ -711,13 +711,23 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_tool_response_can_be_consumed_as_openai_sse(self) -> None:
         content = "Current answer " * 100
+        reasoning_content = "Inspect the requirements before answering."
         response = main.chat_tool_response_to_stream(
             JSONResponse(
                 {
                     "id": "chatcmpl-test",
                     "model": "chat-default",
                     "created": 123,
-                    "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "reasoning_content": reasoning_content,
+                                "content": content,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
                     "usage": {"prompt_tokens": 40, "completion_tokens": 100, "total_tokens": 140},
                     "timings": {"predicted_n": 100, "predicted_ms": 5000.0, "predicted_per_second": 20.0},
                 },
@@ -734,9 +744,10 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
             for line in event_text.splitlines()
             if line.startswith("data: ") and line != "data: [DONE]"
         ]
-        self.assertEqual(len(events), 3)
+        self.assertEqual(len(events), 4)
         self.assertEqual(events[0]["choices"][0]["delta"], {"role": "assistant"})
-        self.assertEqual(events[1]["choices"][0]["delta"]["content"], content)
+        self.assertEqual(events[1]["choices"][0]["delta"], {"reasoning_content": reasoning_content})
+        self.assertEqual(events[2]["choices"][0]["delta"]["content"], content)
         self.assertEqual(events[-1]["choices"][0]["finish_reason"], "stop")
         self.assertEqual(events[-1]["usage"]["completion_tokens"], 100)
         self.assertEqual(events[-1]["timings"]["predicted_per_second"], 20.0)
