@@ -317,6 +317,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    reasoning: Literal["fast", "normal", "quality", "deep"] | None = None
     runtime_policy: str = "any"
     b1_tools: list[str] | None = Field(default=None, max_length=16)
     b1_tool_max_iterations: int = Field(default=4, ge=1, le=8)
@@ -5048,6 +5049,7 @@ def strip_b1_chat_fields(payload: dict[str, Any], *, preserve_client_tools: bool
     # The resolved GPT-OSS effort is restored after generic B1 fields are
     # removed so only that model family receives this runtime parameter.
     cleaned.pop("reasoning_effort", None)
+    cleaned.pop("reasoning", None)
     cleaned["messages"] = normalize_open_webui_chat_messages(cleaned.get("messages"))
     return cleaned
 
@@ -5173,6 +5175,61 @@ def inject_gpt_oss_reasoning_effort(runtime_payload: dict[str, Any], effort: str
     # ``reasoning_effort`` kwarg. Injecting a separate system message instead
     # turns it into developer instructions and can displace the real prompt.
     updated["reasoning_effort"] = effort
+    return updated
+
+
+DEEPSEEK_QUALITY_REASONING_BUDGETS = {
+    "fast": 512,
+    "normal": 2048,
+    "quality": 4096,
+    "deep": 8192,
+}
+DEEPSEEK_QUALITY_MAX_REASONING_BUDGET = max(DEEPSEEK_QUALITY_REASONING_BUDGETS.values())
+DEEPSEEK_QUALITY_SAMPLING_DEFAULTS: dict[str, int | float] = {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "min_p": 0.0,
+    "typical_p": 1.0,
+    "repeat_penalty": 1.0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+}
+
+
+def inject_deepseek_quality_policy(
+    runtime_payload: dict[str, Any],
+    request: ChatCompletionRequest,
+    resolution: RuntimeResolution,
+) -> dict[str, Any]:
+    """Apply the B1 reasoning and sampling policy only to deepseek-quality."""
+    if resolution.public_alias != "deepseek-quality":
+        return runtime_payload
+    raw_budgets: list[tuple[str, Any]] = [
+        (key, runtime_payload[key])
+        for key in ("reasoning_budget_tokens", "thinking_budget_tokens")
+        if key in runtime_payload
+    ]
+    for key, value in raw_budgets:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise HTTPException(status_code=422, detail=f"{key} must be an integer")
+        if not 0 <= value <= DEEPSEEK_QUALITY_MAX_REASONING_BUDGET:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{key} must be between 0 and {DEEPSEEK_QUALITY_MAX_REASONING_BUDGET}",
+            )
+    if len({value for _key, value in raw_budgets}) > 1:
+        raise HTTPException(status_code=422, detail="reasoning budget fields disagree")
+    budget = (
+        raw_budgets[0][1]
+        if raw_budgets
+        else DEEPSEEK_QUALITY_REASONING_BUDGETS[request.reasoning or "quality"]
+    )
+    updated = dict(runtime_payload)
+    updated.pop("thinking_budget_tokens", None)
+    updated["reasoning_budget_tokens"] = budget
+    for key, value in DEEPSEEK_QUALITY_SAMPLING_DEFAULTS.items():
+        updated.setdefault(key, value)
     return updated
 
 
@@ -15339,6 +15396,7 @@ async def chat_completions(
     transcript = await load_agent_transcript(conversation_id, auth.subject_id, resolution.public_alias)
     runtime_payload = prepend_agent_transcript(runtime_payload, transcript)
     runtime_payload = inject_gpt_oss_reasoning_effort(runtime_payload, await gpt_oss_reasoning_effort(payload, resolution))
+    runtime_payload = inject_deepseek_quality_policy(runtime_payload, payload, resolution)
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
     # Open WebUI cannot add B1's private `b1_tools` field itself. Enable the
     # LAN-managed search tools only for clear requests for fresh information,

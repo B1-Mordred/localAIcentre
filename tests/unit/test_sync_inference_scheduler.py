@@ -73,6 +73,19 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
             runtime_policy="any",
         )
 
+    def deepseek_quality_resolution(self) -> Any:
+        return main.RuntimeResolution(
+            public_alias="deepseek-quality",
+            model_id="b1-unsloth-deepseek-v4-flash-0731-quality",
+            model_version="fbbb5b93",
+            resolved_model_version="b1-unsloth-deepseek-v4-flash-0731-quality@fbbb5b93",
+            runtime="lan-deepseek-worker",
+            preferred_runtime="lan-deepseek-worker",
+            requires_gpu=True,
+            resource_label="measured",
+            runtime_policy="any",
+        )
+
     def test_chat_request_keeps_openai_tool_and_reasoning_fields(self) -> None:
         payload = main.ChatCompletionRequest(
             model="chat-default",
@@ -222,6 +235,71 @@ class SyncInferenceSchedulerTests(unittest.TestCase):
         self.assertEqual(effort, "high")
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertEqual(payload["messages"], [{"role": "user", "content": "solve it"}])
+
+    def test_deepseek_quality_defaults_to_quality_budget_and_clean_sampling(self) -> None:
+        request = main.ChatCompletionRequest(model="deepseek-quality")
+        payload = main.inject_deepseek_quality_policy(
+            {"messages": [{"role": "user", "content": "solve it"}]},
+            request,
+            self.deepseek_quality_resolution(),
+        )
+
+        self.assertEqual(payload["reasoning_budget_tokens"], 4096)
+        for key, value in main.DEEPSEEK_QUALITY_SAMPLING_DEFAULTS.items():
+            self.assertEqual(payload[key], value)
+
+    def test_deepseek_quality_maps_all_named_levels(self) -> None:
+        resolution = self.deepseek_quality_resolution()
+        for level, expected in main.DEEPSEEK_QUALITY_REASONING_BUDGETS.items():
+            with self.subTest(level=level):
+                request = main.ChatCompletionRequest(model="deepseek-quality", reasoning=level)
+                payload = main.inject_deepseek_quality_policy({}, request, resolution)
+                self.assertEqual(payload["reasoning_budget_tokens"], expected)
+
+    def test_deepseek_quality_preserves_explicit_sampling_and_numeric_compatibility(self) -> None:
+        request = main.ChatCompletionRequest(model="deepseek-quality", reasoning="deep")
+        payload = main.inject_deepseek_quality_policy(
+            {
+                "thinking_budget_tokens": 384,
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "top_k": 20,
+                "min_p": 0.1,
+                "typical_p": 0.9,
+                "repeat_penalty": 1.1,
+                "presence_penalty": 0.2,
+                "frequency_penalty": 0.3,
+            },
+            request,
+            self.deepseek_quality_resolution(),
+        )
+
+        self.assertEqual(payload["reasoning_budget_tokens"], 384)
+        self.assertNotIn("thinking_budget_tokens", payload)
+        self.assertEqual(payload["temperature"], 0.7)
+        self.assertEqual(payload["top_k"], 20)
+
+    def test_deepseek_quality_rejects_invalid_or_conflicting_numeric_budgets(self) -> None:
+        request = main.ChatCompletionRequest(model="deepseek-quality")
+        resolution = self.deepseek_quality_resolution()
+        for raw in (-1, 8193, True, 1.5, "4096"):
+            with self.subTest(raw=raw), self.assertRaises(main.HTTPException) as caught:
+                main.inject_deepseek_quality_policy({"reasoning_budget_tokens": raw}, request, resolution)
+            self.assertEqual(caught.exception.status_code, 422)
+        with self.assertRaises(main.HTTPException):
+            main.inject_deepseek_quality_policy(
+                {"reasoning_budget_tokens": 2048, "thinking_budget_tokens": 4096},
+                request,
+                resolution,
+            )
+
+    def test_deepseek_quality_policy_does_not_modify_other_aliases(self) -> None:
+        request = main.ChatCompletionRequest(model="deepseek-main", reasoning="deep")
+        payload = {"messages": [{"role": "user", "content": "solve it"}]}
+        resolution = self.deepseek_quality_resolution()
+        resolution = replace(resolution, public_alias="deepseek-main")
+
+        self.assertIs(main.inject_deepseek_quality_policy(payload, request, resolution), payload)
 
     def test_agent_transcript_is_bounded_and_keeps_structured_tool_history(self) -> None:
         messages = [

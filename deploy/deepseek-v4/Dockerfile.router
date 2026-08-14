@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
+ARG LLAMA_IMAGE
+FROM ${LLAMA_IMAGE}
+
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --chown=root:root --chmod=0555 deepseek_manager.py /usr/local/libexec/deepseek_manager.py
+
+LABEL org.opencontainers.image.title="B1 managed DeepSeek V4 worker router" \
+      b1.runtime.name="lan-deepseek-worker" \
+      b1.runtime.router-version="v0.1.2"
+
+ENTRYPOINT ["/usr/bin/python3", "/usr/local/libexec/deepseek_manager.py"]
