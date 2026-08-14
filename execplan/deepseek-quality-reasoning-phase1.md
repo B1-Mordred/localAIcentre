@@ -30,6 +30,8 @@ Success is demonstrated by unit tests, deterministic template inspection, a live
   Evidence: run keys `debugging_self_consistency:B:1` and `debugging_self_consistency:C:3`, router logs, and the corresponding immutable run JSON files.
 - Observation: llama.cpp exposes separate streamed `reasoning_content`, but this pinned server's usage object does not expose a reasoning-token count. The benchmark therefore records that field as unavailable instead of estimating it.
   Evidence: completed Phase-1A response usage and stream chunks.
+- Observation: adding the typed public `reasoning` field changes the generated OpenAPI request schema. The first CI run correctly rejected the stale committed `docs/openapi.json`; regenerating that repository-owned artifact fixed the drift.
+  Evidence: GitHub Actions run 31763336390, backend job 94654070278, and `test_committed_openapi_schema_is_current`.
 
 ## Decision Log
 

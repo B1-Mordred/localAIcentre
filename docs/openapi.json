@@ -687,6 +687,23 @@
             "title": "Model",
             "type": "string"
           },
+          "reasoning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "fast",
+                  "normal",
+                  "quality",
+                  "deep"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          },
           "reasoning_effort": {
             "anyOf": [
               {
