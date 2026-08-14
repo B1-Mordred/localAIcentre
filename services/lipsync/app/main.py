@@ -58,6 +58,8 @@ CHARACTER_PERFORMANCE_ENUMS = {
     "gesture_frequency": {"none", "occasional", "frequent"},
 }
 PERFORMANCE_RENDER_CACHE_VERSION = "b1-performance-render-cache/v1"
+DECLARED_MOUTH_FALLBACK_VERSION = "b1-declared-region-audio-mouth/v2"
+DECLARED_MOUTH_MINIMUM_MOTION = 0.035
 
 app = FastAPI(title="B1 AI Hub Lipsync Runtime", version="0.1.0")
 LOGGER = logging.getLogger("b1.lipsync")
@@ -83,6 +85,7 @@ class LipsyncRequest(BaseModel):
     use_float16: bool = True
     performance_plan: dict[str, Any] | None = None
     source_context: str = Field(default="portrait", pattern=r"^(portrait|scene_face_region)$")
+    face_bbox: dict[str, float] | None = None
 
 
 def read_secret(path: str) -> str:
@@ -123,6 +126,39 @@ def decode_b64(value: str, field_name: str) -> bytes:
     if len(data) > MAX_INPUT_BYTES:
         raise HTTPException(status_code=413, detail={"code": "input_too_large", "message": f"{field_name} exceeds input limit"})
     return data
+
+
+def validated_scene_face_bbox(payload: LipsyncRequest) -> dict[str, float] | None:
+    """Validate the control-plane face rectangle used for scene crops."""
+    value = payload.face_bbox
+    if value is None:
+        return None
+    if payload.source_context != "scene_face_region":
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "face_bbox_not_allowed", "message": "face_bbox is only valid for scene_face_region inputs"},
+        )
+    required = {"x", "y", "width", "height"}
+    if set(value) != required or any(isinstance(value[key], bool) for key in required):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_face_bbox", "message": "face_bbox must contain only numeric x, y, width, and height fields"},
+        )
+    normalized = {key: float(value[key]) for key in required}
+    if (
+        any(not math.isfinite(number) for number in normalized.values())
+        or normalized["x"] < 0
+        or normalized["y"] < 0
+        or normalized["width"] <= 0
+        or normalized["height"] <= 0
+        or normalized["x"] + normalized["width"] > 1
+        or normalized["y"] + normalized["height"] > 1
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_face_bbox", "message": "face_bbox must be a positive normalized rectangle inside the input image"},
+        )
+    return normalized
 
 
 def checkpoint_status() -> dict[str, Any]:
@@ -383,6 +419,150 @@ def mux_performance_audio(video_path: Path, audio_source: Path, output_path: Pat
         raise RuntimeError((result.stderr or "performance audio mux failed")[:1000])
 
 
+def mouth_motion_score(video_path: Path, face_bbox: dict[str, float]) -> float:
+    """Measure average frame-to-frame luma motion in the expected mouth area."""
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError("cannot open MuseTalk video for mouth-motion measurement")
+    previous: np.ndarray | None = None
+    total = 0.0
+    count = 0
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            height, width = frame.shape[:2]
+            face_x = int(round(face_bbox["x"] * width))
+            face_y = int(round(face_bbox["y"] * height))
+            face_w = max(1, int(round(face_bbox["width"] * width)))
+            face_h = max(1, int(round(face_bbox["height"] * height)))
+            x1 = max(0, min(width - 1, face_x + int(face_w * 0.20)))
+            x2 = max(x1 + 1, min(width, face_x + int(face_w * 0.80)))
+            y1 = max(0, min(height - 1, face_y + int(face_h * 0.50)))
+            y2 = max(y1 + 1, min(height, face_y + int(face_h * 0.90)))
+            gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+            if previous is not None and previous.shape == gray.shape:
+                total += float(cv2.absdiff(previous, gray).mean())
+                count += 1
+            previous = gray
+    finally:
+        capture.release()
+    return total / count if count else 0.0
+
+
+def audio_rms_envelope(audio_source: Path, *, fps: float, frame_count: int) -> list[float]:
+    result = subprocess.run(
+        [
+            "/usr/bin/ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(audio_source),
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "pipe:1",
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr.decode("utf-8", errors="replace") or "audio envelope decode failed")[:1000])
+    samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if not len(samples) or frame_count <= 0:
+        return [0.0] * max(0, frame_count)
+    window = max(1, int(16000 * 0.08))
+    values: list[float] = []
+    for frame_index in range(frame_count):
+        center = int((frame_index / max(fps, 1.0)) * 16000)
+        start = max(0, center - window // 2)
+        chunk = samples[start : min(len(samples), start + window)]
+        values.append(float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0)
+    floor = float(np.percentile(values, 10))
+    ceiling = float(np.percentile(values, 90))
+    scale = max(1e-6, ceiling - floor)
+    normalized = [max(0.0, min(1.0, (value - floor) / scale)) for value in values]
+    smoothed: list[float] = []
+    current = 0.0
+    for value in normalized:
+        current = current * 0.55 + value * 0.45
+        smoothed.append(current)
+    return smoothed
+
+
+def apply_declared_mouth_fallback(
+    input_path: Path,
+    audio_source: Path,
+    output_path: Path,
+    face_bbox: dict[str, float],
+    *,
+    trigger_score: float,
+) -> dict[str, Any]:
+    """Add bounded audio-driven mouth opening when MuseTalk is visually static."""
+    capture = cv2.VideoCapture(str(input_path))
+    if not capture.isOpened():
+        raise RuntimeError("cannot open MuseTalk video for declared mouth fallback")
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 24.0)
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if width <= 0 or height <= 0 or frame_count <= 0:
+        capture.release()
+        raise RuntimeError("MuseTalk video has invalid geometry for declared mouth fallback")
+    envelope = audio_rms_envelope(audio_source, fps=fps, frame_count=frame_count)
+    silent_path = output_path.with_name("declared-mouth-silent.mp4")
+    writer = cv2.VideoWriter(str(silent_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    if not writer.isOpened():
+        capture.release()
+        raise RuntimeError("cannot create declared mouth fallback video")
+    face_x = int(round(face_bbox["x"] * width))
+    face_y = int(round(face_bbox["y"] * height))
+    face_w = max(1, int(round(face_bbox["width"] * width)))
+    face_h = max(1, int(round(face_bbox["height"] * height)))
+    mouth_center = (face_x + face_w // 2, face_y + int(face_h * 0.73))
+    mouth_width = max(2, int(face_w * 0.075))
+    frame_index = 0
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            openness = envelope[min(frame_index, len(envelope) - 1)] if envelope else 0.0
+            if openness > 0.04:
+                mouth_height = max(1, int(face_h * (0.004 + 0.012 * openness)))
+                mask = feathered_ellipse_mask(
+                    (height, width),
+                    mouth_center,
+                    (mouth_width, mouth_height),
+                    max(3, int(face_h * 0.025)),
+                )
+                darkened = (frame.astype(np.float32) * (0.42 + 0.12 * (1.0 - openness))).astype(np.uint8)
+                frame = alpha_blend(frame, darkened, mask * min(0.68, 0.34 + openness * 0.34))
+            writer.write(frame)
+            frame_index += 1
+    finally:
+        capture.release()
+        writer.release()
+    if frame_index == 0:
+        raise RuntimeError("declared mouth fallback emitted no frames")
+    mux_performance_audio(silent_path, audio_source, output_path)
+    with suppress(FileNotFoundError):
+        silent_path.unlink()
+    return {
+        "applied": True,
+        "backend": DECLARED_MOUTH_FALLBACK_VERSION,
+        "motion_source": "audio_rms",
+        "trigger_motion_score": trigger_score,
+        "minimum_motion_score": DECLARED_MOUTH_MINIMUM_MOTION,
+        "face_region_source": "declared_scene_face_region",
+    }
+
+
 def apply_character_performance(input_path: Path, audio_source: Path, output_path: Path, plan: dict[str, Any]) -> dict[str, Any]:
     """Apply sparse deterministic non-mouth motion while retaining MuseTalk mouth pixels."""
     capture = cv2.VideoCapture(str(input_path))
@@ -514,13 +694,18 @@ def write_musetalk_config(job_dir: Path, portrait_path: Path, audio_path: Path) 
     return config_path
 
 
-def write_seeded_musetalk_sitecustomize(job_dir: Path, variation_seed: int) -> Path:
-    """Seed the child MuseTalk process without changing its CUDA kernel choices."""
+def write_musetalk_sitecustomize(
+    job_dir: Path,
+    *,
+    variation_seed: int | None,
+    face_bbox: dict[str, float] | None,
+) -> Path:
+    """Configure deterministic inference and an optional trusted scene bbox."""
     sitecustomize_path = job_dir / "sitecustomize.py"
-    sitecustomize_path.write_text(
-        "\n".join(
+    lines: list[str] = []
+    if variation_seed is not None:
+        lines.extend(
             [
-                "import os",
                 "import random",
                 "import numpy as np",
                 "import torch",
@@ -531,11 +716,30 @@ def write_seeded_musetalk_sitecustomize(job_dir: Path, variation_seed: int) -> P
                 "if torch.cuda.is_available():",
                 "    torch.cuda.manual_seed_all(seed)",
                 "torch.backends.cudnn.benchmark = False",
-                "",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    if face_bbox is not None:
+        lines.extend(
+            [
+                "from musetalk.utils import preprocessing as _b1_preprocessing",
+                f"_b1_face_bbox = {json.dumps(face_bbox, sort_keys=True)}",
+                "def _b1_declared_face_bbox(img_list, upperbondrange=0):",
+                "    frames = _b1_preprocessing.read_imgs(img_list)",
+                "    coords = []",
+                "    for frame in frames:",
+                "        height, width = frame.shape[:2]",
+                "        x1 = max(0, min(width - 1, int(round(_b1_face_bbox['x'] * width))))",
+                "        y1 = max(0, min(height - 1, int(round(_b1_face_bbox['y'] * height))))",
+                "        x2 = max(x1 + 1, min(width, int(round((_b1_face_bbox['x'] + _b1_face_bbox['width']) * width))))",
+                "        y2 = max(y1 + 1, min(height, int(round((_b1_face_bbox['y'] + _b1_face_bbox['height']) * height))))",
+                "        coords.append((x1, y1, x2, y2))",
+                "    print('B1: using authenticated declared scene face bbox')",
+                "    return coords, frames",
+                "_b1_preprocessing.get_landmark_and_bbox = _b1_declared_face_bbox",
+            ]
+        )
+    lines.append("")
+    sitecustomize_path.write_text("\n".join(lines), encoding="utf-8")
     return sitecustomize_path
 
 
@@ -561,6 +765,9 @@ def performance_render_cache_key(payload: LipsyncRequest, plan: dict[str, Any], 
         "left_cheek_width": payload.left_cheek_width,
         "right_cheek_width": payload.right_cheek_width,
         "use_float16": payload.use_float16,
+        "source_context": payload.source_context,
+        "face_bbox": payload.face_bbox,
+        "declared_mouth_fallback_version": DECLARED_MOUTH_FALLBACK_VERSION if payload.face_bbox is not None else None,
         "performance_plan": plan,
     }
     return hashlib.sha256(json.dumps(payload_view, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
@@ -632,6 +839,7 @@ def runtime_error_detail(exc: Exception) -> tuple[int, str, str]:
 def run_musetalk(job_dir: Path, payload: LipsyncRequest) -> tuple[bytes, dict[str, Any]]:
     ensure_ready()
     performance_plan = validated_character_performance_plan(payload.performance_plan)
+    face_bbox = validated_scene_face_bbox(payload)
     portrait_path, audio_path = write_input_files(job_dir, payload)
     performance_cache_key: str | None = None
     if performance_plan is not None:
@@ -643,8 +851,12 @@ def run_musetalk(job_dir: Path, payload: LipsyncRequest) -> tuple[bytes, dict[st
     final_output = job_dir / "result.mp4"
     result_dir.mkdir(parents=True, exist_ok=True)
     config_path = write_musetalk_config(job_dir, portrait_path, audio_path)
-    if performance_plan is not None:
-        write_seeded_musetalk_sitecustomize(job_dir, performance_plan["variation_seed"])
+    if performance_plan is not None or face_bbox is not None:
+        write_musetalk_sitecustomize(
+            job_dir,
+            variation_seed=performance_plan["variation_seed"] if performance_plan is not None else None,
+            face_bbox=face_bbox,
+        )
     command = [
         "python",
         "-m",
@@ -713,11 +925,28 @@ def run_musetalk(job_dir: Path, payload: LipsyncRequest) -> tuple[bytes, dict[st
         if result.returncode != 0:
             raise RuntimeError(f"MuseTalk inference failed with exit {result.returncode}: {diagnostic}")
         raise RuntimeError(f"MuseTalk did not create a non-empty MP4: {diagnostic}")
+    mouth_fallback: dict[str, Any] | None = None
+    if face_bbox is not None:
+        trigger_score = mouth_motion_score(raw_output, face_bbox)
+        if trigger_score < DECLARED_MOUTH_MINIMUM_MOTION:
+            declared_mouth_output = job_dir / "declared-mouth-with-audio.mp4"
+            mouth_fallback = apply_declared_mouth_fallback(
+                raw_output,
+                audio_path,
+                declared_mouth_output,
+                face_bbox,
+                trigger_score=trigger_score,
+            )
+            raw_output = declared_mouth_output
     performance: dict[str, Any] | None = None
     output_for_normalization = raw_output
     if performance_plan is not None:
         performance_output = job_dir / "performance-with-audio.mp4"
         performance = apply_character_performance(raw_output, audio_path, performance_output, performance_plan)
+        if face_bbox is not None:
+            performance["musetalk_face_region_source"] = "declared_scene_face_region"
+        if mouth_fallback is not None:
+            performance["declared_mouth_fallback"] = mouth_fallback
         output_for_normalization = performance_output
     normalize_output_video(output_for_normalization, final_output, width=payload.width, height=payload.height, fps=payload.fps, duration_ms=payload.duration_ms)
     content = final_output.read_bytes()
@@ -729,6 +958,8 @@ def run_musetalk(job_dir: Path, payload: LipsyncRequest) -> tuple[bytes, dict[st
         "musetalk_stdout_tail": (result.stdout or "")[-1000:],
         "musetalk_stderr_tail": (result.stderr or "")[-1000:],
         "musetalk_returncode": result.returncode,
+        "musetalk_face_region_source": "declared_scene_face_region" if face_bbox is not None else "detector",
+        **({"declared_mouth_fallback": mouth_fallback} if mouth_fallback is not None else {}),
         **({"performance": performance} if performance is not None else {}),
     }
 

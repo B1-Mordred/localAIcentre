@@ -1121,13 +1121,36 @@ class GpuJobRunner:
                 f"idle timeout expired for {runtime} model {state.get('active_model') or state.get('resolved_model_version')} "
                 f"after {idle_seconds}s >= {timeout_seconds}s"
             )
-            result, details = await self.graceful_or_forced_unload_runtime(
-                runtime,
-                runtime,
-                {"id": state.get("job_id") or f"idle-{runtime}", "runtime": runtime},
-                state,
-                reason=reason,
-            )
+            try:
+                result, details = await self.graceful_or_forced_unload_runtime(
+                    runtime,
+                    runtime,
+                    {"id": state.get("job_id") or f"idle-{runtime}", "runtime": runtime},
+                    state,
+                    reason=reason,
+                )
+            except Exception as exc:
+                # A failed idle hook must not terminate the persistent GPU job
+                # runner. Preserve the loaded-state claim and refresh its
+                # timestamp so the next retry is bounded by the idle timeout.
+                with suppress(Exception):
+                    await self.upsert_runtime_state(
+                        {
+                            "runtime": runtime,
+                            "status": "idle_unload_failed",
+                            "stage": "idle_unload_failed",
+                            "active_model": state.get("active_model"),
+                            "model_alias": state.get("model_alias"),
+                            "resolved_model_version": state.get("resolved_model_version"),
+                            "job_id": state.get("job_id"),
+                            "details": {
+                                "idle_seconds": idle_seconds,
+                                "timeout_seconds": timeout_seconds,
+                                "error": (str(exc) or exc.__class__.__name__)[:500],
+                            },
+                        }
+                    )
+                return False
             confirmed = str((result or {}).get("status") or "") == "ok"
             await self.upsert_runtime_state(
                 {
@@ -2172,6 +2195,27 @@ class GpuJobRunner:
         crop_y = max(0, min(height - target_height, center_y - target_height // 2))
         return crop_x, crop_y, target_width, target_height
 
+    @staticmethod
+    def normalized_face_bbox_in_crop(
+        width: int,
+        height: int,
+        face_region: dict[str, Any],
+        crop: tuple[int, int, int, int],
+    ) -> dict[str, float]:
+        """Transform a trusted scene face rectangle into crop coordinates."""
+        crop_x, crop_y, crop_width, crop_height = crop
+        face_x = float(face_region["x"]) * width
+        face_y = float(face_region["y"]) * height
+        face_right = (float(face_region["x"]) + float(face_region["width"])) * width
+        face_bottom = (float(face_region["y"]) + float(face_region["height"])) * height
+        x = max(0.0, min(1.0, (face_x - crop_x) / crop_width))
+        y = max(0.0, min(1.0, (face_y - crop_y) / crop_height))
+        right = max(x, min(1.0, (face_right - crop_x) / crop_width))
+        bottom = max(y, min(1.0, (face_bottom - crop_y) / crop_height))
+        if right <= x or bottom <= y:
+            raise LipsyncInputRejectedError("scene_face_invalid_crop: declared face rectangle does not intersect the speaker crop")
+        return {"x": x, "y": y, "width": right - x, "height": bottom - y}
+
     def native_scene_camera_plan(
         self,
         *,
@@ -2230,7 +2274,9 @@ class GpuJobRunner:
         crop_x = max(0, min(scene_width - int(round(target_width)), int(round(center_x - target_width / 2))))
         crop_y = max(0, min(scene_height - int(round(target_height)), int(round(center_y - target_height / 2))))
         crop_width = max(2, int(round(target_width)) // 2 * 2)
-        crop_height = max(2, int(round(target_height)) // 2 * 2)
+        # Never round the detail-limited crop upward: doing so can turn an
+        # exact threshold plan into 219px for a requested 220px close-up.
+        crop_height = max(2, int(target_height) // 2 * 2)
         face = speaker_region["face_region"]
         transformed = {
             "x": (float(face["x"]) * scene_width - crop_x) / crop_width,
@@ -2307,6 +2353,12 @@ class GpuJobRunner:
         )
         face_region = camera["face_region"]
         crop_x, crop_y, crop_width, crop_height = self.seated_scene_crop(width, height, face_region)
+        runtime_face_bbox = self.normalized_face_bbox_in_crop(
+            width,
+            height,
+            face_region,
+            (crop_x, crop_y, crop_width, crop_height),
+        )
         runtime_scale = min(8, max(4, int((384 + min(crop_width, crop_height) - 1) / min(crop_width, crop_height))))
         runtime_width = min(768, max(256, crop_width * runtime_scale))
         runtime_height = min(768, max(256, crop_height * runtime_scale))
@@ -2330,7 +2382,11 @@ class GpuJobRunner:
                     height=runtime_height,
                     fps=fps,
                     duration_ms=duration_ms,
-                    payload={**payload, "_b1_lipsync_source_context": "scene_face_region"},
+                    payload={
+                        **payload,
+                        "_b1_lipsync_source_context": "scene_face_region",
+                        "_b1_lipsync_face_bbox": runtime_face_bbox,
+                    },
                 )
             except LipsyncInputRejectedError as exc:
                 message = str(exc)
@@ -2577,6 +2633,9 @@ class GpuJobRunner:
         source_context = payload.get("_b1_lipsync_source_context")
         if source_context == "scene_face_region":
             request_payload["source_context"] = source_context
+            face_bbox = payload.get("_b1_lipsync_face_bbox")
+            if isinstance(face_bbox, dict):
+                request_payload["face_bbox"] = face_bbox
         options = payload.get("lipsync_options")
         if isinstance(options, dict):
             for key in (

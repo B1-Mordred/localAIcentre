@@ -318,6 +318,42 @@ class ExecutorTests(unittest.TestCase):
                     speaker_region=region,
                 )
 
+    def test_native_scene_camera_close_up_preserves_detail_at_rounding_boundary(self) -> None:
+        region = {
+            "participant_id": "mistral",
+            "seat": 5,
+            "face_region": {"x": 0.6041, "y": 0.4685, "width": 0.0393, "height": 0.0603},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            plan = runner.native_scene_camera_plan(
+                scene_width=1280,
+                scene_height=720,
+                output_width=1024,
+                output_height=576,
+                payload={
+                    "camera_view": "speaker_close",
+                    "speaker_participant_id": "mistral",
+                    "framed_participant_ids": ["mistral"],
+                    "face_regions": [region],
+                },
+                speaker_region=region,
+            )
+
+        self.assertEqual(plan["view"], "speaker_close")
+        self.assertGreaterEqual(plan["speaker_face_height_px"], 220)
+
+    def test_declared_scene_face_region_is_transformed_into_speaker_crop(self) -> None:
+        face_region = {"x": 0.40, "y": 0.30, "width": 0.10, "height": 0.20}
+        crop = (400, 168, 100, 144)
+
+        bbox = executor.GpuJobRunner.normalized_face_bbox_in_crop(1000, 600, face_region, crop)
+
+        self.assertAlmostEqual(bbox["x"], 0.0)
+        self.assertAlmostEqual(bbox["y"], 1 / 12)
+        self.assertAlmostEqual(bbox["width"], 1.0)
+        self.assertAlmostEqual(bbox["height"], 5 / 6)
+
     def test_seated_plate_anatomy_metrics_detects_spread_disconnected_legs(self) -> None:
         alpha = executor.Image.new("L", (200, 300), 0)
         draw = executor.ImageDraw.Draw(alpha)
@@ -1427,6 +1463,44 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(fake.runtime_states["localai"]["stage"], "idle_unloaded")
         self.assertIsNone(fake.runtime_states["localai"]["active_model"])
         self.assertIsNone(fake.runtime_states["localai"]["model_alias"])
+        self.assertEqual(fake.releases, [runner.lease_owner])
+
+    def test_gpu_runner_survives_failed_idle_unload_hook(self) -> None:
+        fake = FakeDatabase(runtime="lan-p40-media", claim_job=False)
+        fake.runtime_states["lan-p40-media"] = {
+            "runtime": "lan-p40-media",
+            "status": "idle",
+            "stage": "idle",
+            "active_model": "talking-head-lipsync",
+            "model_alias": "talking-head-lipsync",
+            "resolved_model_version": "musetalk@1",
+            "job_id": "job_old",
+            "details": {},
+            "updated_at": datetime.now(tz=UTC) - timedelta(seconds=61),
+        }
+        self.patch_database(fake)
+
+        class FailingIdleRunner(executor.GpuJobRunner):
+            def __init__(self, artifact_root: Path) -> None:
+                super().__init__(
+                    artifact_root,
+                    runtime_urls={"lan-p40-media": "https://worker.example"},
+                    default_idle_timeout_seconds=60,
+                )
+
+            async def graceful_or_forced_unload_runtime(self, *args, **kwargs):
+                raise RuntimeError("runtime recover hook returned HTTP 503")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = FailingIdleRunner(Path(tmp))
+            processed = asyncio.run(runner.run_once())
+
+        self.assertFalse(processed)
+        state = fake.runtime_states["lan-p40-media"]
+        self.assertEqual(state["status"], "idle_unload_failed")
+        self.assertEqual(state["stage"], "idle_unload_failed")
+        self.assertEqual(state["active_model"], "talking-head-lipsync")
+        self.assertIn("HTTP 503", state["details"]["error"])
         self.assertEqual(fake.releases, [runner.lease_owner])
 
     def test_gpu_runner_uses_alias_idle_timeout_override(self) -> None:

@@ -3,10 +3,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import shutil
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
+from unittest import mock
+
+import cv2
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +76,66 @@ class PerformanceRenderCacheTests(unittest.TestCase):
                 )
             finally:
                 lipsync.CACHE_ROOT = original_cache_root
+
+    def test_scene_face_bbox_is_validated_and_bound_to_cache_key(self) -> None:
+        payload = self.payload().model_copy(
+            update={
+                "source_context": "scene_face_region",
+                "face_bbox": {"x": 0.1, "y": 0.08, "width": 0.8, "height": 0.84},
+            }
+        )
+        self.assertEqual(lipsync.validated_scene_face_bbox(payload), payload.face_bbox)
+        portrait_path = Path(__file__)
+        key = lipsync.performance_render_cache_key(payload, PERFORMANCE_PLAN, portrait_path)
+        changed = payload.model_copy(update={"face_bbox": {"x": 0.12, "y": 0.08, "width": 0.78, "height": 0.84}})
+        self.assertNotEqual(key, lipsync.performance_render_cache_key(changed, PERFORMANCE_PLAN, portrait_path))
+
+    def test_face_bbox_is_rejected_for_plain_portrait(self) -> None:
+        payload = self.payload().model_copy(update={"face_bbox": {"x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8}})
+        with self.assertRaises(lipsync.HTTPException) as raised:
+            lipsync.validated_scene_face_bbox(payload)
+        self.assertEqual(raised.exception.detail["code"], "face_bbox_not_allowed")
+
+    def test_declared_mouth_fallback_adds_audio_driven_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "static.mp4"
+            audio = root / "speech.wav"
+            output = root / "animated.mp4"
+            writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (96, 96))
+            self.assertTrue(writer.isOpened())
+            frame = np.full((96, 96, 3), 180, dtype=np.uint8)
+            for _ in range(20):
+                writer.write(frame)
+            writer.release()
+            samples = (np.sin(np.arange(32000) * 2 * np.pi * 220 / 16000) * 12000).astype(np.int16)
+            samples[:4000] = 0
+            with wave.open(str(audio), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(16000)
+                handle.writeframes(samples.tobytes())
+            bbox = {"x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8}
+
+            envelope = [0.0 if index < 4 else 1.0 for index in range(20)]
+            with (
+                mock.patch.object(lipsync, "audio_rms_envelope", return_value=envelope),
+                mock.patch.object(
+                    lipsync,
+                    "mux_performance_audio",
+                    side_effect=lambda video, _audio, destination: shutil.copyfile(video, destination),
+                ),
+            ):
+                metadata = lipsync.apply_declared_mouth_fallback(
+                    source,
+                    audio,
+                    output,
+                    bbox,
+                    trigger_score=0.0,
+                )
+
+            self.assertTrue(metadata["applied"])
+            self.assertGreater(lipsync.mouth_motion_score(output, bbox), lipsync.DECLARED_MOUTH_MINIMUM_MOTION)
 
 
 if __name__ == "__main__":
