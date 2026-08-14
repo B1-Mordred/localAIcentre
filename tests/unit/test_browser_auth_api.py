@@ -95,8 +95,10 @@ class FakeDatabase:
         return {"id": f"audit_{len(self.audit_events)}", **payload}
 
     async def upsert_api_client(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.api_clients[payload["id"]] = dict(payload)
-        return dict(payload)
+        existing = self.api_clients.get(payload["id"], {})
+        row = {**existing, **payload}
+        self.api_clients[payload["id"]] = row
+        return dict(row)
 
     async def insert_api_client(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {**payload, "last_used_at": None, "revoked_at": None}
@@ -352,7 +354,25 @@ class BrowserAuthApiTests(unittest.TestCase):
             set(row["scopes"]),
             {"models:read", "inference:write", "jobs:read", "jobs:write", "workflows:read"},
         )
+        self.assertEqual(row["default_b1_tools"], ["web_search", "web_fetch"])
         self.assertIn(main.OPEN_WEBUI_CLIENT_ID, self.database.api_clients)
+
+    def test_invalid_open_webui_tool_configuration_preserves_stored_policy(self) -> None:
+        self.database.api_clients[main.OPEN_WEBUI_CLIENT_ID] = {
+            "id": main.OPEN_WEBUI_CLIENT_ID,
+            "default_b1_tools": ["web_search", "web_fetch"],
+        }
+        main.settings = replace(
+            main.settings,
+            open_webui_api_key="b1k_openwebui.test-secret",
+            open_webui_default_b1_tools=("not-a-b1-tool",),
+        )
+
+        row = asyncio.run(main.ensure_open_webui_api_client())
+
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["default_b1_tools"], ["web_search", "web_fetch"])
 
     def test_api_client_create_validates_and_returns_cidr_allowlist(self) -> None:
         created = asyncio.run(

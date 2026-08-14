@@ -3316,20 +3316,24 @@ async def upsert_api_client(payload: dict[str, Any]) -> dict[str, Any]:
         **payload,
     }
     stmt = pg_insert(api_clients).values(**row)
+    update_values = {
+        "display_name": stmt.excluded.display_name,
+        "role": stmt.excluded.role,
+        "scopes": stmt.excluded.scopes,
+        "key_prefix": stmt.excluded.key_prefix,
+        "key_salt": stmt.excluded.key_salt,
+        "key_hash": stmt.excluded.key_hash,
+        "cidr_allowlist": stmt.excluded.cidr_allowlist,
+        "updated_at": now,
+        "revoked_at": None,
+    }
+    # System-managed callers that do not provide a tool policy must not clear an
+    # administrator-managed policy during an unrelated credential upsert.
+    if "default_b1_tools" in payload:
+        update_values["default_b1_tools"] = stmt.excluded.default_b1_tools
     stmt = stmt.on_conflict_do_update(
         index_elements=[api_clients.c.id],
-        set_={
-            "display_name": stmt.excluded.display_name,
-            "role": stmt.excluded.role,
-            "scopes": stmt.excluded.scopes,
-            "key_prefix": stmt.excluded.key_prefix,
-            "key_salt": stmt.excluded.key_salt,
-            "key_hash": stmt.excluded.key_hash,
-            "cidr_allowlist": stmt.excluded.cidr_allowlist,
-            "default_b1_tools": stmt.excluded.default_b1_tools,
-            "updated_at": now,
-            "revoked_at": None,
-        },
+        set_=update_values,
     )
     async with engine.begin() as conn:
         await conn.execute(stmt)

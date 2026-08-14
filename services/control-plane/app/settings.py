@@ -227,7 +227,7 @@ def load_settings() -> Settings:
         dev_auth_bypass=_bool("B1_DEV_AUTH_BYPASS", False),
         admin_bootstrap_key=_read_secret(os.getenv("B1_ADMIN_BOOTSTRAP_KEY_FILE"), os.getenv("B1_ADMIN_BOOTSTRAP_KEY", "")),
         open_webui_api_key=_read_secret(os.getenv("B1_OPEN_WEBUI_API_KEY_FILE"), os.getenv("B1_OPEN_WEBUI_API_KEY", "")),
-        open_webui_default_b1_tools=_words("B1_OPEN_WEBUI_DEFAULT_B1_TOOLS", ""),
+        open_webui_default_b1_tools=_words("B1_OPEN_WEBUI_DEFAULT_B1_TOOLS", "web_search,web_fetch"),
         master_key=_read_secret(os.getenv("B1_MASTER_KEY_FILE"), os.getenv("B1_MASTER_KEY", "")),
         database_url=database_url,
         redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),

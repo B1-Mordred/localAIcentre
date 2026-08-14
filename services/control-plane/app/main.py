@@ -7871,24 +7871,21 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
     if not key_prefix:
         log_event("open_webui_api_key_invalid")
         return None
+    payload: dict[str, Any] = {
+        "id": OPEN_WEBUI_CLIENT_ID,
+        "display_name": "Open WebUI internal",
+        "role": Role.SERVICE.value,
+        "scopes": list(scopes_for_role(Role.SERVICE, OPEN_WEBUI_SCOPES)),
+        "key_prefix": key_prefix,
+    }
     try:
-        default_b1_tools = normalize_model_tool_names(list(settings.open_webui_default_b1_tools))
+        payload["default_b1_tools"] = normalize_model_tool_names(list(settings.open_webui_default_b1_tools))
     except HTTPException as exc:
         log_event("open_webui_default_b1_tools_invalid", detail=str(exc.detail))
-        default_b1_tools = []
     salt, key_hash = hash_api_key(api_key)
-    row = await database.upsert_api_client(
-        {
-            "id": OPEN_WEBUI_CLIENT_ID,
-            "display_name": "Open WebUI internal",
-            "role": Role.SERVICE.value,
-            "scopes": list(scopes_for_role(Role.SERVICE, OPEN_WEBUI_SCOPES)),
-            "key_prefix": key_prefix,
-            "key_salt": salt,
-            "key_hash": key_hash,
-            "default_b1_tools": default_b1_tools,
-        }
-    )
+    payload["key_salt"] = salt
+    payload["key_hash"] = key_hash
+    row = await database.upsert_api_client(payload)
     log_event("open_webui_api_client_ready", client_id=row["id"], key_prefix=key_prefix, scopes=row["scopes"], default_b1_tools=row.get("default_b1_tools") or [])
     return row
 

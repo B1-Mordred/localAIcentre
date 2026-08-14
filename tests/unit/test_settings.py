@@ -86,6 +86,18 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.self_test_tls_gateway_host, "gateway")
         self.assertEqual(settings.self_test_tls_gateway_port, 443)
 
+    def test_open_webui_search_and_fetch_tools_default_when_unset_or_blank(self) -> None:
+        self.patch_env(B1_OPEN_WEBUI_DEFAULT_B1_TOOLS=None)
+
+        unset_settings = settings_module.load_settings()
+
+        self.assertEqual(unset_settings.open_webui_default_b1_tools, ("web_search", "web_fetch"))
+
+        self.patch_env(B1_OPEN_WEBUI_DEFAULT_B1_TOOLS="")
+        blank_settings = settings_module.load_settings()
+
+        self.assertEqual(blank_settings.open_webui_default_b1_tools, ("web_search", "web_fetch"))
+
 
 if __name__ == "__main__":
     unittest.main()
