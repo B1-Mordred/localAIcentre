@@ -7879,7 +7879,16 @@ async def ensure_open_webui_api_client() -> dict[str, Any] | None:
         "key_prefix": key_prefix,
     }
     try:
-        payload["default_b1_tools"] = normalize_model_tool_names(list(settings.open_webui_default_b1_tools))
+        default_b1_tools = normalize_model_tool_names(list(settings.open_webui_default_b1_tools))
+        unsupported_tools = [
+            name for name in default_b1_tools if name not in model_tools.BUILTIN_TOOL_NAMES
+        ]
+        if unsupported_tools:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported built-in model tool: {unsupported_tools[0]}",
+            )
+        payload["default_b1_tools"] = default_b1_tools
     except HTTPException as exc:
         log_event("open_webui_default_b1_tools_invalid", detail=str(exc.detail))
     salt, key_hash = hash_api_key(api_key)
