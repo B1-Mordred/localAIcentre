@@ -45,7 +45,7 @@ docker compose config
 If `make repository-quality-evidence` fails during `backend-python-quality-container` with pip errors such as `Temporary failure in name resolution` while the host itself can resolve and download packages, test Docker bridge DNS:
 
 ```bash
-docker run --rm python:3.12.12-slim-bookworm getent hosts pypi.org
+docker run --rm python:3.12.14-slim-bookworm getent hosts pypi.org
 docker run --rm --network host python:3.12.11-slim-bookworm getent hosts pypi.org
 ```
 

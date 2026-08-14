@@ -2916,7 +2916,7 @@ class AcceptanceReportTests(unittest.TestCase):
         )
         self.assertEqual(
             bases[("services/mock-runtime/Dockerfile", "mock-runtime", "final")],
-            "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+            "python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134",
         )
 
         repository_runtimes = {item["runtime"]: item for item in repository["runtime_sources"]}

@@ -17,7 +17,7 @@ x-python-health: &python-health
 
 services:
   bootstrap:
-    image: python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+    image: python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
     command: ["python", "/opt/b1/deploy/scripts/bootstrap.py", "--root", "${B1_DATA_ROOT:-/srv/b1-ai-hub}"]
     environment:
       B1_DATA_ROOT: ${B1_DATA_ROOT:-/srv/b1-ai-hub}
@@ -124,7 +124,7 @@ services:
       start_period: 20s
 
   caddy-ca-export:
-    image: python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+    image: python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
     <<: *service-defaults
     read_only: true
     cap_add:
@@ -808,7 +808,7 @@ services:
       B1_CPU_STT_ENGINE: ${B1_CPU_STT_ENGINE:-}
       B1_CPU_AUDIO_ENABLE_PLACEHOLDER: ${B1_CPU_AUDIO_ENABLE_PLACEHOLDER:-true}
       B1_AUDIO_CPU_RUNTIME_VERSION: ${B1_AUDIO_CPU_RUNTIME_VERSION:-b1-audio-cpu/v0.1.0-b1}
-      B1_AUDIO_CPU_BASE_IMAGE: ${B1_AUDIO_CPU_BASE_IMAGE:-python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c}
+      B1_AUDIO_CPU_BASE_IMAGE: ${B1_AUDIO_CPU_BASE_IMAGE:-python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134}
       B1_AUDIO_CPU_PIPER_RELEASE: ${B1_PIPER_RELEASE:-2023.11.14-2}
       B1_AUDIO_CPU_PIPER_ASSET: ${B1_PIPER_ASSET:-piper_linux_x86_64.tar.gz}
       B1_AUDIO_CPU_PIPER_SHA256: ${B1_PIPER_SHA256:-a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992}
