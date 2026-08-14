@@ -1587,6 +1587,72 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["path"] for call in calls], ["/v1/chat/completions", "/v1/chat/completions"])
         self.assertEqual(calls[0]["payload"]["tools"][0]["function"]["name"], "web_fetch")
 
+    async def test_open_webui_ordinary_prompt_streams_directly_despite_default_web_tools(self) -> None:
+        auth = main.AuthContext(
+            subject_id=main.OPEN_WEBUI_CLIENT_ID,
+            role=main.Role.SERVICE,
+            scopes=frozenset({"inference:write"}),
+            default_b1_tools=("web_search", "web_fetch"),
+        )
+        resolution = SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default")
+        stream_calls: list[dict[str, object]] = []
+
+        async def fake_authenticate(_authorization):
+            return auth
+
+        def fake_resolve(*_args, **_kwargs):
+            return resolution
+
+        async def fake_registry(_auth):
+            return model_tools.ModelToolRegistry(
+                model_tools.ModelToolSettings(allowed_tools=("web_search", "web_fetch"))
+            )
+
+        async def fake_runtime_stream(path, payload, selected, operation, owner_id=None, **_kwargs):
+            stream_calls.append(
+                {"path": path, "payload": payload, "selected": selected, "operation": operation, "owner_id": owner_id}
+            )
+
+            async def events():
+                yield 'data: {"choices":[{"delta":{"reasoning_content":"live"}}]}\n\n'
+
+            return main.StreamingResponse(events(), media_type="text/event-stream")
+
+        async def fail_tool_loop(*_args, **_kwargs):
+            raise AssertionError("ordinary Open WebUI prompts must not enter the buffered tool loop")
+
+        original_authenticate = main.authenticate
+        original_resolve = main.resolve_catalog_alias_for_modalities_auth
+        original_registry = main.model_tool_registry_for_auth
+        original_runtime_stream = main.call_openai_runtime_stream
+        original_tool_loop = main.call_chat_with_b1_tools
+        main.authenticate = fake_authenticate
+        main.resolve_catalog_alias_for_modalities_auth = fake_resolve
+        main.model_tool_registry_for_auth = fake_registry
+        main.call_openai_runtime_stream = fake_runtime_stream
+        main.call_chat_with_b1_tools = fail_tool_loop
+        self.addAsyncCleanup(lambda: setattr(main, "authenticate", original_authenticate))
+        self.addAsyncCleanup(lambda: setattr(main, "resolve_catalog_alias_for_modalities_auth", original_resolve))
+        self.addAsyncCleanup(lambda: setattr(main, "model_tool_registry_for_auth", original_registry))
+        self.addAsyncCleanup(lambda: setattr(main, "call_openai_runtime_stream", original_runtime_stream))
+        self.addAsyncCleanup(lambda: setattr(main, "call_chat_with_b1_tools", original_tool_loop))
+
+        request = main.ChatCompletionRequest(
+            model="chat-default",
+            messages=[{"role": "user", "content": "Review this transaction code."}],
+            stream=True,
+        )
+        response = await main.chat_completions(
+            request,
+            authorization="Bearer test",
+            open_webui_chat_id=None,
+        )
+
+        self.assertIsInstance(response, main.StreamingResponse)
+        self.assertEqual(len(stream_calls), 1)
+        self.assertNotIn("tools", stream_calls[0]["payload"])
+        self.assertEqual(stream_calls[0]["owner_id"], main.OPEN_WEBUI_CLIENT_ID)
+
     async def test_explicit_empty_b1_tools_disables_api_client_defaults(self) -> None:
         auth = main.AuthContext(
             subject_id="client_1",

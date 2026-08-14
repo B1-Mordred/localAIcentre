@@ -15420,6 +15420,16 @@ async def chat_completions(
     runtime_payload = inject_gpt_oss_reasoning_effort(runtime_payload, await gpt_oss_reasoning_effort(payload, resolution))
     runtime_payload = inject_deepseek_quality_policy(runtime_payload, payload, resolution)
     requested_tools, tool_registry = await requested_b1_model_tools(payload, auth)
+    if (
+        auth.subject_id == OPEN_WEBUI_CLIENT_ID
+        and not chat_request_has_explicit_b1_tools(payload)
+        and not chat_request_requests_current_information(payload)
+    ):
+        # Open WebUI's client defaults make web tools available without
+        # requiring private B1 request fields. Do not let those defaults force
+        # every ordinary turn through the completed, non-streaming tool loop:
+        # direct runtime streaming preserves live reasoning and token output.
+        requested_tools = []
     # Open WebUI cannot add B1's private `b1_tools` field itself. Enable the
     # LAN-managed search tools only for clear requests for fresh information,
     # not for every ordinary chat turn.
