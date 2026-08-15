@@ -1,14 +1,14 @@
 {
   "id": "b1-studio-panel-shot-compositor",
-  "version": "20260809.1",
+  "version": "20260815.1",
   "display_name": "B1 Studio Panel Shot Compositor",
-  "description": "Private-reference 16:9 studio panel keyframe compositor. It accepts only approved transparent studio-seated-character plates, composites them at fixed seats with chair/table depth occlusion over the supplied studio reference, and records semantic pixel-derived seat occupancy plus normalized speaker-face and wall-screen geometry for B1's seated audio-driven lipsync path.",
+  "description": "Private-reference 16:9 studio panel keyframe compositor. It accepts only approved transparent studio-seated-character plates, normalizes visible stature to an explicit reference participant, composites them at fixed seats with chair/table depth occlusion over the supplied studio reference, and records semantic pixel-derived seat occupancy plus normalized speaker-face and wall-screen geometry for B1's seated audio-driven lipsync path.",
   "modality": "image",
   "operations": ["studio-panel-shot"],
   "source": {
     "type": "catalog",
     "url": "https://github.com/B1-Mordred/localAIcentre",
-    "revision": "20260809.1",
+    "revision": "20260815.1",
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "files": [{"path": "internal/b1-studio-panel-shot-compositor", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size_bytes": 1, "format": "internal", "quantization": "none"}],
@@ -21,6 +21,6 @@
   "aliases": ["studio-panel-shot"],
   "visibility_roles": ["admin", "operator", "creator", "user", "service"],
   "permissions": {"visible_to": ["admin", "operator", "creator", "user", "service"], "installable_by": ["admin"], "downloadable_by": [], "inference_roles": ["admin", "operator", "creator", "user", "service"]},
-  "runtime_adapter_versions": {"panel-cpu": "b1-studio-panel-compositor/v2"},
+  "runtime_adapter_versions": {"panel-cpu": "b1-studio-panel-compositor/v3"},
   "deprecation": {"status": "active"}
 }

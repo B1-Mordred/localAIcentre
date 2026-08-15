@@ -3083,6 +3083,12 @@ def resolve_studio_panel_shot_inputs(auth: AuthContext, payload: MediaJobCreate)
             "full_body_artifact_id": private_upload_reference(auth, participant.get("full_body_artifact_id"), f"participants[{index}].full_body_artifact_id", allowed_image_types),
             "seated_reference_artifact_id": private_upload_reference(auth, participant.get("seated_reference_artifact_id"), f"participants[{index}].seated_reference_artifact_id", {"image/png"}),
         })
+    stature_reference = input_payload.get("stature_reference_participant_id")
+    if stature_reference is not None and (
+        not isinstance(stature_reference, str)
+        or stature_reference not in participant_ids
+    ):
+        raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.stature_reference_participant_id", "message": "stature_reference_participant_id must name one requested participant"})
     camera = input_payload.get("camera")
     if camera != {"view": "establishing_wide", "action": "cut"}:
         raise HTTPException(status_code=422, detail={"code": "invalid_studio_panel_input", "field": "input.camera", "message": "studio-panel-shot currently supports only camera.view=establishing_wide and camera.action=cut"})

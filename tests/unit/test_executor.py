@@ -478,6 +478,94 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("panel-cpu", fake.claims[0]["runtime_names"])
         self.assertEqual(fake.releases, [])
 
+    def test_panel_compositor_normalizes_visible_height_to_named_reference(self) -> None:
+        def png(image: Any) -> bytes:
+            output = executor.io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+
+        studio = executor.Image.new("RGB", (1280, 720), (24, 34, 52))
+        figures = {
+            "claude": (300, 300, (70, 150, 230, 255)),
+            "deepseek": (180, 390, (40, 180, 130, 255)),
+            "grok": (340, 240, (180, 90, 190, 255)),
+        }
+        participants = []
+        for seat, (participant_id, (figure_width, figure_height, color)) in enumerate(
+            figures.items(), start=1
+        ):
+            plate = executor.Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+            left, top = 640 - figure_width // 2, 80
+            executor.ImageDraw.Draw(plate).rectangle(
+                (left, top, left + figure_width - 1, top + figure_height - 1),
+                fill=color,
+            )
+            participants.append(
+                {
+                    "participant_id": participant_id,
+                    "seat": seat,
+                    "seated_plate": png(plate),
+                    "seated_character": {
+                        "face_region": {
+                            "x": (left + figure_width * 0.3) / 1280,
+                            "y": (top + figure_height * 0.04) / 720,
+                            "width": figure_width * 0.4 / 1280,
+                            "height": figure_height * 0.28 / 720,
+                        }
+                    },
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            _, _, occupancy, qc = runner.compose_studio_panel_image(
+                studio=png(studio),
+                participants=participants,
+                width=1280,
+                height=720,
+                stature_reference_participant_id="claude",
+            )
+
+        body_heights = {
+            entry["participant_id"]: round(entry["body_region"]["height"] * 720)
+            for entry in occupancy
+        }
+        self.assertEqual(set(body_heights.values()), {96})
+        self.assertEqual(qc["stature_reference_participant_id"], "claude")
+        self.assertEqual(qc["target_body_height_px"], 96)
+        self.assertEqual(qc["body_height_spread_px"], 0)
+        self.assertEqual(qc["body_height_spread_ratio"], 0.0)
+
+    def test_panel_compositor_rejects_unknown_stature_reference(self) -> None:
+        studio = executor.Image.new("RGB", (1280, 720), (24, 34, 52))
+        studio_output = executor.io.BytesIO()
+        studio.save(studio_output, format="PNG")
+        plate = executor.Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+        executor.ImageDraw.Draw(plate).rectangle((500, 80, 780, 400), fill=(70, 150, 230, 255))
+        plate_output = executor.io.BytesIO()
+        plate.save(plate_output, format="PNG")
+        participant = {
+            "participant_id": "claude",
+            "seat": 1,
+            "seated_plate": plate_output.getvalue(),
+            "seated_character": {
+                "face_region": {"x": 0.46, "y": 0.14, "width": 0.08, "height": 0.12}
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(Path(tmp))
+            with self.assertRaisesRegex(
+                executor.StudioPanelQualityError, "stature reference"
+            ):
+                runner.compose_studio_panel_image(
+                    studio=studio_output.getvalue(),
+                    participants=[participant],
+                    width=1280,
+                    height=720,
+                    stature_reference_participant_id="missing",
+                )
+
     def test_gpu_runner_async_pause_hook_skips_claiming_work(self) -> None:
         fake = FakeDatabase(runtime="localai")
         self.patch_database(fake)

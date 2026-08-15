@@ -1940,6 +1940,7 @@ class GpuJobRunner:
         participants: list[dict[str, Any]],
         width: int,
         height: int,
+        stature_reference_participant_id: str | None = None,
     ) -> tuple[bytes, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Composite approved RGBA seated plates into one fixed studio scene.
 
@@ -1964,6 +1965,7 @@ class GpuJobRunner:
         seat_map: list[dict[str, Any]] = []
         occupancy: list[dict[str, Any]] = []
         body_boxes: list[tuple[str, tuple[int, int, int, int]]] = []
+        prepared_participants: list[dict[str, Any]] = []
 
         # Preserve the physical chair back where each plate meets the desk.
         # It is a masked crop of the caller's actual studio, not a generated
@@ -2015,8 +2017,54 @@ class GpuJobRunner:
                 "width": (face_pixels[2] - face_pixels[0]) / plate.width,
                 "height": (face_pixels[3] - face_pixels[1]) / plate.height,
             }
+            legacy_layer = ImageOps.contain(
+                plate,
+                (person_width, person_height),
+                method=Image.Resampling.LANCZOS,
+            )
+            prepared_participants.append(
+                {
+                    "participant": participant,
+                    "plate": plate,
+                    "source_face_in_plate": source_face_in_plate,
+                    "legacy_height": legacy_layer.height,
+                }
+            )
+
+        reference_entry = next(
+            (
+                entry
+                for entry in prepared_participants
+                if entry["participant"]["participant_id"]
+                == stature_reference_participant_id
+            ),
+            None,
+        )
+        if stature_reference_participant_id and reference_entry is None:
+            raise StudioPanelQualityError(
+                "studio_panel_qc_failed: stature reference is not a panel participant"
+            )
+        if reference_entry is None:
+            ordered_heights = sorted(
+                int(entry["legacy_height"]) for entry in prepared_participants
+            )
+            target_body_height = ordered_heights[len(ordered_heights) // 2]
+            effective_stature_reference = "median_legacy_fit"
+        else:
+            target_body_height = int(reference_entry["legacy_height"])
+            effective_stature_reference = str(stature_reference_participant_id)
+
+        for entry in prepared_participants:
+            participant = entry["participant"]
+            plate = entry["plate"]
+            source_face_in_plate = entry["source_face_in_plate"]
             face_region, (center_x, _) = self.studio_panel_geometry(int(participant["seat"]))
-            layer = ImageOps.contain(plate, (person_width, person_height), method=Image.Resampling.LANCZOS)
+            target_width = max(
+                1, int(round(plate.width * target_body_height / plate.height))
+            )
+            layer = plate.resize(
+                (target_width, target_body_height), resample=Image.Resampling.LANCZOS
+            )
             body_left = int(round(width * center_x - layer.width / 2))
             # Anchor the cropped figure at the physical desk line.  The old
             # expression anchored it to the bottom of the much taller maximum
@@ -2038,7 +2086,7 @@ class GpuJobRunner:
                 "height": round(layer.height / height, 4),
             }
             seat_map.append({"participant_id": participant["participant_id"], "seat": participant["seat"], "face_region": rendered_face})
-            occupancy.append({"participant_id": participant["participant_id"], "seat": participant["seat"], "occupied": True, "seated_pose_detected": True, "body_region": body_region, "face_region": rendered_face})
+            occupancy.append({"participant_id": participant["participant_id"], "seat": participant["seat"], "occupied": True, "seated_pose_detected": True, "body_region": body_region, "face_region": rendered_face, "stature_scale": round(target_body_height / int(entry["legacy_height"]), 4)})
             body_boxes.append((str(participant["participant_id"]), (body_left, body_top, body_left + layer.width, body_top + layer.height)))
 
         # The original desk and its foreground chair geometry occlude each
@@ -2064,6 +2112,13 @@ class GpuJobRunner:
                 overlap = overlap_width * overlap_height
                 if overlap > 0.18 * min((first[2] - first[0]) * (first[3] - first[1]), (second[2] - second[0]) * (second[3] - second[1])):
                     raise StudioPanelQualityError("studio_panel_qc_failed: seated character plates materially overlap")
+        rendered_body_heights = [box[3] - box[1] for _, box in body_boxes]
+        body_height_spread = max(rendered_body_heights) - min(rendered_body_heights)
+        body_height_spread_ratio = body_height_spread / target_body_height
+        if body_height_spread_ratio > 0.04:
+            raise StudioPanelQualityError(
+                "studio_panel_qc_failed: seated character stature is not normalized"
+            )
         qc = {
             "status": "passed",
             "composition": "shared_studio_seated_panel",
@@ -2075,6 +2130,11 @@ class GpuJobRunner:
             "source_card_compositing": False,
             "mean_pixel_delta": round(mean_delta, 3),
             "rear_screen_mean_pixel_delta": round(rear_screen_mean, 3),
+            "stature_normalization": "alpha_bounds_reference_height_v1",
+            "stature_reference_participant_id": effective_stature_reference,
+            "target_body_height_px": target_body_height,
+            "body_height_spread_px": body_height_spread,
+            "body_height_spread_ratio": round(body_height_spread_ratio, 4),
         }
         output = io.BytesIO()
         canvas.convert("RGB").save(output, format="PNG", optimize=True)
@@ -2139,6 +2199,10 @@ class GpuJobRunner:
             participants=composite_inputs,
             width=width,
             height=height,
+            stature_reference_participant_id=(
+                str(payload.get("stature_reference_participant_id") or "").strip()
+                or None
+            ),
         )
         if not content:
             raise StudioPanelQualityError("studio_panel_qc_failed: panel compositor produced an empty image")

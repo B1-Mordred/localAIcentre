@@ -391,6 +391,7 @@ class MediaJobWorkflowEnforcementTests(unittest.TestCase):
                     "full_body_artifact_id": "upload_fedcba9876543210fedcba9876543210",
                     "seated_reference_artifact_id": "upload_00112233445566778899aabbccddeeff",
                 }],
+                "stature_reference_participant_id": "chatgpt",
                 "camera": {"view": "establishing_wide", "action": "cut"},
                 "width": 512,
                 "height": 288,
@@ -404,6 +405,41 @@ class MediaJobWorkflowEnforcementTests(unittest.TestCase):
         normalized = main.resolve_studio_panel_shot_inputs(auth, payload)
 
         self.assertEqual(normalized.input["seed"], 20260802)
+        self.assertEqual(
+            normalized.input["stature_reference_participant_id"], "chatgpt"
+        )
+
+    def test_studio_panel_rejects_unknown_stature_reference(self) -> None:
+        payload = main.MediaJobCreate(
+            modality="image",
+            operation="studio-panel-shot",
+            model="studio-panel-shot",
+            runtime_policy="comfyui",
+            priority="single_image",
+            input={
+                "studio_reference_artifact_id": "upload_0123456789abcdef0123456789abcdef",
+                "participants": [{
+                    "participant_id": "chatgpt",
+                    "seat": 1,
+                    "portrait_artifact_id": "upload_0123456789abcdef0123456789abcdef",
+                    "full_body_artifact_id": "upload_fedcba9876543210fedcba9876543210",
+                    "seated_reference_artifact_id": "upload_00112233445566778899aabbccddeeff",
+                }],
+                "stature_reference_participant_id": "claude",
+                "camera": {"view": "establishing_wide", "action": "cut"},
+                "width": 512,
+                "height": 288,
+            },
+        )
+        auth = AuthContext(subject_id="creator", role=Role.CREATOR, scopes=frozenset({"jobs:write"}))
+        original = main.private_upload_reference
+        main.private_upload_reference = lambda _auth, value, _field, _types: {"id": value, "source": "staged_upload", "path": "inputs/test"}
+        self.addCleanup(lambda: setattr(main, "private_upload_reference", original))
+
+        with self.assertRaises(HTTPException) as caught:
+            main.resolve_studio_panel_shot_inputs(auth, payload)
+
+        self.assertEqual(caught.exception.detail["field"], "input.stature_reference_participant_id")
 
     def test_studio_panel_requires_completed_seated_reference_field(self) -> None:
         payload = main.MediaJobCreate(
