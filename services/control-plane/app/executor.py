@@ -976,7 +976,26 @@ class GpuJobRunner:
     def compact_hook_result(self, result: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(result, dict):
             return {"status": "unconfirmed"}
-        allowed_keys = {"status", "reason", "action", "strategy", "runtime_action", "service", "runtime", "message", "error", "code", "memory_used_mib", "reserve_mib"}
+        allowed_keys = {
+            "status",
+            "reason",
+            "action",
+            "strategy",
+            "runtime_action",
+            "service",
+            "runtime",
+            "message",
+            "error",
+            "code",
+            "memory_used_mib",
+            "reserve_mib",
+            "baseline_mib",
+            "margin_mib",
+            "idle_threshold_mib",
+            "stable_sample_count",
+            "stable_sample_target",
+            "memory_samples_mib",
+        }
         return {key: value for key, value in result.items() if key in allowed_keys}
 
     def runtime_hook_state_status(self, action: str, result: dict[str, Any] | None) -> str:
@@ -1191,7 +1210,22 @@ class GpuJobRunner:
         if response.status_code in {404, 405}:
             return {"status": "unsupported", "reason": f"http_{response.status_code}", "runtime": runtime, "action": action}
         if response.status_code >= 400:
-            raise RuntimeError(f"{runtime} runtime {action} hook returned HTTP {response.status_code}")
+            hook_evidence: dict[str, Any] = {}
+            try:
+                response_body = response.json()
+            except ValueError:
+                response_body = None
+            if isinstance(response_body, dict):
+                hook_evidence = self.compact_hook_result(response_body)
+            evidence_suffix = (
+                f": {json.dumps(hook_evidence, sort_keys=True, separators=(',', ':'))[:1000]}"
+                if hook_evidence
+                else ""
+            )
+            raise RuntimeError(
+                f"{runtime} runtime {action} hook returned HTTP "
+                f"{response.status_code}{evidence_suffix}"
+            )
         if not response.content:
             return {"status": "ok", "runtime": runtime, "action": action}
         try:

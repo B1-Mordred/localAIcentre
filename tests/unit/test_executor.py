@@ -1328,6 +1328,66 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")
         self.assertFalse(FakeAsyncClient.calls[0]["client_kwargs"]["trust_env"])
 
+    def test_runtime_control_failure_preserves_bounded_idle_evidence(self) -> None:
+        class FakeResponse:
+            status_code = 503
+            content = b'{"status":"failed"}'
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "status": "failed",
+                    "runtime": "lan-p40-media",
+                    "action": "recover",
+                    "memory_used_mib": 744,
+                    "baseline_mib": 256,
+                    "margin_mib": 256,
+                    "idle_threshold_mib": 512,
+                    "stable_sample_count": 0,
+                    "stable_sample_target": 3,
+                    "memory_samples_mib": [744, 744, 744],
+                    "detail": {"access_token": "must-not-escape"},
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+            async def post(
+                self,
+                _url: str,
+                json: dict[str, Any],
+                headers: dict[str, str],
+            ) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = executor.httpx.AsyncClient
+        executor.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(executor.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = executor.GpuJobRunner(
+                Path(tmp),
+                runtime_urls={"lan-p40-media": "https://worker.example/media"},
+                runtime_control_token="hook-token",
+            )
+            with self.assertRaisesRegex(RuntimeError, "idle_threshold_mib.*512") as raised:
+                asyncio.run(
+                    runner.post_runtime_control(
+                        "lan-p40-media",
+                        "recover",
+                        {"operation": "talking-head-lipsync"},
+                    )
+                )
+
+        self.assertIn('"memory_samples_mib":[744,744,744]', str(raised.exception))
+        self.assertNotIn("must-not-escape", str(raised.exception))
+
     def test_lan_worker_control_and_metrics_use_pinned_ca_and_bearer_token(self) -> None:
         class FakeResponse:
             status_code = 200
