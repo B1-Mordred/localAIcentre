@@ -4,10 +4,12 @@ COPY b1-open-webui-entrypoint.sh /usr/local/bin/b1-open-webui-entrypoint.sh
 COPY b1_cancel_bridge.py /app/backend/open_webui/b1_cancel_bridge.py
 COPY patch_tasks.py /tmp/b1-patch-open-webui-tasks.py
 COPY patch_managed_web_defaults.py /tmp/b1-patch-open-webui-managed-web-defaults.py
+COPY patch_reasoning_tool_loops.py /tmp/b1-patch-open-webui-reasoning-tool-loops.py
 RUN chmod 0555 /usr/local/bin/b1-open-webui-entrypoint.sh \
     && python /tmp/b1-patch-open-webui-tasks.py \
     && python /tmp/b1-patch-open-webui-managed-web-defaults.py \
-    && rm /tmp/b1-patch-open-webui-tasks.py /tmp/b1-patch-open-webui-managed-web-defaults.py \
+    && python /tmp/b1-patch-open-webui-reasoning-tool-loops.py \
+    && rm /tmp/b1-patch-open-webui-tasks.py /tmp/b1-patch-open-webui-managed-web-defaults.py /tmp/b1-patch-open-webui-reasoning-tool-loops.py \
     && chgrp -R 999 /app/backend/open_webui/static \
     && chmod -R g+rwX /app/backend/open_webui/static
 
