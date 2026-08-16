@@ -27,8 +27,9 @@ HOP_BY_HOP_HEADERS = {
 }
 INFERENCE_PATHS = {"/v1/chat/completions", "/v1/completions", "/v1/responses"}
 PROFILE_SCHEMA = "b1.deepseek.runtime_profiles.v1"
-ROUTER_VERSION = "b1-deepseek-v4-router/v0.1.2"
+ROUTER_VERSION = "b1-deepseek-v4-router/v0.1.3"
 RUNTIME_NAME = "lan-deepseek-worker"
+ATTESTATION_CACHE_SCHEMA = "b1.deepseek.attestation_cache.v1"
 DEEPSEEK_QUALITY_ALIAS = "deepseek-quality"
 DEEPSEEK_QUALITY_REASONING_BUDGETS = {
     "fast": 512, "normal": 2048, "quality": 4096, "deep": 8192,
@@ -346,7 +347,9 @@ class DeepSeekRuntime:
                           for selector in (profile.model_id, *profile.aliases)}
         self.lock = threading.RLock()
         self.load_lock = threading.RLock()
-        self.verified_files: dict[Path, tuple[int, int, int, int, str]] = {}
+        cache_file = os.getenv("B1_DEEPSEEK_ATTESTATION_CACHE_FILE", "").strip()
+        self.attestation_cache_file = Path(cache_file) if cache_file else None
+        self.verified_files = self._load_verified_files()
         self.process: subprocess.Popen[bytes] | None = None
         self.active_model = ""
         self.active_job_id = ""
@@ -404,6 +407,80 @@ class DeepSeekRuntime:
     def _all_artifacts(self, profile: RuntimeProfile) -> tuple[Artifact, ...]:
         return profile.artifacts + ((profile.draft,) if profile.draft is not None else ())
 
+    def _cache_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": ATTESTATION_CACHE_SCHEMA,
+            "profiles_sha256": os.getenv("B1_DEEPSEEK_PROFILES_SHA256", ""),
+            "files": {
+                str(path): {
+                    "device": identity[0], "inode": identity[1], "size_bytes": identity[2],
+                    "mtime_ns": identity[3], "sha256": identity[4],
+                }
+                for path, identity in sorted(self.verified_files.items(), key=lambda item: str(item[0]))
+            },
+        }
+
+    @staticmethod
+    def _cache_signature(payload: dict[str, Any]) -> str:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hmac.new(RUNTIME_TOKEN.encode(), body, hashlib.sha256).hexdigest()
+
+    def _load_verified_files(self) -> dict[Path, tuple[int, int, int, int, str]]:
+        path = self.attestation_cache_file
+        if path is None or not RUNTIME_TOKEN:
+            return {}
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict) or set(document) != {"payload", "signature"}:
+                return {}
+            payload, signature = document["payload"], document["signature"]
+            if not isinstance(payload, dict) or not isinstance(signature, str):
+                return {}
+            if not hmac.compare_digest(self._cache_signature(payload), signature):
+                return {}
+            if payload.get("schema_version") != ATTESTATION_CACHE_SCHEMA:
+                return {}
+            if payload.get("profiles_sha256") != os.getenv("B1_DEEPSEEK_PROFILES_SHA256", ""):
+                return {}
+            files = payload.get("files")
+            if not isinstance(files, dict):
+                return {}
+            verified: dict[Path, tuple[int, int, int, int, str]] = {}
+            for raw_path, value in files.items():
+                if not isinstance(raw_path, str) or not isinstance(value, dict):
+                    return {}
+                if set(value) != {"device", "inode", "size_bytes", "mtime_ns", "sha256"}:
+                    return {}
+                numbers = tuple(value[key] for key in ("device", "inode", "size_bytes", "mtime_ns"))
+                digest = value["sha256"]
+                if not all(isinstance(item, int) and not isinstance(item, bool) for item in numbers):
+                    return {}
+                if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                    return {}
+                verified[Path(raw_path)] = (*numbers, digest)
+            return verified
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+
+    def _save_verified_files(self) -> None:
+        path = self.attestation_cache_file
+        if path is None or not RUNTIME_TOKEN:
+            return
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._cache_payload()
+            document = {"payload": payload, "signature": self._cache_signature(payload)}
+            temporary.write_text(
+                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            temporary.chmod(0o600)
+            os.replace(temporary, path)
+        except OSError:
+            with suppress(OSError):
+                temporary.unlink()
+
     def _verify_profile_files(self, profile: RuntimeProfile) -> None:
         root = MODEL_ROOT.resolve()
         for artifact in self._all_artifacts(profile):
@@ -425,6 +502,7 @@ class DeepSeekRuntime:
             if actual != artifact.sha256:
                 raise RuntimeError(f"profile artifact checksum mismatch: {artifact.path.name}")
             self.verified_files[resolved] = (*identity, actual)
+            self._save_verified_files()
 
     def _assert_load_safety(self, *, allow_hot: bool = False) -> bool:
         devices = gpu_metrics().get("devices") or []
@@ -559,6 +637,10 @@ class DeepSeekRuntime:
                 "active_model": self.active_model or None, "active_job_id": self.active_job_id or None,
                 "active_requests": self.active_requests, "queued_requests": 0,
                 "loaded": self._child_alive(), "idle_timeout_seconds": self.idle_seconds,
+                "artifact_attestation": {
+                    "persistent_cache_enabled": self.attestation_cache_file is not None,
+                    "verified_file_count": len(self.verified_files),
+                },
                 "safety_limits": {
                     "maximum_idle_gpu_memory_mib": self.maximum_idle_gpu_mib,
                     "maximum_power_limit_w": self.maximum_power_limit_w,

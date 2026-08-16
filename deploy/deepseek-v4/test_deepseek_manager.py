@@ -215,6 +215,105 @@ class DeepSeekManagerTests(unittest.TestCase):
         self.assertEqual(second["status"], "ok")
         self.assertEqual(digest_call.call_count, 2)
 
+    def test_signed_hash_cache_survives_router_recreation(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        artifact_path = root / "model.gguf"
+        artifact_path.write_bytes(b"verified model")
+        artifact = manager.Artifact(
+            role="main-shard-1", path=artifact_path,
+            sha256=manager.hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            size_bytes=artifact_path.stat().st_size,
+        )
+        profile = manager.RuntimeProfile(
+            model_id="b1-unsloth-deepseek-v4-flash-0731-main", version="revision-1",
+            artifacts=(artifact,), server_args=("--ctx-size", "16384"),
+        )
+        cache = root / "cache" / "attestations.json"
+        environment = {
+            "B1_DEEPSEEK_ATTESTATION_CACHE_FILE": str(cache),
+            "B1_DEEPSEEK_PROFILES_SHA256": "1" * 64,
+        }
+        with mock.patch.object(manager, "MODEL_ROOT", root), mock.patch.object(
+            manager, "RUNTIME_TOKEN", "runtime-secret"
+        ), mock.patch.dict(manager.os.environ, environment), mock.patch.object(
+            manager, "sha256", wraps=manager.sha256
+        ) as digest_call:
+            first = manager.DeepSeekRuntime({profile.model_id: profile})
+            self.addCleanup(first.shutdown)
+            first.attest(profile.model_id)
+            self.assertEqual(digest_call.call_count, 1)
+            second = manager.DeepSeekRuntime({profile.model_id: profile})
+            self.addCleanup(second.shutdown)
+            second.attest(profile.model_id)
+            self.assertEqual(digest_call.call_count, 1)
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+
+    def test_persistent_hash_cache_fails_closed_after_artifact_change(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        artifact_path = root / "model.gguf"
+        artifact_path.write_bytes(b"good")
+        artifact = manager.Artifact(
+            role="main-shard-1", path=artifact_path,
+            sha256=manager.hashlib.sha256(b"good").hexdigest(), size_bytes=4,
+        )
+        profile = manager.RuntimeProfile(
+            model_id="b1-unsloth-deepseek-v4-flash-0731-main", version="revision-1",
+            artifacts=(artifact,), server_args=("--ctx-size", "16384"),
+        )
+        environment = {
+            "B1_DEEPSEEK_ATTESTATION_CACHE_FILE": str(root / "cache.json"),
+            "B1_DEEPSEEK_PROFILES_SHA256": "2" * 64,
+        }
+        with mock.patch.object(manager, "MODEL_ROOT", root), mock.patch.object(
+            manager, "RUNTIME_TOKEN", "runtime-secret"
+        ), mock.patch.dict(manager.os.environ, environment):
+            first = manager.DeepSeekRuntime({profile.model_id: profile})
+            self.addCleanup(first.shutdown)
+            first.attest(profile.model_id)
+            artifact_path.write_bytes(b"evil")
+            second = manager.DeepSeekRuntime({profile.model_id: profile})
+            self.addCleanup(second.shutdown)
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                second.attest(profile.model_id)
+
+    def test_persistent_hash_cache_ignores_invalid_signature(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        artifact_path = root / "model.gguf"
+        artifact_path.write_bytes(b"model")
+        artifact = manager.Artifact(
+            role="main-shard-1", path=artifact_path,
+            sha256=manager.hashlib.sha256(b"model").hexdigest(), size_bytes=5,
+        )
+        profile = manager.RuntimeProfile(
+            model_id="b1-unsloth-deepseek-v4-flash-0731-main", version="revision-1",
+            artifacts=(artifact,), server_args=("--ctx-size", "16384"),
+        )
+        cache = root / "cache.json"
+        environment = {
+            "B1_DEEPSEEK_ATTESTATION_CACHE_FILE": str(cache),
+            "B1_DEEPSEEK_PROFILES_SHA256": "3" * 64,
+        }
+        with mock.patch.object(manager, "MODEL_ROOT", root), mock.patch.object(
+            manager, "RUNTIME_TOKEN", "runtime-secret"
+        ), mock.patch.dict(manager.os.environ, environment):
+            first = manager.DeepSeekRuntime({profile.model_id: profile})
+            self.addCleanup(first.shutdown)
+            first.attest(profile.model_id)
+            document = json.loads(cache.read_text(encoding="utf-8"))
+            document["signature"] = "0" * 64
+            cache.write_text(json.dumps(document), encoding="utf-8")
+            with mock.patch.object(manager, "sha256", wraps=manager.sha256) as digest_call:
+                second = manager.DeepSeekRuntime({profile.model_id: profile})
+                self.addCleanup(second.shutdown)
+                second.attest(profile.model_id)
+            self.assertEqual(digest_call.call_count, 1)
+
     def test_unknown_models_never_fall_through_to_another_backend(self) -> None:
         profile = manager.load_profiles(self.write_profiles(self.valid_payload())).popitem()[1]
         runtime = manager.DeepSeekRuntime({profile.model_id: profile})

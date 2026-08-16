@@ -12,6 +12,6 @@ COPY --chown=root:root --chmod=0555 deepseek_manager.py /usr/local/libexec/deeps
 
 LABEL org.opencontainers.image.title="B1 managed DeepSeek V4 worker router" \
       b1.runtime.name="lan-deepseek-worker" \
-      b1.runtime.router-version="v0.1.2"
+      b1.runtime.router-version="v0.1.3"
 
 ENTRYPOINT ["/usr/bin/python3", "/usr/local/libexec/deepseek_manager.py"]
