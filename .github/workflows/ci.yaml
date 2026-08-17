@@ -1,0 +1,191 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22.18.0"
+  TRIVY_IMAGE: "aquasec/trivy:0.66.0@sha256:086971aaf400beebd94e8300fd8ea623774419597169156cec56eec5b00dfb1e"
+  CYCLONEDX_CLI_IMAGE: "cyclonedx/cyclonedx-cli:0.29.1@sha256:f025573a1dcc12971d711badf32bff1e030192a051a3a4987204fc6b79f91b6c"
+
+jobs:
+  backend:
+    name: Backend, Compose, and API Schema
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install PyYAML==6.0.2 \
+            -r services/control-plane/requirements.txt \
+            -r services/runtime-agent/requirements.txt \
+            -r services/artifact-server/requirements.txt \
+            -r services/audio-cpu/requirements.txt \
+            -r services/mock-runtime/requirements.txt
+      - name: Bootstrap test root
+        run: python deploy/scripts/bootstrap.py --root "$RUNNER_TEMP/b1-ai-hub"
+      - name: Validate backend and Compose policy
+        run: |
+          export B1_DATA_ROOT="$RUNNER_TEMP/b1-ai-hub"
+          make validate
+      - name: Check OpenAPI drift
+        run: make openapi-check
+      - name: Check generated web API client drift
+        run: make openapi-client-check
+      - name: Check migration package
+        run: python -m unittest tests.unit.test_migrations -v
+
+  frontend:
+    name: Frontend Build and NPM Audit
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - web/control-center
+          - web/media-studio
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+      - name: Install dependencies
+        working-directory: ${{ matrix.app }}
+        run: npm ci
+      - name: Type-check and build
+        working-directory: ${{ matrix.app }}
+        run: npm run build
+      - name: Audit production dependencies
+        working-directory: ${{ matrix.app }}
+        run: npm audit --omit=dev --audit-level=high
+
+  security-and-sbom:
+    name: Secret Scan, SBOM, and Dependency Audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install audit tools
+        run: python -m pip install pip-audit==2.9.0
+      - name: Secret scan
+        run: make secret-scan
+      - name: Generate CycloneDX SBOM
+        run: make sbom
+      - name: Validate generated SBOM
+        run: |
+          docker run --rm \
+            -v "$PWD/artifacts/sbom:/sbom:ro" \
+            -v "$RUNNER_TEMP/cyclonedx-cache:/tmp/cyclonedx-cache" \
+            "$CYCLONEDX_CLI_IMAGE" validate --input-file /sbom/b1-ai-hub.cdx.json
+      - name: Audit Python requirements
+        run: |
+          pip-audit -r services/control-plane/requirements.txt
+          pip-audit -r services/runtime-agent/requirements.txt
+          pip-audit -r services/artifact-server/requirements.txt
+          pip-audit -r services/audio-cpu/requirements.txt
+          pip-audit -r services/mock-runtime/requirements.txt
+      - name: Voicebox constraints vulnerability inventory
+        run: make voicebox-audit-inventory
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: b1-ai-hub-sbom
+          path: artifacts/sbom/b1-ai-hub.cdx.json
+          if-no-files-found: error
+      - name: Upload Voicebox vulnerability inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: voicebox-pip-audit
+          path: artifacts/pip-audit/voicebox-constraints.json
+          if-no-files-found: error
+
+  containers:
+    name: Container Builds and Image Vulnerability Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build service images
+        run: |
+          docker build -t b1-ai-hub/control-plane:ci services/control-plane
+          docker build -t b1-ai-hub/runtime-agent:ci services/runtime-agent
+          docker build -t b1-ai-hub/artifact-server:ci services/artifact-server
+          docker build -t b1-ai-hub/audio-cpu:ci services/audio-cpu
+          docker build -t b1-ai-hub/mock-runtime:ci services/mock-runtime
+          docker build -t b1-ai-hub/control-center:ci web/control-center
+          docker build -t b1-ai-hub/media-studio:ci web/media-studio
+          docker build -t b1-ai-hub/open-webui-wrapper:ci deploy/open-webui
+          docker build -t b1-ai-hub/localai:ci deploy/localai
+          docker build -t b1-ai-hub/comfyui:ci deploy/comfyui
+          docker build -t b1-ai-hub/voicebox:ci deploy/voicebox
+          docker build -t b1-ai-hub/model-client:ci integrations/b1-model-client
+      - name: Prepare vulnerability scan cache and reports
+        run: mkdir -p "$RUNNER_TEMP/trivy-cache" artifacts/trivy
+      - name: Filesystem vulnerability scan
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            "$TRIVY_IMAGE" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --skip-files /repo/services/lipsync/requirements.txt /repo
+      - name: Lipsync dependency vulnerability inventory
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            -v "$PWD/artifacts/trivy:/reports" \
+            "$TRIVY_IMAGE" fs --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed \
+            --format json --output /reports/lipsync-requirements.trivy.json \
+            /repo/services/lipsync/requirements.txt
+      - name: Image vulnerability scan
+        run: |
+          for image in \
+            b1-ai-hub/control-plane:ci \
+            b1-ai-hub/runtime-agent:ci \
+            b1-ai-hub/artifact-server:ci \
+            b1-ai-hub/audio-cpu:ci \
+            b1-ai-hub/mock-runtime:ci \
+            b1-ai-hub/control-center:ci \
+            b1-ai-hub/media-studio:ci \
+            b1-ai-hub/model-client:ci
+          do
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+              "$TRIVY_IMAGE" image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$image"
+          done
+      - name: Upstream-heavy image vulnerability inventory
+        run: |
+          for image in \
+            b1-ai-hub/open-webui-wrapper:ci \
+            b1-ai-hub/localai:ci \
+            b1-ai-hub/comfyui:ci \
+            b1-ai-hub/voicebox:ci
+          do
+            report="$(echo "$image" | tr '/:' '--').trivy.json"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+              -v "$PWD/artifacts/trivy:/reports" \
+              "$TRIVY_IMAGE" image --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed \
+              --format json --output "/reports/$report" \
+              "$image"
+          done
+      - name: Upload upstream-heavy vulnerability inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: upstream-heavy-trivy
+          path: artifacts/trivy/*.trivy.json
+          if-no-files-found: error

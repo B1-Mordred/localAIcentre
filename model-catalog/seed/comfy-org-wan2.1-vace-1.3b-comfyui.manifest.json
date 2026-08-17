@@ -1,0 +1,17 @@
+{
+  "id": "b1-comfy-org-wan2.1-vace-1.3b-comfyui",
+  "version": "06e001fc51048fb03433a6fb25334de7836704a5",
+  "display_name": "Wan 2.1 VACE 1.3B Native ComfyUI",
+  "description": "Pinned Wan 2.1 VACE 1.3B profile for low-VRAM image-conditioned video and video editing experiments. The managed image-to-video API accepts one private PNG, JPEG, or WebP upload reference in input.source_image_artifact_id, resolves it before queueing, and never forwards raw base64 or caller paths to ComfyUI. It shares the CPU-resident UMT5 FP8 encoder and Wan VAE with the Wan 1.3B text-to-video profile.",
+  "modality": "video", "operations": ["image-to-video"],
+  "source": {"type": "huggingface", "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged", "revision": "06e001fc51048fb03433a6fb25334de7836704a5"},
+  "files": [
+    {"path": "diffusion/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors", "source_path": "split_files/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors", "sha256": "640ccc0577e6a5d4bb15cd91b11b699ef914fc55f126c5a1c544e152130784f2", "size_bytes": 4309519800, "format": "safetensors", "quantization": "fp16"},
+    {"path": "diffusion/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors", "source_path": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors", "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68", "size_bytes": 6735906897, "format": "safetensors", "quantization": "fp8-e4m3fn-scaled"},
+    {"path": "diffusion/vae/wan_2.1_vae.safetensors", "source_path": "split_files/vae/wan_2.1_vae.safetensors", "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b", "size_bytes": 253815318, "format": "safetensors", "quantization": "fp16"}
+  ],
+  "runtimes": ["comfyui"], "preferred_runtime": "comfyui", "resource_estimate": {"vram_gib": 5.5, "ram_gib": 15.0, "disk_gib": 10.6, "max_resolution": "512x288", "max_frames": 33},
+  "license": {"name": "Apache-2.0", "url": "https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B", "redistribution": "downloadable", "attribution": "Alibaba Wan 2.1 VACE and Comfy-Org repackaged ComfyUI weights", "acceptance_required": true},
+  "execution_modes": ["hosted-inference", "downloadable"], "installation_status": "available", "aliases": ["video-image", "wan2.1-vace-1.3b"], "visibility_roles": ["admin", "operator", "creator", "service"], "runtime_adapter_versions": {"comfyui": "b1-runtime-adapter/v1alpha1"},
+  "measurements": {"schema": "b1-ai-hub-model-measurements/v1", "updated_at": "2026-07-28T00:00:00+00:00", "source": "Pinned official Comfy-Org file metadata and ComfyUI Wan documentation. Runtime measurement is required before production exposure.", "original_resource_estimate": {"vram_gib": 5.5, "ram_gib": 15.0, "disk_gib": 10.6, "max_resolution": "512x288", "max_frames": 33}, "latest_resource_estimate": {"vram_gib": 5.5, "ram_gib": 15.0, "disk_gib": 10.6, "max_resolution": "512x288", "max_frames": 33}, "runs": [{"id": "wan2.1-vace-1.3b-catalog-metadata-20260728", "type": "catalog-metadata", "status": "ok", "runtime": "comfyui", "model_alias": "video-image", "resolved_model_version": "b1-comfy-org-wan2.1-vace-1.3b-comfyui@06e001fc51048fb03433a6fb25334de7836704a5", "peak_vram_mib": 5632, "peak_ram_mib": 15360, "hook": {"status": "unconfirmed", "reason": "catalog_metadata_not_runtime_smoke"}}]}
+}

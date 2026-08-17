@@ -1,0 +1,45 @@
+{
+  "id": "b1-modelhub-inference-only-policy-probe",
+  "version": "0.1.0",
+  "display_name": "B1 Model Hub Inference-Only Policy Probe",
+  "description": "Internal hosted-inference-only catalog record used to prove that Model Hub sync clients cannot download inference-only model blobs. It is not assigned to a public alias and is not a runnable user model.",
+  "modality": "tts",
+  "operations": ["text-to-speech"],
+  "source": {
+    "type": "catalog",
+    "url": "https://models.ai.b1.germering/internal/policy-probes",
+    "revision": "0.1.0",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "files": [
+    {
+      "path": "internal-policy-probe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "format": "internal",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.1,
+    "disk_gib": 0.001,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "internal-policy-probe",
+    "redistribution": "inference-only",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "visibility_roles": ["admin", "operator", "service"],
+  "permissions": {
+    "visible_to": ["admin", "operator", "service"],
+    "installable_by": ["admin"],
+    "downloadable_by": ["admin", "operator", "service"],
+    "inference_roles": ["admin", "operator", "service"]
+  }
+}

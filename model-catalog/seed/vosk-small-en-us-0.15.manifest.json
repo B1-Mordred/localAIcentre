@@ -1,0 +1,77 @@
+{
+  "id": "b1-vosk-small-en-us-0.15",
+  "version": "0.15",
+  "display_name": "Vosk Small English US 0.15",
+  "description": "Small offline CPU speech-to-text model for LAN-internal transcription smoke and lightweight usage. This is a catalog recommendation only; install it through Model Hub before assigning it to stt-default.",
+  "modality": "stt",
+  "operations": ["transcription"],
+  "source": {
+    "type": "direct-url",
+    "url": "https://alphacephei.com/kaldi/models/vosk-model-small-en-us-0.15.zip",
+    "revision": "0.15"
+  },
+  "files": [
+    {
+      "path": "vosk-model-small-en-us-0.15.zip",
+      "sha256": "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
+      "size_bytes": 41205931,
+      "format": "zip",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.4,
+    "disk_gib": 0.08,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://alphacephei.com/vosk/models",
+    "redistribution": "downloadable",
+    "attribution": "Alpha Cephei Vosk small English US 0.15 model.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["stt-default"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-07-23T04:31:08+00:00",
+    "source": "local docker smoke on b1-ai-hub-audio-cpu validation build",
+    "original_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.4,
+      "disk_gib": 0.08,
+      "context_tokens": 0
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.4,
+      "disk_gib": 0.08,
+      "context_tokens": 0
+    },
+    "runs": [
+      {
+        "id": "vosk-small-en-us-0.15-local-smoke-20260723",
+        "type": "catalog-smoke",
+        "status": "ok",
+        "runtime": "audio-cpu",
+        "model_alias": "stt-default",
+        "resolved_model_version": "b1-vosk-small-en-us-0.15@0.15",
+        "peak_vram_mib": 0,
+        "hook": {
+          "audio_format": "wav",
+          "channels": 1,
+          "sample_rate_hz": 16000,
+          "audio_seconds": 0.25,
+          "transcript_chars": 0,
+          "test_input": "generated silence smoke"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,942 @@
+name: ${B1_PROJECT_NAME:-b1-ai-hub}
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=128m,noexec,nosuid,nodev
+
+x-python-health: &python-health
+  interval: 20s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
+
+services:
+  bootstrap:
+    image: python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+    command: ["python", "/opt/b1/deploy/scripts/bootstrap.py", "--root", "${B1_DATA_ROOT:-/srv/b1-ai-hub}"]
+    environment:
+      B1_DATA_ROOT: ${B1_DATA_ROOT:-/srv/b1-ai-hub}
+      POSTGRES_DB: ${POSTGRES_DB:-b1_ai_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-b1_ai_hub}
+    volumes:
+      - ./deploy/scripts:/opt/b1/deploy/scripts:ro
+      - ./workflows/acceptance:/opt/b1/workflows/acceptance:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}:${B1_DATA_ROOT:-/srv/b1-ai-hub}
+    networks:
+      - app
+      - data
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ.get("B1_DATA_ROOT", "/srv/b1-ai-hub"))
+          required = (
+              "data/postgres",
+              "data/redis",
+              "data/open-webui",
+              "data/control-plane",
+              "data/prometheus",
+              "data/grafana",
+              "models/blobs",
+              "models/runtime-views/localai",
+              "models/runtime-views/comfyui",
+              "models/runtime-views/voicebox",
+              "models/runtime-views/lipsync",
+              "models/runtime-views/audio-cpu",
+              "workflows/acceptance",
+              "artifacts/temporary",
+              "secrets",
+              "backups",
+          )
+          required_files = (
+              "workflows/acceptance/native-comfyui-smoke-prompt.json",
+              "workflows/acceptance/native-comfyui-upload-save-prompt.json",
+              "workflows/acceptance/text-to-image-api-prompt.json",
+              "workflows/acceptance/image-generation-job.json",
+              "workflows/acceptance/image-edit-job.json",
+              "workflows/acceptance/short-video-job.json",
+          )
+          missing = [relative for relative in required if not (root / relative).is_dir()]
+          if missing:
+              raise SystemExit("missing bootstrap directories: " + ", ".join(missing))
+          missing_files = [relative for relative in required_files if not (root / relative).is_file()]
+          if missing_files:
+              raise SystemExit("missing bootstrap acceptance templates: " + ", ".join(missing_files))
+          PY
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  gateway:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    <<: *service-defaults
+    security_opt: []
+    cap_drop: []
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      control-center:
+        condition: service_healthy
+      media-studio:
+        condition: service_healthy
+      artifact-server:
+        condition: service_healthy
+    ports:
+      - "${B1_HTTP_PORT:-80}:80"
+      - "${B1_HTTPS_PORT:-443}:443"
+    environment:
+      B1_HOST_CHAT: ${B1_HOST_CHAT:-ai.b1.germering}
+      B1_HOST_CONTROL: ${B1_HOST_CONTROL:-control.ai.b1.germering}
+      B1_HOST_MEDIA: ${B1_HOST_MEDIA:-media.ai.b1.germering}
+      B1_HOST_COMFY: ${B1_HOST_COMFY:-comfy.ai.b1.germering}
+      B1_HOST_VOICE: ${B1_HOST_VOICE:-voice.ai.b1.germering}
+      B1_HOST_MODELS: ${B1_HOST_MODELS:-models.ai.b1.germering}
+      B1_HOST_API: ${B1_HOST_API:-api.ai.b1.germering}
+      B1_HOST_MONITORING: ${B1_HOST_MONITORING:-monitoring.ai.b1.germering}
+      B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
+      B1_CADDY_REQUEST_BODY_LIMIT: ${B1_CADDY_REQUEST_BODY_LIMIT:-268435456}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets/caddy-certs:/etc/caddy/external-certs:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:/data
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/logs/caddy:/var/log/caddy
+    networks:
+      - edge
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy-ca-export:
+    image: python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+    <<: *service-defaults
+    read_only: true
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    command:
+      - python
+      - /opt/b1/deploy/scripts/bootstrap.py
+      - --root
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}
+      - --export-caddy-ca-only
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - ./deploy/scripts:/opt/b1/deploy/scripts:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/caddy:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane
+    networks:
+      - app
+    restart: "no"
+
+  open-webui:
+    build:
+      context: ./deploy/open-webui
+    user: "999:999"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      WEBUI_NAME: B1 AI Hub
+      WEBUI_URL: ${B1_OPEN_WEBUI_PUBLIC_URL:-https://ai.b1.germering}
+      B1_OPEN_WEBUI_API_BASE_URL: ${B1_OPEN_WEBUI_API_BASE_URL:-http://control-plane:8000/v1}
+      B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
+      B1_OPEN_WEBUI_SECRET_KEY_FILE: /run/secrets/open_webui_secret_key
+      ENABLE_OPENAI_API: "true"
+      # Long-running GPU generations can outlive a browser WebSocket session.
+      # Socket.IO polling keeps completion events live across reconnects.
+      ENABLE_WEBSOCKET_SUPPORT: "false"
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_SESSION_INFO_HEADER_CHAT_ID: X-B1-OpenWebUI-Chat-Id
+      ENABLE_PERSISTENT_CONFIG: "false"
+      ENABLE_OAUTH_PERSISTENT_CONFIG: "false"
+      ENABLE_OLLAMA_API: "false"
+      OLLAMA_BASE_URL: http://127.0.0.1:9
+      OLLAMA_BASE_URLS: http://127.0.0.1:9
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "false"
+      DEFAULT_MODELS: ${B1_OPEN_WEBUI_DEFAULT_MODELS:-chat-default}
+      DEFAULT_PINNED_MODELS: ${B1_OPEN_WEBUI_DEFAULT_PINNED_MODELS:-chat-default}
+      # Titles, tags, follow-up suggestions, and query generation must not
+      # occupy or queue behind the parallel-one P40 worker.
+      TASK_MODEL: ${B1_OPEN_WEBUI_TASK_MODEL:-chat-fast}
+      TASK_MODEL_EXTERNAL: ${B1_OPEN_WEBUI_TASK_MODEL_EXTERNAL:-chat-fast}
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_EMBEDDING_MODEL: ${B1_OPEN_WEBUI_RAG_EMBEDDING_MODEL:-embedding-default}
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "false"
+      RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE: "false"
+      RAG_RERANKING_MODEL_AUTO_UPDATE: "false"
+      RAG_RERANKING_MODEL_TRUST_REMOTE_CODE: "false"
+      RAG_EMBEDDING_BATCH_SIZE: "1"
+      RAG_EMBEDDING_CONCURRENT_REQUESTS: "1"
+      AUDIO_TTS_ENGINE: openai
+      AUDIO_TTS_MODEL: ${B1_OPEN_WEBUI_TTS_MODEL:-tts-fast}
+      AUDIO_TTS_VOICE: ${B1_OPEN_WEBUI_TTS_VOICE:-alloy}
+      AUDIO_STT_ENGINE: openai
+      AUDIO_STT_MODEL: ${B1_OPEN_WEBUI_STT_MODEL:-stt-default}
+      AUDIO_STT_OPENAI_API_REQUEST_FORMAT: multipart
+      ENABLE_IMAGE_GENERATION: "false"
+      ENABLE_IMAGE_EDIT: "false"
+      USER_PERMISSIONS_FEATURES_IMAGE_GENERATION: "false"
+      # Shared search is executed by the internal SearXNG service. Model
+      # runtimes remain isolated from direct Internet access.
+      ENABLE_WEB_SEARCH: "true"
+      B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://tool-search:8080/search
+      WEB_SEARCH_RESULT_COUNT: "5"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "2"
+      WEB_LOADER_ENGINE: firecrawl
+      FIRECRAWL_API_BASE_URL: http://tool-firecrawl:3002
+      FIRECRAWL_API_KEY: ""
+      WEB_FETCH_MAX_CONTENT_LENGTH: "200000"
+      ENABLE_LOCAL_WEB_FETCH: "false"
+      WEB_SEARCH_TRUST_ENV: "false"
+      USER_PERMISSIONS_FEATURES_WEB_SEARCH: "true"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_EVALUATION_ARENA_MODELS: "false"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      # Prevents update/model downloads; web search still uses the explicitly
+      # configured internal SearXNG endpoint above.
+      OFFLINE_MODE: "true"
+      ENABLE_OTEL: "false"
+      ENABLE_OTEL_TRACES: "false"
+      ENABLE_OTEL_METRICS: "false"
+      ENABLE_OTEL_LOGS: "false"
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/open-webui:/app/backend/data
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    networks:
+      - app
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      control-plane:
+        condition: service_healthy
+      tool-firecrawl:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)\nPY"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  control-plane:
+    build:
+      context: ./services/control-plane
+    <<: *service-defaults
+    read_only: true
+    environment:
+      B1_SERVICE_NAME: control-plane
+      B1_DB_MIGRATIONS_ENABLED: ${B1_DB_MIGRATIONS_ENABLED:-true}
+      B1_DEV_AUTH_BYPASS: ${B1_DEV_AUTH_BYPASS:-false}
+      POSTGRES_DB: ${POSTGRES_DB:-b1_ai_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-b1_ai_hub}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      B1_ADMIN_BOOTSTRAP_KEY_FILE: /run/secrets/admin_bootstrap_key
+      B1_OPEN_WEBUI_API_KEY_FILE: /run/secrets/open_webui_api_key
+      B1_OPEN_WEBUI_DEFAULT_B1_TOOLS: ${B1_OPEN_WEBUI_DEFAULT_B1_TOOLS:-web_search,web_fetch}
+      B1_MASTER_KEY_FILE: /run/secrets/master_encryption_key
+      B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_LAN_LOCALAI_WORKER_URL: ${B1_LAN_LOCALAI_WORKER_URL:-}
+      B1_LAN_LOCALAI_WORKER_HOSTNAME: ${B1_LAN_LOCALAI_WORKER_HOSTNAME:-}
+      B1_LAN_LOCALAI_WORKER_ALLOWED_CIDRS: ${B1_LAN_LOCALAI_WORKER_ALLOWED_CIDRS:-}
+      B1_LAN_LOCALAI_WORKER_TLS_CA_FILE: ${B1_LAN_LOCALAI_WORKER_TLS_CA_FILE:-}
+      B1_LAN_DEEPSEEK_WORKER_URL: ${B1_LAN_DEEPSEEK_WORKER_URL:-}
+      B1_LAN_DEEPSEEK_WORKER_HOSTNAME: ${B1_LAN_DEEPSEEK_WORKER_HOSTNAME:-}
+      B1_LAN_DEEPSEEK_WORKER_ALLOWED_CIDRS: ${B1_LAN_DEEPSEEK_WORKER_ALLOWED_CIDRS:-}
+      B1_LAN_DEEPSEEK_WORKER_TLS_CA_FILE: ${B1_LAN_DEEPSEEK_WORKER_TLS_CA_FILE:-}
+      B1_LAN_P40_MEDIA_URL: ${B1_LAN_P40_MEDIA_URL:-}
+      B1_LAN_P40_MEDIA_HOSTNAME: ${B1_LAN_P40_MEDIA_HOSTNAME:-}
+      B1_LAN_P40_MEDIA_ALLOWED_CIDRS: ${B1_LAN_P40_MEDIA_ALLOWED_CIDRS:-}
+      B1_LAN_P40_MEDIA_TLS_CA_FILE: ${B1_LAN_P40_MEDIA_TLS_CA_FILE:-}
+      REDIS_URL: redis://redis:6379/0
+      LOCALAI_URL: http://localai:8000
+      COMFYUI_URL: http://comfyui:8000
+      VOICEBOX_URL: http://voicebox:8000
+      LIPSYNC_URL: http://lipsync:8000
+      AUDIO_CPU_URL: http://audio-cpu:8000
+      ARTIFACT_BASE_URL: http://artifact-server:8000
+      RUNTIME_AGENT_URL: ${RUNTIME_AGENT_URL:-https://runtime-agent:8443}
+      B1_RUNTIME_AGENT_TOKEN_FILE: /run/secrets/runtime_agent_token
+      B1_RUNTIME_AGENT_TLS_CA_FILE: /run/secrets/runtime_agent_mtls_ca.crt
+      B1_RUNTIME_AGENT_TLS_CLIENT_CERT_FILE: /run/secrets/runtime_agent_client.crt
+      B1_RUNTIME_AGENT_TLS_CLIENT_KEY_FILE: /run/secrets/runtime_agent_client.key
+      B1_RUNTIME_AGENT_TLS_VERIFY: ${B1_RUNTIME_AGENT_TLS_VERIFY:-true}
+      B1_PROMETHEUS_SCRAPE_TOKEN_FILE: /run/secrets/prometheus_scrape_token
+      B1_DATA_ROOT: /srv/b1-ai-hub
+      B1_BACKUP_ROOT: /srv/b1-ai-hub/backups
+      B1_RESTORE_TEST_ROOT: /srv/b1-ai-hub/restore-tests
+      B1_BACKUP_ENCRYPTION_MODE: ${B1_BACKUP_ENCRYPTION_MODE:-copy}
+      B1_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
+      B1_UPLOAD_MAX_BYTES: ${B1_UPLOAD_MAX_BYTES:-268435456}
+      B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE: ${B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE:-120}
+      B1_MODEL_CATALOG_DIR: /opt/b1/model-catalog
+      B1_WORKFLOW_SEED_DIR: /opt/b1/workflows/approved
+      B1_COMFYUI_NODE_PIN_REGISTRY: /opt/b1/workflows/approved-node-pins.json
+      B1_COMFYUI_TRUSTED_ROUTE_PREFIXES: ${B1_COMFYUI_TRUSTED_ROUTE_PREFIXES:-}
+      B1_JOB_RUNNER_ENABLED: ${B1_JOB_RUNNER_ENABLED:-true}
+      B1_JOB_RUNNER_INTERVAL_SECONDS: ${B1_JOB_RUNNER_INTERVAL_SECONDS:-1}
+      B1_GPU_JOB_RUNNER_ENABLED: ${B1_GPU_JOB_RUNNER_ENABLED:-true}
+      B1_GPU_JOB_RUNNER_INTERVAL_SECONDS: ${B1_GPU_JOB_RUNNER_INTERVAL_SECONDS:-1}
+      B1_GPU_JOB_RUNNER_LEASE_TTL_SECONDS: ${B1_GPU_JOB_RUNNER_LEASE_TTL_SECONDS:-300}
+      B1_GPU_DEFAULT_IDLE_TIMEOUT_SECONDS: ${B1_GPU_DEFAULT_IDLE_TIMEOUT_SECONDS:-300}
+      B1_SYNC_INFERENCE_LEASE_TTL_SECONDS: ${B1_SYNC_INFERENCE_LEASE_TTL_SECONDS:-300}
+      B1_COMFY_PROMPT_WAIT_TIMEOUT_SECONDS: ${B1_COMFY_PROMPT_WAIT_TIMEOUT_SECONDS:-120}
+      B1_COMFY_PROMPT_LEASE_TTL_SECONDS: ${B1_COMFY_PROMPT_LEASE_TTL_SECONDS:-7200}
+      B1_COMFY_PROMPT_POLL_SECONDS: ${B1_COMFY_PROMPT_POLL_SECONDS:-2}
+      B1_COMFY_PROMPT_COMPLETION_TIMEOUT_SECONDS: ${B1_COMFY_PROMPT_COMPLETION_TIMEOUT_SECONDS:-7200}
+      B1_COMFY_PROMPT_IDLE_GRACE_SECONDS: ${B1_COMFY_PROMPT_IDLE_GRACE_SECONDS:-5}
+      B1_MODEL_DOWNLOAD_RUNNER_ENABLED: ${B1_MODEL_DOWNLOAD_RUNNER_ENABLED:-true}
+      B1_MODEL_DOWNLOAD_RUNNER_INTERVAL_SECONDS: ${B1_MODEL_DOWNLOAD_RUNNER_INTERVAL_SECONDS:-2}
+      B1_MODEL_DOWNLOAD_REQUEST_TIMEOUT_SECONDS: ${B1_MODEL_DOWNLOAD_REQUEST_TIMEOUT_SECONDS:-900}
+      B1_GPU_TOTAL_VRAM_GIB: ${B1_GPU_TOTAL_VRAM_GIB:-6}
+      B1_GPU_USABLE_VRAM_GIB: ${B1_GPU_USABLE_VRAM_GIB:-5}
+      B1_GPU_RESERVE_VRAM_GIB: ${B1_GPU_RESERVE_VRAM_GIB:-1}
+      B1_GPU_MAX_ACTIVE_PIPELINES: ${B1_GPU_MAX_ACTIVE_PIPELINES:-1}
+      B1_HOST_TOTAL_RAM_GIB: ${B1_HOST_TOTAL_RAM_GIB:-32}
+      B1_HOST_RESERVE_RAM_GIB: ${B1_HOST_RESERVE_RAM_GIB:-6}
+      B1_LLM_DEFAULT_CONTEXT: ${B1_LLM_DEFAULT_CONTEXT:-4096}
+      B1_LLM_MAXIMUM_CONTEXT: ${B1_LLM_MAXIMUM_CONTEXT:-8192}
+      B1_LLM_DEFAULT_PARALLEL_REQUESTS: ${B1_LLM_DEFAULT_PARALLEL_REQUESTS:-1}
+      B1_COMFYUI_MAXIMUM_PARALLEL_JOBS: ${B1_COMFYUI_MAXIMUM_PARALLEL_JOBS:-1}
+      B1_COMFYUI_MAXIMUM_BATCH_SIZE: ${B1_COMFYUI_MAXIMUM_BATCH_SIZE:-1}
+      B1_CPU_RESIDENCY_ENABLED: ${B1_CPU_RESIDENCY_ENABLED:-true}
+      B1_CPU_RESIDENCY_MAX_RAM_GIB: ${B1_CPU_RESIDENCY_MAX_RAM_GIB:-2}
+      B1_CPU_RESIDENT_ALIASES: ${B1_CPU_RESIDENT_ALIASES:-embedding-default,tts-fast,stt-default}
+      B1_BACKUP_SCHEDULER_ENABLED: ${B1_BACKUP_SCHEDULER_ENABLED:-true}
+      B1_BACKUP_SCHEDULER_INTERVAL_SECONDS: ${B1_BACKUP_SCHEDULER_INTERVAL_SECONDS:-60}
+      B1_ALLOW_EXTERNAL_PROVIDERS: ${B1_ALLOW_EXTERNAL_PROVIDERS:-false}
+      B1_MODEL_TOOLS_ENABLED: ${B1_MODEL_TOOLS_ENABLED:-true}
+      B1_MODEL_TOOLS_ALLOWED: ${B1_MODEL_TOOLS_ALLOWED:-web_search,web_fetch}
+      B1_MODEL_TOOLS_ALLOW_PRIVATE_NETWORK: ${B1_MODEL_TOOLS_ALLOW_PRIVATE_NETWORK:-false}
+      B1_MODEL_TOOLS_ALLOWED_HOSTS: ${B1_MODEL_TOOLS_ALLOWED_HOSTS:-}
+      B1_MODEL_TOOLS_MAX_RESULT_CHARS: ${B1_MODEL_TOOLS_MAX_RESULT_CHARS:-12000}
+      B1_MODEL_TOOLS_MAX_SEARCH_RESULTS: ${B1_MODEL_TOOLS_MAX_SEARCH_RESULTS:-5}
+      B1_MODEL_TOOLS_TIMEOUT_SECONDS: ${B1_MODEL_TOOLS_TIMEOUT_SECONDS:-12}
+      B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE: ${B1_MODEL_TOOLS_SEARCH_ENDPOINT_TEMPLATE:-http://tool-search:8080/search?q={query}&format=json}
+      B1_OPENAI_COMPATIBLE_BASE_URL: ${B1_OPENAI_COMPATIBLE_BASE_URL:-}
+      B1_OPENAI_COMPATIBLE_API_KEY_FILE: ${B1_OPENAI_COMPATIBLE_API_KEY_FILE:-}
+      B1_GENERIC_HTTP_BASE_URL: ${B1_GENERIC_HTTP_BASE_URL:-}
+      B1_RUNTIME_DEPLOYMENT_MODE: ${B1_RUNTIME_DEPLOYMENT_MODE:-development}
+      B1_RUNTIME_PRODUCTION_REQUIRED: ${B1_RUNTIME_PRODUCTION_REQUIRED:-localai,comfyui,audio-cpu}
+      B1_COMPOSE_FILE: ${COMPOSE_FILE:-compose.yaml}
+      B1_COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      B1_SOURCE_COMMIT: ${B1_SOURCE_COMMIT:-}
+      B1_SOURCE_REF: ${B1_SOURCE_REF:-}
+      B1_SOURCE_DIRTY: ${B1_SOURCE_DIRTY:-}
+      B1_SOURCE_DIRTY_PATH_COUNT: ${B1_SOURCE_DIRTY_PATH_COUNT:-}
+      B1_HOST_CHAT: ${B1_HOST_CHAT:-ai.b1.germering}
+      B1_HOST_CONTROL: ${B1_HOST_CONTROL:-control.ai.b1.germering}
+      B1_HOST_MEDIA: ${B1_HOST_MEDIA:-media.ai.b1.germering}
+      B1_HOST_COMFY: ${B1_HOST_COMFY:-comfy.ai.b1.germering}
+      B1_HOST_VOICE: ${B1_HOST_VOICE:-voice.ai.b1.germering}
+      B1_HOST_MODELS: ${B1_HOST_MODELS:-models.ai.b1.germering}
+      B1_HOST_API: ${B1_HOST_API:-api.ai.b1.germering}
+      B1_CORS_ALLOW_ORIGINS: ${B1_CORS_ALLOW_ORIGINS:-}
+      B1_TRUSTED_PROXY_CIDRS: ${B1_TRUSTED_PROXY_CIDRS:-127.0.0.1/32 ::1/128 172.16.0.0/12 fd00::/8}
+      B1_SESSION_COOKIE_NAME: ${B1_SESSION_COOKIE_NAME:-b1_ai_hub_session}
+      B1_SESSION_COOKIE_SECURE: ${B1_SESSION_COOKIE_SECURE:-true}
+      B1_SESSION_TTL_SECONDS: ${B1_SESSION_TTL_SECONDS:-28800}
+      B1_CADDY_TLS_ARGS: ${B1_CADDY_TLS_ARGS:-internal}
+      B1_CADDY_INTERNAL_CA_FILE: ${B1_CADDY_INTERNAL_CA_FILE:-/srv/b1-ai-hub/data/control-plane/caddy-root.crt}
+      B1_SELF_TEST_TLS_URLS: ${B1_SELF_TEST_TLS_URLS:-}
+      B1_SELF_TEST_TLS_CA_FILE: ${B1_SELF_TEST_TLS_CA_FILE:-/srv/b1-ai-hub/data/control-plane/caddy-root.crt}
+      B1_SELF_TEST_TLS_VERIFY: ${B1_SELF_TEST_TLS_VERIFY:-true}
+      B1_SELF_TEST_TLS_GATEWAY_HOST: ${B1_SELF_TEST_TLS_GATEWAY_HOST:-gateway}
+      B1_SELF_TEST_TLS_GATEWAY_PORT: ${B1_SELF_TEST_TLS_GATEWAY_PORT:-443}
+      B1_SELF_TEST_TINY_INFERENCE_ENABLED: ${B1_SELF_TEST_TINY_INFERENCE_ENABLED:-true}
+      B1_SELF_TEST_UNLOAD_RUNTIME: ${B1_SELF_TEST_UNLOAD_RUNTIME:-localai}
+      B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER: ${B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}:/srv/b1-ai-hub:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/control-plane:/srv/b1-ai-hub/data/control-plane
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/backups:/srv/b1-ai-hub/backups
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/restore-tests:/srv/b1-ai-hub/restore-tests
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views:/srv/b1-ai-hub/models/runtime-views
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/quarantine:/srv/b1-ai-hub/models/quarantine
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+      - ./model-catalog:/opt/b1/model-catalog:ro
+      - ./workflows:/opt/b1/workflows:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/workflows:/srv/b1-ai-hub/workflows
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts:/srv/b1-ai-hub/artifacts
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/logs/control-plane:/srv/b1-ai-hub/logs
+    networks:
+      - app
+      - data
+      - runtime
+      - egress
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  control-center:
+    build:
+      context: ./web/control-center
+      network: host
+      args:
+        VITE_B1_API_BASE: ""
+        VITE_B1_PUBLIC_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
+    <<: *service-defaults
+    read_only: true
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  media-studio:
+    build:
+      context: ./web/media-studio
+      network: host
+      args:
+        VITE_B1_API_BASE: ""
+        VITE_B1_PUBLIC_API_BASE: https://${B1_HOST_API:-api.ai.b1.germering}
+    <<: *service-defaults
+    read_only: true
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  runtime-agent:
+    build:
+      context: ./services/runtime-agent
+    <<: *service-defaults
+    read_only: true
+    gpus: all
+    group_add:
+      - "${B1_DOCKER_GID:-0}"
+    environment:
+      B1_ALLOWED_SERVICES: control-plane,localai,comfyui,voicebox,lipsync,audio-cpu,artifact-server,open-webui,gateway
+      B1_RUNTIME_ACTION_SERVICES: ${B1_RUNTIME_ACTION_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu}
+      B1_ENABLE_MUTATIONS: ${B1_ENABLE_MUTATIONS:-false}
+      B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE: ${B1_RUNTIME_AGENT_MUTATION_RATE_LIMIT_PER_MINUTE:-12}
+      B1_RUNTIME_AGENT_TOKEN_FILE: /run/secrets/runtime_agent_token
+      B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH: ${B1_RUNTIME_AGENT_ALLOW_MISSING_AUTH:-false}
+      B1_RUNTIME_AGENT_MTLS_ENABLED: ${B1_RUNTIME_AGENT_MTLS_ENABLED:-true}
+      B1_RUNTIME_AGENT_TLS_CERT_FILE: /run/secrets/runtime_agent_server.crt
+      B1_RUNTIME_AGENT_TLS_KEY_FILE: /run/secrets/runtime_agent_server.key
+      B1_RUNTIME_AGENT_TLS_CA_FILE: /run/secrets/runtime_agent_mtls_ca.crt
+      B1_RUNTIME_AGENT_CLIENT_CERT_FILE: /run/secrets/runtime_agent_client.crt
+      B1_RUNTIME_AGENT_CLIENT_KEY_FILE: /run/secrets/runtime_agent_client.key
+      B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED: ${B1_RUNTIME_AGENT_CLIENT_CERT_REQUIRED:-true}
+      NVIDIA_VISIBLE_DEVICES: ${B1_RUNTIME_AGENT_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${B1_RUNTIME_AGENT_NVIDIA_DRIVER_CAPABILITIES:-utility}
+      B1_COMPOSE_PROJECT: ${B1_PROJECT_NAME:-b1-ai-hub}
+      B1_METRIC_PATHS: /srv/b1-ai-hub,/tmp
+      B1_ROLLBACK_SERVICES: ${B1_ROLLBACK_SERVICES:-localai,comfyui,voicebox,lipsync,audio-cpu,artifact-server,open-webui,gateway}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}:/srv/b1-ai-hub:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/logs/runtime-agent:/srv/b1-ai-hub/logs
+    networks:
+      - app
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+
+  tool-search:
+    image: searxng/searxng@sha256:5d6d903ab82afa56ee32792d477f36bc63d3e5ca04fcb6947e28a5cfd987fad3
+    <<: *service-defaults
+    read_only: true
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - app
+      - egress
+    healthcheck:
+      test: ["CMD-SHELL", "python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)\nPY"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Firecrawl is reachable only from the private application network. Its
+  # browser and HTTP fetchers have no direct default route: all external
+  # traffic is forced through tool-web-egress, whose destination ACL rejects
+  # loopback, link-local, Docker, LAN, tailnet, and other non-public ranges.
+  tool-firecrawl:
+    image: ghcr.io/firecrawl/firecrawl@sha256:1b9a8c673f4adf174f01ed377f434a09881af2e37a4f3a6fe5e1c8938c049c09
+    <<: *service-defaults
+    read_only: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3002"
+      EXTRACT_WORKER_PORT: "3004"
+      WORKER_PORT: "3005"
+      ENV: local
+      USE_DB_AUTHENTICATION: "false"
+      REDIS_URL: redis://tool-firecrawl-redis:6379
+      REDIS_RATE_LIMIT_URL: redis://tool-firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://tool-firecrawl-playwright:3000/scrape
+      POSTGRES_HOST: tool-firecrawl-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${B1_FIRECRAWL_POSTGRES_PASSWORD:?set B1_FIRECRAWL_POSTGRES_PASSWORD}
+      NUQ_RABBITMQ_URL: amqp://tool-firecrawl-rabbitmq:5672
+      PROXY_SERVER: http://tool-web-egress:3128
+      # Firecrawl sees the mandatory proxy's internal address as its peer.
+      # Destination safety is enforced after proxy-side DNS resolution by the
+      # Squid ACL; Firecrawl itself has no network path around that proxy.
+      ALLOW_LOCAL_WEBHOOKS: "true"
+      NUM_WORKERS_PER_QUEUE: "1"
+      CRAWL_CONCURRENT_REQUESTS: "2"
+      MAX_CONCURRENT_JOBS: "2"
+      BROWSER_POOL_SIZE: "1"
+      LOGGING_LEVEL: INFO
+    command: ["node", "dist/src/harness.js", "--start-docker"]
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    networks:
+      - app
+      - web-fetch
+    depends_on:
+      tool-firecrawl-postgres:
+        condition: service_healthy
+      tool-firecrawl-redis:
+        condition: service_healthy
+      tool-firecrawl-rabbitmq:
+        condition: service_healthy
+      tool-firecrawl-playwright:
+        condition: service_healthy
+      tool-web-egress:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3002/v0/health/readiness >/dev/null"]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  tool-firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service@sha256:150da5ef39e3aebc322c25f968506ea288042e3b4a5214ae38c18b58a3e941be
+    restart: unless-stopped
+    user: node
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      PORT: "3000"
+      PROXY_SERVER: http://tool-web-egress:3128
+      ALLOW_LOCAL_WEBHOOKS: "true"
+      BLOCK_MEDIA: "true"
+      MAX_CONCURRENT_PAGES: "2"
+    command: ["node", "dist/api.js"]
+    cpus: 1.5
+    mem_limit: 2G
+    memswap_limit: 2G
+    tmpfs:
+      - /tmp:size=1g,noexec,nosuid,nodev
+      - /home/node/.cache:size=512m,uid=1000,gid=1000,mode=0750,noexec,nosuid,nodev
+    networks:
+      - web-fetch
+    depends_on:
+      tool-web-egress:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  tool-firecrawl-redis:
+    image: redis:8.2.1-alpine@sha256:f887e6dacdcfa8e14af2f625fdf4474ff8c37dc36ce13b9e89e6e9a901f155ad
+    <<: *service-defaults
+    read_only: true
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  tool-firecrawl-rabbitmq:
+    image: rabbitmq:4.1.3-alpine@sha256:b529562dde42f1993a0013da03158bc8f6727582e6dd132f41ef218c94aaecd8
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit disk_free_limit 2147483648
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/firecrawl/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 20s
+      timeout: 8s
+      retries: 10
+      start_period: 30s
+
+  tool-firecrawl-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres@sha256:4ca6718b2cef40404b046db5cd37ae45db3e44d1a5750c80522f3587a5b193d5
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${B1_FIRECRAWL_POSTGRES_PASSWORD:?set B1_FIRECRAWL_POSTGRES_PASSWORD}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/firecrawl/postgres:/var/lib/postgresql/data
+    networks:
+      - web-fetch
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  tool-web-egress:
+    image: ubuntu/squid:6.13-25.04_beta@sha256:7e2987a8a2717fca698b76777c7ef286ef256b3cf9f3ce8b3f45b6b4306105bd
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    read_only: true
+    volumes:
+      - ./deploy/firecrawl/squid.conf:/etc/squid/squid.conf:ro
+    tmpfs:
+      - /run:size=16m,nosuid,nodev
+      - /var/log/squid:size=32m,uid=13,gid=13,mode=0750,noexec,nosuid,nodev
+      - /var/spool/squid:size=32m,uid=13,gid=13,mode=0750,noexec,nosuid,nodev
+    networks:
+      - web-fetch
+      - egress
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k parse -f /etc/squid/squid.conf >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  localai:
+    build:
+      context: ./services/mock-runtime
+    <<: *service-defaults
+    read_only: true
+    labels:
+      b1.ai-hub.runtime: localai
+      b1.ai-hub.runtime.kind: placeholder-localai
+      b1.ai-hub.placeholder: "true"
+    environment:
+      B1_RUNTIME_NAME: localai
+      B1_RUNTIME_KIND: placeholder-localai
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/localai:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/localai:/srv/b1-ai-hub/cache
+    networks:
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  comfyui:
+    build:
+      context: ./services/mock-runtime
+    <<: *service-defaults
+    read_only: true
+    labels:
+      b1.ai-hub.runtime: comfyui
+      b1.ai-hub.runtime.kind: placeholder-comfyui
+      b1.ai-hub.placeholder: "true"
+    environment:
+      B1_RUNTIME_NAME: comfyui
+      B1_RUNTIME_KIND: placeholder-comfyui
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/comfyui:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/workflows:/srv/b1-ai-hub/workflows
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts:/srv/b1-ai-hub/artifacts
+    networks:
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  voicebox:
+    build:
+      context: ./services/mock-runtime
+    <<: *service-defaults
+    read_only: true
+    profiles:
+      - voicebox
+    labels:
+      b1.ai-hub.runtime: voicebox
+      b1.ai-hub.runtime.kind: placeholder-voicebox
+      b1.ai-hub.placeholder: "true"
+    environment:
+      B1_RUNTIME_NAME: voicebox
+      B1_RUNTIME_KIND: placeholder-voicebox
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro
+    networks:
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  lipsync:
+    build:
+      context: ./services/lipsync
+    <<: *service-defaults
+    read_only: true
+    gpus: all
+    labels:
+      b1.ai-hub.runtime: lipsync
+      b1.ai-hub.runtime.kind: musetalk
+      b1.ai-hub.placeholder: "false"
+    environment:
+      B1_LIPSYNC_RUNTIME_VERSION: ${B1_LIPSYNC_RUNTIME_VERSION:-b1-lipsync-musetalk/v0.1.0-b1}
+      B1_LIPSYNC_MODEL_ROOT: /srv/b1-ai-hub/models
+      B1_LIPSYNC_CACHE_ROOT: /srv/b1-ai-hub/cache
+      B1_MUSETALK_COMMIT: ${B1_MUSETALK_COMMIT:-0a89dec45a0192b824e3cf4daf96c239440c5ed8}
+      B1_MUSETALK_UNET_SHA256: ${B1_MUSETALK_UNET_SHA256:-}
+      B1_MUSETALK_UNET_CONFIG_SHA256: ${B1_MUSETALK_UNET_CONFIG_SHA256:-}
+      B1_LIPSYNC_REQUEST_TIMEOUT_SECONDS: ${B1_LIPSYNC_REQUEST_TIMEOUT_SECONDS:-1800}
+      B1_LIPSYNC_MAX_INPUT_BYTES: ${B1_LIPSYNC_MAX_INPUT_BYTES:-268435456}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
+      NVIDIA_VISIBLE_DEVICES: ${B1_LIPSYNC_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${B1_LIPSYNC_NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/lipsync:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/lipsync:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    networks:
+      - runtime
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  audio-cpu:
+    build:
+      context: ./services/audio-cpu
+      args:
+        B1_INSTALL_PIPER: ${B1_INSTALL_PIPER:-true}
+        B1_PIPER_RELEASE: ${B1_PIPER_RELEASE:-2023.11.14-2}
+        B1_PIPER_ASSET: ${B1_PIPER_ASSET:-piper_linux_x86_64.tar.gz}
+        B1_PIPER_SHA256: ${B1_PIPER_SHA256:-a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992}
+    <<: *service-defaults
+    read_only: true
+    labels:
+      b1.ai-hub.runtime: audio-cpu
+      b1.ai-hub.runtime.kind: audio-cpu
+    environment:
+      B1_CPU_AUDIO_ENGINE: ${B1_CPU_AUDIO_ENGINE:-scaffold}
+      B1_CPU_EMBEDDING_ENGINE: ${B1_CPU_EMBEDDING_ENGINE:-}
+      B1_CPU_STT_ENGINE: ${B1_CPU_STT_ENGINE:-}
+      B1_CPU_AUDIO_ENABLE_PLACEHOLDER: ${B1_CPU_AUDIO_ENABLE_PLACEHOLDER:-true}
+      B1_AUDIO_CPU_RUNTIME_VERSION: ${B1_AUDIO_CPU_RUNTIME_VERSION:-b1-audio-cpu/v0.1.0-b1}
+      B1_AUDIO_CPU_BASE_IMAGE: ${B1_AUDIO_CPU_BASE_IMAGE:-python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134}
+      B1_AUDIO_CPU_PIPER_RELEASE: ${B1_PIPER_RELEASE:-2023.11.14-2}
+      B1_AUDIO_CPU_PIPER_ASSET: ${B1_PIPER_ASSET:-piper_linux_x86_64.tar.gz}
+      B1_AUDIO_CPU_PIPER_SHA256: ${B1_PIPER_SHA256:-a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
+      B1_CPU_AUDIO_MODEL_ROOT: /srv/b1-ai-hub/models
+      B1_ONNX_EMBEDDING_MODEL_ROOT: /srv/b1-ai-hub/models
+      B1_VOSK_STT_MODEL_ROOT: /srv/b1-ai-hub/models
+      B1_ONNX_EMBEDDING_MAX_TOKENS: ${B1_ONNX_EMBEDDING_MAX_TOKENS:-256}
+      B1_ONNX_EMBEDDING_MAX_BATCH: ${B1_ONNX_EMBEDDING_MAX_BATCH:-32}
+      B1_ONNX_EMBEDDING_MAX_TEXT_CHARS: ${B1_ONNX_EMBEDDING_MAX_TEXT_CHARS:-8000}
+      B1_ONNX_EMBEDDING_NORMALIZE: ${B1_ONNX_EMBEDDING_NORMALIZE:-true}
+      B1_VOSK_STT_MAX_AUDIO_BYTES: ${B1_VOSK_STT_MAX_AUDIO_BYTES:-26214400}
+      B1_VOSK_STT_MAX_AUDIO_SECONDS: ${B1_VOSK_STT_MAX_AUDIO_SECONDS:-1800}
+      B1_VOSK_STT_WORDS: ${B1_VOSK_STT_WORDS:-true}
+      B1_VOSK_STT_LANGUAGE: ${B1_VOSK_STT_LANGUAGE:-de}
+      B1_VOSK_STT_MODEL_PATH: ${B1_VOSK_STT_MODEL_PATH:-}
+      B1_CPU_AUDIO_MAX_TEXT_CHARS: ${B1_CPU_AUDIO_MAX_TEXT_CHARS:-4000}
+      B1_CPU_RESIDENCY_ENABLED: ${B1_CPU_RESIDENCY_ENABLED:-true}
+      B1_CPU_RESIDENCY_MAX_RAM_GIB: ${B1_CPU_RESIDENCY_MAX_RAM_GIB:-2}
+      B1_CPU_RESIDENT_ALIASES: ${B1_CPU_RESIDENT_ALIASES:-embedding-default,tts-fast,stt-default}
+      B1_HOST_TOTAL_RAM_GIB: ${B1_HOST_TOTAL_RAM_GIB:-32}
+      B1_HOST_RESERVE_RAM_GIB: ${B1_HOST_RESERVE_RAM_GIB:-6}
+      B1_PIPER_BINARY: ${B1_PIPER_BINARY:-/opt/piper/piper}
+      B1_PIPER_MODEL_PATH: ${B1_PIPER_MODEL_PATH:-}
+      B1_PIPER_CONFIG_PATH: ${B1_PIPER_CONFIG_PATH:-}
+      B1_PIPER_SPEAKER: ${B1_PIPER_SPEAKER:-}
+      B1_PIPER_TIMEOUT_SECONDS: ${B1_PIPER_TIMEOUT_SECONDS:-30}
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/audio-cpu:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    networks:
+      - runtime
+      - app
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  artifact-server:
+    build:
+      context: ./services/artifact-server
+    <<: *service-defaults
+    read_only: true
+    environment:
+      B1_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
+      B1_MODEL_BLOB_ROOT: /srv/b1-ai-hub/models/blobs
+      B1_ARTIFACT_SERVER_TOKEN_FILE: /run/secrets/artifact_server_token
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts:/srv/b1-ai-hub/artifacts:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/blobs:/srv/b1-ai-hub/models/blobs:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    networks:
+      - app
+      - data
+    healthcheck:
+      <<: *python-health
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\nPY"]
+
+  postgres:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-b1_ai_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-b1_ai_hub}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/postgres:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7.4.5-bookworm@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/redis:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  edge:
+  app:
+    internal: true
+  data:
+    internal: true
+  runtime:
+    internal: true
+  web-fetch:
+    internal: true
+  egress: {}

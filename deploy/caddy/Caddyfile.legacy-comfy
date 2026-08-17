@@ -1,0 +1,13 @@
+import /etc/caddy/Caddyfile
+
+:8188 {
+	import request_limits
+	@denied not remote_ip {$B1_LEGACY_COMFY_ALLOW_CIDRS:192.168.2.0/24 100.64.0.0/10}
+	respond @denied "legacy ComfyUI listener denied by B1 AI Hub CIDR policy" 403
+	reverse_proxy control-plane:8000 {
+		header_up -Authorization
+		header_up -Cookie
+		header_up -X-B1-CSRF
+		header_up X-B1-Compatibility comfyui-legacy-8188
+	}
+}

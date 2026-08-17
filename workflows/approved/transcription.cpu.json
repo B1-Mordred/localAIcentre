@@ -1,0 +1,47 @@
+{
+  "id": "transcription",
+  "version": "0.1.0",
+  "display_name": "Transcription",
+  "description": "Runnable local CPU speech-to-text workflow for Media Studio using the managed stt-default alias.",
+  "modality": "stt",
+  "operation": "transcription",
+  "model_alias": "stt-default",
+  "backend_policy": "non-comfy-only",
+  "runtime_policy": "non_comfy_only",
+  "output_mime_types": ["application/json"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["audio"],
+    "properties": {
+      "audio": { "type": "string", "contentEncoding": "base64", "contentMediaType": "audio/wav" },
+      "language": { "type": "string", "maxLength": 16, "default": "auto" }
+    },
+    "additionalProperties": false
+  },
+  "presets": [
+    {
+      "id": "auto-language",
+      "display_name": "Auto language",
+      "description": "Let the local STT backend detect language when supported.",
+      "values": {
+        "language": "auto"
+      }
+    }
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string" }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "audio-cpu" },
+    { "type": "model", "id": "stt-default" }
+  ],
+  "limits": {
+    "max_duration_seconds": 300
+  },
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
+}

@@ -1,0 +1,17 @@
+{$B1_P40_WORKER_HOSTNAME:p40-worker.b1.germering}:443 {
+	tls internal
+	encode zstd gzip
+
+	@allowed remote_ip {$B1_P40_ALLOWED_REMOTE_IPS}
+	handle @allowed {
+		@health path /healthz
+		handle @health {
+			rewrite * /readyz
+			reverse_proxy localai-worker:8080
+		}
+
+		reverse_proxy localai-worker:8080
+	}
+
+	respond "forbidden\n" 403
+}

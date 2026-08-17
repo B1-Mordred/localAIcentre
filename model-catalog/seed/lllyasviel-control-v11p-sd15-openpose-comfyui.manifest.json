@@ -1,0 +1,26 @@
+{
+  "id": "lllyasviel-control-v11p-sd15-openpose-comfyui",
+  "version": "9ae9f970358db89e211b87c915f9535c6686d5ba",
+  "display_name": "ControlNet v1.1 SD 1.5 OpenPose",
+  "description": "Pinned OpenPose ControlNet dependency for B1 identity-preserving seated-character plate generation. It is used only by the internal ComfyUI workflow and is not exposed as a generic model alias.",
+  "modality": "image",
+  "operations": ["studio-seated-character"],
+  "source": {
+    "type": "huggingface",
+    "url": "https://huggingface.co/lllyasviel/control_v11p_sd15_openpose",
+    "revision": "9ae9f970358db89e211b87c915f9535c6686d5ba",
+    "sha256": "b25b1125e870275550b2a7de289056cb3c236c01c293bd5ba883657b1c006e3e"
+  },
+  "files": [{"path": "diffusion/controlnet/b1-control-v11p-sd15-openpose-fp16.safetensors", "source_path": "diffusion_pytorch_model.fp16.safetensors", "sha256": "b25b1125e870275550b2a7de289056cb3c236c01c293bd5ba883657b1c006e3e", "size_bytes": 722598642, "format": "safetensors", "quantization": "fp16"}],
+  "runtimes": ["comfyui"],
+  "preferred_runtime": "comfyui",
+  "resource_estimate": {"vram_gib": 0.8, "ram_gib": 1.0, "disk_gib": 0.7, "max_resolution": "512x720", "max_frames": 1},
+  "license": {"name": "OpenRAIL", "url": "https://huggingface.co/lllyasviel/control_v11p_sd15_openpose", "redistribution": "inference-only", "attribution": "lllyasviel ControlNet v1.1 OpenPose.", "acceptance_required": true},
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": [],
+  "visibility_roles": ["admin", "operator"],
+  "permissions": {"visible_to": ["admin", "operator"], "installable_by": ["admin"], "downloadable_by": [], "inference_roles": ["admin", "operator"]},
+  "runtime_adapter_versions": {"comfyui": "native-controlnet-loader/v1"},
+  "deprecation": {"status": "active"}
+}

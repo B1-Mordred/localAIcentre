@@ -1,0 +1,50 @@
+{
+  "id": "tts",
+  "version": "0.1.0",
+  "display_name": "Text to Speech",
+  "description": "Runnable local CPU text-to-speech workflow for Media Studio using the managed tts-fast alias.",
+  "modality": "tts",
+  "operation": "speech",
+  "model_alias": "tts-fast",
+  "backend_policy": "non-comfy-only",
+  "runtime_policy": "non_comfy_only",
+  "output_mime_types": ["audio/wav"],
+  "workflow_json": {},
+  "input_schema": {
+    "type": "object",
+    "required": ["text"],
+    "properties": {
+      "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+      "voice": { "type": "string", "maxLength": 128, "default": "default" },
+      "speed": { "type": "number", "minimum": 0.5, "maximum": 2, "default": 1 }
+    },
+    "additionalProperties": false
+  },
+  "presets": [
+    {
+      "id": "local-test",
+      "display_name": "Local test",
+      "description": "Short speech sample for validating the CPU TTS path.",
+      "values": {
+        "text": "B1 AI Hub is ready for a local speech test.",
+        "voice": "default",
+        "speed": 1
+      }
+    }
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "audio": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "audio-cpu" },
+    { "type": "model", "id": "tts-fast" }
+  ],
+  "limits": {
+    "max_duration_seconds": 60
+  },
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"]
+}

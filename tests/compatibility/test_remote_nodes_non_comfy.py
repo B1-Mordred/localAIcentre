@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import unittest
+from contextlib import AbstractContextManager, nullcontext
+from datetime import UTC, datetime
+from pathlib import Path
+from types import TracebackType
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "integrations" / "comfyui-b1-remote-nodes"))
+
+from tests.support.evidence import write_private_json  # noqa: E402
+from comfyui_b1_remote_nodes import nodes  # noqa: E402
+
+
+REMOTE_NODES_EVIDENCE_FORMAT = "b1-ai-hub-remote-nodes-non-comfy-compatibility/v1"
+REMOTE_NODES_REQUIRED_CHECKS = (
+    "server_side_comfyui_stopped",
+    "server_side_comfyui_stop_verified",
+    "node_surface_registered",
+    "remote_models_listed",
+    "model_alias_selected",
+    "credentials_externalized",
+    "non_comfy_tts_completed",
+    "artifact_downloaded",
+    "server_side_comfyui_still_stopped_after_operation",
+)
+REMOTE_NODE_REQUIRED_CLASSES = (
+    "B1ListModels",
+    "B1SelectModelAlias",
+    "B1ChatText",
+    "B1VisionAnalysis",
+    "B1Embeddings",
+    "B1SubmitMediaJob",
+    "B1TextToImage",
+    "B1ImageToImage",
+    "B1TextToVideo",
+    "B1ImageToVideo",
+    "B1TextToSpeech",
+    "B1SpeechToText",
+    "B1UploadMediaBase64",
+    "B1WaitMediaJob",
+    "B1CancelMediaJob",
+    "B1ListJobArtifacts",
+    "B1DownloadArtifact",
+)
+EXAMPLES_ROOT = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples"
+SECRET_VALUE_PATTERN = re.compile(r"\b(?:b1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|b1adm_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+)\b")
+FORBIDDEN_WORKFLOW_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "credential",
+    "password",
+    "secret",
+    "token",
+}
+
+
+class DockerComposeComfyUiStopper(AbstractContextManager["DockerComposeComfyUiStopper"]):
+    service_name = "comfyui"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.was_running = False
+
+    def compose(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "compose", *args],
+            cwd=self.root,
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+
+    def running_services(self) -> set[str]:
+        completed = self.compose("ps", "--status", "running", "--services")
+        return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+    def assert_stopped(self) -> None:
+        running = self.running_services()
+        if self.service_name in running:
+            raise AssertionError("server-side B1 ComfyUI service is still running")
+
+    def __enter__(self) -> "DockerComposeComfyUiStopper":
+        self.was_running = self.service_name in self.running_services()
+        if self.was_running:
+            self.compose("stop", self.service_name)
+        self.assert_stopped()
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None) -> None:
+        if self.was_running:
+            self.compose("up", "-d", self.service_name)
+
+
+def server_side_comfyui_stopped_context() -> AbstractContextManager[object]:
+    mode = os.getenv("B1_REMOTE_NODES_COMFYUI_STOP_MODE", "").strip().lower()
+    if mode in {"docker-compose", "compose"}:
+        return DockerComposeComfyUiStopper(ROOT)
+    if mode == "manual":
+        return nullcontext()
+    raise unittest.SkipTest(
+        "set B1_REMOTE_NODES_COMFYUI_STOP_MODE=docker-compose to let the test stop/restore the B1 comfyui service, "
+        "or manually stop it first and set B1_REMOTE_NODES_COMFYUI_STOP_MODE=manual"
+    )
+
+
+def workflow_secret_findings(value: Any, path: str = "$") -> list[str]:
+    findings: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            text_key = str(key)
+            normalized = text_key.lower().replace("-", "_")
+            if any(fragment in normalized for fragment in FORBIDDEN_WORKFLOW_SECRET_KEYS):
+                findings.append(f"{path}.{text_key}")
+            findings.extend(workflow_secret_findings(child, f"{path}.{text_key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            findings.extend(workflow_secret_findings(child, f"{path}[{index}]"))
+    elif isinstance(value, str) and SECRET_VALUE_PATTERN.search(value):
+        findings.append(path)
+    return findings
+
+
+def workflow_node_types(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    raw_nodes = value.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return []
+    found: list[str] = []
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            continue
+        node_type = item.get("type")
+        if isinstance(node_type, str) and node_type:
+            found.append(node_type)
+    return found
+
+
+def configured_credential_source() -> str:
+    if os.getenv(nodes.API_KEY_ENV):
+        return "environment"
+    if os.getenv(nodes.API_KEY_FILE_ENV):
+        return "environment_file"
+    config, _path = nodes.local_config_with_path()
+    if config.get("api_key_file") or config.get(nodes.API_KEY_FILE_ENV):
+        return "config_file_key_file"
+    if config.get("api_key") or config.get(nodes.API_KEY_ENV):
+        return "config_file_inline_private"
+    return "none"
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def comfyui_container_is_running(container: dict[str, Any]) -> bool:
+    state = str(container.get("state") or "").strip().lower()
+    status = str(container.get("status") or "").strip().lower()
+    return state == "running" or status.startswith("up ")
+
+
+def comfyui_stop_verification_from_runtime_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+    inventory = payload.get("runtime_agent_services")
+    if not isinstance(inventory, dict):
+        raise AssertionError("/admin/runtimes did not include runtime_agent_services")
+    if inventory.get("error"):
+        raise AssertionError(f"runtime-agent service inventory is unavailable: {inventory.get('error')}")
+    services = inventory.get("services")
+    if not isinstance(services, list):
+        raise AssertionError("runtime-agent service inventory did not include a services list")
+    service = next((item for item in services if isinstance(item, dict) and item.get("name") == "comfyui"), None)
+    if not isinstance(service, dict):
+        raise AssertionError("runtime-agent service inventory did not include the comfyui service")
+    if service.get("docker_error"):
+        raise AssertionError(f"runtime-agent could not inspect the comfyui service: {service.get('docker_error')}")
+    containers = service.get("containers")
+    if not isinstance(containers, list):
+        raise AssertionError("runtime-agent comfyui service record did not include containers")
+    compact_containers = [
+        {
+            "short_id": str(container.get("short_id") or ""),
+            "name": str(container.get("name") or ""),
+            "state": str(container.get("state") or ""),
+            "status": str(container.get("status") or ""),
+            "image": str(container.get("image") or ""),
+        }
+        for container in containers
+        if isinstance(container, dict)
+    ]
+    running = [container for container in compact_containers if comfyui_container_is_running(container)]
+    snapshot = {
+        "verified_by": "admin_runtimes_runtime_agent_services",
+        "service": "comfyui",
+        "container_count": len(compact_containers),
+        "running_container_count": len(running),
+        "containers": compact_containers[:10],
+    }
+    if running:
+        raise AssertionError("server-side B1 ComfyUI service still has running containers: " + json.dumps(snapshot, sort_keys=True))
+    return snapshot
+
+
+def verify_server_side_comfyui_stopped_via_admin() -> dict[str, Any]:
+    timeout = int(os.getenv("B1_REMOTE_NODES_VERIFY_TIMEOUT_SECONDS", "30"))
+    return comfyui_stop_verification_from_runtime_inventory(nodes.request_json("/admin/runtimes", timeout_seconds=timeout))
+
+
+@unittest.skipUnless(os.getenv("B1_REMOTE_NODES_LIVE_TEST") == "1", "set B1_REMOTE_NODES_LIVE_TEST=1 to run live remote-node compatibility tests")
+class RemoteNodesNonComfyCompatibilityTests(unittest.TestCase):
+    checks: dict[str, dict[str, Any]] = {}
+    samples: list[dict[str, Any]] = []
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.checks = {}
+        cls.samples = []
+        cls.allow_placeholder = env_flag("B1_REMOTE_NODES_ALLOW_PLACEHOLDER", False)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        evidence_path = os.getenv("B1_REMOTE_NODES_EVIDENCE", "").strip()
+        if not evidence_path:
+            return
+        path = Path(evidence_path)
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in REMOTE_NODES_REQUIRED_CHECKS) else "incomplete"
+        write_private_json(
+            path,
+            {
+                "format": REMOTE_NODES_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": nodes.api_base(),
+                "status": status,
+                "required_checks": list(REMOTE_NODES_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
+        )
+
+    def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
+        self.checks[name] = {
+            "status": status,
+            "recorded_at": datetime.now(tz=UTC).isoformat(),
+            **data,
+        }
+
+    def test_tts_fast_uses_unified_api_without_server_side_comfyui(self) -> None:
+        self.assertTrue(nodes.api_key(), "configure a B1 API key through environment or private config")
+        output_dir = Path(os.getenv("B1_AI_HUB_DOWNLOAD_DIR", "b1-artifacts")).resolve()
+        model = os.getenv("B1_REMOTE_NODES_TTS_MODEL", "tts-fast")
+        runtime_policy = "non_comfy_only"
+        self.verify_node_surface_registered()
+        self.verify_credentials_externalized()
+        with server_side_comfyui_stopped_context():
+            stop_verification = verify_server_side_comfyui_stopped_via_admin()
+            self.record_check(
+                "server_side_comfyui_stopped",
+                stop_mode=os.getenv("B1_REMOTE_NODES_COMFYUI_STOP_MODE", "").strip().lower(),
+            )
+            self.record_check("server_side_comfyui_stop_verified", **stop_verification)
+            aliases_json, raw_models_json = nodes.B1ListModels().run()
+            aliases = json.loads(aliases_json)
+            raw_models = json.loads(raw_models_json)
+            self.assertIsInstance(aliases, list)
+            self.assertTrue(aliases, "B1 remote nodes could not list any model aliases")
+            self.assertIn(model, aliases, f"{model} was not visible in /v1/models")
+            self.record_check(
+                "remote_models_listed",
+                alias_count=len(aliases),
+                selected_model_visible=True,
+                model=model,
+                raw_object=raw_models.get("object"),
+            )
+            self.samples.append({"label": "remote-node-model-list", "alias_count": len(aliases), "selected_model_visible": True})
+            selected_model = nodes.B1SelectModelAlias().run(model)[0]
+            self.assertEqual(selected_model, model)
+            self.record_check("model_alias_selected", model=selected_model)
+            file_path, byte_count, digest, proof_raw = nodes.B1TextToSpeech().run(
+                model,
+                "B1 remote-node non-Comfy compatibility test.",
+                "default",
+                runtime_policy=runtime_policy,
+                filename="b1-remote-node-non-comfy.wav",
+            )
+            node_proof = json.loads(proof_raw)
+            placeholder_proof = node_proof.get("placeholder_proof") if isinstance(node_proof.get("placeholder_proof"), dict) else {
+                "placeholder": None,
+                "cpu_audio_engine": None,
+                "placeholder_failure": True,
+                "reasons": ["node_placeholder_proof_missing"],
+            }
+            post_run_stop_verification = verify_server_side_comfyui_stopped_via_admin()
+            self.record_check("server_side_comfyui_still_stopped_after_operation", **post_run_stop_verification)
+        self.record_check(
+            "non_comfy_tts_completed",
+            "incomplete" if placeholder_proof.get("placeholder_failure") else "ok",
+            model=model,
+            runtime_policy=runtime_policy,
+            byte_count=byte_count,
+            sha256=digest,
+            placeholder_proof=placeholder_proof,
+            node_proof=node_proof,
+            placeholder_allowed=self.allow_placeholder,
+        )
+        self.assertEqual(Path(file_path).parent.resolve(), output_dir)
+        self.assertGreater(byte_count, 0)
+        self.assertEqual(len(digest), 64)
+        self.assertTrue(Path(file_path).is_file())
+        artifact_proof = self.verify_downloaded_artifact_file(file_path, output_dir, byte_count, digest)
+        self.record_check("artifact_downloaded", **artifact_proof)
+        self.samples.append(
+            {
+                "label": "tts-fast-non-comfy",
+                "model": model,
+                "runtime_policy": runtime_policy,
+                "output_filename": artifact_proof["filename"],
+                "relative_path": artifact_proof["relative_path"],
+                "byte_count": byte_count,
+                "sha256": digest,
+                "placeholder_proof": placeholder_proof,
+            }
+        )
+        if placeholder_proof.get("placeholder_failure") and not self.allow_placeholder:
+            reason = ", ".join(str(item) for item in placeholder_proof.get("reasons") or []) or "placeholder output"
+            raise AssertionError(
+                "remote-node non-Comfy TTS returned placeholder or unproven output "
+                f"({reason}); install a real non-Comfy TTS model/runtime before handoff"
+            )
+
+    def verify_downloaded_artifact_file(self, file_path: str, output_dir: Path, byte_count: int, digest: str) -> dict[str, Any]:
+        original_path = Path(file_path)
+        resolved_path = original_path.resolve()
+        resolved_output_dir = output_dir.resolve()
+        self.assertFalse(original_path.is_symlink(), "remote-node artifact download must not be a symlink")
+        try:
+            relative_path = resolved_path.relative_to(resolved_output_dir)
+        except ValueError as exc:
+            raise AssertionError("remote-node artifact escaped the configured download directory") from exc
+        stat_result = resolved_path.stat()
+        mode = stat_result.st_mode & 0o777
+        private_file_mode = os.name == "nt" or (mode & 0o077) == 0
+        content = resolved_path.read_bytes()
+        file_digest = hashlib.sha256(content).hexdigest()
+        self.assertEqual(stat_result.st_size, byte_count)
+        self.assertEqual(len(content), byte_count)
+        self.assertEqual(file_digest, digest)
+        self.assertTrue(private_file_mode, f"remote-node artifact mode is too broad: {oct(mode)}")
+        return {
+            "filename": resolved_path.name,
+            "relative_path": relative_path.as_posix(),
+            "byte_count": byte_count,
+            "stat_size": stat_result.st_size,
+            "sha256": digest,
+            "file_sha256": file_digest,
+            "path_within_download_dir": True,
+            "symlink": False,
+            "private_file_mode": private_file_mode,
+            "file_mode": oct(mode),
+        }
+
+    def verify_node_surface_registered(self) -> None:
+        registered = sorted(str(name) for name in nodes.NODE_CLASS_MAPPINGS)
+        display_names = nodes.NODE_DISPLAY_NAME_MAPPINGS
+        missing_node_classes = sorted(set(REMOTE_NODE_REQUIRED_CLASSES) - set(registered))
+        missing_display_names = sorted(name for name in REMOTE_NODE_REQUIRED_CLASSES if name not in display_names)
+        invalid_node_classes: list[str] = []
+        for name in REMOTE_NODE_REQUIRED_CLASSES:
+            candidate = nodes.NODE_CLASS_MAPPINGS.get(name)
+            if candidate is None:
+                continue
+            if not callable(getattr(candidate, "INPUT_TYPES", None)) or getattr(candidate, "FUNCTION", None) != "run":
+                invalid_node_classes.append(name)
+
+        inspected_workflows: list[str] = []
+        workflow_types_by_file: dict[str, list[str]] = {}
+        example_node_types: set[str] = set()
+        for path in sorted(EXAMPLES_ROOT.glob("*.json")):
+            inspected_workflows.append(path.name)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            node_types = workflow_node_types(payload)
+            workflow_types_by_file[path.name] = node_types
+            example_node_types.update(node_types)
+        missing_example_node_types = sorted(set(REMOTE_NODE_REQUIRED_CLASSES) - example_node_types)
+
+        self.assertFalse(missing_node_classes, f"remote-node package missing required node classes: {missing_node_classes}")
+        self.assertFalse(missing_display_names, f"remote-node package missing display names: {missing_display_names}")
+        self.assertFalse(invalid_node_classes, f"remote-node package classes do not expose ComfyUI node shape: {invalid_node_classes}")
+        self.assertFalse(missing_example_node_types, f"remote-node examples do not cover node classes: {missing_example_node_types}")
+        self.record_check(
+            "node_surface_registered",
+            required_node_count=len(REMOTE_NODE_REQUIRED_CLASSES),
+            registered_node_count=len(registered),
+            required_node_classes=list(REMOTE_NODE_REQUIRED_CLASSES),
+            registered_node_classes=registered,
+            missing_node_classes=[],
+            missing_display_names=[],
+            invalid_node_classes=[],
+            inspected_workflow_count=len(inspected_workflows),
+            inspected_workflows=inspected_workflows,
+            example_workflow_node_types=workflow_types_by_file,
+            example_node_types=sorted(example_node_types),
+            missing_example_node_types=[],
+        )
+
+    def verify_credentials_externalized(self) -> None:
+        source = configured_credential_source()
+        self.assertNotEqual(source, "none", "remote-node credentials must come from environment or private config")
+        inspected_files: list[str] = []
+        findings: list[str] = []
+        for path in sorted(EXAMPLES_ROOT.glob("*.json")):
+            inspected_files.append(path.name)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            findings.extend(f"{path.name}:{finding}" for finding in workflow_secret_findings(payload))
+        self.assertFalse(findings, f"remote-node example workflows contain credential material: {findings}")
+        self.record_check(
+            "credentials_externalized",
+            credential_source=source,
+            inspected_workflow_count=len(inspected_files),
+            inspected_workflows=inspected_files,
+            workflow_secret_findings=[],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

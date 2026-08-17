@@ -1,0 +1,20 @@
+b1:
+  base_path: /srv/b1-ai-hub/models
+  is_default: true
+  checkpoints: diffusion/checkpoints
+  diffusion_models: |
+    diffusion/diffusion_models
+    diffusion/unet
+    video
+  text_encoders: |
+    diffusion/text_encoders
+    vision/text_encoders
+  clip_vision: vision/clip_vision
+  configs: diffusion/configs
+  controlnet: diffusion/controlnet
+  embeddings: embeddings
+  loras: diffusion/loras
+  upscale_models: diffusion/upscale_models
+  vae: diffusion/vae
+  audio_encoders: audio_encoders
+  model_patches: model_patches

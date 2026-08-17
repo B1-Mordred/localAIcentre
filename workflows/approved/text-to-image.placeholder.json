@@ -1,0 +1,16 @@
+{
+  "id": "text-to-image", "version": "1.0.0", "display_name": "SD 1.5 Text to Image", "description": "Bounded native ComfyUI SD 1.5 text-to-image workflow for the 6 GB appliance.",
+  "modality": "image", "operation": "generation", "model_alias": "image-default", "backend_policy": "comfyui-only", "runtime_policy": "any", "output_mime_types": ["image/png"],
+  "workflow_json": {
+    "10": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd-v1-5-pruned-emaonly-b1.safetensors"}},
+    "20": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["10", 1]}},
+    "21": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["10", 1]}},
+    "30": {"class_type": "EmptyLatentImage", "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}},
+    "40": {"class_type": "KSampler", "inputs": {"model": ["10", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "normal", "positive": ["20", 0], "negative": ["21", 0], "latent_image": ["30", 0], "denoise": 1}},
+    "50": {"class_type": "VAEDecode", "inputs": {"samples": ["40", 0], "vae": ["10", 2]}},
+    "60": {"class_type": "SaveImage", "inputs": {"images": ["50", 0], "filename_prefix": "b1-media-studio/sd15/t2i"}}
+  },
+  "input_schema": {"type": "object", "required": ["prompt"], "properties": {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}, "negative_prompt": {"type": "string", "maxLength": 2000, "default": "text, watermark, logo, blurry, low quality"}, "width": {"type": "integer", "minimum": 128, "maximum": 768, "default": 512}, "height": {"type": "integer", "minimum": 128, "maximum": 768, "default": 512}, "steps": {"type": "integer", "minimum": 1, "maximum": 30, "default": 20}, "cfg": {"type": "number", "minimum": 1, "maximum": 12, "default": 7}, "seed": {"type": "integer", "minimum": 0, "default": 20260728}}, "additionalProperties": false},
+  "presets": [{"id": "low-vram-proof", "display_name": "Low-VRAM Proof", "description": "Fast 256 px SD 1.5 proof image.", "values": {"prompt": "a red ceramic cup on a wooden table, studio light", "negative_prompt": "text, watermark, logo, blurry", "width": 256, "height": 256, "steps": 2, "cfg": 5, "seed": 20260728}}],
+  "output_schema": {"type": "object", "properties": {"images": {"type": "array", "items": {"type": "string"}}}}, "resource_class": "rtx3060-laptop-6gb-32gb", "dependencies": [{"type": "runtime", "id": "comfyui"}, {"type": "model", "id": "image-default"}], "limits": {"max_width": 768, "max_height": 768, "max_steps": 30, "max_batch_size": 1}, "visibility_roles": ["admin", "operator", "creator", "user", "service"]
+}

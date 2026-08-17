@@ -1,0 +1,75 @@
+# Smoke Tests
+
+Smoke tests are opt-in live checks against a running B1 AI Hub deployment. By default they skip so normal unit validation never mutates a local stack.
+
+Run the first live path through Make with a scoped key that has `models:read`, `jobs:read`, and `jobs:write`:
+
+```bash
+export B1_SMOKE_LIVE_TEST=1
+export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_SMOKE_OPEN_WEBUI_BASE=https://ai.b1.germering
+export B1_AI_HUB_API_KEY=...
+export B1_SMOKE_EVIDENCE=/srv/b1-ai-hub/backups/acceptance/live-smoke.json
+make live-smoke-acceptance
+```
+
+The underlying unittest module remains available for isolated harness debugging:
+
+```bash
+python3 -m unittest discover -s tests/smoke -v
+```
+
+Before LAN DNS is configured, keep the real virtual-host URLs and temporarily resolve them to the local gateway. This preserves TLS SNI and Caddy virtual-host routing while still testing the local machine:
+
+```bash
+export B1_AI_HUB_API_BASE=https://api.ai.b1.germering
+export B1_SMOKE_OPEN_WEBUI_BASE=https://ai.b1.germering
+export B1_SMOKE_RESOLVE_HOSTS=api.ai.b1.germering=127.0.0.1,ai.b1.germering=127.0.0.1
+```
+
+`B1_SMOKE_HOST_HEADER` and `B1_SMOKE_OPEN_WEBUI_HOST_HEADER` remain available for non-TLS or externally terminated harnesses, but they are not a substitute for correct HTTPS SNI.
+
+For the default Caddy internal CA, either trust the generated root certificate on the test machine or pass it directly:
+
+```bash
+export B1_SMOKE_CA_FILE=/srv/b1-ai-hub/data/control-plane/caddy-root.crt
+```
+
+For temporary lab runs only, TLS verification can be disabled:
+
+```bash
+export B1_SMOKE_TLS_VERIFY=0
+```
+
+Smoke and integration harnesses refuse to send bearer API keys over plain HTTP by default. Use HTTPS for normal LAN validation, including temporary host-header testing. The override `B1_ACCEPTANCE_ALLOW_INSECURE_HTTP=true` is only for isolated development harnesses where no real B1 API key or user data is at risk.
+
+The live suite currently checks:
+
+- gateway/control-plane `/healthz`
+- Open WebUI `/health` through the chat virtual host, including HTTPS and Caddy media-capture/security-header evidence
+- authenticated `/v1/models`
+- async TTS media-job creation through `tts-fast`
+- advertised media-job `self`, `events`, `artifacts`, and `cancel` links
+- final job runtime and immutable resolved model version
+- non-placeholder TTS artifact proof for every returned artifact; scaffold or unmarked audio-cpu output fails by default
+- terminal job polling
+- SSE job event delivery
+- terminal completed job state observed in the SSE stream
+- artifact listing and authenticated download for every returned artifact
+- artifact metadata integrity for every returned artifact, including SHA-256, size, ETag, and range support
+- optional `/admin/self-test` when `B1_SMOKE_ADMIN_API_KEY` has sufficient scope
+
+When `B1_SMOKE_EVIDENCE` is set, the suite writes a machine-readable `b1-ai-hub-live-smoke/v1` evidence file with `status`, `required_checks`, per-check records, and redacted samples. The file is written atomically with `0640` permissions and symlink refusal. Control Center acceptance reports ingest the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` smoke evidence file and block handoff if API health, Open WebUI chat-host health/security-header proof, model listing, async TTS completion, non-placeholder TTS proof, resolved model/runtime proof, SSE delivery, terminal SSE state, artifact download, or artifact metadata checks are absent or incomplete. Multi-output TTS jobs must report `artifact_count`, matching `verified_artifact_count`, and an `artifact_proofs[]` entry for every returned artifact.
+
+Useful knobs:
+
+- `B1_SMOKE_TTS_MODEL`, default `tts-fast`
+- `B1_SMOKE_TTS_RUNTIME_POLICY`, default `non_comfy_only`
+- `B1_SMOKE_TTS_VOICE`, default `default`
+- `B1_SMOKE_OPEN_WEBUI_BASE`, default `https://ai.b1.germering`
+- `B1_SMOKE_RESOLVE_HOSTS`, optional `host=address` list for pre-DNS local gateway testing while preserving HTTPS SNI
+- `B1_SMOKE_OPEN_WEBUI_HOST_HEADER`, optional routed host override for temporary gateway addresses
+- `B1_SMOKE_ALLOW_PLACEHOLDER=1`, development-only; lets the unittest finish against scaffold audio but records incomplete evidence
+- `B1_SMOKE_EVIDENCE`, optional machine-readable handoff evidence path
+- `B1_SMOKE_JOB_TIMEOUT_SECONDS`, default `120`
+- `B1_SMOKE_HTTP_TIMEOUT_SECONDS`, default `10`

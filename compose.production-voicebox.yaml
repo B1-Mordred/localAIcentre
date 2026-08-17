@@ -1,0 +1,84 @@
+services:
+  control-plane:
+    environment:
+      VOICEBOX_URL: http://voicebox:17493
+
+  voicebox:
+    image: ${B1_VOICEBOX_IMAGE:-b1-ai-hub/voicebox:v0.5.0-b1}
+    build:
+      context: ./deploy/voicebox
+      network: host
+      args:
+        B1_VOICEBOX_VERSION: ${B1_VOICEBOX_VERSION:-v0.5.0}
+        B1_VOICEBOX_COMMIT: ${B1_VOICEBOX_COMMIT:-2bcb98d1a8b6fe05e15fbc1559e3085669e4035d}
+        B1_VOICEBOX_TARBALL_SHA256: ${B1_VOICEBOX_TARBALL_SHA256:-d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083}
+        B1_QWEN3_TTS_COMMIT: ${B1_QWEN3_TTS_COMMIT:-022e286b98fbec7e1e916cb940cdf532cd9f488e}
+        B1_LINACODEC_COMMIT: ${B1_LINACODEC_COMMIT:-c0ae7c7285e121475c27592cfbb600624b714290}
+        B1_LUXTTS_COMMIT: ${B1_LUXTTS_COMMIT:-28ae6a61151684fffc9d1a7aa15eafa02286fe0b}
+    labels:
+      b1.ai-hub.runtime: voicebox
+      b1.ai-hub.runtime.kind: voicebox
+      b1.ai-hub.placeholder: "false"
+    read_only: true
+    environment:
+      B1_RUNTIME_KIND: !reset null
+      B1_RUNTIME_NAME: !reset null
+      B1_VOICEBOX_HOST: ${B1_VOICEBOX_HOST:-0.0.0.0}
+      B1_VOICEBOX_PORT: ${B1_VOICEBOX_PORT:-17493}
+      B1_VOICEBOX_UPSTREAM_HOST: ${B1_VOICEBOX_UPSTREAM_HOST:-127.0.0.1}
+      B1_VOICEBOX_UPSTREAM_PORT: ${B1_VOICEBOX_UPSTREAM_PORT:-17494}
+      B1_VOICEBOX_PROXY_VERSION: ${B1_VOICEBOX_PROXY_VERSION:-b1-voicebox-proxy/v0.5.0-b1}
+      B1_VOICEBOX_UPSTREAM_VERSION: ${B1_VOICEBOX_VERSION:-v0.5.0}
+      B1_VOICEBOX_UPSTREAM_COMMIT: ${B1_VOICEBOX_COMMIT:-2bcb98d1a8b6fe05e15fbc1559e3085669e4035d}
+      B1_VOICEBOX_SOURCE_ARCHIVE_SHA256: ${B1_VOICEBOX_TARBALL_SHA256:-d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083}
+      B1_VOICEBOX_DATA_DIR: /srv/b1-ai-hub/voicebox
+      B1_VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
+      B1_VOICEBOX_ARTIFACT_ROOT: /srv/b1-ai-hub/artifacts
+      B1_VOICEBOX_PROFILE_MAP_FILE: /srv/b1-ai-hub/voicebox/b1-profile-map.json
+      B1_VOICEBOX_DEFAULT_LANGUAGE: ${B1_VOICEBOX_DEFAULT_LANGUAGE:-en}
+      B1_VOICEBOX_DEFAULT_REFERENCE_TEXT: ${B1_VOICEBOX_DEFAULT_REFERENCE_TEXT:-B1 voice reference sample}
+      B1_VOICEBOX_BROADCAST_AUDIO_ENABLED: ${B1_VOICEBOX_BROADCAST_AUDIO_ENABLED:-true}
+      B1_VOICEBOX_BROADCAST_SAMPLE_RATE: ${B1_VOICEBOX_BROADCAST_SAMPLE_RATE:-48000}
+      B1_VOICEBOX_BROADCAST_LOUDNESS_LUFS: ${B1_VOICEBOX_BROADCAST_LOUDNESS_LUFS:--18.0}
+      B1_VOICEBOX_BROADCAST_LRA_LU: ${B1_VOICEBOX_BROADCAST_LRA_LU:-11.0}
+      B1_VOICEBOX_BROADCAST_TRUE_PEAK_DBTP: ${B1_VOICEBOX_BROADCAST_TRUE_PEAK_DBTP:--1.5}
+      B1_VOICEBOX_BROADCAST_FFMPEG_TIMEOUT_SECONDS: ${B1_VOICEBOX_BROADCAST_FFMPEG_TIMEOUT_SECONDS:-120}
+      VOICEBOX_MODELS_DIR: /srv/b1-ai-hub/models
+      B1_VOICEBOX_HOOK_STRICT_MODEL_LIST: ${B1_VOICEBOX_HOOK_STRICT_MODEL_LIST:-false}
+      B1_VOICEBOX_HOOK_MODEL_ROOTS: ${B1_VOICEBOX_HOOK_MODEL_ROOTS:-/srv/b1-ai-hub/models}
+      B1_VOICEBOX_HOOK_WARM_ENABLED: ${B1_VOICEBOX_HOOK_WARM_ENABLED:-false}
+      B1_VOICEBOX_HOOK_SMOKE_ENABLED: ${B1_VOICEBOX_HOOK_SMOKE_ENABLED:-false}
+      B1_RUNTIME_CONTROL_TOKEN_FILE: /run/secrets/runtime_control_token
+      B1_RUNTIME_CONTROL_REQUIRE_AUTH: ${B1_RUNTIME_CONTROL_REQUIRE_AUTH:-true}
+      B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD: ${B1_VOICEBOX_HOOK_RESTART_ON_UNLOAD:-true}
+      B1_VOICEBOX_HOOK_UNLOAD_TIMEOUT_SECONDS: ${B1_VOICEBOX_HOOK_UNLOAD_TIMEOUT_SECONDS:-20}
+      B1_VOICEBOX_HOOK_SMOKE_TIMEOUT_SECONDS: ${B1_VOICEBOX_HOOK_SMOKE_TIMEOUT_SECONDS:-300}
+      VOICEBOX_CORS_ORIGINS: ${B1_VOICEBOX_CORS_ORIGINS:-https://voice.ai.b1.germering,https://control.ai.b1.germering,https://media.ai.b1.germering}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_OFFLINE: ${B1_VOICEBOX_HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${B1_VOICEBOX_TRANSFORMERS_OFFLINE:-1}
+      DO_NOT_TRACK: "1"
+      HF_HOME: /srv/b1-ai-hub/cache/huggingface
+      XDG_CACHE_HOME: /srv/b1-ai-hub/cache/xdg
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+    volumes: !override
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/data/voicebox:/srv/b1-ai-hub/voicebox
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/models/runtime-views/voicebox:/srv/b1-ai-hub/models:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/artifacts/voicebox:/srv/b1-ai-hub/artifacts/voicebox:ro
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/cache/voicebox:/srv/b1-ai-hub/cache
+      - ${B1_DATA_ROOT:-/srv/b1-ai-hub}/secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17493/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${B1_VOICEBOX_MEMORY_LIMIT:-12g}
+        reservations:
+          devices:
+            - driver: ${B1_VOICEBOX_GPU_DRIVER:-nvidia}
+              count: ${B1_VOICEBOX_GPU_COUNT:-1}
+              capabilities: [gpu]

@@ -1,0 +1,26 @@
+{
+  "id": "xuebinqin-u2net-human-seg-matting",
+  "version": "rembg-v0.0.0",
+  "display_name": "U2Net Human Segmentation for B1 Seated Plates",
+  "description": "Pinned local ONNX human-segmentation dependency. B1 uses it after the OpenPose-controlled seated image pass to remove generated chairs, desks, studio remnants, and source backgrounds from private seated-character plates.",
+  "modality": "image",
+  "operations": ["studio-seated-character"],
+  "source": {
+    "type": "direct-url",
+    "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_human_seg.onnx",
+    "revision": "rembg-v0.0.0",
+    "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c"
+  },
+  "files": [{"path": "matting/u2net_human_seg.onnx", "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c", "size_bytes": 175997641, "format": "onnx", "quantization": "fp32"}],
+  "runtimes": ["comfyui"],
+  "preferred_runtime": "comfyui",
+  "resource_estimate": {"vram_gib": 0.0, "ram_gib": 1.0, "disk_gib": 0.2, "max_resolution": "512x720", "max_frames": 1},
+  "license": {"name": "Apache-2.0", "url": "https://github.com/xuebinqin/U-2-Net", "redistribution": "inference-only", "attribution": "U2-Net by Xuebin Qin et al.; rembg model distribution.", "acceptance_required": false},
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": [],
+  "visibility_roles": ["admin", "operator"],
+  "permissions": {"visible_to": ["admin", "operator"], "installable_by": ["admin"], "downloadable_by": [], "inference_roles": ["admin", "operator"]},
+  "runtime_adapter_versions": {"comfyui": "b1-cpu-matting/v1"},
+  "deprecation": {"status": "active"}
+}

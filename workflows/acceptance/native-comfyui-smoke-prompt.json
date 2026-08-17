@@ -1,0 +1,24 @@
+{
+  "prompt": {
+    "1": {
+      "class_type": "B1RuntimeTinyImage",
+      "inputs": {
+        "width": 64,
+        "height": 64,
+        "red": 47,
+        "green": 111,
+        "blue": 115
+      }
+    },
+    "2": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "b1-native-comfyui-smoke",
+        "images": [
+          "1",
+          0
+        ]
+      }
+    }
+  }
+}

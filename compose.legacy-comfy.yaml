@@ -1,0 +1,11 @@
+services:
+  gateway:
+    profiles:
+      - legacy-comfy
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.legacy-comfy", "--adapter", "caddyfile"]
+    environment:
+      B1_LEGACY_COMFY_ALLOW_CIDRS: ${B1_LEGACY_COMFY_ALLOW_CIDRS:-192.168.2.0/24 100.64.0.0/10}
+    volumes:
+      - ./deploy/caddy/Caddyfile.legacy-comfy:/etc/caddy/Caddyfile.legacy-comfy:ro
+    ports:
+      - "${B1_LEGACY_COMFY_PUBLISH:-8188:8188}"

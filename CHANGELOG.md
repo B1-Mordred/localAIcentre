@@ -1,0 +1,215 @@
+# Changelog
+
+## Unreleased
+
+- Added implementation plan for B1 AI Hub.
+- Added initial Docker Compose topology with pinned base images and internal networks.
+- Added a bootstrap Compose health check and policy coverage so every implementation-plan service declares a health check.
+- Added service scaffolds for the control plane, runtime agent, artifact server, CPU audio, and runtime placeholders.
+- Added Caddy gateway routing for the intended LAN virtual hosts.
+- Added bootstrap, inventory, backup, and validation entry points.
+- Added a production LocalAI Compose override and B1 wrapper image built from the pinned official CUDA 12 image digest, including internal native API proxying and scheduler lifecycle hooks for model-list, smoke, warm, and unload probes.
+- Hardened the production LocalAI wrapper to run as the B1 non-root runtime UID/GID and made bootstrap mark LocalAI and ComfyUI cache mounts app-writable for non-root startup.
+- Added a production ComfyUI Compose override and pinned B1 ComfyUI image build from upstream `v0.3.77`, including native `:8188` routing, B1 model-view mapping, conservative RTX 3060 startup flags, B1 lifecycle hooks, and CI/SBOM inventory coverage.
+- Hardened model installation so runtime model views are built under a private staging directory and published only after every runtime view succeeds, preventing failed links or archive extractions from exposing partial final views.
+- Hardened `b1-model-client` model identifier handling so unsafe aliases, slashes, encoded path controls, query/fragment controls, whitespace, and malformed catalog defaults are rejected before request paths are built.
+- Hardened native ComfyUI compatibility route policy so malformed percent escapes plus percent-encoded traversal, separator, query/fragment, and control-byte path forms are rejected before HTTP or WebSocket proxying.
+- Hardened native ComfyUI compatibility proxying so approved decoded paths are forwarded consistently and native queue/interrupt cancellation mirroring cannot be bypassed with safe percent-encoded route characters.
+- Hardened ComfyUI custom-node compatibility route approval so route-bearing node pins are ignored by the proxy unless they carry a valid reviewed dependency-lock SHA-256 digest, even if malformed pin state reaches memory.
+- Hardened ComfyUI custom-node pin validation so malformed percent escapes are rejected in approved repository URL paths and mutating route prefixes.
+- Hardened external runtime base URL validation so malformed percent escapes and invalid percent-encoded UTF-8 in adapter paths fail closed before OpenAI-compatible or generic HTTP providers can be enabled.
+- Hardened shared model-import and controlled-update source URL validation so malformed percent escapes and invalid percent-encoded UTF-8 are rejected before remote manifests, model blobs, or update metadata are fetched.
+- Hardened model manifest and archive member path validation so malformed percent escapes and invalid percent-encoded UTF-8 are rejected before runtime views, archive extraction, direct-url expansion, or Hugging Face file URL generation.
+- Hardened artifact, staged-upload, Model Hub client, and remote-node artifact path validation so malformed percent escapes and invalid percent-encoded UTF-8 fail closed before authorization, request building, or downloads.
+- Hardened internal artifact-server path and blob-name validation so storage requests repeat decoded path-control checks and reject newline-extended or otherwise non-exact SHA-256 blob IDs before file access.
+- Hardened artifact-server artifact and Model Hub blob resolution so symlinked path components are refused before file access.
+- Added `Idempotency-Key` handling for native ComfyUI `POST /prompt` so exact replays return the stored native prompt ID after acceptance and conflicting or still-pending replays do not submit duplicate GPU work.
+- Added live native ComfyUI acceptance coverage and handoff gating for same-body `POST /prompt` idempotency replay.
+- Changed ComfyUI-backed media jobs to enter `recovery_required` when native history contains no image, video, GIF, or audio outputs instead of completing without downloadable artifacts.
+- Made ComfyUI-backed media prompt submission cancellable through the GPU runner's shared runtime-call cancellation and recovery path.
+- Made audio-cpu async TTS/STT runtime calls cancellable while their internal speech/transcription request is in flight.
+- Added a PostgreSQL-backed ComfyUI custom-node approval registry with seed-file merge, administrator-only node-pin APIs, Control Center management, workflow dependency refresh, mutating-route prefix enforcement, audit records, and logical backup coverage.
+- Added Control Center and admin API Open WebUI migration-plan generation from constrained backup-root inventory/old-stack backup artifacts without reading chat rows, importing data, touching the old stack, or accepting arbitrary host paths.
+- Added GPU container runtime readiness and Docker socket GID/runtime-agent access readiness to the read-only inventory, cutover plan, final backup/migration/rollback evidence gate, and handoff report blockers.
+- Added a production Voicebox Compose override and pinned B1 Voicebox image build from upstream `v0.5.0`, including native `:17493` routing through a B1 REST/WebSocket proxy, B1-managed voice data/cache storage, read-only model-view mapping, conservative scheduler lifecycle hooks, and CI/SBOM inventory coverage.
+- Added a control-plane observability report at `GET /admin/metrics` and wired the Dashboard to display queue waits, recent job timings, model switches, runtime-agent availability, GPU telemetry, and host memory/storage without requiring a heavy monitoring stack.
+- Added generated-artifact retention planning and confirmed cleanup through the Storage tab and `POST /admin/artifacts/*`, preserving protected Voicebox samples and marking reclaimed job artifacts as deleted.
+- Added configurable admission controls for media job queue/rate limits and artifact storage headroom, exposed through `GET /admin/admission`, persisted admin policy APIs, Dashboard, Storage, and System tab editing.
+- Added an administrator/operator runtime reservation fleet view at `GET /admin/runtime-reservations` and Jobs tab controls for reservation creation, cancellation, filtering, and current GPU lease inspection.
+- Hardened runtime reservation creation against conflicting active GPU reservations so a second batch client cannot reserve the single GPU while another owner/model reservation is active.
+- Added structured operator evidence gates to acceptance reports so handoff readiness now requires explicit proof for live smoke, RTX 3060 acceptance, installed-model media paths, ComfyUI compatibility, external consumers, Model Hub sync, Voicebox, backups, restore, migration, rollback, and security review.
+- Added machine-readable live RTX GPU acceptance evidence ingestion to acceptance reports, gating handoff on a supported `$B1_BACKUP_ROOT/acceptance/*.json` cross-runtime proof with required checks.
+- Added machine-readable LocalAI runtime acceptance evidence ingestion and an opt-in live harness for streamed chat, single reported LocalAI GPU residency, and confirmed unload through the guarded admin route.
+- Added machine-readable installed workflow acceptance evidence ingestion and an opt-in live harness for chat, TTS, STT, CPU-audio no-GPU-lease proof, image generation, image edit, and short-video user paths backed by real installed models.
+- Added persisted model-smoke measurement gates to the LocalAI, RTX GPU, and installed-workflow live acceptance harnesses, and made handoff reports block when required aliases lack measured immutable model runs.
+- Added machine-readable native ComfyUI compatibility evidence ingestion and an opt-in live REST/WebSocket harness so handoff now requires proof of `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, native queue deletion, targeted interrupt, `/upload/image`, `/upload/mask`, native `POST /prompt`, `/ws`, `/history`, and `/history/{prompt_id}` through the gateway.
+- Hardened raw native ComfyUI, Voicebox, and deployed-security acceptance harnesses so API keys, browser cookies, and credential-bearing payloads are not sent over plain HTTP/WebSocket unless an explicit development-only opt-out is set.
+- Added native ComfyUI `/view` artifact retrieval to the live compatibility evidence gate so handoff proves generated outputs are downloadable through the gateway.
+- Added OpenAPI/source regression gates for the implementation-plan public API, Model Hub, runtime-reservation, SSE, and native compatibility passthrough route surfaces.
+- Aligned Model Hub model-detail OpenAPI paths with the implementation-plan `/modelhub/v1/models/{id}` and `/modelhub/v1/models/{id}/versions` contract.
+- Aligned runtime-reservation and Model Hub client OpenAPI path parameter names with the implementation-plan `{id}` public contract.
+- Added an opt-in legacy ComfyUI listener compatibility harness for restricted `http://host:8188` clients, verifying unauthenticated metadata and WebSocket access through the scheduler-aware proxy.
+- Added machine-readable remote-node non-Comfy compatibility evidence ingestion so handoff now requires proof that external ComfyUI B1 nodes complete a unified-API operation while server-side ComfyUI is stopped.
+- Added machine-readable Model Hub client sync evidence ingestion so handoff now requires proof of external catalog access, Range/resume blob sync, managed-cache state, safe prune behavior, and inference-only download blocking.
+- Added machine-readable Voicebox remote compatibility evidence ingestion and an opt-in live harness for native HTTP proxying, voice-profile lifecycle, scheduler-routed speech, and WebSocket-or-pinned-limitation proof.
+- Added machine-readable deployed security acceptance evidence ingestion and an opt-in live harness for auth rejection, under-scoped rejection, CORS/CSRF, ComfyUI route-policy, SSRF, traversal, artifact authorization, and log-redaction proof.
+- Added acceptance-report freshness gates so live evidence must be generated within 72 hours of the handoff report and cannot be future-dated beyond clock-skew tolerance.
+- Added acceptance-report source-control gating so operator handoff now requires a valid 40-character source commit in the generated report.
+- Added machine-readable live stack smoke evidence output and acceptance-report gating for health, model listing, async TTS, SSE, and artifact download checks.
+- Hardened native ComfyUI custom-node mutating route passthrough so trusted prefixes must also be declared on an approved custom-node commit pin.
+- Hardened ComfyUI custom-node approval so approved pins that expose mutating route prefixes must include a reviewed dependency-lock SHA-256 digest.
+- Redacted native ComfyUI prompt job metadata to store only the client ID, request hash, and structural graph counts/digests instead of top-level request keys or node inputs.
+- Hardened native ComfyUI compatibility WebSocket passthrough so non-core custom routes require write scope, trusted prefixes, and approved node pins while manager/internal paths are blocked.
+- Hardened ComfyUI and Voicebox WebSocket proxying so gateway compatibility markers are stripped before traffic reaches internal runtimes, including the optional legacy ComfyUI listener.
+- Hardened shared HTTP runtime proxying so browser cookies, CSRF/session headers, forwarded-client-IP headers, and hop-by-hop headers are stripped before requests reach internal runtimes while preserving explicit control-plane service headers.
+- Hardened runtime WebSocket compatibility proxying with the same credential, CSRF, forwarded-client-IP, hop-by-hop, and handshake-header stripping used by the HTTP proxy.
+- Hardened OpenAI-compatible forwarding so caller-supplied `b1_*` extension fields are stripped, optional external speech providers use adapter URL/bearer-token handling, and those providers never receive B1 internal resolved-model metadata.
+- Hardened synchronous STT forwarding so caller-supplied `b1_*` fields are stripped before proxying transcription requests to the CPU audio runtime.
+- Hardened external ComfyUI B1 remote nodes so media-reference fields reject arbitrary external URLs and require staged uploads, internal artifacts, or data URLs.
+- Hardened external ComfyUI B1 remote-node data URLs with base64, media-kind, non-empty payload, and size-limit validation.
+- Hardened external ComfyUI B1 remote-node staged-upload JSON handling so arbitrary JSON objects are rejected, upload responses expose a direct reusable reference, and media jobs forward staged references as objects for backend multipart adapters.
+- Added local JSON configuration-file support for external ComfyUI B1 remote nodes so API base URLs, API keys, download directories, and media size caps can be configured outside workflow JSON, with environment variables still taking precedence.
+- Hardened external ComfyUI B1 remote-node credential files with `api_key_file` support, environment override support, ambiguous-source rejection, and POSIX private-file checks for token-bearing config files.
+- Hardened external ComfyUI B1 remote-node upload and artifact-download handling with MIME/filename/header normalization and query, fragment, traversal, and encoded-traversal rejection.
+- Hardened external ComfyUI B1 remote-node job routes so job IDs are validated as opaque identifiers before wait, cancel, or artifact-list requests are built.
+- Hardened external ComfyUI B1 remote-node uploads so only server-supported media MIME types can be staged and staged responses must match the uploaded media kind.
+- Added external ComfyUI B1 remote-node CA bundle support through `B1_AI_HUB_CA_FILE`/`ca_file` and blocked API-key transport over plain HTTP unless an explicit development opt-out is set.
+- Added a generated runtime-control bearer token for production LocalAI, ComfyUI, and Voicebox `/b1/runtime/*` lifecycle hooks so load, warm, smoke, and unload actions fail closed when the internal hook secret is missing or wrong.
+- Extended runtime-control bearer enforcement to the default `audio-cpu` `/b1/runtime/smoke` hook and mounted the generated token read-only into that service.
+- Aligned the external ComfyUI `B1 Speech To Text` node with the public OpenAI-compatible multipart transcription contract, including safe filename/header handling and no private model header.
+- Improved read-only migration inventory with safe Docker inspect mount discovery so volume-backed Open WebUI data roots and model mounts are surfaced without storing container environment secrets, and unscannable Open WebUI roots carry into the operator backup-scope template.
+- Added Open WebUI migration-plan warnings for discovered but unreadable Open WebUI data roots so Docker-volume preservation gaps block silent cutover assumptions.
+- Hardened old-stack migration backups so raw container inspect metadata is marked sensitive while a redacted inspect companion is archived for operator review.
+- Aligned migration Makefile targets with `B1_BACKUP_ROOT` so old-stack inventory, scope, backup, migration-plan, and cutover-plan artifacts can be redirected away from an unwritable default `/srv` backup directory.
+- Added hardware-profile readiness to migration inventory, backup scopes, cutover plans, and live GPU acceptance so hosts below the initial 12 GB VRAM / 32 GB RAM baseline require explicit operator review and fail production handoff evidence.
+- Propagated cutover hardware-readiness into Control Center acceptance reports so below-baseline or missing hardware evidence blocks operator handoff.
+- Propagated Open WebUI preservation readiness into Control Center acceptance reports so missing or still-review-required preservation evidence blocks operator handoff.
+- Made unresolved cutover-plan warnings block Control Center operator handoff instead of remaining informational-only.
+- Added machine-readable backup/migration/rollback handoff evidence and a generator that verifies B1 backup/restore reports, old-stack backup, migration plans, cutover plan, and rollback rehearsal before Control Center can mark handoff ready.
+- Added a non-destructive rollback rehearsal report generator and Make target so rollback handoff proof is produced from the reviewed cutover plan instead of hand-authored JSON, with checksum validation to reject stale reports.
+- Added Control Center and admin API rollback rehearsal report generation from reviewed cutover plans without accepting arbitrary host paths or executing rollback commands.
+- Added Control Center and admin API backup/migration/rollback acceptance evidence generation from constrained backup-root artifacts, replacing the final shell-only handoff evidence step for normal operation.
+- Added Control Center PostgreSQL logical restore import planning and maintenance-gated apply controls for restore-tested backups.
+- Hardened external runtime URL validation so OpenAI-compatible and generic HTTP adapter hostnames must resolve to public IP addresses before configuration can become eligible.
+- Hardened model-import URL validation so direct-url and Hugging Face source hostnames must resolve to public IP addresses before download planning or redirects are accepted.
+- Hardened controlled-update source URL validation so release metadata hostnames must resolve to public IP addresses before update plans can be created.
+- Hardened model-download and remote-manifest execution so worker stream requests revalidate public DNS/import policy immediately before connecting, reject unsafe redirects, and ignore ambient proxy environment variables.
+- Hardened resumed model downloads so partial `206` responses must match the requested `Content-Range` and `Content-Length` before bytes are appended to staged blobs.
+- Hardened artifact URL canonicalization so percent-encoded traversal, separators, and control characters are rejected before artifact access or Voicebox reference-sample linking.
+- Hardened workflow staged-upload references so percent-encoded path controls are rejected and the normalized artifact path must contain the declared upload ID.
+- Hardened model manifest file-path validation so encoded traversal, separators, query/fragment controls, control bytes, and Windows drive prefixes cannot feed runtime views or derived download URLs.
+- Hardened `b1-model-client` resumed blob sync with exact `Content-Range` parsing before appending server bytes to a local partial cache file.
+- Hardened `b1-model-client` sync plans so server-provided blob IDs must be SHA-256 digests and local write paths are recomputed under the managed cache.
+- Hardened `b1-model-client` credential and endpoint handling with token-file support, ambiguous-source rejection, POSIX private-file checks, and Model Hub base URL validation.
+- Hardened `b1-model-client` transport handling so bearer tokens are not sent over plain HTTP unless an explicit development-only opt-out is set.
+- Added `b1-model-client` CA bundle support through `--ca-file` and `B1_MODELHUB_CA_FILE` for LAN clients using the Caddy internal CA.
+- Hardened the live Model Hub compatibility harness so its direct Range/resume probe uses the `b1-model-client` CA bundle and token-transport guards.
+- Hardened Model Hub sync plans so downloadable version selection is filtered by the caller's Model Hub client allowlist and manifest role permissions before blob actions are returned.
+- Added public media-job history filters for `state`, `runtime`, and `modality` while preserving owner-scoped results for ordinary API clients.
+- Added Media Studio history job details so selected past jobs expose artifacts, download actions, measured run/load time, peak RAM/VRAM, model version, runtime, and failure metadata.
+- Added authenticated Media Studio output previews for generated image, audio, and video artifacts in active and historical job panels.
+- Added redacted Media Studio reproducibility metadata for active and historical jobs without exposing raw request parameters.
+- Added Media Studio resolved backing labels so active and historical jobs clearly show local/external and ComfyUI/non-Comfy execution after runtime selection.
+- Preserved B1 `runtime_policy` and `priority` extensions from OpenAI-compatible image generation/edit requests on the durable media-job envelope while still stripping them before backend runtime submission.
+- Enforced published workflow `backend_policy` after alias resolution so ComfyUI-only workflows cannot run through LocalAI/other runtimes, and non-Comfy workflows cannot resolve to ComfyUI.
+- Added structured media-job request redaction that preserves workflow IDs, versions, and safe runtime parameters while redacting prompts, uploads, paths, hashes, and credentials.
+- Added a Control Center job reproducibility summary beside the raw redacted request JSON for faster operator inspection.
+- Added authenticated Control Center job artifact downloads from the selected job detail panel.
+- Allowed Control Center queue administrators and operators to download artifacts for inspected jobs without requiring wildcard API scope, while preserving owner-only artifact access for ordinary clients.
+- Added Control Center External Access snippets for curl, Open WebUI, external ComfyUI, Voicebox, Python, and JavaScript clients.
+- Added a Control Center External Access snippet for `b1-model-client` Model Hub cache synchronization.
+- Added cutover-plan preservation capture to acceptance reports so the Markdown handoff lists old containers, Docker volumes, and host paths deliberately preserved for rollback and blocks handoff when that evidence is missing.
+- Added Hugging Face repository source support for model download planning and resumable blob downloads, with bounded safe redirect handling and credential forwarding limited to the original source host.
+- Added a maintenance-gated update promotion preflight at `POST /admin/updates/{id}/promote`, verifying staged Compose override checksums and pinned image availability before recording the Control Center promotion handoff.
+- Bound the Caddy admin API to loopback inside the gateway container and added Compose policy coverage so the normal HTTPS virtual hosts remain the only exposed gateway management surface.
+- Made `b1-model-client` recover stale partial blob downloads by retrying once from byte zero after an HTTP 416 resume rejection, while still verifying ETag, size, and SHA-256 before publication.
+- Digest-pinned the remaining base Compose images and B1-owned Dockerfile base images, with regression coverage for immutable third-party image references.
+- Added startup reconciliation for the model-download runner so interrupted running downloads are requeued, pausing/cancelling downloads settle to `paused`/`cancelled`, and `/admin/scheduler/reconciliation` reports the runner when enabled.
+- Added Control Center smoke-test controls for installed model records, including persisted measurement feedback for runtime status, load/run timing, and observed RAM/VRAM peaks.
+- Hardened seed model recommendations so `available` manifests must include auditable license/source metadata and complete measured-run evidence tied to the exact immutable model version.
+- Removed broad mutable package-upgrade steps from B1-owned Dockerfiles and added policy coverage so rebuilds stay tied to pinned base images and locked dependencies.
+- Added offline compatibility harness discovery and security policy checks to the default `make validate` path, with CI regression coverage so these non-live acceptance suites and the digest-pinned Caddy validation image cannot drift out of validation.
+- Added a repository-wide Python source compilation gate to `make validate`, using a temporary bytecode cache so validation does not depend on writable ignored `__pycache__` directories.
+- Added a Voicebox constraints `pip-audit` inventory target and CI artifact upload so upstream-heavy Python vulnerability findings are visible during update review without breaking strict B1-owned service audits.
+- Expanded the backend CI validation environment to install every B1-owned service requirements file before `make validate`, reducing dependency-related skips in API and service unit tests.
+- Aligned the published-workflow and approved-node-pin JSON Schemas with the parser-backed workflow contract, including modality, operation, alias, runtime policy, output MIME types, and approved custom-node route prefixes.
+- Hardened model measurement metadata so seed manifests and parser-backed catalog imports cannot reference floating `:latest` runtime tags.
+- Added a local `make frontend` quality gate that installs, builds, and production-audits both React web UIs.
+- Added a local `make quality` aggregate with an isolated Python 3.12 dependency environment or digest-pinned Python 3.12 container fallback for backend/Compose validation, OpenAPI drift checking, and frontend build/audit gates.
+- Added a structured handoff quick reference to acceptance reports with configured URLs, install/migration commands, administrator onboarding, known limitations, and hardware guidance.
+- Added completed-download model installation from stored manifests, exposed in the Control Center Downloads table, so operators can publish verified downloaded blobs without re-entering the manifest URL.
+- Documented `make quality` as the stronger local pre-push quality gate alongside the CI dependency-isolated backend checks.
+- Added an authenticated Prometheus text exposition at `GET /admin/metrics.prometheus` for scraper-friendly queue, job, runtime, GPU, host, and storage metrics without sensitive labels.
+- Pinned GitHub Actions workflow runner labels, actions, and CI scanner containers to fixed Ubuntu, immutable commit SHA, and tag-plus-digest references.
+- Added CI workflow runner/action/scanner references to the generated CycloneDX SBOM.
+- Hardened unit-test isolation for Compose-injected runtime-control, backup-encryption, artifact-reserve, DNS, and noexec `/tmp` defaults so the full service-container unit suite runs deterministically.
+- Added model-blob quarantine retention planning and confirmed cleanup through Storage and `POST /admin/models/quarantine/*`, preserving malformed entries and never deleting active authoritative blobs.
+- Exposed a versioned `b1-runtime-adapter/v1alpha1` contract from `/admin/runtimes` and the Control Center Runtimes tab, including adapter capabilities, scheduler/submission/event surfaces, lifecycle hooks, metrics source, and runtime-agent unload/recovery boundaries.
+- Added runtime-adapter operation capabilities and manifest-operation enforcement with endpoint-name normalization, so unsupported operations now return clear capability errors instead of resolving by modality alone.
+- Added model-manifest operation taxonomy validation and canonicalization so catalog, upload, and remote manifests cannot advertise unsupported operation/modality pairs.
+- Extended model manifests with validated governance metadata for runtime adapter version ranges, companion files, role permissions, and deprecation/replacement records, and enforced Model Hub read/download permissions for non-admin clients.
+- Enforced manifest `permissions.inference_roles` during catalog alias resolution so model-level inference permissions apply to chat, audio, media jobs, and runtime reservations.
+- Added a configurable Caddy `request_body` limit across all B1 virtual hosts and the optional legacy ComfyUI listener so oversized uploads are rejected at the gateway before reaching backend services, with Caddyfile parser validation included in `make validate`.
+- Enforced manifest `permissions.installable_by` on model install planning, upstream blob staging, and final install so non-admin model-management clients cannot prepare or mutate admin-reserved models.
+- Restricted `/admin/models*` to administrator/operator roles in addition to model or storage scopes so public/service model-read clients cannot inspect or mutate Control Center model-management state.
+- Restricted API client and Model Hub client management routes to administrators so operators and service clients cannot list, create, update, or revoke credentials even if presented with broad admin scopes.
+- Updated the Control Center External Access tab to treat administrator-only credential routes as restricted-management state, keeping snippets visible while disabling API client, Model Hub client, and encrypted-secret mutations for non-admin sessions.
+- Required administrator role and active maintenance mode before applying a PostgreSQL logical import from backup while preserving operator-accessible dry-run import planning.
+- Added structured Control Center runtime capability rows for modalities, operations, GPU/CPU residency, OpenAI/native API support, configured state, and local/external-data policy.
+- Added model-download retry/requeue through `POST /admin/models/downloads/{id}/retry` and the Control Center Models tab, preserving staged partial files so failed or cancelled downloads can resume through the verified worker path.
+- Added model-download pause/resume through `POST /admin/models/downloads/{id}/pause` and `/resume` plus Control Center actions, stopping running downloads at chunk boundaries while preserving staged partial blobs.
+- Added cooperative cancellation for blocking LocalAI and Voicebox GPU media runtime calls, aborting the control-plane request, marking the durable job cancelled, and requesting bounded runtime-agent recovery before releasing the GPU lease.
+- Added an opt-in live smoke test target for deployed health, authenticated model listing, async TTS media jobs, SSE event delivery, artifact download, and optional admin self-test.
+- Hardened the shared live smoke/integration acceptance client so bearer API keys are not sent over plain HTTP unless an explicit development-only opt-out is set.
+- Added an opt-in RTX 3060 cross-runtime GPU acceptance target that verifies production readiness, runtime-agent GPU metrics, LocalAI -> ComfyUI -> Voicebox switching, single reported GPU residency, sampled VRAM reserve compliance, and optional evidence capture.
+- Changed GPU runtime switching and idle cleanup to try runtime `/b1/runtime/unload` hooks before escalating to runtime-agent restart fallback, and made confirmed admin unloads clear persisted runtime-state residency.
+- Added Makefile targets for smoke, integration, compatibility, and security tests, with an opt-in live `/admin/runtimes` integration check and offline Compose exposure/privilege security checks.
+- Added Redis-coordinated Model Hub blob download rate limiting with per-subject `X-RateLimit-*` headers and a bounded in-process fallback before proxying blob requests to internal storage.
+- Added Voicebox voice-profile dependency checks to model removal and blob quarantine planning so active profiles block unsafe cleanup and disabled profiles remain visible in dependency reports.
+- Added licence/source/resource metadata to Model Hub sync plans and made `b1-model-client` and Model Hub blob downloads require explicit licence acknowledgement before synchronising acceptance-gated models.
+- Hardened `b1-model-client` sync planning so the local cache inventory reports only SHA-256-verified blobs, forcing corrupt same-name files to be re-downloaded instead of treated as installed.
+- Hardened artifact and Model Hub conditional downloads so `If-None-Match` handles weak entity tags consistently with strong SHA-256 ETags.
+- Hardened external runtime base URL validation so percent-encoded traversal, encoded separators, and control characters cannot bypass the remote-provider SSRF/path policy.
+- Hardened controlled-update source URLs and ComfyUI custom-node approval inputs with the same decoded path-control checks before release URLs, repository URLs, or route prefixes are persisted.
+- Added CIDR allowlists for general API clients, enforced during bearer-token authentication and editable from the Control Center External Access tab for API and Model Hub clients.
+- Added editable Model Hub client download policy, allowing administrators to change allowed models and catalog-only/download mode without rotating client keys.
+- Added persisted network policy management for CORS origins and trusted proxy CIDRs, including live Control Center editing and dynamic credentialed CORS enforcement.
+- Added scheduler-aware tracking for native ComfyUI `/interrupt` and mutating `/queue` compatibility requests so accepted native cancellations update durable B1 job state while still forwarding immediately to ComfyUI.
+- Made the native ComfyUI prompt tracker mark already-terminal WebSocket-updated jobs idle before releasing the scheduler lease, keeping runtime status accurate after execution errors or external cancellations.
+- Added Media Studio fetch-based SSE job progress and authenticated artifact downloads, keeping browser-session and service-token access aligned with the control-plane authorization model.
+- Added `.env.production.example` plus Compose validation coverage so the real LocalAI, ComfyUI, Voicebox, and audio-cpu production posture can still be started with the documented `docker compose up -d` command after bootstrap.
+- Clarified installation docs so `docker compose up -d` is the required fresh-install start command and `make bootstrap` is an optional idempotent preflight.
+- Added bootstrap regression coverage for the complete implementation-plan external data, model, artifact, cache, secret, log, and backup directory contract.
+- Added an opt-in external ComfyUI remote-node compatibility harness that stops/restores the server-side B1 ComfyUI service before proving a `non_comfy_only` TTS operation succeeds through the unified API.
+- Added offline runtime-agent security policy tests that lock down its route surface, mutation guards, pinned-image requirement, and absence of arbitrary Docker passthrough APIs.
+- Made runtime-agent `/v1/*` authentication fail closed when its bearer-token secret is missing or malformed, with only an explicit development bypass.
+- Sanitized public/admin job API and SSE responses so raw request parameters and idempotency keys remain internal while clients see only `redacted_request`.
+- Added recursive structured-log redaction for control-plane events, including sensitive keys, bearer/B1/GitHub token-shaped strings, URL credential query values, long strings, and long lists.
+- Hardened controlled-update source URL validation against loopback/private/link-local/reserved IP literals, localhost names, malformed ports, query strings, fragments, and relative path segments.
+- Hardened shared model-import URL validation against localhost/internal targets, URL credentials, fragments, malformed ports, reserved/multicast/unspecified IP literals, and decoded path traversal.
+- Centralized credential-query detection for model source and remote-manifest URLs, including signed URL keys such as `download_token`, `X-Amz-Signature`, and `X-Goog-Credential`.
+- Centralized control-plane job state groups so `recovery_required` jobs close SSE streams, cancel idempotently, remain retryable, and show recovery counts in observability.
+- Tightened runner startup reconciliation so only pre-runtime `waiting_for_gpu` claims are automatically requeued; jobs interrupted during runtime preparation or execution remain `recovery_required` for explicit operator retry.
+- Removed the obsolete blanket recovery requeue helper so `recovery_required` jobs only leave that state through explicit retry, cancellation, failure, or expiry workflows.
+- Removed the fixed 120-second backend timeout from public and admin job SSE streams so long-running media jobs remain observable until terminal state or client disconnect.
+- Surfaced recovery-required job counts in the Control Center dashboard and added source-level guards against duplicate FastAPI route registration.
+- Added an administrator/operator job SSE route at `GET /admin/jobs/{job_id}/events` so Control Center can observe any durable job without weakening public owner-scoped media streams.
+- Aligned Control Center and Media Studio terminal-job handling with the backend so `recovery_required` jobs stop live progress/cancel affordances while remaining retryable.
+- Wired the Control Center Jobs tab to the administrator job SSE endpoint so the selected job detail and row update live while non-terminal work is running.
+- Added a deliberate ComfyUI compatibility passthrough policy that allows native read routes and core mutating routes while blocking internal lifecycle hooks and unapproved custom-node management surfaces.
+- Tightened durable media-job idempotency so invalid keys are rejected, reused keys must match the original job identity, and image-edit replays avoid restaging upload data.
+- Restricted runtime reservation creation to configured GPU runtimes so CPU-only or external adapters cannot create scheduler records that the GPU lease will never enforce.
+- Scoped Model Hub catalog responses to each dedicated client's `allowed_models` policy so limited workstation keys cannot discover unrelated aliases or manifests.
+- Moved media-job and image-generation idempotent replay checks ahead of mutable workflow and alias validation so retries return the original durable job after catalog or workflow changes.
+- Tightened maintenance-mode admission so image generation, image edit, and media-job creation fail before body staging, workflow validation, or alias/runtime resolution, while idempotent replays can still return existing jobs.
+- Added authentication gates for normal ComfyUI and Voicebox compatibility routes and gateway header stripping so clients cannot spoof the disabled-by-default legacy ComfyUI listener through ordinary API hosts.
+- Scoped gateway browser camera/microphone permissions to Open WebUI, Media Studio, and Voicebox same-origin workflows while keeping admin, API, Model Hub, and ComfyUI surfaces deny-by-default.
+- Added runtime-agent mutation rate limiting, structured redacted mutation audit events, and dry-run enforcement for service/image mutation paths even when Docker mutations are enabled.
+- Added a runtime-agent mutation-guard self-test and acceptance-report handoff blocker so bearer auth, mTLS client enforcement, allowlists, and mutation rate limiting must be evidenced before cutover handoff.
+- Added runtime-agent mutation-guard proof to the live security acceptance evidence contract so stale security handoff files cannot omit the deployed agent posture.
+- Added artifact authorization proof to the live security acceptance evidence contract so stale handoff files cannot omit unauthenticated, under-scoped, and different-owner artifact download rejection.
+- Added a scheduler reconciliation admin endpoint, Control Center handoff gate, and opt-in live restart acceptance harness proving startup requeues interrupted `waiting_for_gpu` jobs and marks interrupted active jobs `recovery_required`.
+- Strengthened the admin self-test TLS routing probe so configured gateway URLs must return the expected Caddy security headers, catching direct backend exposure or gateway drift before cutover.
+- Made gateway TLS configurable through `B1_CADDY_TLS_ARGS` and a read-only external certificate mount while preserving the default Caddy internal CA flow.
+- Redacted manifest source URLs across public Model Hub catalog, model, and version responses so external sync clients do not receive upstream credentials, signed query strings, or fragments.
+- Added a generated internal artifact-server bearer token and made the control plane inject it for authenticated artifact and Model Hub blob proxying while artifact-server fails closed on direct unauthenticated artifact/blob requests.

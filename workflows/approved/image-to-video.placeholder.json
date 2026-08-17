@@ -1,0 +1,50 @@
+{
+  "id": "image-to-video",
+  "version": "1.0.0",
+  "display_name": "Wan 2.1 VACE 1.3B Image to Video",
+  "description": "Native ComfyUI Wan VACE image-conditioned video workflow for the 6 GB appliance. Managed API clients upload one private PNG, JPEG, or WebP through POST /v1/media/uploads and pass reference.id as input.source_image_artifact_id; B1 resolves and verifies it before queueing, then uploads the staged image to ComfyUI immediately before submission. UMT5 stays on CPU and execution is sequential.",
+  "modality": "video",
+  "operation": "image-to-video",
+  "model_alias": "video-image",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["video/mp4"],
+  "workflow_json": {
+    "10": {"class_type": "CLIPLoader", "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "cpu"}},
+    "11": {"class_type": "UNETLoader", "inputs": {"unet_name": "wan2.1_vace_1.3B_fp16.safetensors", "weight_dtype": "default"}},
+    "12": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+    "13": {"class_type": "LoadImage", "inputs": {"image": "{{source_image_filename}}"}},
+    "20": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["10", 0]}},
+    "21": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["10", 0]}},
+    "30": {"class_type": "WanVaceToVideo", "inputs": {"positive": ["20", 0], "negative": ["21", 0], "vae": ["12", 0], "reference_image": ["13", 0], "width": "{{width}}", "height": "{{height}}", "length": "{{frames}}", "batch_size": 1, "strength": "{{strength}}"}},
+    "40": {"class_type": "KSampler", "inputs": {"seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["11", 0], "positive": ["30", 0], "negative": ["30", 1], "latent_image": ["30", 2]}},
+    "50": {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["40", 0], "vae": ["12", 0], "tile_size": "{{vae_tile_size}}", "overlap": 64, "temporal_size": 4096, "temporal_overlap": 8}},
+    "60": {"class_type": "CreateVideo", "inputs": {"images": ["50", 0], "fps": "{{fps}}"}},
+    "61": {"class_type": "SaveVideo", "inputs": {"video": ["60", 0], "filename_prefix": "b1-media-studio/wan2.1-vace-1.3b/i2v", "format": "mp4", "codec": "h264"}}
+  },
+  "input_schema": {
+    "type": "object",
+    "required": ["source_image", "prompt"],
+    "properties": {
+      "source_image": {"type": "string", "contentEncoding": "base64", "contentMediaType": "image/png"},
+      "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+      "negative_prompt": {"type": "string", "maxLength": 2000, "default": "text, watermark, logo, subtitles, low quality, blurry"},
+      "width": {"type": "integer", "minimum": 256, "maximum": 384, "default": 384},
+      "height": {"type": "integer", "minimum": 256, "maximum": 288, "default": 256},
+      "frames": {"type": "integer", "minimum": 5, "maximum": 33, "default": 17},
+      "fps": {"type": "integer", "minimum": 4, "maximum": 12, "default": 8},
+      "steps": {"type": "integer", "minimum": 1, "maximum": 10, "default": 6},
+      "cfg": {"type": "number", "minimum": 1, "maximum": 8, "default": 6},
+      "strength": {"type": "number", "minimum": 0.1, "maximum": 1, "default": 1},
+      "vae_tile_size": {"type": "integer", "minimum": 128, "maximum": 384, "default": 256},
+      "seed": {"type": "integer", "minimum": 0, "default": 20260728}
+    },
+    "additionalProperties": false
+  },
+  "presets": [{"id": "low-vram-image-motion", "display_name": "Low-VRAM Image Motion", "description": "17-frame 384x256 image-conditioned motion probe for measured admission.", "values": {"prompt": "gentle natural camera movement while preserving the subject and composition", "negative_prompt": "text, watermark, logo, subtitles, low quality, blurry", "width": 384, "height": 256, "frames": 17, "fps": 8, "steps": 6, "cfg": 6, "strength": 1, "vae_tile_size": 256, "seed": 20260728}}],
+  "output_schema": {"type": "object", "properties": {"videos": {"type": "array", "items": {"type": "string"}}}},
+  "resource_class": "rtx3060-laptop-6gb-32gb",
+  "dependencies": [{"type": "runtime", "id": "comfyui"}, {"type": "model", "id": "video-image"}],
+  "limits": {"max_width": 384, "max_height": 288, "max_frames": 33, "max_steps": 10, "max_batch_size": 1, "max_duration_seconds": 5},
+  "visibility_roles": ["admin", "operator", "creator", "service"]
+}

@@ -1,0 +1,1246 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "services" / "control-plane"))
+
+try:
+    from app import main  # noqa: E402
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on local test environment packages
+    if exc.name not in {"fastapi", "httpx", "pydantic", "redis", "sqlalchemy"}:
+        raise
+    main = None
+    MISSING_DEPENDENCY = exc.name
+else:
+    MISSING_DEPENDENCY = ""
+
+
+@unittest.skipIf(main is None, f"{MISSING_DEPENDENCY} is not installed in this lightweight test environment")
+class SelfTestApiTests(unittest.TestCase):
+    def patch_attr(self, name: str, value: Any) -> None:
+        original = getattr(main, name)
+        setattr(main, name, value)
+        self.addCleanup(lambda: setattr(main, name, original))
+
+    def patch_settings(self, **changes: Any) -> None:
+        original = main.settings
+        main.settings = replace(main.settings, **changes)
+        self.addCleanup(lambda: setattr(main, "settings", original))
+
+    def patch_auth(self, scopes: set[str]) -> None:
+        auth = main.AuthContext(subject_id="admin_1", role=main.Role.ADMIN, scopes=frozenset(scopes))
+
+        async def authenticate(_: str | None = None) -> Any:
+            return auth
+
+        self.patch_attr("authenticate", authenticate)
+
+    def test_admin_runtimes_exposes_compose_selection_readiness(self) -> None:
+        class FakeAdapter:
+            external = False
+
+            async def health(self) -> dict[str, Any]:
+                return {"name": "localai", "status": "ok", "details": {"version": "pinned"}}
+
+        class FakeDatabase:
+            async def list_runtime_states(self) -> list[dict[str, Any]]:
+                return []
+
+        async def runtime_agent_get(path: str) -> tuple[dict[str, Any] | None, str | None]:
+            self.assertEqual(path, "/v1/services")
+            return {"services": []}, None
+
+        async def self_test_localai_build_info() -> dict[str, Any]:
+            return {"name": "runtime:localai-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_localai_status() -> dict[str, Any]:
+            return {"name": "runtime:localai-status", "status": "ok", "detail": "ok"}
+
+        async def self_test_audio_cpu_build_info() -> dict[str, Any]:
+            return {"name": "runtime:audio-cpu-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_audio_cpu_status() -> dict[str, Any]:
+            return {"name": "runtime:audio-cpu-status", "status": "ok", "detail": "ok"}
+
+        async def self_test_voicebox_build_info() -> dict[str, Any]:
+            return {"name": "runtime:voicebox-build-info", "status": "ok", "detail": "ok"}
+
+        async def self_test_voicebox_status() -> dict[str, Any]:
+            return {"name": "runtime:voicebox-status", "status": "ok", "detail": "ok"}
+
+        async def self_test_comfyui_build_info() -> dict[str, Any]:
+            return {"name": "runtime:comfyui-build-info", "status": "warning", "detail": "not checked"}
+
+        async def self_test_comfyui_status() -> dict[str, Any]:
+            return {"name": "runtime:comfyui-status", "status": "warning", "detail": "not checked"}
+
+        def compose_selection_snapshot() -> dict[str, Any]:
+            return {
+                "format": "b1-ai-hub-compose-selection/v1",
+                "status": "blocked",
+                "raw_compose_file": "compose.yaml:compose.production-localai.yaml",
+                "raw_compose_profiles": "",
+                "selected_file_basenames": ["compose.yaml", "compose.production-localai.yaml"],
+                "selected_profiles": [],
+                "production_required_runtimes": ["localai", "comfyui"],
+                "required_files": ["compose.yaml", "compose.production-comfyui.yaml", "compose.production-localai.yaml"],
+                "required_profiles": [],
+                "missing_files": ["compose.production-comfyui.yaml"],
+                "missing_profiles": [],
+            }
+
+        self.patch_auth({"runtimes:read"})
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "comfyui"))
+        self.patch_attr("database", FakeDatabase())
+        self.patch_attr("runtime_agent_get", runtime_agent_get)
+        self.patch_attr("runtime_registry_snapshot", lambda: SimpleNamespace(adapters={"localai": FakeAdapter()}, public_adapters=lambda: []))
+        self.patch_attr("self_test_localai_build_info", self_test_localai_build_info)
+        self.patch_attr("self_test_localai_status", self_test_localai_status)
+        self.patch_attr("self_test_audio_cpu_build_info", self_test_audio_cpu_build_info)
+        self.patch_attr("self_test_audio_cpu_status", self_test_audio_cpu_status)
+        self.patch_attr("self_test_voicebox_build_info", self_test_voicebox_build_info)
+        self.patch_attr("self_test_voicebox_status", self_test_voicebox_status)
+        self.patch_attr("self_test_comfyui_build_info", self_test_comfyui_build_info)
+        self.patch_attr("self_test_comfyui_status", self_test_comfyui_status)
+        original_compose_selection = main.acceptance.compose_selection_snapshot
+        main.acceptance.compose_selection_snapshot = compose_selection_snapshot
+        self.addCleanup(lambda: setattr(main.acceptance, "compose_selection_snapshot", original_compose_selection))
+
+        result = asyncio.run(main.admin_runtimes())
+
+        self.assertEqual(result["compose_readiness"]["status"], "failed")
+        self.assertEqual(result["compose_selection"]["missing_files"], ["compose.production-comfyui.yaml"])
+        self.assertEqual(result["readiness"]["status"], "failed")
+        self.assertEqual(
+            [check["name"] for check in result["lifecycle_checks"]],
+            [
+                "runtime:localai-build-info",
+                "runtime:localai-status",
+                "runtime:audio-cpu-build-info",
+                "runtime:audio-cpu-status",
+                "runtime:voicebox-build-info",
+                "runtime:voicebox-status",
+                "runtime:comfyui-build-info",
+                "runtime:comfyui-status",
+            ],
+        )
+
+    def test_runtime_unload_probe_uses_agent_dry_run(self) -> None:
+        self.patch_settings(self_test_unload_runtime="localai")
+        calls: list[dict[str, Any]] = []
+
+        async def runtime_agent_post(path: str, payload: dict[str, Any], timeout_seconds: float = 30.0) -> tuple[dict[str, Any] | None, str | None]:
+            calls.append({"path": path, "payload": payload, "timeout_seconds": timeout_seconds})
+            return {"status": "dry_run", "service": "localai", "action": "unload"}, None
+
+        self.patch_attr("runtime_agent_post", runtime_agent_post)
+
+        result = asyncio.run(main.self_test_runtime_unload())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(calls[0]["path"], "/v1/runtime-actions/localai/unload")
+        self.assertTrue(calls[0]["payload"]["dry_run"])
+
+    def test_localai_build_info_self_test_passes_for_pinned_wrapper(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "build-info",
+            "proxy_version": "b1-localai-proxy/v0.2.0",
+            "upstream": "localai/localai",
+            "upstream_version": "v4.7.1-gpu-nvidia-cuda-12",
+            "upstream_commit": "b224c96db6f4b87306a33a808650bfce63b12588",
+            "upstream_image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:" + "a" * 64,
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(localai_url="http://localai:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["upstream"], "localai/localai")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://localai:8000/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_localai_status_self_test_passes_for_guardrails_and_redacted_model_probe(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "build-info",
+            "proxy_version": "b1-localai-proxy/v0.2.0",
+            "upstream": "localai/localai",
+            "upstream_version": "v4.7.1-gpu-nvidia-cuda-12",
+            "upstream_commit": "b224c96db6f4b87306a33a808650bfce63b12588",
+            "upstream_image": "localai/localai:v4.7.1-gpu-nvidia-cuda-12@sha256:" + "a" * 64,
+            "pinned": True,
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "localai",
+            "action": "status",
+            "guardrails": {
+                "status": "ok",
+                "max_active_backends": 1,
+                "watchdog_idle": True,
+                "watchdog_idle_timeout": "5m",
+                "watchdog_interval": "1s",
+                "force_eviction_when_busy": False,
+                "blockers": [],
+            },
+            "model_probe": {"status": "ok", "upstream_status": 200, "model_count": 2},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(localai_url="http://localai:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["guardrails"]["max_active_backends"], 1)
+        self.assertEqual(result["data"]["status"]["model_probe"]["model_count"], 2)
+        self.assertNotIn("chat-secret-model", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://localai:8000/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_localai_status_self_test_fails_when_guardrail_is_relaxed(self) -> None:
+        payload = {
+            "status": "degraded",
+            "runtime": "localai",
+            "action": "status",
+            "guardrails": {
+                "status": "degraded",
+                "max_active_backends": 2,
+                "watchdog_idle": False,
+                "force_eviction_when_busy": True,
+                "blockers": ["LOCALAI_MAX_ACTIVE_BACKENDS must be 1"],
+            },
+            "model_probe": {"status": "ok", "upstream_status": 200, "model_count": 0},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+            "build_info": {},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai",))
+
+        result = asyncio.run(main.self_test_localai_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["guardrails"]["status"], "degraded")
+
+    def test_audio_cpu_build_info_self_test_passes_for_pinned_runtime(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "build-info",
+            "component": "b1-audio-cpu",
+            "runtime_version": "b1-audio-cpu/v0.1.0-b1",
+            "base_image": "python:3.12.11-slim-bookworm@sha256:" + "a" * 64,
+            "piper_release": "2023.11.14-2",
+            "piper_asset": "piper_linux_x86_64.tar.gz",
+            "piper_asset_sha256": "b" * 64,
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "smoke", "unload"], "gpu_lease_required": False},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(audio_cpu_url="http://audio-cpu:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["component"], "b1-audio-cpu")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://audio-cpu:8000/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_audio_cpu_status_self_test_passes_for_real_engines_and_redaction(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "build-info",
+            "component": "b1-audio-cpu",
+            "runtime_version": "b1-audio-cpu/v0.1.0-b1",
+            "base_image": "python:3.12.11-slim-bookworm@sha256:" + "a" * 64,
+            "piper_release": "2023.11.14-2",
+            "piper_asset": "piper_linux_x86_64.tar.gz",
+            "piper_asset_sha256": "b" * 64,
+            "pinned": True,
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "audio-cpu",
+            "action": "status",
+            "gpu_lease_required": False,
+            "capabilities": {
+                "actions": ["status", "build-info", "smoke", "unload"],
+                "operations": {"speech": True, "embeddings": True, "transcription": True},
+            },
+            "engines": {
+                "speech": {"engine": "piper", "available": True, "placeholder": False, "binary_present": True, "model_path_present": True, "config_path_present": True},
+                "embeddings": {"engine": "onnx", "available": True, "placeholder": False, "model_path_present": True, "tokenizer_path_present": True},
+                "transcription": {"engine": "vosk", "available": True, "placeholder": False, "model_path_present": True},
+            },
+            "placeholder": {"enabled": False, "operations": []},
+            "cpu_residency": {"enabled": True, "headroom": {"ok": True, "reserve_ram_gib": 6.0}},
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(audio_cpu_url="http://audio-cpu:8000", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["engines"]["speech"]["engine"], "piper")
+        self.assertNotIn("/srv/b1-ai-hub/models", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://audio-cpu:8000/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_audio_cpu_status_self_test_fails_for_scaffold_engine(self) -> None:
+        payload = {
+            "status": "degraded",
+            "runtime": "audio-cpu",
+            "action": "status",
+            "gpu_lease_required": False,
+            "capabilities": {
+                "actions": ["status", "build-info", "smoke", "unload"],
+                "operations": {"speech": True, "embeddings": True, "transcription": True},
+            },
+            "engines": {
+                "speech": {"engine": "scaffold", "available": True, "placeholder": True},
+                "embeddings": {"engine": "scaffold", "available": True, "placeholder": True},
+                "transcription": {"engine": "scaffold", "available": True, "placeholder": True},
+            },
+            "placeholder": {"enabled": True, "operations": ["speech", "embeddings", "transcription"]},
+            "cpu_residency": {"enabled": True, "headroom": {"ok": True}},
+            "build_info": {},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("audio-cpu",))
+
+        result = asyncio.run(main.self_test_audio_cpu_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["placeholder"]["operations"], ["speech", "embeddings", "transcription"])
+
+    def test_voicebox_build_info_self_test_passes_for_pinned_proxy(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "build-info",
+            "proxy": "b1-voicebox-proxy",
+            "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+            "upstream_repository": "jamiepine/voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(voicebox_url="http://voicebox:17493", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["proxy"], "b1-voicebox-proxy")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://voicebox:17493/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_voicebox_status_self_test_passes_for_process_inventory_and_redaction(self) -> None:
+        build_info = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "build-info",
+            "proxy": "b1-voicebox-proxy",
+            "proxy_version": "b1-voicebox-proxy/v0.5.0-b1",
+            "upstream_repository": "jamiepine/voicebox",
+            "upstream_version": "v0.5.0",
+            "upstream_commit": "2bcb98d1a8b6fe05e15fbc1559e3085669e4035d",
+            "source_archive_sha256": "d901d1e20f6a238830abff268ae5d8d60448b34b7ef0e65d9f0f88a10f1ee083",
+            "pinned": True,
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+        payload = {
+            "status": "ok",
+            "runtime": "voicebox",
+            "action": "status",
+            "process": {"running": True, "pid": 123, "returncode": None},
+            "active_requests": 0,
+            "model_inventory": {
+                "root_count": 1,
+                "available_root_count": 1,
+                "entry_count": 2,
+                "truncated": False,
+                "strict_model_list": False,
+            },
+            "capabilities": {
+                "actions": ["status", "build-info", "load", "warm", "smoke", "unload"],
+                "native_http_passthrough": True,
+                "native_websocket_passthrough": True,
+                "voice_profile_envelope": True,
+            },
+            "build_info": build_info,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(voicebox_url="http://voicebox:17493", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["process"]["running"], True)
+        self.assertEqual(result["data"]["status"]["model_inventory"]["entry_count"], 2)
+        self.assertNotIn("voicebox-secret-model", str(result))
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://voicebox:17493/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+
+    def test_voicebox_status_self_test_fails_when_process_is_not_running(self) -> None:
+        payload = {
+            "status": "unhealthy",
+            "runtime": "voicebox",
+            "action": "status",
+            "process": {"running": False, "pid": None, "returncode": 1},
+            "active_requests": 0,
+            "model_inventory": {"root_count": 1, "available_root_count": 1, "entry_count": 0},
+            "build_info": {},
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("voicebox",))
+
+        result = asyncio.run(main.self_test_voicebox_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["process"]["running"], False)
+
+    def test_comfyui_build_info_self_test_passes_for_pinned_runtime(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "comfyui",
+            "action": "build-info",
+            "hook": "b1-comfyui-runtime-hooks",
+            "hook_version": "b1-comfyui-hooks/v0.3.77-b1",
+            "upstream_repository": "Comfy-Org/ComfyUI",
+            "upstream_version": "v0.3.77",
+            "upstream_commit": "59afc3984868289f808d02fa5cd180edfb2de240",
+            "source_archive_sha256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1",
+            "pinned": True,
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(comfyui_url="http://comfyui:8188", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("comfyui",))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["upstream_commit"], "59afc3984868289f808d02fa5cd180edfb2de240")
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://comfyui:8188/b1/runtime/build-info")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_comfyui_build_info_self_test_fails_when_required_in_production(self) -> None:
+        payload = {"status": "unconfigured", "runtime": "comfyui", "action": "build-info", "pinned": False}
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "comfyui"))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["build_info"]["status"], "unconfigured")
+
+    def test_comfyui_build_info_self_test_is_ok_when_not_required_in_production(self) -> None:
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "audio-cpu"))
+
+        result = asyncio.run(main.self_test_comfyui_build_info())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["data"]["required"])
+        self.assertNotIn("build_info", result["data"])
+
+    def test_comfyui_status_self_test_passes_for_runtime_lifecycle_status(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "comfyui",
+            "action": "status",
+            "queue": {"running": 0, "queued": 0, "tasks_remaining": 0},
+            "memory": {"available": True, "device": "cuda:0", "loaded_model_count": 0},
+            "model_folders": {
+                "folder_count": 2,
+                "file_count": 3,
+                "folders": [
+                    {"folder": "checkpoints", "available": True, "file_count": 2},
+                    {"folder": "vae", "available": True, "file_count": 1},
+                ],
+            },
+            "build_info": {
+                "status": "ok",
+                "runtime": "comfyui",
+                "action": "build-info",
+                "hook": "b1-comfyui-runtime-hooks",
+                "hook_version": "b1-comfyui-hooks/v0.3.77-b1",
+                "upstream_repository": "Comfy-Org/ComfyUI",
+                "upstream_version": "v0.3.77",
+                "upstream_commit": "59afc3984868289f808d02fa5cd180edfb2de240",
+                "source_archive_sha256": "0758fc23e0a62202b48582fd47a59b811edc3b0e04e1c50d253332c03db4b5a1",
+                "pinned": True,
+            },
+            "capabilities": {"actions": ["status", "build-info", "load", "warm", "smoke", "unload"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, trust_env: bool) -> None:
+                self.timeout = timeout
+                self.trust_env = trust_env
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout, "trust_env": self.trust_env})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(comfyui_url="http://comfyui:8188", runtime_control_token="hook-token", runtime_deployment_mode="production", runtime_production_required=("comfyui",))
+
+        result = asyncio.run(main.self_test_comfyui_status())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["model_folders"]["file_count"], 3)
+        self.assertEqual(FakeAsyncClient.calls[0]["url"], "http://comfyui:8188/b1/runtime/status")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer hook-token")  # type: ignore[attr-defined]
+        self.assertFalse(FakeAsyncClient.calls[0]["trust_env"])  # type: ignore[attr-defined]
+
+    def test_comfyui_status_self_test_fails_when_required_in_production(self) -> None:
+        payload = {
+            "status": "ok",
+            "runtime": "comfyui",
+            "action": "status",
+            "queue": {"running": 0, "queued": 0},
+            "memory": {"available": True},
+            "model_folders": {"folder_count": 0, "file_count": 0, "folders": []},
+            "build_info": {"status": "unconfigured", "runtime": "comfyui", "action": "build-info", "pinned": False},
+            "capabilities": {"actions": ["status"]},
+        }
+
+        class FakeResponse:
+            status_code = 200
+            content = json.dumps(payload).encode("utf-8")
+
+            def json(self) -> dict[str, Any]:
+                return dict(payload)
+
+        class FakeAsyncClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *_: Any, **__: Any) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+        self.patch_settings(runtime_deployment_mode="production", runtime_production_required=("localai", "comfyui"))
+
+        result = asyncio.run(main.self_test_comfyui_status())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["required"])
+        self.assertEqual(result["data"]["status"]["build_info"]["status"], "unconfigured")
+
+    def test_tiny_inference_requires_expected_embedding_shape(self) -> None:
+        calls: list[dict[str, Any]] = []
+        resolution = main.RuntimeResolution(
+            public_alias="embedding-default",
+            model_id="b1-cpu-placeholder-embedding",
+            model_version="0.1.0",
+            resolved_model_version="b1-cpu-placeholder-embedding@0.1.0",
+            runtime="audio-cpu",
+            preferred_runtime="audio-cpu",
+            requires_gpu=False,
+            resource_label="recommended",
+            runtime_policy="any",
+        )
+
+        def resolve_catalog_alias(model: str, modality: str, runtime_policy: str = "any", operation: str | None = None) -> Any:
+            calls.append({"resolve": model, "modality": modality, "runtime_policy": runtime_policy, "operation": operation})
+            return resolution
+
+        async def call_openai_runtime_json(
+            path: str,
+            payload: dict[str, Any],
+            selected: Any,
+            operation: str,
+            owner_id: str | None = None,
+        ) -> Any:
+            calls.append({"path": path, "payload": payload, "runtime": selected.runtime, "operation": operation, "owner_id": owner_id})
+            return main.JSONResponse(content={"data": [{"embedding": [0.0] * 8}], "b1_placeholder": True})
+
+        self.patch_attr("resolve_catalog_alias", resolve_catalog_alias)
+        self.patch_attr("call_openai_runtime_json", call_openai_runtime_json)
+
+        result = asyncio.run(main.self_test_tiny_inference("admin_1"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["runtime"], "audio-cpu")
+        self.assertTrue(result["data"]["placeholder"])
+        self.assertEqual(calls[1]["payload"]["dimensions"], 8)
+        self.assertEqual(calls[1]["owner_id"], "admin_1")
+
+    def test_artifact_delivery_probe_uses_range_and_cleans_temp_file(self) -> None:
+        expected_sha256 = main.hashlib.sha256(main.ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD).hexdigest()
+        expected_etag = f'"sha256:{expected_sha256}"'
+
+        class FakeResponse:
+            status_code = 206
+            content = b"b1"
+            headers = {
+                "content-range": "bytes 0-1/31",
+                "content-length": "2",
+                "etag": expected_etag,
+                "x-checksum-sha256": expected_sha256,
+            }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, **_: Any) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "headers": headers, "timeout": self.timeout})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_root = Path(tmp)
+            self.patch_settings(artifact_root=str(artifact_root), artifact_base_url="http://artifact-server:8000", artifact_server_token="service-token")
+            result = asyncio.run(main.self_test_artifact_delivery())
+            leftovers = list((artifact_root / "temporary").glob("self-test-*.txt"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["probe_sha256"], expected_sha256)
+        self.assertEqual(result["data"]["expected_etag"], expected_etag)
+        self.assertEqual(result["data"]["response_etag"], expected_etag)
+        self.assertEqual(result["data"]["response_checksum_sha256"], expected_sha256)
+        self.assertTrue(result["data"]["etag_matches_sha256"])
+        self.assertTrue(result["data"]["checksum_matches_sha256"])
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Range"], "bytes=0-1")  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Authorization"], "Bearer service-token")  # type: ignore[attr-defined]
+        self.assertEqual(leftovers, [])
+
+    def test_artifact_delivery_probe_rejects_checksum_mismatch(self) -> None:
+        expected_sha256 = main.hashlib.sha256(main.ARTIFACT_DELIVERY_SELF_TEST_PAYLOAD).hexdigest()
+        expected_etag = f'"sha256:{expected_sha256}"'
+
+        class FakeResponse:
+            status_code = 206
+            content = b"b1"
+            headers = {
+                "content-range": "bytes 0-1/31",
+                "content-length": "2",
+                "etag": expected_etag,
+                "x-checksum-sha256": "0" * 64,
+            }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, **_: Any) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, artifact_base_url="http://artifact-server:8000", artifact_server_token="service-token")
+            result = asyncio.run(main.self_test_artifact_delivery())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["data"]["etag_matches_sha256"])
+        self.assertFalse(result["data"]["checksum_matches_sha256"])
+        self.assertEqual(result["data"]["response_checksum_sha256"], "0" * 64)
+
+    def test_artifact_delivery_probe_fails_closed_without_internal_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(artifact_root=tmp, artifact_base_url="http://artifact-server:8000", artifact_server_token="")
+            result = asyncio.run(main.self_test_artifact_delivery())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("artifact-server service token is not configured", result["detail"])
+
+    def test_tls_routing_probe_uses_configured_ca_file(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b"{}"
+            headers = {
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, verify: bool | str) -> None:
+                self.timeout = timeout
+                self.verify = verify
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                self.__class__.calls.append({"url": url, "headers": headers, "timeout": self.timeout, "verify": self.verify})
+                return FakeResponse()
+
+        FakeAsyncClient.calls = []  # type: ignore[attr-defined]
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            ca_file.write_text("test ca\n", encoding="utf-8")
+            self.patch_settings(
+                self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
+                self_test_tls_ca_file=str(ca_file),
+                self_test_tls_verify=True,
+                self_test_tls_gateway_host="",
+            )
+            result = asyncio.run(main.self_test_tls_routing())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["routes"][0]["security_headers"], "ok")
+        self.assertEqual(result["data"]["routes"][0]["route_keys"], ["api"])
+        self.assertEqual(result["data"]["expected_route_keys"], ["chat", "control", "media", "comfy", "voice", "models", "api"])
+        self.assertEqual(FakeAsyncClient.calls[0]["verify"], str(ca_file))  # type: ignore[attr-defined]
+        self.assertEqual(FakeAsyncClient.calls[0]["headers"]["Accept"], "application/json")  # type: ignore[attr-defined]
+
+    def test_tls_routing_probe_fails_without_gateway_security_headers(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            content = b"{}"
+            headers = {"X-Content-Type-Options": "nosniff"}
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: float, verify: bool | str) -> None:
+                self.timeout = timeout
+                self.verify = verify
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> FakeResponse:
+                return FakeResponse()
+
+        original_client = main.httpx.AsyncClient
+        main.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(main.httpx, "AsyncClient", original_client))
+
+        self.patch_settings(
+            self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
+            self_test_tls_verify=False,
+            self_test_tls_gateway_host="",
+        )
+
+        result = asyncio.run(main.self_test_tls_routing())
+
+        self.assertEqual(result["status"], "failed")
+        route = result["data"]["routes"][0]
+        self.assertEqual(route["security_headers"], "failed")
+        self.assertIn("missing strict-transport-security", route["header_failures"])
+
+    def test_tls_routing_probe_can_resolve_public_host_through_gateway_service(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        async def fake_gateway_probe(url: str, verify_value: bool | str) -> tuple[int, dict[str, str]]:
+            calls.append(
+                {
+                    "url": url,
+                    "verify_value": verify_value,
+                    "gateway_host": main.settings.self_test_tls_gateway_host,
+                    "gateway_port": main.settings.self_test_tls_gateway_port,
+                }
+            )
+            return (
+                200,
+                {
+                    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Frame-Options": "DENY",
+                    "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                },
+            )
+
+        self.patch_attr("self_test_gateway_tls_probe", fake_gateway_probe)
+        self.patch_settings(
+            self_test_tls_urls=("https://api.ai.b1.germering/healthz",),
+            self_test_tls_verify=False,
+            self_test_tls_gateway_host="gateway",
+            self_test_tls_gateway_port=443,
+        )
+
+        result = asyncio.run(main.self_test_tls_routing())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(calls[0]["url"], "https://api.ai.b1.germering/healthz")
+        self.assertEqual(calls[0]["gateway_host"], "gateway")
+        self.assertEqual(calls[0]["gateway_port"], 443)
+        self.assertEqual(result["data"]["gateway_connect_host"], "gateway")
+        self.assertEqual(result["data"]["gateway_connect_port"], 443)
+
+    def test_caddy_internal_ca_status_and_download_use_configured_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            content = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+            ca_file.write_bytes(content)
+            expected_digest = main.hashlib.sha256(content).hexdigest()
+            self.patch_settings(caddy_internal_ca_file=str(ca_file))
+
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            response = asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "ok")
+        self.assertTrue(status["available"])
+        self.assertEqual(status["sha256"], expected_digest)
+        self.assertEqual(status["download_url"], "/admin/tls/caddy-ca/root.crt")
+        self.assertEqual(status["bootstrap_download_url"], "/.well-known/b1-ai-hub/caddy-root.crt")
+        self.assertEqual(status["fingerprint_sha256"], ":".join(expected_digest[index : index + 2].upper() for index in range(0, 64, 2)))
+        self.assertEqual(response.body, content)
+        self.assertEqual(response.media_type, "application/x-x509-ca-cert")
+        self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
+        self.assertIn("b1-ai-hub-caddy-root.crt", response.headers["content-disposition"])
+
+    def test_caddy_internal_ca_bootstrap_download_is_public_and_hash_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            content = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
+            ca_file.write_bytes(content)
+            expected_digest = main.hashlib.sha256(content).hexdigest()
+            self.patch_settings(caddy_internal_ca_file=str(ca_file))
+
+            response = asyncio.run(main.caddy_internal_ca_bootstrap_download())
+
+        self.assertEqual(response.body, content)
+        self.assertEqual(response.media_type, "application/x-x509-ca-cert")
+        self.assertEqual(response.headers["x-b1-sha256"], expected_digest)
+        self.assertEqual(response.headers["cache-control"], "public, no-store")
+
+    def test_caddy_internal_ca_self_test_passes_when_internal_root_is_exportable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "root.crt"
+            ca_file.write_bytes(b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(ca_file), runtime_deployment_mode="production")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["name"], "tls:caddy-ca")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["required"])
+        self.assertTrue(result["data"]["available"])
+
+    def test_caddy_internal_ca_self_test_warns_missing_root_in_development(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(Path(tmp) / "missing.crt"), runtime_deployment_mode="development")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("development mode permits bootstrapping only", result["detail"])
+        self.assertFalse(result["data"]["available"])
+
+    def test_caddy_internal_ca_self_test_fails_missing_root_in_production(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_tls_args="internal", caddy_internal_ca_file=str(Path(tmp) / "missing.crt"), runtime_deployment_mode="production")
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("has not been generated", result["detail"])
+
+    def test_caddy_internal_ca_self_test_passes_when_external_certs_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(
+                caddy_tls_args="/etc/caddy/external-certs/fullchain.pem /etc/caddy/external-certs/privkey.pem",
+                caddy_internal_ca_file=str(Path(tmp) / "missing.crt"),
+                runtime_deployment_mode="production",
+            )
+            result = asyncio.run(main.self_test_caddy_internal_ca())
+            status = result["data"]
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(status["status"], "not_required")
+        self.assertFalse(status["required"])
+        self.assertFalse(status["available"])
+
+    def test_caddy_internal_ca_download_refuses_missing_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_settings(caddy_internal_ca_file=str(Path(tmp) / "missing-root.crt"))
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "missing")
+        self.assertFalse(status["available"])
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_caddy_internal_ca_download_refuses_symlink_root(self) -> None:
+        self.patch_auth({"admin:read"})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.crt"
+            target.write_text("target ca\n", encoding="utf-8")
+            link = Path(tmp) / "root.crt"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            self.patch_settings(caddy_internal_ca_file=str(link))
+            status = asyncio.run(main.admin_caddy_internal_ca_status(authorization="Bearer key"))
+            with self.assertRaises(main.HTTPException) as raised:
+                asyncio.run(main.admin_caddy_internal_ca_root(authorization="Bearer key"))
+
+        self.assertEqual(status["status"], "blocked")
+        self.assertTrue(status["symlink"])
+        self.assertFalse(status["available"])
+        self.assertEqual(raised.exception.status_code, 409)
+
+
+if __name__ == "__main__":
+    unittest.main()

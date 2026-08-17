@@ -1,0 +1,84 @@
+{
+  "id": "b1-piper-en-us-amy-low",
+  "version": "v1.0.0",
+  "display_name": "Piper en_US Amy Low",
+  "description": "Small local CPU Piper voice for fast LAN-internal TTS. This is a catalog recommendation only; install it through Model Hub before assigning it to tts-fast.",
+  "modality": "tts",
+  "operations": ["text-to-speech"],
+  "source": {
+    "type": "huggingface",
+    "url": "https://huggingface.co/rhasspy/piper-voices",
+    "revision": "v1.0.0"
+  },
+  "files": [
+    {
+      "path": "en/en_US/amy/low/en_US-amy-low.onnx",
+      "sha256": "a5a91abb7de0f104358a25aded480ddacf1ff0762886325886ec406a2e86aab3",
+      "size_bytes": 63104526,
+      "format": "onnx",
+      "quantization": "low"
+    },
+    {
+      "path": "en/en_US/amy/low/en_US-amy-low.onnx.json",
+      "sha256": "2250a9a605b8dc35a116717fadc5056695dd809e34a15d02f72a0f52d53d3ebb",
+      "size_bytes": 4164,
+      "format": "piper-config",
+      "quantization": "none"
+    }
+  ],
+  "runtimes": ["audio-cpu"],
+  "preferred_runtime": "audio-cpu",
+  "resource_estimate": {
+    "vram_gib": 0,
+    "ram_gib": 0.6,
+    "disk_gib": 0.07,
+    "context_tokens": 0
+  },
+  "license": {
+    "name": "MIT",
+    "url": "https://huggingface.co/rhasspy/piper-voices",
+    "redistribution": "downloadable",
+    "attribution": "Rhasspy Piper voices; en_US Amy low model card notes the Mimic3 voices dataset source.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["tts-fast"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-07-23T03:35:00+00:00",
+    "source": "local docker smoke on b1-ai-hub-audio-cpu:piper-check",
+    "original_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.6,
+      "disk_gib": 0.07,
+      "context_tokens": 0
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 0,
+      "ram_gib": 0.6,
+      "disk_gib": 0.07,
+      "context_tokens": 0
+    },
+    "runs": [
+      {
+        "id": "piper-amy-low-local-smoke-20260723",
+        "type": "catalog-smoke",
+        "status": "ok",
+        "runtime": "audio-cpu",
+        "model_alias": "tts-fast",
+        "resolved_model_version": "b1-piper-en-us-amy-low@v1.0.0",
+        "peak_vram_mib": 0,
+        "hook": {
+          "audio_format": "wav",
+          "channels": 1,
+          "sample_rate_hz": 16000,
+          "audio_seconds": 3.176,
+          "output_bytes": 101676,
+          "test_prompt": "B1 AI Hub local speech test."
+        }
+      }
+    ]
+  }
+}

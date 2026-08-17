@@ -1,0 +1,128 @@
+{
+  "id": "text-to-video",
+  "version": "0.1.0",
+  "display_name": "Text to Video",
+  "description": "Runnable experimental 6 GB starter workflow. It generates a tiny SD 1.5 image batch and packages the frames as an animated GIF; install a true temporal video model before treating this as quality video generation.",
+  "modality": "video",
+  "operation": "generation",
+  "model_alias": "video-text",
+  "backend_policy": "comfyui-only",
+  "runtime_policy": "any",
+  "output_mime_types": ["image/gif"],
+  "workflow_json": {
+    "3": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "sd-v1-5-pruned-emaonly-b1-video.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "{{prompt}}",
+        "clip": ["3", 1]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "{{negative_prompt}}",
+        "clip": ["3", 1]
+      }
+    },
+    "6": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": "{{width}}",
+        "height": "{{height}}",
+        "batch_size": "{{frames}}"
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": "{{seed}}",
+        "steps": "{{steps}}",
+        "cfg": "{{cfg}}",
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "denoise": 1.0,
+        "model": ["3", 0],
+        "positive": ["4", 0],
+        "negative": ["5", 0],
+        "latent_image": ["6", 0]
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["7", 0],
+        "vae": ["3", 2]
+      }
+    },
+    "9": {
+      "class_type": "B1RuntimeSaveAnimatedGif",
+      "inputs": {
+        "images": ["8", 0],
+        "filename_prefix": "b1-media-studio/text-to-video",
+        "fps": "{{fps}}",
+        "max_frames": "{{frames}}",
+        "loop": true
+      }
+    }
+  },
+  "input_schema": {
+    "type": "object",
+    "required": ["prompt"],
+    "properties": {
+      "prompt": { "type": "string", "minLength": 1, "maxLength": 2000 },
+      "negative_prompt": { "type": "string", "maxLength": 2000, "default": "text, watermark, blurry, low quality" },
+      "width": { "type": "integer", "minimum": 128, "maximum": 256, "default": 192 },
+      "height": { "type": "integer", "minimum": 128, "maximum": 256, "default": 192 },
+      "frames": { "type": "integer", "minimum": 1, "maximum": 4, "default": 4 },
+      "fps": { "type": "integer", "minimum": 1, "maximum": 8, "default": 4 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 6, "default": 3 },
+      "cfg": { "type": "number", "minimum": 1, "maximum": 8, "default": 4.5 },
+      "seed": { "type": "integer", "minimum": 0, "default": 0 }
+    },
+    "additionalProperties": false
+  },
+  "presets": [
+    {
+      "id": "tiny-sequence",
+      "display_name": "Tiny Sequence",
+      "description": "Four 192 px frames for proving local scheduling and artifact delivery on 6 GB VRAM.",
+      "values": {
+        "prompt": "four colorful geometric animation frames, clean composition, simple motion",
+        "negative_prompt": "text, watermark, blurry, low quality",
+        "width": 192,
+        "height": 192,
+        "frames": 4,
+        "fps": 4,
+        "steps": 3,
+        "cfg": 4.5,
+        "seed": 20260726
+      }
+    }
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "videos": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "resource_class": "rtx3060-laptop-6gb-32gb",
+  "dependencies": [
+    { "type": "runtime", "id": "comfyui" },
+    { "type": "model", "id": "video-text" }
+  ],
+  "limits": {
+    "max_width": 256,
+    "max_height": 256,
+    "max_frames": 4,
+    "max_steps": 6,
+    "max_batch_size": 1,
+    "max_duration_seconds": 1
+  },
+  "visibility_roles": ["admin", "operator", "creator", "service"]
+}

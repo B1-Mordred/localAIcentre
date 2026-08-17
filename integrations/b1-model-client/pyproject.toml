@@ -1,0 +1,9 @@
+[project]
+name = "b1-model-client"
+version = "0.1.0"
+description = "Synchronise permitted B1 AI Hub model blobs into a local cache."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+b1-model-client = "b1_model_client.__main__:main"

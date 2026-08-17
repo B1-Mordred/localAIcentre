@@ -1,0 +1,817 @@
+# API
+
+The unified API is served at `https://api.ai.b1.germering/`.
+
+Implemented scaffold endpoints:
+
+```text
+GET  /auth/status
+POST /auth/setup
+POST /auth/login
+POST /auth/logout
+GET  /admin/status
+GET  /admin/metrics
+GET  /admin/metrics.prometheus
+GET  /admin/admission
+GET  /admin/admission-policy
+POST /admin/admission-policy/validate
+PUT  /admin/admission-policy
+DELETE /admin/admission-policy
+GET  /admin/network-policy
+POST /admin/network-policy/validate
+PUT  /admin/network-policy
+DELETE /admin/network-policy
+GET  /admin/maintenance
+PUT  /admin/maintenance
+GET  /admin/updates
+POST /admin/updates
+GET  /admin/updates/{update_id}
+POST /admin/updates/{update_id}/stage
+POST /admin/updates/{update_id}/promote
+POST /admin/updates/{update_id}/health-check
+POST /admin/updates/{update_id}/rollback
+GET  /admin/api-clients
+POST /admin/api-clients
+PUT  /admin/api-clients/{client_id}/cidr-allowlist
+DELETE /admin/api-clients/{client_id}
+GET  /admin/scheduler/lease
+POST /admin/scheduler/lease
+GET  /admin/runtime-reservations
+GET  /admin/runtimes
+POST /admin/runtimes/{runtime}/recover
+POST /admin/runtimes/{runtime}/unload
+GET  /admin/voicebox/profile-policy
+GET  /admin/voicebox/profiles
+POST /admin/voicebox/sample-artifacts
+POST /admin/voicebox/sample-artifacts/retention-plan
+POST /admin/voicebox/sample-artifacts/cleanup
+POST /admin/voicebox/profiles
+GET  /admin/voicebox/profiles/{profile_id}
+PATCH /admin/voicebox/profiles/{profile_id}
+POST /admin/voicebox/profiles/{profile_id}/export
+DELETE /admin/voicebox/profiles/{profile_id}
+GET  /admin/self-test
+GET  /admin/scheduler/reconciliation
+GET  /admin/acceptance-reports
+POST /admin/acceptance-reports
+GET  /admin/acceptance-reports/{report_id}
+GET  /admin/migration/open-webui-plan
+POST /admin/migration/open-webui-plan
+GET  /admin/migration/rollback-rehearsal
+POST /admin/migration/rollback-rehearsal
+GET  /admin/migration/backup-migration-rollback-evidence
+POST /admin/migration/backup-migration-rollback-evidence
+GET  /admin/audit-log
+POST /admin/artifacts/retention-plan
+POST /admin/artifacts/cleanup
+POST /admin/models/quarantine/retention-plan
+POST /admin/models/quarantine/cleanup
+GET  /admin/jobs
+GET  /admin/jobs/{job_id}
+GET  /admin/jobs/{job_id}/events
+POST /admin/jobs/{job_id}/priority
+POST /admin/jobs/{job_id}/cancel
+POST /admin/jobs/{job_id}/retry
+GET  /admin/models
+POST /admin/models/install-plan
+POST /admin/models/manifest-draft/huggingface-gguf
+POST /admin/models/download-plan
+GET  /admin/models/downloads
+GET  /admin/models/downloads/{download_id}
+POST /admin/models/downloads
+DELETE /admin/models/downloads/{download_id}
+POST /admin/models/downloads/{download_id}/pause
+POST /admin/models/downloads/{download_id}/resume
+POST /admin/models/downloads/{download_id}/retry
+POST /admin/models/install
+POST /admin/models/quarantine/retention-plan
+POST /admin/models/quarantine/cleanup
+DELETE /admin/models/{id}/versions/{version}
+GET  /admin/models/{id}/versions/{version}/blob-quarantine-plan
+POST /admin/models/{id}/versions/{version}/blobs/quarantine
+GET  /admin/comfyui/node-pins
+POST /admin/comfyui/node-pins
+PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}
+GET  /workflows/v1/published
+GET  /workflows/v1/published/{id}
+GET  /workflows/v1/published/{id}/versions
+GET  /workflows/v1/published/{id}/versions/{version}
+POST /workflows/v1/validate
+POST /workflows/v1/test
+POST /workflows/v1/published
+POST /workflows/v1/published/{id}/versions/{version}/restore
+DELETE /workflows/v1/published/{id}/versions/{version}
+GET  /v1/models
+GET  /v1/tools
+POST /v1/open-webui/chat/cancel
+POST /v1/chat/completions
+POST /v1/responses
+POST /v1/embeddings
+POST /v1/audio/speech
+POST /v1/audio/transcriptions
+POST /v1/images/generations
+POST /v1/images/edits
+POST /v1/media/uploads
+POST /v1/media/jobs
+GET  /v1/media/jobs
+GET  /v1/media/jobs/{job_id}
+DELETE /v1/media/jobs/{job_id}
+GET  /v1/media/jobs/{job_id}/events
+GET  /v1/media/jobs/{job_id}/artifacts
+GET  /artifacts/{artifact_path}
+HEAD /artifacts/{artifact_path}
+POST /v1/runtime-reservations
+GET  /v1/runtime-reservations/{id}
+DELETE /v1/runtime-reservations/{id}
+GET  /modelhub/v1/catalog
+GET  /modelhub/v1/models/{id}
+GET  /modelhub/v1/models/{id}/versions
+GET  /modelhub/v1/blobs/{sha256}
+HEAD /modelhub/v1/blobs/{sha256}
+POST /modelhub/v1/sync/plan
+GET  /modelhub/v1/clients
+POST /modelhub/v1/clients
+PUT  /modelhub/v1/clients/{id}/cidr-allowlist
+PUT  /modelhub/v1/clients/{id}/policy
+DELETE /modelhub/v1/clients/{id}
+```
+
+## Self-Test and Metrics
+
+The web UIs use the generated TypeScript client committed at
+`web/control-center/src/generated/b1-api-client.ts` and
+`web/media-studio/src/generated/b1-api-client.ts`. Regenerate it after OpenAPI
+changes with `make openapi-client`; CI and `make validate` run
+`make openapi-client-check` to catch drift.
+
+`GET /admin/self-test` requires `admin:read` and returns an overall `ok`, `degraded`, or `failed` status plus individual checks for PostgreSQL, Redis, storage permissions, runtime health, runtime production-readiness, runtime-agent status, runtime-agent service inventory, runtime-agent metrics, GPU metric availability, TLS gateway routing and Caddy security headers, ComfyUI runtime build identity, a tiny embedding inference, runtime-agent unload capability, and artifact-server Range delivery with SHA-256 `ETag` and checksum-header proof.
+
+`GET /admin/metrics?limit=500` requires `admin:read` and returns the lightweight in-app observability report used by the Dashboard. It combines durable PostgreSQL job records, scheduler ownership, runtime state rows, and runtime-agent telemetry into queue depth/wait summaries, recent completed/failed/cancelled job counts, load/run-time summaries, peak RAM/VRAM summaries, model-switch counts from started jobs, active runtime status, host memory/storage, and normalized GPU utilization, temperature, power, and memory values. The endpoint remains reachable when runtime-agent metrics are unavailable; the response then sets `runtime_agent.available=false` and includes the error instead of failing the dashboard.
+
+`GET /admin/metrics.prometheus?limit=500` requires the same `admin:read` scope or the bootstrap-generated metrics-only bearer token from `B1_PROMETHEUS_SCRAPE_TOKEN_FILE`. It returns the same observability snapshot as Prometheus text exposition with `text/plain; version=0.0.4`. It exposes queue depth/waits by state and priority, recent job outcome/load/run/resource summaries, model switches, runtime-state counts, runtime-agent availability, GPU telemetry, host memory/swap, CPU load, and configured storage counters. Labels are restricted to operational categories such as state, priority, runtime, status, stage, and summary statistic; prompts, model identifiers, owner IDs, job IDs, artifacts, paths, and credentials are not emitted as labels. The scrape token is not accepted by `GET /admin/metrics` or other JSON/admin APIs.
+
+`GET /admin/admission` requires `admin:read` and returns the current admission policy, queue counters, artifact-storage headroom, and hardware/resource-policy verdict used before accepting new media jobs, native ComfyUI prompts, uploads, runtime reservations, or synchronous GPU inference. The optional `owner_id` query parameter is restricted to administrators and operators; other authenticated subjects receive their own counters. `/admin/status` embeds the authenticated subject's same admission report for Dashboard display and includes `acceptance_model_measurements`, the same required handoff alias coverage object returned by `/admin/models`, so the first Dashboard screen can show whether LocalAI, RTX GPU, and installed-workflow model-smoke measurements are already persisted.
+
+Runtime production-readiness is controlled by `B1_RUNTIME_DEPLOYMENT_MODE` and `B1_RUNTIME_PRODUCTION_REQUIRED`. In `development` mode, placeholders or unhealthy required runtimes create a warning. In `production` mode, they fail the self-test so cutover cannot treat mock LocalAI, mock ComfyUI, mock Voicebox, scaffold CPU audio, or runtime-agent service containers labelled or imaged as placeholders as accepted production backends.
+
+Stable acceptance-oriented check names include `database`, `redis`, `runtimes`, `runtime-agent:status`, `runtime-agent:mutation-guard`, `runtime-agent:metrics`, `gpu:nvml`, `hardware:resource-policy`, `tls:caddy-ca`, `tls:routing`, `runtime:localai-build-info`, `runtime:localai-status`, `runtime:audio-cpu-build-info`, `runtime:audio-cpu-status`, `runtime:voicebox-build-info`, `runtime:voicebox-status`, `runtime:comfyui-build-info`, `runtime:comfyui-status`, `inference:tiny`, `workflows:starter-readiness`, `runtime-agent:unload`, and `artifact:delivery`. The hardware policy check compares runtime-agent GPU/RAM metrics against the effective scheduler resource policy and configured reserves; production handoff requires it to be `ok`. The Caddy CA check verifies that the internal LAN root is exportable when `B1_CADDY_TLS_ARGS=internal`; with externally supplied certificates it records `status=not_required` as an `ok` check. The LocalAI build-info check calls the authenticated internal runtime hook and fails in production when LocalAI is required but the live wrapper does not report the B1 proxy version, pinned upstream LocalAI commit, and digest-pinned upstream image. The LocalAI status check verifies the one-backend guardrails, idle watchdog policy, redacted model-count probe, lifecycle capability list, and nested pinned build metadata. The audio-cpu build-info check calls the authenticated internal runtime hook and fails in production when `audio-cpu` is required but the live runtime does not report the B1 runtime version, digest-pinned base image, and checksum-pinned Piper asset metadata. The audio-cpu status check verifies no GPU lease requirement, real non-placeholder Piper speech, ONNX embeddings, and Vosk transcription capability, redacted model probes, CPU residency headroom, and nested pinned build metadata. The Voicebox build-info check calls the authenticated internal runtime hook and fails in production when Voicebox is required but the live proxy does not report the B1 proxy version, pinned upstream repository, upstream commit, and source archive SHA-256. The Voicebox status check verifies the managed upstream process, active native request count, redacted model-inventory counts, lifecycle capabilities, and nested pinned build metadata. The ComfyUI build-info check calls the authenticated internal runtime hook and fails in production when ComfyUI is required but the live runtime does not report the B1 hook package, a pinned upstream commit, and a source archive SHA-256. The ComfyUI status check calls the authenticated internal lifecycle hook and fails in production when ComfyUI is required but the runtime does not report queue counts, memory availability, model-folder counts, lifecycle capabilities, and pinned build metadata. The starter workflow check verifies that every Media Studio starter workflow is seeded and that the CPU TTS/STT starters are published, dependency-ready, non-placeholder, non-Comfy, and routed to `audio-cpu`; GPU image/video starters may remain visible as `needs_dependencies` until validated model/workflow dependencies are installed. The TLS routing check fails if a configured HTTPS route is unreachable, returns an error status, or omits the expected Caddy security headers. The unload check uses `dry_run=true`, so it proves the authenticated runtime-agent path without restarting containers. The artifact delivery check requires a `206` Range response whose returned bytes, `ETag: "sha256:<digest>"`, and `X-Checksum-SHA256` match the self-test probe content.
+
+`GET /admin/tls/caddy-ca` requires `admin:read` and returns the configured Caddy internal root certificate status: path, regular-file/symlink verdict, byte count, modified time, SHA-256, colon-formatted SHA-256 fingerprint, public-host map, blockers, and `download_url` when export is safe. `GET /admin/tls/caddy-ca/root.crt` requires the same scope and returns the root certificate as `application/x-x509-ca-cert` with `Content-Disposition`, `ETag`, and `X-B1-SHA256` headers. The control plane opens the configured `B1_CADDY_INTERNAL_CA_FILE` as a bounded regular file, refuses symlinks/non-regular files, and does not accept a path from the browser.
+
+`GET /admin/scheduler/reconciliation` requires `runtimes:read` and returns the current control-plane start timestamp, required runner inventory, a native ComfyUI prompt reattachment summary, plus enabled CPU, GPU, and model-download runner startup reconciliation records. Each enabled job runner records whether startup reconciliation completed, its start/completion timestamps, which runtime names it covered, how many interrupted `waiting_for_gpu` jobs were requeued, how many active preparation/execution jobs were marked `recovery_required`, and bounded sampled job IDs for each nonzero job action. Native ComfyUI compatibility jobs that already persisted a native `prompt_id` are reattached before the generic GPU sweep and are counted under `comfyui_native_prompt_resume`. When the model-download runner is enabled, the same report includes resumable interrupted downloads requeued from `running`, downloads settled from `pausing` to `paused`, downloads settled from `cancelling` to `cancelled`, and bounded sampled download IDs for those actions. The restart reconciliation acceptance evidence records the API status, required CPU/GPU runner presence, missing required runner list, record count, and runner timestamp windows so the final report can prove reconciliation happened after the operator's captured pre-restart timestamp.
+
+`POST /admin/acceptance-reports` requires administrator `admin:write`, reruns the same self-test, snapshots `GET /admin/metrics`, the effective resource policy, admission headroom, maintenance state, scheduler lease, runtime state rows, active runtime reservations, runtime-agent `/v1/services` deployment inventory, recent controlled-update records, repository deployment-pin manifest integrity, available source commit metadata, current database model-smoke coverage for the required handoff alias groups, submitted operator evidence, the latest supported direct-child `$B1_BACKUP_ROOT/acceptance/*.json` repository quality, live stack smoke, live GPU, LocalAI runtime, installed workflow, native ComfyUI compatibility, remote-node compatibility, Model Hub client sync, Voicebox remote compatibility, deployed security, restart reconciliation, and backup/migration/rollback evidence files, and the latest supported direct-child `$B1_BACKUP_ROOT/cutover-plan*.json` preservation summary, then writes a JSON report, Markdown handoff report, and `SHA256SUMS` under `$B1_BACKUP_ROOT/acceptance/<report_id>/`. Evidence ingestion ignores symlinked, non-regular, nested, oversized, or unsupported JSON files. `GET /admin/acceptance-reports` lists summaries and `GET /admin/acceptance-reports/{report_id}` returns the stored report. A report is marked `operator_handoff_ready=true` only when the self-test is `ok`, `tls:caddy-ca` is `ok`, LocalAI build-info/status self-tests are `ok` when LocalAI is production-required, audio-cpu build-info/status self-tests are `ok` when `audio-cpu` is production-required, Voicebox build-info/status self-tests are `ok` when Voicebox is production-required, ComfyUI build-info/status self-tests are `ok` when ComfyUI is production-required, `tls:routing` contains successful HTTPS/Caddy-header route evidence for the configured chat, control, media, ComfyUI, Voicebox, Model Hub, and API hosts, runtime deployment mode is `production`, runtime production-readiness is `ok`, GPU/NVML evidence is present and healthy, hardware resource-policy evidence is present and healthy, deployment image evidence is available, deployment-pin manifest integrity is clean, source-control evidence includes a valid 40-character commit, stamped live-evidence source metadata is clean and matches that commit, repository-quality evidence reports a clean source tree for the same commit with `quality_container` and `secret_scan` coverage plus passed per-coverage result summaries, `model_measurement_coverage.status` is `ok` for all required LocalAI, RTX GPU, and installed-workflow aliases and expected runtimes, every required operator-evidence item is checked, the live stack smoke evidence file reports `status=ok` with health, authenticated model listing, async TTS completion, non-placeholder TTS artifact proof, terminal SSE state, artifact download, and artifact metadata checks, the live RTX evidence file reports `status=ok` with required cross-runtime checks, combined LocalAI -> ComfyUI -> Voicebox switch proof, non-tiny ComfyUI prompt metadata, native prompt ID, verified B1 artifact downloads from the ComfyUI leg, and persisted model-smoke measurements for every selected GPU alias, the LocalAI runtime evidence file reports `status=ok` with streamed chat, single-backend, confirmed unload, and a persisted model-smoke measurement for the selected chat alias, the installed workflow evidence file reports `status=ok` with chat, non-placeholder TTS/STT proof, CPU-audio no-GPU-lease proof, image generation, image edit, short-video checks, and persisted model-smoke measurements for every alias used by those checks, the native ComfyUI evidence file reports `status=ok` with non-tiny prompt metadata, required REST/WebSocket checks, `Idempotency-Key` prompt replay, B1 durable job lookup, redacted native summary observability, and B1 artifact listing/download present, the remote-node non-Comfy evidence file reports `status=ok` with server-side ComfyUI stop action, runtime-agent stopped-state verification before and after execution, full node-surface registration with example-workflow coverage, model listing, alias selection, credential-externalization, non-placeholder non-Comfy TTS, and file-backed artifact-download checks present, the Model Hub client evidence file reports `status=ok` with `HEAD` metadata, `If-None-Match`/304 revalidation, range/resume, cache, prune, and inference-only checks present, the Voicebox evidence file reports `status=ok` with native HTTP, profile lifecycle, reference-sample artifact protection, profile export, delete audit, speech-or-limitation, and WebSocket-or-limitation checks present, the security evidence file reports `status=ok` with unauthenticated, under-scoped, CORS, CSRF, ComfyUI route-policy, loopback/link-local/private/plain-HTTP import rejection, traversal, artifact authorization, runtime-agent mutation-guard, arbitrary runtime/log-service rejection, and log-redaction checks present, the restart reconciliation evidence file reports `status=ok` with control-plane restart timestamps, CPU/GPU runner runtime coverage, observed/minimum recovery counts, sampled interrupted durable job IDs, waiting-job requeue, active-job recovery-required, and reattached native ComfyUI durable job/native prompt ID samples present, the backup/migration/rollback evidence file reports `status=ok` with B1 backup creation/verification, B1 restore rehearsal, old-stack inventory review, old-stack backup verification, Open WebUI migration-plan review, cutover-plan review, rollback rehearsal, and old-resource preservation checks present, and the cutover plan lists preserved rollback resources with verified old-stack backup evidence, accepted core DNS readiness, accepted target-host identity readiness with B1 appliance-config hostname authority, accepted host DHCP/networking readiness with DHCP-owned network properties, accepted hardware readiness, accepted GPU container runtime readiness, ready runtime-agent Docker socket group access, resolved Open WebUI preservation, and no unresolved cutover warnings. Required operator evidence covers live stack smoke, RTX 3060 acceptance, installed-model chat/TTS/STT/image/video validation plus CPU-audio GPU-lease isolation, native ComfyUI compatibility, remote-node non-Comfy execution with verified server-side ComfyUI stopped state before and after execution, node-surface coverage, non-placeholder TTS proof, and local artifact integrity, Model Hub sync, Voicebox remote/server validation or documented pinned-upstream limitation, backup verification, restore rehearsal, migration/cutover review, restart reconciliation, rollback rehearsal with old resources preserved, and security review. The deployment inventory includes service image references plus resolved Docker image IDs when runtime-agent can read the Docker API; recent update records preserve digest-pinned image refs used for controlled promotion.
+
+RTX 3060 live GPU evidence includes a deeper residency proof than the required-check list alone shows. The report validates each LocalAI, ComfyUI, and Voicebox `after_runtime_state` block against the full managed GPU runtime state rows, validates the ordered combined `runtime_state_sequence`, requires labelled readiness and per-switch VRAM samples, and rejects active-runtime counts or reported active lists that disagree with the persisted state.
+
+Voicebox remote compatibility includes a deeper identity check than the required-check list alone shows. The report validates live `/b1/runtime/build-info` proof for the B1 proxy version, upstream repository/version/commit, and source archive SHA-256, then requires native HTTP, speech, and WebSocket evidence or pinned-upstream limitations to carry the same identity fields. Profile evidence must also tie the protected sample through upload, fetched profile, export, and audit records with matching sample ID, internal URL, byte count, SHA-256, MIME type, and redacted audit metadata.
+
+Model Hub client compatibility also includes a deeper cache-integrity check than the required-check list alone shows. The report validates the planned blob SHA-256 and size against `HEAD`, `If-None-Match`, and resumed-download evidence, then requires the final managed cache file to prove its SHA-256, size, cache-relative `blobs/{sha256}` path, regular-file/non-symlink status, removed `.partial` staging file, managed-state entry SHA-256 and size, and POSIX private modes when the evidence host can check them.
+
+Deployed security acceptance also includes a detailed proof summary. The report validates expected rejection HTTP statuses, rejected import policy cases and hosts, authorized artifact `206` range-read byte/hash/header metadata plus denial statuses, runtime-agent mTLS/auth/rate-limit posture, and log-redaction markers before setting `security_evidence_ready=true`.
+
+Backup/migration/rollback acceptance also includes a detailed proof summary. The report validates B1 backup file counts, PostgreSQL dump coverage, B1 and old-stack archive SHA-256 values, alternate-restore file counts, Open WebUI backed-up readable account/chat/settings/document domains, cutover DNS/networking/hardware/GPU-runtime/runtime-agent readiness, preserved rollback containers/systemd services/volumes/host paths with matching resource-set SHA-256, and rollback rehearsal cutover-plan SHA-256 plus rollback action SHA-256 and command/action counts before setting `backup_migration_rollback_evidence_ready=true`.
+
+Live smoke handoff evidence requires every artifact returned by the async TTS job to be proven, not only the first one. The harness records `artifact_count`, `verified_artifact_count`, total downloaded bytes, and `artifact_proofs[]` entries with stored bytes/SHA-256/MIME metadata plus authenticated download `Content-Length`, `ETag`, `Accept-Ranges`, byte count, and SHA-256. Acceptance reports reject smoke evidence where any returned artifact lacks a proof entry or where placeholder markers appear on any TTS artifact.
+
+Installed-workflow handoff evidence requires the `media_artifacts_verified` check. The live harness records every artifact returned by image generation, image edit, and short video jobs, then compares each artifact's stored `bytes`, `sha256`, `mime_type`, authenticated download `Content-Length`, `ETag`, `Accept-Ranges`, downloaded byte count, and downloaded SHA-256 before marking the aggregate check `ok`. Acceptance reports reject evidence where `verified_artifact_count` is lower than the job's returned `artifact_count`, so multi-output workflows cannot pass after checking only the first artifact.
+
+`GET /admin/migration/open-webui-plan` returns readiness for the Open WebUI preservation plan: latest valid direct-child old-stack `inventory*.json`, old-stack backup directory, fixed restore-test target, and current generated `open-webui-migration-plan*.json` under `$B1_BACKUP_ROOT`. `POST /admin/migration/open-webui-plan` requires administrator `admin:write`, verifies the selected old-stack backup, writes only a generated `$B1_BACKUP_ROOT/open-webui-migration-plan-*.json`, and audits the selected strategy and warning count. The plan includes `open_webui.data_domains.all_readable` and `open_webui.data_domains.backed_up_readable` summaries for account, chat, settings, document/RAG, model/prompt/tool, and feedback tables so operators can verify preservation coverage without exposing row contents. It does not read Open WebUI row contents, import data, modify the old stack, or accept arbitrary host paths.
+
+`GET /admin/migration/rollback-rehearsal` returns the latest generated `cutover-plan*.json` status and the current `$B1_BACKUP_ROOT/rollback-rehearsal.json` status, including preserved-resource counts, resource-set SHA-256, and rollback-action SHA-256 when available. `POST /admin/migration/rollback-rehearsal` requires administrator `admin:write`, accepts only a generated cutover-plan file name under `$B1_BACKUP_ROOT`, requires explicit `rollback_commands_tested=true` and `old_resources_preserved=true`, and writes a fixed `rollback-rehearsal.json` report with the cutover-plan SHA-256 plus rollback-action and preserved-resource fingerprints. It writes atomically with private `0600` permissions and symlink refusal. It does not execute rollback commands or accept arbitrary host paths.
+
+`GET /admin/migration/backup-migration-rollback-evidence` returns readiness for the final backup/migration/rollback evidence bundle: latest valid B1 backup, matching restore report, old-stack inventory, old-stack backup, Open WebUI migration plan, cutover plan, rollback rehearsal report, and current output file. `POST /admin/migration/backup-migration-rollback-evidence` requires administrator `admin:write` and `confirm_reviewed=true`, verifies the selected artifacts, requires the cutover plan's core DNS readiness, host DHCP/networking readiness, hardware readiness, GPU container runtime readiness, runtime-agent Docker socket readiness, and Open WebUI preservation readiness to be accepted, carries the Open WebUI table-domain coverage into the final check records, verifies the rollback rehearsal's action/resource fingerprints against the selected cutover plan, and writes only `$B1_BACKUP_ROOT/acceptance/backup-migration-rollback.json`. The output is atomic, private `0600`, and symlink-refusing. The endpoint auto-selects known artifacts from configured roots and never accepts arbitrary host paths.
+
+Native ComfyUI compatibility evidence includes `/object_info`, `/object_info/{node}`, `/system_stats`, `/models`, `/queue`, `/upload/image`, `/upload/mask`, `POST /prompt`, same-body `Idempotency-Key` replay returning the native `prompt_id`, `/ws`, `/history`, `/history/{prompt_id}`, non-destructive `POST /queue` deletion and targeted `POST /interrupt` after completion, every stored B1 artifact returned for the durable job, and `/view` retrieval for every generated image, video, GIF, or audio artifact returned by native history.
+
+The runtime-agent internal `GET /v1/metrics` endpoint is protected by the internal runtime-agent mTLS channel and bearer token, and returns CPU/load, host memory/swap, configured disk paths, and GPU telemetry from `nvidia-smi` when available. It does not accept command, path, or device parameters from callers.
+
+`GET /admin/services/{service}/logs?lines=100` requires `runtimes:read` and administrator or operator role. `service` is restricted to the B1 services exposed by the runtime-agent log allowlist: `control-plane`, `localai`, `comfyui`, `voicebox`, `audio-cpu`, `artifact-server`, `open-webui`, and `gateway`. `lines` is bounded to `1..500`. The control plane calls runtime-agent through the internal mTLS/token channel, applies a second redaction/truncation pass to token-like strings and JSON log payload fields such as prompts, messages, media, documents, and voice samples, and returns `{"service":"control-plane","lines":100,"entries":["..."]}`. This is the API behind the Control Center System log viewer.
+
+Runtime recovery actions are exposed to administrators through `POST /admin/runtimes/{runtime}/recover` and `POST /admin/runtimes/{runtime}/unload`:
+
+```bash
+curl -s https://api.ai.b1.germering/admin/runtimes/localai/recover \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"failed unload after validation run","timeout_seconds":10}'
+```
+
+The control plane validates that the selected adapter is configured and non-external, then calls the mTLS/token-protected runtime-agent predefined action endpoint. The runtime-agent only accepts services in `B1_RUNTIME_ACTION_SERVICES` and implements the current forced unload/recovery strategy as a bounded restart of that allowlisted runtime service. With the default `B1_ENABLE_MUTATIONS=false`, these endpoints return a dry-run response.
+
+Runtime-agent `/v1/images/{service}/inspect` and `/v1/images/{service}/pull` are internal update-staging endpoints. Both require an allowlisted service name and an image reference pinned with `@sha256:<digest>`; `latest` and missing digests are rejected. Pull is a mutation and returns `status=dry_run` unless `B1_ENABLE_MUTATIONS=true`. Runtime-agent `/v1/rollback` is intentionally internal and predefined. It restarts only the static `B1_ROLLBACK_SERVICES` sequence after validating every entry against `B1_ALLOWED_SERVICES`; it accepts only the common `reason` and `timeout_seconds` payload. With mutations disabled it returns the rollback plan as a dry run.
+
+## Network Policy
+
+Administrators manage browser CORS origins and trusted reverse-proxy CIDRs through the System tab or these endpoints:
+
+```text
+GET    /admin/network-policy
+POST   /admin/network-policy/validate
+PUT    /admin/network-policy
+DELETE /admin/network-policy
+```
+
+`PUT` persists a single default policy in PostgreSQL and updates the live control-plane cache immediately:
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/network-policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"cors_allow_origins":["https://control.ai.b1.germering","https://media.ai.b1.germering"],"trusted_proxy_cidrs":["127.0.0.1/32","172.16.0.0/12"]}'
+```
+
+CORS origins are canonicalized to `scheme://host[:port]`; wildcard and `null` origins are rejected because browser credentials are allowed only for explicit origins. `trusted_proxy_cidrs` controls when the control plane trusts `X-Forwarded-For` or `Forwarded` headers for API-client and Model Hub CIDR checks. `DELETE` returns to the environment defaults from `B1_CORS_ALLOW_ORIGINS` and `B1_TRUSTED_PROXY_CIDRS`.
+
+## Model Hub Clients
+
+Administrators manage external sync clients through `GET`, `POST`, `PUT`, and `DELETE` under `/modelhub/v1/clients`. The create response is the only time the full API key is returned. CIDR allowlists can be updated separately from policy so a workstation can move networks without changing its download permissions:
+
+```bash
+curl -X PUT https://models.ai.b1.germering/modelhub/v1/clients/mhc_123/policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_models":["image-default","image-upscale"],"allow_downloads":true}'
+```
+
+`allowed_models` accepts explicit aliases/model IDs or `["*"]`. Explicit entries must use the same safe B1 identifier rule as sync-plan requests and are rejected before catalog lookup when they contain path separators, encoded separators, whitespace, or other unsafe characters. Dedicated Model Hub clients see only permitted aliases and manifest records in `/modelhub/v1/catalog`, and the same policy gates model detail, version listing, sync-plan, and blob access. `GET /modelhub/v1/models/{id}/versions` returns only versions visible to the caller; when a root model's newest manifest is hidden but an older version is permitted, `GET /modelhub/v1/models/{id}` returns the permitted manifest instead of the hidden newest one. Hidden aliases remain hidden even when their underlying model version is visible through another permitted identifier. `allow_downloads=false` leaves the client able to read permitted catalog metadata while blocking sync plans and blob downloads. Policy and CIDR changes write audit records; revoked clients cannot be modified.
+
+## Maintenance Mode
+
+Maintenance mode is controlled by administrators:
+
+```text
+GET /admin/maintenance
+PUT /admin/maintenance
+```
+
+`GET` requires `admin:read`; `PUT` requires `admin:write`. Both require the `admin` role. Enabling requires a non-empty reason and persists the state in PostgreSQL:
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/maintenance \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true,"reason":"staged update and backup validation"}'
+```
+
+While enabled, new `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*`, `/v1/media/uploads`, `/v1/media/jobs`, `/v1/runtime-reservations`, native ComfyUI `POST /prompt`, and admin job retry requests return `503` with `detail.message=maintenance mode is active`. CPU, GPU, and model-download runners do not claim queued work while the flag is active. Read, cancel, backup, audit, model-management, and runtime-inspection APIs remain available.
+
+## Controlled Updates
+
+Controlled application update planning is administrator-only:
+
+```text
+GET  /admin/updates
+POST /admin/updates
+GET  /admin/updates/{update_id}
+POST /admin/updates/{update_id}/stage
+POST /admin/updates/{update_id}/promote
+POST /admin/updates/{update_id}/health-check
+POST /admin/updates/{update_id}/rollback
+```
+
+`POST /admin/updates` records a target version, optional HTTPS release URL, notes, and pinned image references. Every image reference must include an immutable `@sha256:<digest>` and `latest` is rejected:
+
+```bash
+curl -X POST https://api.ai.b1.germering/admin/updates \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"target_version":"0.2.0","source_url":"https://github.com/B1-Mordred/localAIcentre/releases/tag/v0.2.0","image_refs":[{"service":"control-plane","image":"ghcr.io/b1/b1-ai-hub-control-plane:0.2.0@sha256:0000000000000000000000000000000000000000000000000000000000000000"}]}'
+```
+
+Staging, promotion, health-check, and rollback require maintenance mode. Staging creates a normal constrained backup, asks runtime-agent to stage each pinned service image through `/v1/images/{service}/pull`, stores the image staging result on `image_stage`, writes a digest-pinned Compose override to `$B1_DATA_ROOT/data/control-plane/updates/<update_id>/compose.images.yaml`, and records the override metadata plus the same `/admin/self-test` report on the update row. With default `B1_ENABLE_MUTATIONS=false`, image staging is recorded as a dry run and `compose_override.ready_for_promotion=false` until the pinned images are actually pulled.
+
+`POST /admin/updates/{update_id}/health-check` reruns `/admin/self-test` and stores an `update_health_gate` summary on the public update response. The gate must be `ready` before the row becomes `validated`; it requires an overall `ok` self-test plus all required update checks at `ok`: database, Redis, storage, runtime health, runtime-agent status/services/metrics/mutation guard, deployment Compose selection, runtime production-readiness, GPU/NVML, hardware resource policy, TLS/Caddy CA routing, LocalAI and ComfyUI build/status hooks, tiny inference, runtime unload, and artifact delivery. Missing, warning, degraded, or failed checks return `health_failed` and a bounded `failure_message`.
+
+`POST /admin/updates/{update_id}/promote` is allowed only after the update is `validated` and the stored update health gate is still ready. It verifies the generated override's expected relative path, SHA-256, service list, image-stage results, and runtime-agent `/v1/images/{service}/inspect` digest results. On success the row becomes `promotion_ready` and `promotion_result` contains a fixed operator handoff command such as:
+
+```bash
+docker compose -f compose.yaml -f /srv/b1-ai-hub/data/control-plane/updates/<update_id>/compose.images.yaml up -d --no-build control-plane gateway
+```
+
+Run that command from the repository root during maintenance, then call `POST /admin/updates/{update_id}/health-check` again. The control-plane container runs Alembic migrations before serving the promoted image; `B1_DB_MIGRATIONS_ENABLED=false` is only for externally managed deployments that apply `python -m app.migrate upgrade head` separately. Health-check refreshes the gated self-test report after promotion. Rollback calls only the runtime-agent predefined `/v1/rollback` plan; with default mutations disabled the result is stored as `rollback_dry_run`. This surface does not accept arbitrary commands, images without digests, host paths, environment changes, or Docker API passthrough.
+
+## Voicebox Profiles
+
+Voicebox profiles are managed by administrators and operators through Control Center or the admin API:
+
+```bash
+curl -s https://api.ai.b1.germering/admin/voicebox/profiles \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY"
+
+curl -s https://api.ai.b1.germering/admin/voicebox/profiles \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"narrator","runtime":"voicebox","engine":"voicebox","model_alias":"tts-quality","profile_type":"clone","visibility_roles":["admin","operator"],"metadata":{"language":"en"},"sample_artifacts":[{"url":"/artifacts/voicebox/references/narrator.wav","sha256":"0000000000000000000000000000000000000000000000000000000000000000","mime_type":"audio/wav","bytes":4096}]}'
+
+curl -s https://api.ai.b1.germering/admin/voicebox/sample-artifacts \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: audio/wav" \
+  -H "X-B1-Filename: narrator.wav" \
+  --data-binary @narrator.wav
+```
+
+`GET /admin/voicebox/profile-policy` requires `runtimes:read` and an `admin` or `operator` role. It returns the allowlisted upstream selector metadata fields, runtime payload mappings, metadata size limits, forbidden sensitive-key fragments, and the internal sample artifact prefix used by Control Center profile forms. `GET /admin/voicebox/profiles` uses the same read gate and supports `include_deleted`, `runtime`, `status`, and `owner_id` filters. `POST` and `PATCH` require `runtimes:write`; `DELETE` soft-deletes the profile by marking it `deleted` and setting `deleted_at`, so backups and audits can still recover the record. `POST /admin/voicebox/profiles/{profile_id}/export` returns a portable profile metadata bundle and writes an audit event. `POST /admin/voicebox/sample-artifacts` accepts a bounded raw audio upload, stores it under `/artifacts/voicebox/references/...`, writes an audit event, and returns a `sample_artifacts[]` entry containing the internal URL, SHA-256, MIME type, and byte count.
+
+`POST /admin/voicebox/sample-artifacts/retention-plan` requires `storage:read` plus an administrator or operator role and dry-runs cleanup of unreferenced files under `/artifacts/voicebox/references`. `POST /admin/voicebox/sample-artifacts/cleanup` requires `storage:write`, `confirm=true`, and the same role check. Referenced samples from any Voicebox profile row, including deleted rows retained for recovery, are preserved. Symlinked paths, malformed artifact paths, new files, and non-file entries are reported but not deleted.
+
+Profile creation validates that `model_alias` is a TTS alias compatible with `runtime`, which is currently either `voicebox` or `audio-cpu`. `metadata` is capped and may not contain inline audio, base64, local file paths, prompts, secrets, or voice sample fields. Reference samples and cloned-voice material must be stored as normal artifacts and linked through `sample_artifacts`; the profile table stores only artifact URLs, SHA-256 values, MIME type, and byte count.
+
+## Audit Log
+
+`GET /admin/audit-log` requires `admin:read` and returns recent durable audit events from PostgreSQL:
+
+```bash
+curl -s 'https://api.ai.b1.germering/admin/audit-log?limit=50' \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY"
+```
+
+Optional filters are `event_type`, `actor_id`, and `target_type`. Audit events record actor ID, role, API-key prefix where applicable, event type, target, summary, correlation ID when available, and redacted metadata. The metadata redactor recursively removes token, secret, prompt, message, upload, voice, image, audio, video, and document fields before storage, and it scans otherwise safe string fields for bearer tokens, B1 API keys, GitHub PAT-shaped strings, and credential query parameters. Free-form administrative reasons are recorded in audit metadata only as `reason_provided`; runtime-agent mutation labels and controlled-update handoff labels similarly record only the operation and whether an operator reason was supplied. The audit table is included in the control-plane logical PostgreSQL export and native PostgreSQL dump used by backups.
+
+`POST /admin/backups` requires `storage:write` and creates a constrained backup under `$B1_BACKUP_ROOT`. Each backup includes the logical JSON export at `data/control-plane/postgres-logical-export.json` plus a native `pg_dump` custom-format file at `data/control-plane/postgres-native.dump`; public summaries expose `postgres_dump`, `postgres_dumps[]`, `postgres_native_dump`, and `archive_encryption` metadata but never database credentials or encryption keys. `POST /admin/backups/{backup_name}/verify` checks the archive manifest, decrypts encrypted-only payloads with the configured master key when required, and verifies the native dump archive member checksum. `POST /admin/backups/{backup_name}/restore-test` extracts to `$B1_RESTORE_TEST_ROOT/<backup_name>` and runs `pg_restore --list` against the extracted native dump when present. `POST /admin/backups/{backup_name}/postgres-import` with `apply=false` returns a dry-run logical import plan after a restore test. Applying rows with `apply=true` additionally requires administrator role, maintenance mode, and `confirm_backup_name` matching the path parameter.
+
+Backup retention is available through `POST /admin/backups/retention-plan` with `storage:read` and `POST /admin/backups/cleanup` with `storage:write`. Both accept `keep_last` and optional `delete_older_than_days`; cleanup also requires `confirm=true`. The cleanup endpoint re-runs the plan and deletes only validated direct child backup directories under `$B1_BACKUP_ROOT`, while symlinked or invalid entries are reported and preserved.
+
+Generated artifact retention is available through `POST /admin/artifacts/retention-plan` with `storage:read` and `POST /admin/artifacts/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, optional generated-output `namespaces` such as `localai`, `comfyui`, `audio-cpu`, or `voicebox`, a bounded `limit`, and `confirm=true` for cleanup. The planner considers only artifacts recorded on terminal jobs older than the cutoff, refuses staged input/temporary/secret namespaces, preserves active or newer jobs, preserves Voicebox profile sample artifacts, rejects symlinks, missing files, non-files, metadata size mismatches, traversal, and artifacts whose path is not scoped to the job ID or native ComfyUI prompt ID. Cleanup re-runs the plan, unlinks only accepted files under `$B1_ARTIFACT_ROOT`, marks the affected job artifact metadata with `retention_status=deleted`, and writes an audit event. Later downloads of a deleted artifact return HTTP 410.
+
+Recoverable model-blob quarantine retention is available through `POST /admin/models/quarantine/retention-plan` with `storage:read` and `POST /admin/models/quarantine/cleanup` with `storage:write`. Requests accept `delete_older_than_days`, a bounded `limit`, and `confirm=true` for cleanup. The planner scans only `$B1_DATA_ROOT/models/quarantine/blobs`, accepts quarantine set directories named with the existing `<version>-YYYYMMDDTHHMMSSZ` suffix, and preserves malformed entries, symlinks, nested directories, non-regular files, or non-SHA-256 filenames for operator review. Cleanup re-runs the plan and deletes only validated old quarantine set directories; it never deletes active authoritative blobs under `$B1_DATA_ROOT/models/blobs` or runtime views.
+
+Scheduled backups are managed through:
+
+```text
+GET  /admin/backups/schedule
+PUT  /admin/backups/schedule
+POST /admin/backups/schedule/run
+```
+
+`GET` requires `storage:read`; update and run-now require `storage:write`. The schedule row persists `enabled`, `interval_hours`, `keep_last`, optional `delete_older_than_days`, `label_prefix`, next-run time, last-run status, and last backup name. The background scheduler is enabled by `B1_BACKUP_SCHEDULER_ENABLED=true`, polls at `B1_BACKUP_SCHEDULER_INTERVAL_SECONDS`, atomically claims due schedules in PostgreSQL, creates the same constrained backup with logical and native PostgreSQL dumps as `POST /admin/backups`, applies retention with explicit internal confirmation, advances `next_run_at`, and writes a system audit event.
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/backups/schedule \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true,"interval_hours":24,"keep_last":7,"delete_older_than_days":30,"label_prefix":"scheduled","run_immediately":false}'
+```
+
+## Encrypted Secrets
+
+Administrator-only encrypted value management is exposed at:
+
+```text
+GET    /admin/secrets
+GET    /admin/secrets/{name}
+PUT    /admin/secrets/{name}
+POST   /admin/secrets/{name}/verify
+DELETE /admin/secrets/{name}
+```
+
+These routes require an `admin` role. Read routes require `admin:read`; store and delete require `admin:write`. Values are encrypted with the generated master key from `/run/secrets/master_encryption_key` before PostgreSQL storage. Responses never include plaintext, nonce, ciphertext, or the raw envelope; they expose only metadata such as name, category, envelope scheme, key fingerprint, timestamps, and soft-delete state.
+
+Store or rotate a value:
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/secrets/remote:openai \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"OpenAI optional provider","category":"remote-provider","description":"disabled by default","value":"secret-value"}'
+```
+
+Verify decryptability without exposing the value:
+
+```bash
+curl -X POST https://api.ai.b1.germering/admin/secrets/remote:openai/verify \
+  -H "Authorization: Bearer $B1_ADMIN_KEY"
+```
+
+Store a bearer token for authenticated model downloads with category `model-download`:
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/secrets/model-download:hf \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"Hugging Face read token","category":"model-download","description":"direct-url model downloads","value":"hf_..."}'
+```
+
+## Resource Policy
+
+The effective selected-host resource policy is exposed at:
+
+```text
+GET    /admin/resource-policy
+POST   /admin/resource-policy/validate
+PUT    /admin/resource-policy
+DELETE /admin/resource-policy
+```
+
+These routes require an `admin` role. Read requires `admin:read`; validation, update, and reset require `admin:write`. `GET` returns the effective policy, environment default, hard bounds, source (`environment` or `database`), and the persisted override row when present. `POST /validate` returns `accepted=false` plus errors without storing anything. `PUT` persists the policy, refreshes catalog resource admission, updates the live GPU runner VRAM reserve, and audits the change. `DELETE` removes the override and returns to the environment profile.
+
+The default hard bounds enforce the selected physical host profile: no browser update can exceed the environment-defined GPU memory or 32 GiB host RAM profile, and the single-GPU controls remain fixed at one active GPU pipeline, one ComfyUI job, and ComfyUI batch size one. On the current `ai.b1.germering` host this is the RTX 3060 Laptop 6 GB / 32 GB profile. CPU-only residency is controlled by the same resource policy. `cpu_residency_enabled` gates whether any CPU-only model may stay loaded between calls, `cpu_residency_max_ram_gib` caps aggregate resident CPU model RAM outside the protected host reserve, and `cpu_resident_aliases` is the allowlist of aliases eligible for residency. The default allowlist is `embedding-default`, `tts-fast`, and `stt-default`.
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/resource-policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"gpu_total_vram_gib":6,"gpu_usable_vram_gib":5,"gpu_reserve_vram_gib":1,"gpu_max_active_pipelines":1,"host_total_ram_gib":32,"host_reserve_ram_gib":6,"llm_default_context":4096,"llm_maximum_context":8192,"llm_default_parallel_requests":1,"comfyui_maximum_parallel_jobs":1,"comfyui_maximum_batch_size":1,"cpu_residency_enabled":true,"cpu_residency_max_ram_gib":2,"cpu_resident_aliases":["embedding-default","tts-fast","stt-default"]}'
+```
+
+## Admission Policy
+
+The media queue, rate, and artifact-storage admission policy is exposed at:
+
+```text
+GET    /admin/admission-policy
+POST   /admin/admission-policy/validate
+PUT    /admin/admission-policy
+DELETE /admin/admission-policy
+GET    /admin/admission
+```
+
+These routes require an `admin` role for policy management. Read requires `admin:read`; validation, update, and reset require `admin:write`. `GET /admin/admission-policy` returns the effective policy, environment default, hard bounds, source (`environment` or `database`), and persisted override row when present. `POST /validate` returns `accepted=false` plus errors without storing anything. `PUT` persists the override, reloads the in-process policy, and audits the change. `DELETE` returns to the environment defaults.
+
+`GET /admin/admission` returns the live counters, storage snapshot, and hardware/resource-policy verdict used before accepting new `/v1/media/jobs`, native ComfyUI `/prompt`, `/v1/media/uploads`, `/v1/runtime-reservations`, and synchronous GPU OpenAI-compatible inference requests. New media job admission is bounded by `max_queued_jobs_per_owner`, `max_active_jobs_per_owner`, `max_jobs_per_hour_per_owner`, and `max_queued_jobs_global`. Limit breaches return HTTP 429 with a structured `detail.code` such as `owner_queue_limit`, `owner_active_limit`, `owner_rate_limit`, or `global_queue_limit`. Idempotent repeats with an existing `Idempotency-Key` return the original job before admission checks.
+
+New uploads and media jobs also check artifact headroom before accepting work. `artifact_storage_reserve_bytes` protects free space on the filesystem containing `$B1_ARTIFACT_ROOT`, and optional `artifact_storage_max_bytes` caps bytes under the artifact root. Storage breaches return HTTP 507 with `detail.code` of `artifact_storage_reserve` or `artifact_storage_limit`.
+
+In `B1_RUNTIME_DEPLOYMENT_MODE=production`, GPU-backed media jobs and native ComfyUI `/prompt` jobs require the live `hardware:resource-policy` verdict to be `ok` before a durable row is inserted. GPU runtime reservations use the same check before creating the reservation record. Synchronous GPU OpenAI-compatible inference and GPU model smoke tests use the same check before runtime-reservation conflict checks, scheduler lease acquisition, or runtime preparation. If runtime-agent metrics are unavailable, the largest visible GPU is below the effective `gpu_total_vram_gib`, host RAM is below `host_total_ram_gib`, or live free VRAM/RAM is below the configured reserves, admission returns HTTP 503 with `detail.code=hardware_resource_policy` and the redacted check payload. CPU-only jobs, CPU-only synchronous inference, and CPU-only model smoke tests do not require GPU telemetry and continue to use only their queue/rate/storage or endpoint-specific admission rules. CPU-only aliases expose `cpu_resident_candidate`, `cpu_resident_allowed`, and `cpu_resident_reason` in `/v1/models` and `/admin/models` so clients and operators can tell resident candidates from on-demand CPU execution.
+
+```bash
+curl -X PUT https://api.ai.b1.germering/admin/admission-policy \
+  -H "Authorization: Bearer $B1_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"max_queued_jobs_per_owner":20,"max_active_jobs_per_owner":3,"max_jobs_per_hour_per_owner":60,"max_queued_jobs_global":100,"artifact_storage_max_bytes":0,"artifact_storage_reserve_bytes":10737418240}'
+```
+
+## Authentication
+
+Browser clients use `/auth/status`, `/auth/setup`, `/auth/login`, and `/auth/logout`. On first boot, `/auth/status` reports `setup_required=true`; create the initial administrator through Control Center using the generated `/srv/b1-ai-hub/secrets/admin_bootstrap_key`. The setup and login endpoints return an HttpOnly browser session cookie plus a CSRF token. Browser mutations using the session cookie must send `X-B1-CSRF`; the Control Center and Media Studio do this automatically.
+
+Control-plane administrative, unified inference, job, reservation, and Model Hub routes also accept bearer tokens. Bootstrap still creates `/srv/b1-ai-hub/secrets/admin_bootstrap_key`; use that key only for first setup or emergency API-client creation, then rotate to scoped clients.
+
+Open WebUI uses a generated internal service key from `/srv/b1-ai-hub/secrets/open_webui_api_key`. The B1 wrapper image mounts that file at `/run/secrets/open_webui_api_key`, exports it as the OpenAI-compatible key for chat, RAG embeddings, TTS, and STT, pins those base URLs to `B1_OPEN_WEBUI_API_BASE_URL`, and then starts Open WebUI. Open WebUI global config persistence is disabled in this profile so preserved or imported provider/search settings cannot override those defaults. On startup, the control plane upserts `client_open_webui_internal` with the key prefix and only `models:read`, `inference:write`, `jobs:read`, `jobs:write`, and `workflows:read`. `B1_OPEN_WEBUI_DEFAULT_B1_TOOLS` defaults to `web_search,web_fetch`, so every chat-capable Open WebUI model receives B1-managed browsing/search tools even though Open WebUI cannot send the B1-specific `b1_tools` field itself. An invalid configured value does not clear the last known service-client policy. The raw key is not stored in PostgreSQL.
+
+The default Open WebUI model aliases are `chat-default`, `embedding-default`, `tts-fast`, and `stt-default`. The built-in Open WebUI image generator remains disabled because `/v1/images/generations`, `/v1/images/edits`, `/v1/videos/generations`, and `/v1/videos/image-to-video` return B1 async job handles; Media Studio and `/v1/media/jobs` are the supported image/video user interfaces until a synchronous Open WebUI compatibility mode is added.
+
+API clients are created with:
+
+```bash
+curl -s https://api.ai.b1.germering/admin/api-clients \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"external-comfy","role":"service","scopes":["jobs:read","jobs:write","models:read","modelhub:read","modelhub:sync","inference:write"],"cidr_allowlist":["192.168.2.0/24"]}'
+```
+
+Credential-management routes for `/admin/api-clients*` and `/modelhub/v1/clients*` require the `admin` role in addition to `admin:read` or `admin:write`. Operators can inspect external access status through Control Center where exposed, but creating, listing, changing, or revoking API keys and Model Hub sync clients is administrator-only. The full API key is returned once. The control plane stores only a salted PBKDF2 hash plus the public key prefix. Optional `cidr_allowlist` entries are canonicalized and enforced on bearer-token authentication using the trusted-proxy client-IP parser; leave the list empty only for keys that are intentionally unrestricted by source network. `PUT /admin/api-clients/{client_id}/cidr-allowlist` updates only that allowlist and refuses revoked clients. Local browser passwords are stored with scrypt hashes; browser session tokens are stored as server-side hashes, not plaintext.
+
+Initial scope use:
+
+- `admin:read` / `admin:write` for Control Center administration.
+- `models:read` for `/v1/models`.
+- `inference:write` for OpenAI-compatible chat, responses, embeddings, audio, and image endpoints.
+- `jobs:read` / `jobs:write` for asynchronous media jobs and job events/artifacts.
+- `runtimes:read` / `runtimes:write` for runtime reservations and scheduler lease diagnostics.
+- `modelhub:read` / `modelhub:sync` for Model Hub catalog and blob/sync APIs.
+- `workflows:read` / `workflows:write` for published workflow discovery, validation, publication, and unpublication.
+
+## Idempotency
+
+Long-running media operations are represented as durable jobs in PostgreSQL. `POST /v1/media/jobs`, `POST /v1/images/generations`, `POST /v1/images/edits`, `POST /v1/videos/generations`, and `POST /v1/videos/image-to-video` return HTTP `202 Accepted` after a durable job is accepted instead of blocking on generation. Public job responses include a `links` object with relative `self`, `events`, `artifacts`, and `cancel` URLs; OpenAI-compatible image and video convenience routes include the same destinations as `b1_job_url`, `b1_events_url`, `b1_artifacts_url`, and `b1_cancel_url`. Those routes, `POST /v1/runtime-reservations`, and native ComfyUI `POST /prompt` support `Idempotency-Key`; repeated requests from the same API client with the same key return the original job, runtime reservation, or native prompt identity instead of creating a duplicate. Replays are looked up before admission, maintenance, workflow, or mutable alias checks, so a client can safely retry a submitted request even after catalog or workflow state changes. Keys are opaque visible header strings up to 256 characters. Reusing a key for a different job or reservation identity returns HTTP 409 with `detail.code=idempotency_key_conflict` and a list of mismatched public fields, never the original prompt, media, reservation reason, or other sensitive request values. Multipart image-edit and image-to-video replays short-circuit before upload staging when the existing key already belongs to the matching endpoint job. Native ComfyUI prompt replays compare only the stored native body SHA-256 and graph summary; once the original submission has a `native_prompt_id`, the replay returns a native-shaped JSON response with that prompt ID and `X-B1-Idempotent-Replay: true`, while a replay that arrives before ComfyUI acceptance returns HTTP 409 with `Retry-After: 1`.
+
+Job records include `started_at`, `completed_at`, `load_time_ms`, `run_time_ms`, `peak_vram_mib`, and `peak_ram_mib`. Timing values are recorded by the CPU/GPU runners and native ComfyUI compatibility tracker; resource peaks are filled only when runtime-agent metrics are available, so they can be `null` on CPU-only development hosts or when NVIDIA telemetry is unavailable. PostgreSQL stores raw `request_params` for scheduler execution and idempotency matching, but public/admin job responses and SSE events omit `request_params` and `idempotency_key`; they expose only `redacted_request` so prompts, media inputs, voice details, and uploaded document references are not replayed into browsers, operator views, logs, or event streams. Native ComfyUI compatibility jobs also expose a derived `native_comfyui` summary with prompt-recorded status, safe graph counts, body-hash/client-ID presence booleans, artifact ingest counts, and stored-byte totals; it does not expose raw graph nodes, node inputs, filenames, prompt text, client IDs, or full prompt hashes. Runtime reservation responses also omit the stored `idempotency_key`.
+
+OpenAI-compatible image and video convenience endpoints accept B1 scheduler extensions in the request body. `runtime_policy` is used for alias resolution and persisted on the durable job envelope, while `priority` sets the initial scheduler priority before operators make later queue adjustments. Image generation defaults to `image-default` with priority `single_image`; image edit defaults to `image-edit` with priority `single_image`; text-to-video defaults to `video-text` with priority `video`; image-to-video defaults to `video-image` with priority `video`. These fields are removed before LocalAI-compatible runtime submission, so they do not leak into backend image-generation, image-edit, text-to-video, or image-to-video calls.
+
+The CPU runner handles jobs resolved to `audio-cpu` without taking the GPU lease. It claims queued CPU jobs, records `started_at` and `run_time_ms`, marks interrupted active CPU jobs `recovery_required` on restart, and only requeues pre-runtime `waiting_for_gpu` claims through the shared reconciliation path. For `tts/speech` or `stt/transcription` jobs it submits JSON to the internal `audio-cpu` runtime with the authoritative `b1_model_alias`, `b1_resolved_model_version`, and `b1_cpu_residency_allowed` fields. Cancellation is checked before and during blocking audio-cpu speech/transcription calls; when cancellation arrives mid-call, the runner cancels the pending client request and marks the durable job `cancelled`. TTS responses are stored under `$B1_ARTIFACT_ROOT/audio-cpu/...` as audio artifacts; transcription responses are stored as JSON transcript artifacts and include the returned `text` in artifact metadata. STT jobs may pass audio inline as base64 or as a staged upload reference. The development scaffold engine marks successful responses with `b1_placeholder=true` or `X-B1-Placeholder: true`; when `B1_CPU_AUDIO_ENABLE_PLACEHOLDER=false`, scaffold speech, transcription, and embedding calls fail with HTTP 503 and `code=b1_audio_cpu_engine_unavailable` until real engines are configured. Setting `B1_CPU_AUDIO_ENGINE=piper` enables real CPU speech when the default checksum-pinned Piper binary at `/opt/piper/piper` is present and either the request's immutable `b1_resolved_model_version` maps to a read-only runtime view with exactly one ONNX file plus a matching `.onnx.json` voice config or the optional `B1_PIPER_MODEL_PATH` fallback resolves under the model root. In that mode speech responses carry `X-B1-Placeholder: false`. Setting `B1_CPU_EMBEDDING_ENGINE=onnx` enables real CPU embeddings when the request's immutable `b1_resolved_model_version` maps to a read-only runtime view containing exactly one ONNX graph and one `tokenizer.json`; the endpoint tokenizes locally, runs ONNX Runtime on CPU, mean-pools and normalizes the output, and returns `b1_embedding_engine=onnxruntime` with `b1_placeholder=false`. Setting `B1_CPU_STT_ENGINE=vosk` enables real CPU transcription when the request's immutable `b1_resolved_model_version` maps to a read-only Vosk runtime view; the runtime accepts bounded mono 16-bit PCM WAV and returns `b1_stt_engine=vosk` with `b1_placeholder=false`. ONNX embedding and Vosk model objects are kept in process only when the forwarded CPU residency decision allows it and live `/proc/meminfo` `MemAvailable` is at or above `B1_HOST_RESERVE_RAM_GIB`; otherwise the runtime clears resident caches and uses an on-demand session for the call. The runtime-control `/b1/runtime/build-info` hook reports the B1 CPU runtime version, digest-pinned Python base image, checksum-pinned Piper release/asset, and pinned Python package versions. The `/b1/runtime/status` hook reports no GPU lease requirement, per-operation capability, real/scaffold engine selection, CPU residency headroom, and redacted probe booleans such as `model_path_present` instead of raw host paths; it returns `status=degraded` while any enabled operation still uses scaffold. CPU model smoke calls `/b1/runtime/smoke`, returns zero VRAM use, and reports `status=unconfigured` when the requested modality has no configured engine. The runtime-control `/b1/runtime/unload` hook clears CPU resident Vosk and ONNX caches and returns cache before/after state. Unknown CPU job shapes fail with `failure_category=unsupported_audio_cpu_operation` and no artifact.
+
+The GPU job runner is enabled by `B1_GPU_JOB_RUNNER_ENABLED=true`. It claims `localai`, `comfyui`, and `voicebox` media jobs, leaves them in `waiting_for_gpu` when another scheduler owner holds the lease, then acquires the global GPU scheduler-owner lease with a per-instance owner ID and records the full GPU state path. During `unloading`, it calls the other GPU runtimes' `/b1/runtime/unload` hooks first with the recorded active model state, then falls back to runtime-agent predefined `unload` actions only when the graceful hook is unavailable or unconfirmed. During `loading` and `warming`, it calls optional selected-runtime hooks at `/b1/runtime/load` and `/b1/runtime/warm` with the job ID, selected runtime, resolved model ID, public alias, immutable model version, modality, and operation; that admission phase is recorded as `load_time_ms`. Missing or unreachable hooks are treated as unsupported; hook HTTP errors and explicit failure-like hook statuses fail the job before inference with `failure_category=runtime_prepare_failed`. Scheduler-observed runtime states are stored in `b1_runtime_state` and returned by `GET /admin/status` and `GET /admin/runtimes`. During `verifying_vram` and after runtime execution, it reads runtime-agent GPU/RAM metrics when available and stores peak observed values on the job. If measured VRAM use exceeds the configured reserve, it calls the runtime-agent predefined `recover` action for the selected runtime and verifies again. Cancellation is checked between scheduler stages and during blocking LocalAI media, Voicebox speech, and ComfyUI prompt-submission calls; when a cancellation arrives mid-call, the runner cancels its client request, marks the job `cancelled`, records runtime cancellation state, and asks runtime-agent to recover the selected runtime before releasing the GPU lease. The job fails safely if VRAM remains above reserve, records `run_time_ms` when it reached the running phase, and the runner releases the scheduler owner after each processed job.
+
+Database job claiming uses the same priority/aging policy as the scheduler module. Valid priority classes are `chat`, `interactive_audio`, `single_image`, `image_batch`, `video`, and `batch`; unknown priorities rank as `batch`. Reservation filtering runs before priority scoring.
+
+`GET /v1/media/jobs` is owner-scoped for ordinary users and service clients and supports `limit`, `state`, `runtime`, and `modality` filters. A non-admin caller sees only jobs whose `owner_id` matches the authenticated subject; direct job reads, cancellation, SSE events, and artifact metadata use the same owner check. Wildcard admin credentials can read all jobs through the public route, but Control Center uses the administrative queue API.
+
+`GET /v1/media/jobs/{job_id}/events` streams durable job snapshots as Server-Sent Events with stable event IDs derived from the job ID and `updated_at` timestamp plus a reconnect retry hint. Clients may send `Last-Event-ID`; when the current non-terminal snapshot has already been observed, the stream emits heartbeat comments until a newer durable job snapshot is available, while terminal snapshots are still delivered even when their event ID matches the reconnect header. The stream is long-lived and has no control-plane timeout for active work, so slow image/video jobs remain observable until the client disconnects or the job reaches a terminal state. The stream closes after `completed`, `cancelled`, `failed`, `expired`, or `recovery_required`; recovery-required jobs are terminal for event delivery and cancellation, but remain retryable through the admin job API.
+
+`GET /admin/jobs` is available only to `admin` and `operator` roles with `jobs:read`. It supports `limit`, `state`, `runtime`, `modality`, `owner_id`, and `native_prompt_id` filters. The owner-scoped `GET /v1/media/jobs` list supports the same runtime/state/modality filters plus `native_prompt_id`, so a native ComfyUI client can prove its own durable B1 job record without an operator key. `GET /admin/jobs/{job_id}/events` exposes the same durable, long-lived SSE snapshots as the public media job stream, but requires queue-admin role instead of owner matching so operators can observe any queued or running job from Control Center. `POST /admin/jobs/{job_id}/priority` requires `jobs:write`, accepts one of the scheduler priority classes, and only updates jobs still in `created`, `validated`, `queued`, or `waiting_for_gpu`. `POST /admin/jobs/{job_id}/cancel` marks queued/pre-run jobs `cancelled` immediately and marks active jobs `cancelling` for the runner/runtime adapter to interrupt. `POST /admin/jobs/{job_id}/retry` requeues `failed`, `cancelled`, `expired`, or `recovery_required` jobs, increments `retry_count`, clears prior failure fields, clears old prompt/artifact/runtime measurements, and preserves the original immutable runtime/model resolution. These admin mutations write audit events with public job identifiers and redacted metadata only.
+
+Workflow-backed media jobs may target ComfyUI, non-Comfy runtimes, or either according to their published `backend_policy`. Workflow discovery, validation, and test responses include a derived `execution_summary` with selected/candidate runtimes, local/external backing, ComfyUI requirements, GPU-lease need, queue class, graph/input/mapping counts, and dependency-blocker counts. The summary is calculated from the persisted manifest plus current dependency readiness and does not echo raw prompt values, uploaded media, or native graph internals beyond bounded counts. The job input may provide `input.comfyui_payload`, `input.comfyui_prompt`, `input.native_prompt`, `input.workflow_json`, or a `workflow_id`/`workflow_version` pair referencing a published workflow with non-empty `workflow_json`. Published workflow jobs are first validated against workflow visibility, dependency readiness, modality, operation, alias, runtime policy, schema, and resource limits; after alias resolution, the selected runtime must also satisfy the workflow `backend_policy` of `comfyui-only`, `non-comfy-only`, or `either`. Published workflows can define `comfyui_parameter_mappings`, where each entry writes a validated `input.parameters` value to a JSON path in the native graph before submission. `input.parameters` can also fill `{{parameter}}`, `{{parameters.name}}`, `$parameters.name`, or `$input.name` placeholders in that graph. ComfyUI-backed executions record `native_prompt_id`, poll `/history/{prompt_id}`, ingest returned outputs from `/view` into artifact storage, and complete the durable job with authenticated artifact URLs. If native history contains no image, video, GIF, or audio outputs, the job enters `recovery_required` with `failure_category=comfyui_no_media_artifacts` instead of completing without downloadable media.
+
+`POST /v1/media/uploads` stores one bounded image, audio, or video input under `$B1_ARTIFACT_ROOT/inputs/...` and returns a staged upload reference. Raw `audio/wav` and `audio/x-wav` requests with `X-B1-Field: audio` are supported without a multipart filename; B1 validates the RIFF/WAVE bytes and records them as `audio/wav`. The response contains `reference.id` (an `upload_...` identifier), which may be passed unchanged as `audio_artifact_id` or `portrait_artifact_id`. The same staging helper is used by raw or multipart `POST /v1/images/edits` and `POST /v1/videos/image-to-video`, so uploaded image and mask/source bytes are preserved in the durable job input instead of being logged or discarded. Published ComfyUI workflows using `LoadImage`, `LoadImageMask`, or `LoadVideo` with a `{{*_filename}}` template consume this reference through the managed upload bridge; client paths and filenames are never injected into native ComfyUI prompts. Staging accepts only locally sniffed PNG, JPEG, WebP, GIF, WAV, MP3, Ogg, MP4, or WebM payloads that pass bounded structural header/container checks; caller-declared `Content-Type` values are metadata only and cannot make unknown or header-only bytes acceptable. The default limit is `B1_UPLOAD_MAX_BYTES=268435456`.
+
+For managed Wan VACE image-to-video jobs, use one private image upload and exactly one source field: `input.source_image_artifact_id`. Upload a PNG, JPEG, or WebP with `POST /v1/media/uploads`, then pass the returned `reference.id` unchanged to `POST /v1/media/jobs`. B1 resolves the owner-scoped upload, verifies its type and checksum, and converts it to its internal staged ComfyUI input before the job is created. Inline `input.source_image` base64, URLs, paths, and multiple source images are deliberately rejected with a structured HTTP 422 before queueing; clients requiring a panel or group scene should compose a single private contact sheet. `GET /v1/models` exposes this `input_contract` for `video-image`: width `256-384`, height `256-288`, fps `4-12`, frames `5-33`, and at most one source image. The current low-VRAM workflow allows at most five seconds at low fps; at 12 fps use at most 33 frames (about 2.75 seconds).
+
+`studio-seated-character` is the required first stage for a seated panel. It accepts only owner-scoped B1 private uploads for one portrait, one full-body character reference, and the studio reference. It runs the pinned SD 1.5 lower-body inpaint/OpenPose-ControlNet profile under the shared GPU lease, then uses the pinned local U2Net human-matting blob on CPU to remove generated chairs, desks, studio remnants, and source backgrounds. It emits a transparent PNG plate and a reusable `seated_character.seated_reference_artifact_id`. It rejects paths, URLs, base64, cross-owner uploads, unsupported image types, card-like opaque matte results, missing faces, and failed semantic-matte evidence. Every generated plate initially reports `quality_control.status="review_required"`; visually inspect the authenticated artifact and call `POST /admin/jobs/{job_id}/approve-seated-character` before it can be used by `studio-panel-shot`. Approval is audited and changes the plate QC to `passed`. The OpenPose-ControlNet and U2Net dependencies must be installed through Model Hub before this operation is admitted; otherwise the job fails explicitly as `seated_pose_pipeline_unavailable`.
+
+`studio-panel-shot` is the required second stage. Each participant must provide the portrait/full-body provenance inputs plus the matching QC-passed `seated_reference_artifact_id` returned by a completed `studio-seated-character` job owned by the same API client. B1 rejects a missing, arbitrary, cross-owner, mismatched-seat, non-transparent, or failed-QC plate with HTTP 422 `seated_reference_required`; it never falls back to positioning a standing full-body upload behind a chair. Optional `stature_reference_participant_id` must name one requested participant; the compositor normalizes every alpha-bounded visible figure to that participant's fitted body height. Older callers that omit it use the median fitted height. The compositor uses fixed depth order: supplied studio, chair backs, approved transparent seated plates, foreground chair geometry, supplied desk/table, and rear screen. It emits a same-origin authenticated PNG plus `studio_panel.scene_artifact_id`, `seat_occupancy`, normalized `seat_map`, rear-screen quadrilateral, and pixel-derived semantic QC including stature reference, target height, scale factors, and height spread. Contact-sheet/card remnants, missing occupants, material plate overlaps, excessive stature spread, an obscured rear screen, an unoccupied seat, or incoherent output fail as `studio_panel_qc_failed`. The only current panel camera is `establishing_wide` with action `cut`, up to six participants, 16:9 from `256x144` through `1280x720`; `seed` defaults to `20260802`.
+
+`talking-head-lipsync` retains its portrait-only path. A scene-conditioned request must use a `scene_artifact_id` emitted by a completed B1 `studio-panel-shot` whose semantic seated-panel QC passed; arbitrary image uploads and older panel outputs are rejected as `scene_panel_qc_required` before queueing. Supply the selected `speaker_participant_id`, fixed `seating_plan`, and normalized selected-speaker `face_regions` entry. Scene mode supports `establishing_wide`, `speaker_medium`, `speaker_close`, `panel_two_shot`, and `reaction`. Supply optional `camera={"view": camera_view, "action":"cut", "composition":"native_scene_camera"}` and an ordered `framed_participant_ids` list; `panel_two_shot` requires exactly two ids including the speaker. B1 composes that camera frame from the high-resolution scene master before audio-driven animation, then uses the selected camera-space face region for MuseTalk. It never returns an establishing-wide plate labelled as a closer shot. Medium, close, two-shot, and reaction coverage require both a 1024x576-or-larger master and output; their selected face-detail thresholds are 140, 220, 110, and 110 pixels respectively. A request or render that cannot satisfy them fails with `unsupported_camera_coverage`. Completed jobs contain `studio_panel.actual_camera_view`, `camera_composition=native_scene_camera`, output dimensions, `speaker_face_region_px`, framed participants, wall-screen preservation, and `source_card_compositing=false`. In scene mode, the B1 scene plate and declared selected-speaker region are authoritative: `portrait_artifact_id` is optional identity metadata and is never read, detected, or allowed to veto the render. An optional `wall_screen_artifact_id` is rendered only within the physical rear-screen quad as transformed by that camera; B1 never creates a picture-in-picture overlay. Invalid scene geometry or an unusable crop fails explicitly as `invalid_lipsync_input` with one of `region_out_of_bounds`, `scene_face_too_small`, `scene_face_not_detected`, or `unsupported_stylized_face`; B1 never falls back to portrait-only, static, or generic image animation.
+
+For example, after `studio-panel-shot` returns `studio_panel.scene_artifact_id`, DialectiCore can create a native Grok/Mistral two-shot using only private B1 references:
+
+```json
+{
+  "modality": "video",
+  "operation": "talking-head-lipsync",
+  "model": "talking-head-lipsync",
+  "runtime_policy": "comfyui",
+  "priority": "single_video",
+  "input": {
+    "scene_artifact_id": "upload_scene",
+    "speaker_participant_id": "grok",
+    "framed_participant_ids": ["grok", "mistral"],
+    "camera_view": "panel_two_shot",
+    "camera": {"view": "panel_two_shot", "action": "cut", "composition": "native_scene_camera"},
+    "seating_plan": {"claude": 1, "deepseek": 2, "chatgpt": 3, "gemini": 4, "grok": 5, "mistral": 6},
+    "face_regions": [
+      {"participant_id": "grok", "seat": 5, "face_region": {"x": 0.589, "y": 0.455, "width": 0.072, "height": 0.145}},
+      {"participant_id": "mistral", "seat": 6, "face_region": {"x": 0.674, "y": 0.455, "width": 0.072, "height": 0.145}}
+    ],
+    "audio_artifact_id": "upload_dialogue_wav",
+    "audio_sha256": "sha256-of-the-exact-uploaded-wav",
+    "width": 1024,
+    "height": 576,
+    "fps": 12,
+    "duration_ms": 9520
+  }
+}
+```
+
+Submit that body to `POST /v1/media/jobs` and poll `GET /v1/media/jobs/{job_id}`. A successful response contains the authenticated MP4 artifact plus `lip_sync.mode="audio_driven_seated_panel"` and a `studio_panel` object whose `actual_camera_view` is `panel_two_shot`, whose `framed_participant_ids` preserve the submitted order, and whose `speaker_face_region_px` describes the rendered output. The B1 runner verifies the exact WAV checksum and duration before queueing; it does not fetch public source URLs.
+
+`talking-head-lipsync` is a dedicated video model alias and operation for audio-bound talking-head clips. It is visible in `GET /v1/models` with `modality=video`, `operations=["talking-head-lipsync"]`, and is submitted through `POST /v1/media/jobs`, not through `video-image` or Wan/VACE generic image animation. Upload the private portrait and WAV first with `POST /v1/media/uploads`, then pass either the returned staged reference or its `upload_...` id as `portrait_artifact_id` and `audio_artifact_id`. The runner verifies that `audio_sha256` matches the exact uploaded WAV bytes, rejects timing metadata whose `audio_sha256` differs, optionally resolves Voicebox timing by `generation_id`, and serializes under the shared GPU lease with the ComfyUI runtime policy. `duration_ms` must match the WAV within 250 ms and supports 250-60000 ms. MuseTalk requires a clear, frontal human face with visible eyes, nose, and mouth; purely mechanical/helmeted or heavily stylized faces may be rejected as `invalid_lipsync_input` rather than being passed off as generated lipsync.
+
+The default backend is the internal `lipsync` runtime running pinned MuseTalk v1.5 inference from upstream commit `0a89dec45a0192b824e3cf4daf96c239440c5ed8`, with the MuseTalk source tarball SHA-256 `2e1685e4bcc58531c5118c0ba485199f22012016ed4608cab725a51d131f7ca7`, MuseTalk v1.5 UNet SHA-256 `7ebf6c98c181e20838e4c0054e96e944ac60d5d692cc01db42839fe11b787007`, and S3FD face-detector SHA-256 `619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543`. This performs real audio-driven mouth articulation on a detected face. The B1 image applies a small reproducible source patch so MuseTalk honors `--use_float16` before moving the VAE/UNet to CUDA and so FFmpeg uses `/usr/bin/ffmpeg` instead of the limited Conda binary. MuseTalk upstream documents its code as MIT and its trained model as usable for any purpose, including commercial use; its third-party component models still carry their own licences and must be reviewed for the intended production use. If `B1_TALKING_HEAD_LIPSYNC_FALLBACK_RENDERER=true`, the control plane may fall back to the old static FFmpeg smoke renderer when MuseTalk fails; the default is `false`, so failures are explicit rather than silently misreported as mouth articulation.
+
+Install or repair the MuseTalk runtime model view with:
+
+```bash
+sudo B1_DATA_ROOT=/srv/b1-ai-hub deploy/scripts/install-musetalk-lipsync-models.sh
+docker compose up -d --build lipsync control-plane
+```
+
+```bash
+PORTRAIT_REF=$(curl --fail https://api.ai.b1.germering/v1/media/uploads \
+  -H "Authorization: Bearer $B1_API_KEY" \
+  -H "Content-Type: image/png" \
+  -H "X-B1-Field: portrait" \
+  --data-binary @portrait.png)
+
+AUDIO_REF=$(curl --fail https://api.ai.b1.germering/v1/media/uploads \
+  -H "Authorization: Bearer $B1_API_KEY" \
+  -H "Content-Type: audio/wav" \
+  -H "X-B1-Field: audio" \
+  --data-binary @dialogue.wav)
+```
+
+The job request shape is:
+
+```json
+{
+  "modality": "video",
+  "operation": "talking-head-lipsync",
+  "model": "talking-head-lipsync",
+  "input": {
+    "portrait_artifact_id": "upload_or_staged_reference",
+    "audio_artifact_id": "upload_or_staged_reference",
+    "audio_sha256": "64-character-sha256",
+    "timing": {
+      "schema_version": "b1_voice_timing.v1",
+      "generation_id": "gen_optional",
+      "audio_sha256": "same-64-character-sha256",
+      "phoneme_timestamps": [],
+      "viseme_timestamps": []
+    },
+    "width": 1280,
+    "height": 720,
+    "fps": 24,
+    "duration_ms": 1500,
+    "performance_plan": {
+      "schema_version": "dialecticore.character_performance.v1",
+      "on_camera_energy": "measured",
+      "gaze_style": "reflective",
+      "head_motion": "subtle",
+      "expression_range": "warm",
+      "gesture_frequency": "occasional",
+      "signature_habit": "brief thoughtful pause before emphasis",
+      "variation_seed": 2104
+    }
+  },
+  "priority": "single_video",
+  "runtime_policy": "comfyui"
+}
+```
+
+`priority=single_video` is accepted for client compatibility and normalized to the scheduler's `video` priority. A completed job includes a video artifact and top-level evidence:
+
+```json
+{
+  "state": "completed",
+  "artifacts": [
+    {
+      "kind": "video",
+      "mime_type": "video/mp4",
+      "url": "/artifacts/talking-head-lipsync/job_id/0.mp4"
+    }
+  ],
+  "lip_sync": {
+    "mode": "audio_driven",
+    "backend": "b1-musetalk-v1.5",
+    "audio_sha256": "64-character-sha256",
+    "timing_sha256": "64-character-sha256",
+    "measured_offset_ms": 0,
+    "duration_ms": 1500,
+    "fps": 24
+  },
+  "performance": {
+    "mode": "audio_driven_character_performance",
+    "applied": true,
+    "plan_sha256": "64-character-sha256",
+    "variation_seed": 2104,
+    "backend": "b1-musetalk-protected-performance-compositor/v1"
+  }
+}
+```
+
+`input.performance_plan` is optional and is accepted only for `talking-head-lipsync`. It must contain exactly the fields in the example. The supported values are `restrained|measured|engaged`, `steady|reflective|responsive`, `minimal|subtle|expressive`, `contained|warm|animated`, and `none|occasional|frequent`, respectively. Invalid or future plan shapes return HTTP 422 with `detail.code=invalid_talking_head_performance_plan` or `unsupported_talking_head_performance_plan`; B1 never silently ignores a supplied plan and never falls back to generic image animation or the static smoke renderer for one.
+
+For a valid plan, MuseTalk remains responsible for the WAV-driven mouth articulation. The B1 protected-performance compositor applies sparse, deterministic head, gaze, expression, and torso cues only outside a feathered mouth region, keeps the exact MuseTalk audio track, and records `mouth_region_protected=true` in the artifact metadata. It is deliberately a constrained compositor, not a neural actor-performance or upper-body generation model. Repeating the same portrait bytes, WAV, timing payload, render settings, pinned MuseTalk version, and full plan returns the exact cached MP4. The render cache is content-bound, private to the appliance, and invalidated when any one of those inputs changes; a changed plan produces a new GPU render.
+
+Image generation jobs resolved to `localai` submit an OpenAI-compatible JSON request to `/v1/images/generations` using the resolved immutable model ID. Image edit jobs resolved to `localai` submit staged `image` and optional `mask` inputs as multipart files to `/v1/images/edits`; JSON data URLs are also accepted for edit inputs. Workflow-backed LocalAI edit jobs can use `runtime_parameter_mappings` to translate form fields such as `source_image` and `mask_image` into adapter fields such as `image` and `mask` before multipart submission. Text-to-video jobs submit JSON to `/v1/videos/generations`; image-to-video jobs submit staged or data-URL `image` input as multipart files to `/v1/videos/image-to-video`, with workflow-backed `source_image` fields mapped explicitly through `runtime_parameter_mappings`. Returned `b64_json`, `b64`, `base64`, `data:` URL, and same-origin LocalAI runtime URL media are stored under `$B1_ARTIFACT_ROOT/localai/...` and attached to the durable job with authenticated `/artifacts/...` URLs. Video outputs default to `video/mp4` when the runtime does not provide a more specific MIME type. If LocalAI returns no downloadable media, the job enters `recovery_required` with `failure_category=localai_no_media_artifacts`. GPU jobs whose selected runtime does not implement the requested modality/operation fail with `failure_category=unsupported_gpu_operation` and no artifact; that includes non-speech Voicebox media jobs until their real media adapters are implemented.
+
+TTS jobs resolved to `voicebox` submit JSON to the internal Voicebox `/v1/audio/speech` endpoint after the GPU lease is held. Returned audio bytes are stored under `$B1_ARTIFACT_ROOT/voicebox/...` with SHA-256 and byte metadata. Empty Voicebox responses move the job to `recovery_required` with `failure_category=voicebox_empty_speech`.
+
+Synchronous `POST /v1/audio/speech` resolves the public alias before forwarding. `audio-cpu` aliases proxy to the internal CPU runtime without a GPU lease and include the resolved model ID, `b1_resolved_model_version`, `b1_model_alias`, and `b1_cpu_residency_allowed` so Piper can select an installed runtime-view voice and the runtime can decide whether any CPU model object may remain cached. The cache decision is still refused locally when live available host RAM is below the configured reserve. If the default scaffold CPU engine is disabled by policy or the selected Piper model/binary is unavailable, the proxied call returns HTTP 503 with `b1_audio_cpu_engine_unavailable` rather than generating placeholder audio. GPU-backed Voicebox and internal OpenAI-compatible runtimes acquire the global scheduler lease when required, run the shared runtime preparation path, receive the resolved immutable model ID instead of the public alias, and receive only the control plane's authoritative `b1_resolved_model_version` marker. Non-streaming GPU-backed JSON/speech forwarding and native Voicebox speech renew the scheduler lease while the backend request is still running; if renewal fails, the control plane cancels the proxied call and returns `type=scheduler_lease_lost` rather than permitting overlapping GPU pipelines. External OpenAI-compatible speech runtimes use the configured adapter URL and encrypted-secret bearer token, and receive neither caller-supplied nor control-plane `b1_*` fields. If runtime load/warm preparation explicitly fails, the endpoint returns HTTP 503 with `detail.type=runtime_prepare_failed` and does not forward the request. The request body must be JSON.
+
+Synchronous `POST /v1/audio/transcriptions` resolves `model` from the JSON or multipart body, falling back to `X-B1-Model` and then `stt-default`. JSON requests may send `audio` as base64. A standard OpenAI-compatible multipart request may send one named `file` part with `audio/wav`, `audio/x-wav`, or `audio/mpeg`, plus `model`, `language`, and `response_format=verbose_json`. The control plane bounds the upload, identifies it from safe bytes rather than relying on the supplied MIME type, preserves `audio_mime_type` and `filename`, rewrites the public alias to the resolved model ID, strips caller-supplied `b1_*` fields, adds only its authoritative `b1_resolved_model_version`, `b1_model_alias`, and `b1_cpu_residency_allowed`, and forwards JSON to `audio-cpu`. Raw audio request bodies are also normalized to base64 with the request content type; `POST /v1/media/uploads` accepts the same raw WAV type with `X-B1-Field: audio` and returns a reusable `reference.id`. The default German narration-QC alias is `stt-default` (also available as `stt-german`) and resolves to `b1-vosk-small-de-0.15`; the retained English recognizer is `stt-english`. Vosk receives mono signed 16-bit PCM WAV; `audio/mpeg` is decoded locally to bounded mono 16 kHz PCM before recognition. Successful responses always contain a `text` string and include `language`, `duration_seconds`, and word timing data when Vosk supplies it. Unsupported or undecodable media is rejected with capability or media errors rather than being sent to a cloud service.
+
+Native ComfyUI `POST /prompt` requests create durable `workflow/comfyui-prompt` jobs as well. In production mode, the prompt must satisfy the live hardware/resource-policy gate before the durable job row is inserted. The proxy then waits for the global GPU lease, asks runtime-agent to unload other GPU runtimes, verifies the configured VRAM reserve, calls ComfyUI's load/warm hooks when present, and only then forwards the unchanged body. The production ComfyUI image provides those hooks through the B1 `b1_runtime_hooks` custom-node package; non-production images may still report unsupported hooks. Explicit hook failures return HTTP 503 with `detail.type=runtime_prepare_failed`, and the durable job records `failure_category=runtime_prepare_failed` without submitting a native prompt. It records scheduler admission as `load_time_ms`, records the native ComfyUI `prompt_id` as `native_prompt_id`, and holds the lease through a background history tracker until `/history/{prompt_id}` appears or the configured completion timeout is reached. Native prompt submissions also honor `Idempotency-Key`; exact replays return the stored native prompt ID after acceptance and never submit a duplicate prompt. The tracker records `run_time_ms` on completion, cancellation, timeout, or recovery-required outcomes and marks ComfyUI idle after confirmed completion or cancellation so the idle-unload policy can later free the runtime. Native `/ws` traffic is bridged bidirectionally with text and binary messages preserved. Text events with a known `prompt_id` update durable job stage/progress, mark execution errors failed, and stream `executed` output references from internal ComfyUI `/view` into artifact storage immediately; the history tracker retries any non-stored references at completion before deciding whether artifact ingestion requires recovery.
+
+## Job Artifacts
+
+`GET /v1/media/jobs/{job_id}/artifacts` lists artifact metadata recorded on a durable job. Artifact URLs use `/artifacts/{artifact_path}` and are served by the control plane, not by exposing the internal artifact-server.
+
+Artifact downloads require `jobs:read`. Ordinary callers can only download artifacts attached to their own job records; `admin` and `operator` roles can read artifacts for any recorded job they can inspect in Control Center. The internal artifact-server provides `GET`, `HEAD`, `Range`, `ETag`, `If-None-Match`, `Content-Length`, `Content-Range`, `X-Checksum-SHA256`, and private cache headers for generated artifacts. Artifact `ETag` values use the same `"sha256:{digest}"` shape as Model Hub blobs, so live evidence can compare stored metadata, response headers, and downloaded bytes without relying on mtime-derived validators. The control plane strips client `Authorization` before proxying and injects the generated `B1_ARTIFACT_SERVER_TOKEN_FILE` bearer token; direct internal artifact-server artifact/blob requests without that token fail closed. The storage service repeats path-control checks and refuses malformed percent escapes, invalid percent-encoded UTF-8, and symlink components before opening a file.
+
+ComfyUI-native artifacts also use `/artifacts/...` URLs and the same owner/scope checks. The normal completion path ingests `/history/{prompt_id}` outputs from internal ComfyUI `/view` into `$B1_ARTIFACT_ROOT/comfyui/...`, records byte count and SHA-256 metadata, and serves the stored file through the internal artifact-server. Metadata-only `source=comfyui_view` artifacts are still accepted as a fallback for in-flight or recovery-required jobs.
+
+## Catalog-Backed Aliases
+
+`GET /v1/models` and Model Hub catalog routes are loaded from `model-catalog/seed/aliases.json` plus `*.manifest.json` files under `model-catalog/seed`. `/v1/models` applies the persisted alias policy table before returning results, so disabled aliases and aliases not visible to the caller's role are omitted.
+
+Seeded aliases such as `chat-default`, `vision-default`, and `image-default` may exist before weights are installed. Inference and asynchronous media submission return a capability/dependency error when an alias is unknown, disabled by administrator policy, hidden from the caller role, has the wrong modality, violates `runtime_policy`, requests an operation not declared by the installed model manifest or selected runtime adapter, exceeds the resource policy, or is not backed by an installed manifest. Manifest load/install validates operations against the manifest modality and stores known synonyms under canonical operation names. Runtime checks normalize the documented endpoint names to the same model-operation taxonomy: for example `responses` is accepted for a `chat` model, `embeddings` for `embedding`, `speech` for `text-to-speech`, `audio-transcriptions` for `transcription`, and `image-generation` for `text-to-image`. The initial CPU placeholders for `embedding-default`, `tts-fast`, and `stt-default` are explicitly marked as CPU-resident candidates.
+
+## Model Lifecycle
+
+Administrative model management is exposed through:
+
+```bash
+curl -s https://api.ai.b1.germering/admin/models \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY"
+
+curl -s https://api.ai.b1.germering/admin/models/install-plan \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-fast"}'
+```
+
+All `/admin/models*` routes require an `admin` or `operator` role in addition to the listed `models:*` or `storage:*` scope. Service, creator, and user API keys that hold `models:read` must use `/v1/models` for inference-facing alias discovery or the Model Hub routes for permitted external synchronization; they cannot inspect or mutate Control Center model-management state.
+
+`GET /admin/models` returns the alias catalog, model profiles, catalog recommendations, installed model records, alias policies, and `acceptance_model_measurements`. The coverage object groups the default handoff aliases for LocalAI runtime acceptance, RTX 3060 GPU acceptance, and installed workflow acceptance, then reports each alias as ready only when it is installed, resolves to an immutable model record, has a persisted `ok` smoke run for that exact `model_id@version`, matches the expected runtime such as `localai`, `comfyui`, `voicebox`, or `audio-cpu`, and carries an `ok` runtime-hook proof correlated to the same alias/runtime/model version. Any hook that reports placeholder output blocks handoff. CPU-only `audio-cpu` handoff smoke must also prove `placeholder=false` and a real engine such as `piper`, `onnx`, or `vosk`; the scaffold engine cannot satisfy acceptance. It also returns `ready_count`, `blocked_count`, `ready_aliases`, `blocker_summary`, and `next_actions` plus the same values under `handoff_plan`, so Control Center and acceptance reports can tell operators whether to install a compatible manifest, repair alias resolution, select the required runtime, or rerun a persisted model smoke before expensive live acceptance tests.
+
+`POST /admin/models/install-plan` accepts exactly one of `{"model":"alias-or-model-id"}` for a manifest already known to the catalog, `{"manifest":{...}}` for an uploaded manifest object, or `{"manifest_url":"https://..."}` for a remote manifest JSON document. Remote manifest URLs must be public HTTPS URLs, must not contain credentials, fragments, or credential-like query parameters, are fetched with bounded redirects on the same host, and are capped at 2 MiB before JSON parsing and normal manifest validation. If a manifest declares `permissions.installable_by`, non-admin callers must hold one of those roles before install planning, source download staging, or final install can proceed. The plan reports source URL policy, licence acceptance requirement, file verification status under `$B1_DATA_ROOT/models/blobs/{sha256}`, total size, and the selected-host resource decision.
+
+`POST /admin/models/manifest-draft/huggingface-gguf` accepts a Hugging Face model-repository `.gguf` file URL and returns a normal uploaded-manifest payload for the existing install-plan, download-plan, download-create, and install routes. It accepts only `https://huggingface.co/.../{blob|resolve}/{revision}/...*.gguf`, rejects credentials, query strings, fragments, datasets, and spaces, derives the canonical `/resolve/` URL, reads Hugging Face hash/size/commit metadata with bounded redirect validation, and refuses floating revisions such as `main` unless Hugging Face exposes an immutable `x-repo-commit`. The generated draft is intentionally LocalAI/LLM-only and uses a licence-review placeholder by default, so operators must review the model card and acceptance requirements before staging or installing.
+
+`POST /admin/models/download-plan` uses the same model, uploaded-manifest, or remote-manifest-url payload and reports whether the current worker can stage the manifest's blobs. The worker supports HTTPS `direct-url` manifests and `huggingface` repository manifests. Direct-url manifests reject embedded username/password values and common credential query parameters such as `token`, `api_key`, or `signature`. Single-file direct-url manifests use `source.url` as the exact file URL. Multi-file direct-url manifests use `source.url` as a base URL ending in `/`; each safe manifest `files[].path` is appended and query strings/fragments on the base URL are rejected. Hugging Face manifests require `source.url` under `https://huggingface.co/...`, a simple branch/tag/commit `source.revision`, manifest file paths, and per-file SHA-256 values; the control plane derives `/resolve/{revision}/{path}` URLs instead of trusting arbitrary per-file URLs. `allow_download_override=true` lets an admin/operator queue a download despite alias, profile, runtime, operation, or resource warnings, and the response returns those entries under `warnings`; source URL policy, licence acceptance, unsafe paths, duplicate target hashes, existing bad blobs, and checksum/size requirements remain hard blockers.
+
+The download plan response includes aggregate `target_size_bytes`, aggregate `existing_partial_bytes`, `file_count`, `requires_license_acceptance`, `license_accepted`, top-level `warnings`, and `files[]` entries with per-file source URL, target blob path, partial path, verification status, and blockers.
+
+`POST /admin/models/downloads` requires `models:write` and `{"confirm":true}`. If the manifest declares `license.acceptance_required=true`, the same request must include `accept_license=true`; otherwise the queue request is rejected before any blob staging starts. Optional `credential_secret_name` must reference an active encrypted secret in category `model-download`. The queued record stores only the secret name and an `authenticated=true` marker in public responses. The background runner decrypts the token only when claiming the work, sends it as `Authorization: Bearer ...` only to the original source host, preserves `Range` when resuming, and never stores or logs the plaintext token. Direct-url redirects are bounded and must stay on the original host. Hugging Face redirects are bounded and allowed only to Hugging Face or known HF/CDN hosts; signed redirect URLs are not persisted. The runner writes each file to `$B1_DATA_ROOT/models/blobs/.partial/{sha256}.partial`, updates aggregate byte progress, verifies final size and SHA-256 per file, and atomically publishes blobs to `$B1_DATA_ROOT/models/blobs/{sha256}`. `GET /admin/models/downloads` lists recent records, `GET /admin/models/downloads/{download_id}` reads one record, and `DELETE /admin/models/downloads/{download_id}` cancels queued or paused work immediately or asks a running worker to stop at the next chunk boundary. `POST /admin/models/downloads/{download_id}/pause` pauses queued work immediately or marks running work `pausing` until the worker reaches the next chunk boundary; `POST /admin/models/downloads/{download_id}/resume` requeues a paused download without touching partial files. `POST /admin/models/downloads/{download_id}/retry` requeues only `failed` or `cancelled` downloads, preserves staged partial files and byte counters, clears the old error/cancellation fields, and lets the same worker resume and re-verify the manifest blobs.
+
+`POST /admin/models/install` uses the same payload plus `confirm=true` and optional `smoke_test=true`. If the manifest requires licence acceptance, `accept_license=true` is also required. The current implementation publishes only manifests whose required blobs are already present, size-matched, and SHA-256 verified. It creates runtime views under `$B1_DATA_ROOT/models/runtime-views/{runtime}/{model_id}/{version}`, hardlinks ordinary blobs, safely extracts supported archive-format blobs, stores the installed record in PostgreSQL, refreshes the catalog overlay, and refreshes workflow dependency readiness. When `smoke_test=true`, it immediately runs the installed model through the smoke-test endpoint path and returns that result.
+
+`POST /admin/models/{id}/versions/{version}/smoke-test` requires `models:write` and accepts optional `{"persist":true}`. In production mode, GPU models must pass the live hardware/resource-policy check before the control plane touches reservation state, takes the scheduler lease, unloads another runtime, or calls runtime hooks. After admission, GPU models acquire the global scheduler lease, unload other GPU runtimes, verify VRAM, call the selected runtime's optional load/warm/smoke hooks, record peak runtime-agent RAM/VRAM where available, and mark the runtime idle after the smoke attempt. CPU `audio-cpu` models call the runtime smoke hook without a GPU lease and report `peak_vram_mib=0`. A successful runtime `status=ok` appends a bounded `measurements` section to the stored manifest and updates `resource_estimate` conservatively from measured peaks, which can make future catalog admission stricter. Unsupported, unconfigured, or failed smoke hooks return their status and write an audit event but do not replace the stored estimate.
+
+`PUT /admin/models/aliases/{alias}/policy` requires `models:write` and accepts `enabled`, optional `preferred_runtime`, optional `idle_timeout_seconds` from 30 to 86400, optional `visibility_roles`, and `notes`. A preferred runtime override must name a known adapter and, when an installed manifest exists, must be listed by that manifest. Setting `enabled=false` refuses active jobs and active runtime reservations for that alias. While active runtime reservations exist for the alias, preferred-runtime and visibility-role changes are refused because they would alter alias resolution for a reserved GPU window; idle-timeout and notes-only updates remain allowed. Runtime reservation dependency reports include only reservation ID, owner, runtime, model alias, immutable model version, and expiry; reservation reasons and idempotency keys are not exposed. A blank `idle_timeout_seconds` uses `B1_GPU_DEFAULT_IDLE_TIMEOUT_SECONDS`, which defaults to 300 seconds. The response returns the persisted policy plus the refreshed alias projection. `DELETE /admin/models/aliases/{alias}/policy` requires `models:write`; if active reservations exist, reset is refused when it would change preferred runtime or visibility roles. Otherwise it removes the override row, refreshes catalog/workflow dependency status, audits the reset, and returns the seed/default alias projection.
+
+`DELETE /admin/models/{id}/versions/{version}` requires `models:write` and a JSON body `{"confirm":true}`. It refuses removal while active jobs or active Voicebox voice profiles reference the immutable model or one of its aliases, and while active runtime reservations reference the immutable model version, then reports dependent workflows, voice profiles, and scheduler reservations, moves runtime views to `$B1_DATA_ROOT/models/quarantine/runtime-views`, and marks the model record `quarantined`. It does not move authoritative blobs automatically.
+
+After a model record is quarantined, `GET /admin/models/{id}/versions/{version}/blob-quarantine-plan` requires `models:read` and reports which content-addressed blobs can be moved out of the authoritative library. The plan refuses installed records, active job references, active runtime reservation references, active Voicebox voice-profile references, blobs shared by any other model record, symlinked paths, missing files, size mismatches, SHA-256 mismatches, and pre-existing quarantine destinations. Runtime reservation dependency reports include only reservation ID, owner, runtime, model alias, immutable model version, and expiry; reservation reasons and idempotency keys are not exposed.
+
+`POST /admin/models/{id}/versions/{version}/blobs/quarantine` requires `models:write` and `{"confirm":true}`. It re-runs the same checks immediately before moving eligible blobs to `$B1_DATA_ROOT/models/quarantine/blobs/{model_id}/{version-timestamp}/{sha256}` and writes an audit event. This is recoverable storage staging, not permanent deletion.
+
+## Runtime Resolution
+
+The control plane has a versioned runtime-adapter registry for `localai`, `comfyui`, `voicebox`, `audio-cpu`, `openai-compatible`, and `generic-http`. `GET /admin/runtimes` returns current health plus a public adapter record with `capabilities` and `adapter_contract.version=b1-runtime-adapter/v1alpha1`. The public capabilities include both modalities and supported operations, and resolution requires the requested operation to match both the installed model manifest and the selected adapter. The contract names the scheduler surface, submission/event surface, lifecycle hook surface, runtime-agent unload/recovery control, metrics source, and method-level implementation status for capability discovery, model listing, health, validation, load/warm, submit/stream, progress/events, cancellation, unload, work discovery, metrics, failure classification, and recovery. If an adapter returns JSON with a body-level `status`, the control plane surfaces that status; for example, a policy-disabled scaffold `audio-cpu` runtime reports `unconfigured` with `details.capabilities` set to `false` for speech, transcription, and embeddings.
+
+External adapters are disabled unless `B1_ALLOW_EXTERNAL_PROVIDERS=true` and remain non-selectable unless their configured base URL passes the external-runtime URL policy. The policy requires HTTPS, rejects embedded credentials, query strings, fragments, relative path segments, malformed ports, malformed percent escapes, invalid percent-encoded UTF-8, private/loopback/link-local/reserved IP literals, hostnames that resolve to non-public IP addresses, and hostnames that cannot be resolved safely. `B1_OPENAI_COMPATIBLE_BASE_URL` may point at either an API root or a `/v1` base; OpenAI-style forwarding avoids duplicating `/v1`. Public adapter records include `configured` and `configuration_error` but never expose API keys.
+
+`GET /admin/runtimes/external-config` requires `runtimes:read` and administrator role. It returns database-managed or environment-fallback configuration records for `openai-compatible` and `generic-http`, the global `allow_external_providers` switch, status, validation errors, secret-name metadata, and the external-data warning. `PUT /admin/runtimes/external-config/{runtime}` requires `runtimes:write` and administrator role. The request body is `{"enabled":true,"base_url":"https://api.example.com/v1","api_key_secret_name":"remote:openai","confirm_external_data":true,"notes":"..."}`. `api_key_secret_name` is optional, but when present it must name an active encrypted secret in category `remote-provider`. Saving rebuilds the in-memory runtime registry and writes an audit event without logging the secret value.
+
+When a request uses a public alias, the resolver checks administrator alias policy, caller role visibility, modality, resource admission, installed manifest, runtime policy, and external-provider policy before selecting a runtime. A persisted preferred-runtime override takes precedence over the manifest default only when that runtime is compatible with the installed manifest; stale incompatible overrides are shown in admin metadata but ignored during resolution. Durable media jobs store the selected runtime and immutable `model_id@version` in PostgreSQL. `runtime_policy: non_comfy_only` excludes the server-side ComfyUI adapter and fails clearly when no non-Comfy runtime is compatible.
+
+For installed aliases resolved to an OpenAI-compatible runtime such as `localai` or the lightweight `audio-cpu` embedding path, `/v1/chat/completions`, `/v1/responses`, and `/v1/embeddings` forward to the selected internal runtime with `model` rewritten to the immutable manifest ID, `runtime_policy` stripped, and `b1_resolved_model_version` included so LAN runtimes can select the exact read-only model view. External OpenAI-compatible providers never receive that B1-internal field. Chat completions and Responses accept aliases whose modality is `llm` or `vlm`, so vision-language models can be used through the same OpenAI-style surfaces when the request payload supplies image content. Embeddings, audio, image, video, and media-job endpoints keep exact modality checks. GPU-backed synchronous calls acquire the global PostgreSQL scheduler lease, ask runtime-agent to unload other GPU runtimes, verify VRAM policy, call optional selected-runtime `/b1/runtime/load` and `/b1/runtime/warm` hooks, then release the lease after the response or stream completes. Streaming responses renew the lease periodically; the default synchronous inference lease TTL is `B1_SYNC_INFERENCE_LEASE_TTL_SECONDS=300`. If a load or warm hook reports an explicit failure status, synchronous JSON and streaming requests return HTTP 503 with a structured detail body containing `type=runtime_prepare_failed`, `operation`, `runtime`, `resolved_model`, `public_model`, and `retryable=false`; the runtime request is not forwarded. Responses include `b1_runtime`, `b1_resolved_model`, and `b1_public_model` metadata. A non-OpenAI-compatible runtime on a synchronous OpenAI-style endpoint returns a capability error instead of a scaffold response.
+
+`POST /v1/open-webui/chat/cancel` is an internal, authenticated integration endpoint used by Open WebUI's existing Stop action. It accepts an Open WebUI `chat_id`, signals the matching registered provider stream, and waits for controller cleanup before Open WebUI cancels its local background task. Only the generated `client_open_webui_internal` credential may call it. Repeated calls and calls for chats without an active stream are safe and return an inactive completed result.
+
+`GET /v1/tools` requires `models:read` and returns the currently executable B1-managed model tools as OpenAI-compatible function definitions. `GET /admin/model-tools` returns the same execution registry plus the effective policy and all administrator-visible custom definitions, including disabled definitions that can be re-enabled from Control Center. Tool use is explicit by request or by API-client policy: a client may include `b1_tools`, for example `[“web_search”,“web_fetch”]`, a custom tool name, or `[“*”]`, on a non-streaming `POST /v1/chat/completions` or `POST /v1/responses` request, and administrators may set `default_b1_tools` on API clients that cannot send B1-specific fields. Per-request `b1_tools` takes precedence; an explicit empty list disables client defaults for that call. The control plane strips B1-only request fields before forwarding, appends the enabled tool definitions to the standard `tools` array, executes only B1-recognized tool calls, appends standard `role=tool` messages, and repeats the model call up to `b1_tool_max_iterations` times, default `4` and maximum `8`. For Responses tool requests, convertible `instructions` and `input` messages are normalized through the same chat-compatible harness and the final answer is returned as a Responses-shaped object with `output_text`; ordinary Responses requests without request tools or API-client defaults still proxy to the selected runtime's native `/v1/responses` endpoint. For local runtimes or models that do not emit native OpenAI `tool_calls`, B1 also injects a strict text fallback protocol. A model may respond with only `{"b1_tool_call":{"name":"web_fetch","arguments":{"url":"https://example.com"}}}` or the same object inside a single JSON code fence; arbitrary prose is ignored. Repeated identical tool calls are not re-executed. If a model repeats a tool call or reaches the iteration limit after at least one successful tool result, the harness can return a bounded synthesized answer from the tool result rather than asking the same weak model to interpret raw JSON again; those responses include `b1_tool_answer_synthesized=true` and header `X-B1-Tool-Answer: synthesized`. Responses include `X-B1-Tool-Iterations`, `X-B1-Tools`, and, when applicable, `X-B1-Tool-Stop-Reason` such as `duplicate_tool_call` or `max_iterations`. Streaming tool loops are rejected with HTTP 422 in this implementation slice; ordinary streaming without tool defaults is unchanged.
+
+Agent/API clients that need native tool and reasoning continuity across separate requests can send an opaque `X-B1-Agent-Conversation` identifier (8-128 ASCII letters, digits, dots, underscores, or hyphens). On a B1-managed tool loop, the control plane encrypts the bounded structured transcript with the appliance master key, binds it to the authenticated client and model alias, and keeps it for 24 hours. A later request with the same header restores the transcript before the new input. This is intended for clients that send the next turn, or an exact canonical transcript, rather than an independently reconstructed chat history. The transcript is never returned to the browser, audit log, metrics, or ordinary chat response. It expires automatically; using the same identifier with another owner or alias is rejected. This feature is opt-in and is not a substitute for a client retaining its own visible conversation history.
+
+For GPT-OSS aliases, `reasoning_effort` accepts `low`, `medium`, or `high` on `/v1/chat/completions`. B1 forwards it through LocalAI 4.7+'s native request field, which supplies the value to the embedded Harmony template and renders `Reasoning: <level>` in Harmony's system header. The alias policy can persist the default setting. `chat-quality` and `gpt-oss-20b` default to `medium`; `gpt-oss-reasoning` defaults to `high`.
+
+The initial built-in tools are `web_search` and `web_fetch`. `web_search` uses the effective search endpoint template, defaulting to DuckDuckGo HTML search with `{query}` interpolation, and returns bounded title/URL results. `web_fetch` retrieves public HTTP/HTTPS URLs, returns a parsed HTML `title`, and accepts an optional `query` used for deterministic passage ranking. When `max_chars` is omitted, fetching uses a fast 5,000-character progressive budget; callers may explicitly request more up to the administrator's hard policy limit, normally 12,000. Cleaned pages are cached in-process for 15 minutes with a 32-entry least-recently-used bound, while passage selection is performed independently for every query. The cache contains no request credentials and is cleared on controller restart. Both tools reject embedded URL credentials, localhost, loopback, link-local, private, reserved, malformed, relative-path, and unsafe percent-encoded destinations unless an administrator explicitly changes the policy. Results are capped by the policy text limit, search result count by the policy search limit, and request time by the policy timeout. Environment variables `B1_MODEL_TOOLS_ENABLED`, `B1_MODEL_TOOLS_ALLOWED`, `B1_MODEL_TOOLS_ALLOW_PRIVATE_NETWORK`, `B1_MODEL_TOOLS_ALLOWED_HOSTS`, and the other `B1_MODEL_TOOLS_*` values provide the fallback policy; saving the policy from Control Center or `PUT /admin/model-tools/policy` persists a PostgreSQL override that is included in logical backups.
+
+Administrators can create custom tool definitions with `PUT /admin/model-tools/{name}` and remove them with `DELETE /admin/model-tools/{name}`. The current custom kind is `http-json`, with `{"kind":"http-json","display_name":"Ticket lookup","description":"...","parameters_schema":{...},"config":{"url":"https://service.example/api/tickets/{id}","method":"GET","json_result_path":"data.items.0.title","include_raw_json":false},"visibility_roles":["admin","creator"]}`. `url` may be a safe URL template with `{argument_name}` placeholders only in the path or query; scheme, host, port, and credentials cannot be templated. Placeholder values must be scalar model arguments, are URL-encoded before the request, and are removed from the remaining GET query parameters or POST JSON body. Other `GET` arguments are sent as query parameters; `POST` arguments are sent as a JSON body. JSON responses are bounded before being returned to the model. If `json_result_path` is set, it is a dot-separated object-key or array-index path resolved against the JSON response; the extracted value is returned as `extracted` when it fits the text cap or `extracted_text` when truncated. `include_raw_json=false` returns only the extracted value and metadata; otherwise small JSON responses are returned as `json`, while oversized JSON is returned as bounded `json_text` with `json_truncated=true`. Custom tool URLs use the same static and runtime URL safety policy as the built-ins, only `GET` and `POST` are accepted, and arbitrary request headers are rejected. Optional auth is configured through encrypted secrets in category `integration`: bearer auth uses `"auth":{"type":"bearer","secret_name":"integration:ticket-api"}`, while custom-header auth uses `"auth":{"type":"header","secret_name":"integration:ticket-api","header_name":"X-API-Key"}`. Header names are allowlisted to ordinary custom header syntax and cannot replace hop-by-hop, cookie, host, content, proxy, `Sec-*`, or user-agent headers. Public/admin tool records return the secret name and `secret_configured=true`, never the encrypted value or plaintext. Built-in tool names cannot be overridden. Prompts and tool results still pass through the selected local runtime; web/search/custom HTTP access itself necessarily contacts configured external websites or LAN services when requested and permitted by policy.
+
+`POST /admin/model-tools/{name}/execute` lets an administrator or operator run an enabled and role-visible model tool with explicit JSON arguments before allowing a model to use it. It requires `models:write`, uses the same policy, host allowlist, private-network setting, secret-backed auth, timeout, and bounded-result rules as model-initiated execution, returns `{"tool":"...","result":{...}}`, and records an audit event with only the tool name, success flag, and argument keys. It does not log argument values or tool results.
+
+After a queued GPU job or synchronous GPU-backed request finishes runtime preparation, the control plane records the selected runtime as idle with the public alias and immutable model version. The GPU job runner performs idle cleanup only when it has no claimable GPU job and can acquire the global scheduler lease. It then applies the alias idle timeout or the `B1_GPU_DEFAULT_IDLE_TIMEOUT_SECONDS` fallback, calls the runtime's `/b1/runtime/unload` hook, and falls back to runtime-agent `/v1/runtime-actions/{runtime}/unload` if the graceful hook does not confirm success. A confirmed `status=ok` clears the active model from runtime state; dry-run or unconfirmed unload attempts leave the model recorded for a later retry. The public admin unload route also clears persisted runtime state only after runtime-agent confirms `status=ok`.
+
+## Workflows
+
+Approved seed workflows under `workflows/approved` are imported into PostgreSQL on control-plane startup. The registry stores the immutable workflow JSON, input/output schemas, execution modality/operation/model alias, runtime policy, output MIME types, limits, visibility roles, backend policy, resource class, optional safe parameter presets, optional ComfyUI parameter mappings, optional runtime parameter mappings, and dependency readiness report.
+
+Custom ComfyUI node dependencies must use `{"type":"node","id":"...","version":"<40-char commit>"}`. The control plane checks those dependencies against the merged node-pin registry: `$B1_COMFYUI_NODE_PIN_REGISTRY`, defaulting to `/opt/b1/workflows/approved-node-pins.json`, plus the PostgreSQL `b1_comfyui_node_pins` table. Database rows override matching seed rows so operators can disable or supersede seed approvals without editing repository files. A node dependency is publishable only when the exact `(id, commit)` exists with `status: approved`; missing, disabled, superseded, or unpinned nodes produce `needs_dependencies` with the repository URL and approval metadata where available.
+
+`GET /admin/comfyui/node-pins` requires `workflows:read` and an administrator, operator, or creator role. It returns the merged seed/database registry with a `source` field for each pin. `POST /admin/comfyui/node-pins` requires administrator `workflows:write`, validates the exact node id, lowercase 40-character commit, credential-free HTTPS repository URL, optional SHA-256 dependency lock, and safe relative route prefixes, then writes the approval to PostgreSQL, refreshes workflow dependency status, and audits the mutation. An approved pin that exposes any `allowed_route_prefixes` must include `dependency_lock_sha256` so mutating custom-node APIs cannot be enabled without dependency-review evidence. `PATCH /admin/comfyui/node-pins/{node_id}/commits/{commit}` has the same administrator requirement and writes a PostgreSQL overlay for an existing seed or database pin. Logical backups include `b1_comfyui_node_pins`; restore-import preserves the approvals along with published workflows.
+
+Read endpoints require `workflows:read` and filter records by `visibility_roles` unless the caller has administrative wildcard scope. Governance readers with admin, operator, or creator role can call `GET /workflows/v1/published/{id}/versions` to inspect all stored versions, including unpublished rows retained for rollback. `POST /workflows/v1/validate`, `POST /workflows/v1/test`, `POST /workflows/v1/published`, restore, and unpublish operations require `workflows:write`. Publication records are allowed to persist with `status: needs_dependencies`; this keeps placeholder workflows visible while making uninstalled models, missing runtimes, or unapproved custom nodes explicit through `dependency_status`. `POST /workflows/v1/test` accepts either draft workflow JSON or a published `workflow_id`/`workflow_version` plus `parameters`, validates the same media-job schema/resource constraints without creating a job, and returns only parameter names/counts so prompt or media values are not echoed. Restore revalidates the stored manifest, clears `unpublished_at`, audits `reason_provided`, and does not delete newer versions. Control Center exposes the same operations as JSON import/edit, validate, test, publish, dependency inspection, version history, restore, and unpublish actions.
+
+The repository seeds starter placeholder workflows for image/video ComfyUI operations and runnable CPU starter workflows for TTS and transcription. These seed files include bounded safe parameter presets for Media Studio, but do not bundle weights or sample media; dependency readiness points operators to the required runtime/model aliases before execution. Presets are validated against the workflow input schema and resource limits at publication time, and may not include inline base64 media or staged-upload fields.
+
+When `POST /v1/media/jobs` includes `input.workflow_id` and `input.workflow_version`, the control plane treats it as a published-workflow job. It requires the workflow to be visible to the caller and dependency-ready, then verifies that the requested modality, operation, public model alias, and runtime policy match the workflow record. It also validates `input.parameters` against the workflow input schema, rejects unsupported fields when `additionalProperties=false`, enforces enum/string/number/boolean constraints, checks inline base64 media fields or staged-upload media references, and applies workflow resource limits such as `max_steps`, `max_frames`, `max_width`, `max_height`, `max_batch_size`, and `max_duration_seconds`. Adapter-specific workflow fields are translated only through explicit `runtime_parameter_mappings`; the control plane does not infer backend parameter names from UI labels.
+
+## Model Hub Blobs
+
+Blob downloads are authenticated through the control plane and served by the internal artifact-server. `GET` and `HEAD /modelhub/v1/blobs/{sha256}` require `modelhub:sync`, and the requested SHA-256 must be an exact 64-character hex digest belonging to a catalog manifest whose licence and execution mode mark it downloadable. The control plane normalizes uppercase hex to lowercase and rejects malformed digests with HTTP 422 before catalog authorization lookup, rate limiting, or proxying. If every allowed catalog record for the blob sets `license.acceptance_required=true` or top-level `requires_license_acceptance=true`, the request must include `X-B1-Accept-License: model_id@version`; otherwise the control plane returns HTTP 428 with the required model refs. Each authenticated subject is limited by the fixed-window `B1_MODELHUB_BLOB_REQUESTS_PER_MINUTE` policy before the request is proxied to storage with the generated internal artifact-server bearer token; exhausted windows return HTTP 429 with `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`. The internal storage service accepts only exact 64-character SHA-256 hex blob names, refuses symlinked blob paths, and re-hashes each blob before returning it.
+
+Supported blob response behaviour:
+
+- `ETag: "sha256:{digest}"`
+- `X-Checksum-SHA256`
+- `Content-Length`
+- `Accept-Ranges: bytes`
+- `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`
+- single-range `Range: bytes=start-end`, `bytes=start-`, and `bytes=-suffix`
+- `206 Partial Content` with `Content-Range`
+- `304 Not Modified` for matching `If-None-Match`
+- `416 Range Not Satisfiable` with `Content-Range: bytes */{size}`
+
+Inference-only model manifests remain visible in the catalog but are not downloadable. The Model Hub blob endpoint rejects unknown or non-downloadable catalog blobs before proxying to storage, returns `404` for allowed-but-absent blobs, and returns `409` if an on-disk blob checksum does not match its content-address.
+
+Model Hub catalog, model, version, and sync-plan responses redact manifest `source.url` fields before returning them to external consumers. The public value keeps only scheme, host, optional port, and path; usernames, passwords, query strings, fragments, signed URLs, and credential parameters are omitted and `url_redacted=true` is included when the URL changed. Model and version responses are also filtered through the caller's dedicated-client allowlist and manifest `visible_to` permissions before redaction. Administrators can still inspect the authoritative manifest source through the admin model-management APIs.
+
+## Model Hub Sync Plans
+
+`POST /modelhub/v1/sync/plan` accepts a requested model/alias list and the caller's local blob inventory:
+
+```json
+{
+  "models": ["chat-default"],
+  "installed_blobs": [
+    { "sha256": "0123...", "size_bytes": 123456 }
+  ]
+}
+```
+
+The response contains deterministic `keep`, `download`, `replace`, or `skip` actions. Requested model IDs and aliases must be simple B1 identifiers: alphanumeric first character, then only ASCII letters, digits, `.`, `_`, `+`, or `-`, with a 128-character maximum. Unsafe names are rejected with HTTP 422 before dedicated-client lookup, catalog authorization, or sync planning. Download actions include the blob URL, expected byte size, ETag, licence metadata, redacted source metadata, execution modes, resource estimate, and the resolved immutable model version. The planner filters candidate versions through the caller's Model Hub client allowlist and manifest role permissions before selecting a downloadable version, so a client never receives a sync action for a version it cannot download. Inference-only models, visible aliases without installed versions, and otherwise visible records without downloadable blobs return a `skip` action instead of a blob URL, with the same policy metadata so clients can explain why the model must be consumed through hosted inference or installed through Model Hub first. Versions blocked by Model Hub client policy or manifest download permissions return HTTP 403 rather than a skip.
+
+Official `b1-model-client sync` runs refuse `keep`, `download`, or `replace` actions whose sync metadata sets `requires_license_acceptance=true` or whose manifest sets `license.acceptance_required=true` unless the operator reruns with `--accept-license` or `B1_MODEL_CLIENT_ACCEPT_LICENSES=true` after reviewing `b1-model-client plan`. When accepted, the client sends `X-B1-Accept-License` with the resolved immutable model refs on each blob request that needs it.
+
+## Model Hub Clients
+
+Administrators can create dedicated Model Hub clients:
+
+```bash
+curl -s https://models.ai.b1.germering/modelhub/v1/clients \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY"
+
+curl -s https://models.ai.b1.germering/modelhub/v1/clients \
+  -H "Authorization: Bearer $B1_ADMIN_BOOTSTRAP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name":"workstation-1","allowed_models":["chat-default"],"cidr_allowlist":["192.168.2.0/24"]}'
+```
+
+The response includes a one-time API key scoped to `modelhub:read` and `modelhub:sync`. The control plane stores the backing API key as a salted PBKDF2 hash, records the Model Hub allowlist, and revokes both records when `DELETE /modelhub/v1/clients/{id}` is called. Explicit allowlist entries must be safe B1 identifiers and known catalog aliases or model IDs; unsafe values are rejected before catalog lookup. CIDR allowlists are canonicalized when the client is created or updated through `PUT /modelhub/v1/clients/{id}/cidr-allowlist`, then enforced on the backing API key plus Model Hub catalog, model, sync-plan, and blob requests. An empty CIDR list means no network restriction for that client; use explicit CIDRs for workstation keys.
+
+The control plane derives the effective client IP from the direct peer address unless the peer matches the active network policy's trusted proxy CIDRs. Only trusted proxy peers may supply `X-Forwarded-For` or `Forwarded` client addresses. The environment default comes from `B1_TRUSTED_PROXY_CIDRS`, and administrators can persist a live override through `/admin/network-policy` or the System tab.
+
+## Scheduler Lease
+
+`POST /admin/scheduler/lease` records the active GPU scheduler owner in PostgreSQL with an epoch and expiry time. At runtime the control plane also coordinates an expiring Redis owner key. A GPU lease is usable only when PostgreSQL grants the durable owner/epoch and Redis grants or renews the matching live owner/epoch key. Redis renewal and release use atomic exact-value checks so a stale process cannot refresh or delete a newer epoch; if Redis is configured but unavailable or held by another owner, acquisition fails closed and the PostgreSQL claim is released.
+
+Runtime reservations created through `/v1/runtime-reservations` are durable scheduler intent records for the GPU scheduler. Creation bounds runtime identifiers to 64 characters, model aliases to 128 safe B1 identifier characters, duration to 30-7200 seconds, and the optional reason to 500 characters, then stores the stripped identity used for idempotency comparisons. Creation validates that the requested alias is installed, compatible with the requested runtime, and targets a configured GPU runtime such as LocalAI, ComfyUI, or Voicebox; CPU-only and external runtimes are rejected because they do not participate in the one-GPU lease. In production mode, creation also requires the live `hardware:resource-policy` verdict to be `ok` before reservation conflict checks or database insertion. Creation supports owner-scoped `Idempotency-Key` replay before maintenance, catalog, hardware, and conflict checks; exact repeats return the original reservation, while reuse for a different runtime/model/duration/reason shape returns HTTP 409 without echoing either reason value. Creation returns HTTP 409 when another active reservation already owns the single-GPU window for a different owner/runtime/immutable model. Accepted reservations store the immutable resolved model version, expiry, owner, reason, and hidden idempotency key where supplied, and support owner-scoped read/cancel operations. Public and admin reservation responses expose `reason_provided` but never return the free-form reason text. Active reservations gate actual GPU execution: queued GPU jobs must match an active reservation's owner/runtime/immutable model when any reservation is active, and synchronous GPU inference requests are rejected before lease acquisition when they do not match the active reservation set. Expired reservations are marked `expired` during scheduler checks, reservation listing, direct reservation reads, idempotency-key replays, and cancellation attempts before their response is returned. Deleting an already expired or already cancelled reservation returns its current terminal state without recording a duplicate cancellation audit event.
+
+`GET /admin/runtime-reservations` requires `runtimes:read` plus administrator or operator role. It returns a bounded, filterable fleet view for Control Center with optional `status`, `runtime`, and `owner_id` query parameters. The Jobs tab also reads `GET /admin/scheduler/lease` so operators can compare queued work, reservations, and the current GPU scheduler owner from one screen.
+
+## OpenAPI
+
+The committed OpenAPI 3.1 contract is [openapi.json](./openapi.json). It is generated from the FastAPI application, not hand-edited:
+
+```bash
+make openapi
+make openapi-check
+make openapi-client
+make openapi-client-check
+```
+
+`make openapi-check` compares the committed schema against a fresh generated schema, and `make openapi-client-check` compares both committed web clients against that schema. Both checks are run by CI. Install `services/control-plane/requirements.txt` before running schema generation outside the Compose development environment. The deliberate future-route compatibility catch-all is excluded from the OpenAPI document; stable public/admin routes and explicit compatibility routes such as `/prompt` are included.

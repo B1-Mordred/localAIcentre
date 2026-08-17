@@ -1,0 +1,16 @@
+{
+  "id": "b1-poolside-laguna-xs-2.1-gguf-q4-k-m-localai",
+  "version": "1a37c0a5fb8c7a18e6106decb6be6327d1b63fa6",
+  "display_name": "Poolside Laguna XS 2.1 GGUF Q4_K_M",
+  "description": "Official Poolside Laguna XS 2.1 Q4_K_M GGUF for local agentic coding and long-horizon tool use. The B1 LocalAI profile preserves reasoning_content and tool-call history, uses the native Jinja template, auto-fits GPU layers on the 6 GB GPU, keeps MoE work on CPU, and uses quantized KV caches.",
+  "modality": "llm",
+  "operations": ["chat"],
+  "source": {"type": "huggingface", "url": "https://huggingface.co/poolside/Laguna-XS-2.1-GGUF", "revision": "1a37c0a5fb8c7a18e6106decb6be6327d1b63fa6"},
+  "files": [{"path": "Laguna-XS-2.1-Q4_K_M.gguf", "source_path": "Laguna-XS-2.1-Q4_K_M.gguf", "sha256": "1ac7079101fca5a6df8c5a7523a3c30ea7d1c0e4b1258090e7d6d4039287f6cb", "size_bytes": 20274300032, "format": "gguf", "quantization": "Q4_K_M"}],
+  "runtimes": ["localai"], "preferred_runtime": "localai",
+  "resource_estimate": {"vram_gib": 5.5, "ram_gib": 28.0, "disk_gib": 18.9, "context_tokens": 32768},
+  "license": {"name": "OpenMDW-1.1", "url": "https://huggingface.co/poolside/Laguna-XS-2.1-GGUF/blob/main/LICENSE.md", "redistribution": "downloadable", "attribution": "Poolside, Laguna XS 2.1 official GGUF conversion", "acceptance_required": true},
+  "execution_modes": ["hosted-inference", "downloadable"], "installation_status": "available", "aliases": ["chat-reasoning", "laguna-xs-2.1"], "visibility_roles": ["admin", "operator", "creator", "user", "service"], "runtime_adapter_versions": {"localai": "b1-runtime-adapter/v1alpha1"},
+  "runtime_smoke": {"schema": "b1-ai-hub-runtime-smoke/v1", "description": "Tiny non-streaming LocalAI chat completion using the generated Laguna Jinja/reasoning configuration.", "localai": {"request": {"path": "/v1/chat/completions", "method": "POST"}, "timeout_seconds": 900}},
+  "measurements": {"schema": "b1-ai-hub-model-measurements/v1", "updated_at": "2026-07-28T00:00:00+00:00", "source": "Official Poolside Laguna XS 2.1 GGUF repository revision and LFS digest. The 6 GB profile requires a local smoke run before the alias is promoted for ordinary use.", "original_resource_estimate": {"vram_gib": 5.5, "ram_gib": 28.0, "disk_gib": 18.9, "context_tokens": 32768}, "latest_resource_estimate": {"vram_gib": 5.5, "ram_gib": 28.0, "disk_gib": 18.9, "context_tokens": 32768}, "runs": [{"id": "laguna-xs-2.1-q4-k-m-catalog-metadata-20260728", "type": "catalog-metadata", "status": "ok", "runtime": "localai", "model_alias": "chat-reasoning", "resolved_model_version": "b1-poolside-laguna-xs-2.1-gguf-q4-k-m-localai@1a37c0a5fb8c7a18e6106decb6be6327d1b63fa6", "peak_vram_mib": 5632, "peak_ram_mib": 28672, "hook": {"status": "unconfirmed", "reason": "catalog_metadata_not_runtime_smoke"}}]}
+}

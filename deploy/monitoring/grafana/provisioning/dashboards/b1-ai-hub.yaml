@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: B1 AI Hub
+    orgId: 1
+    folder: B1 AI Hub
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/dashboards

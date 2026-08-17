@@ -1,0 +1,26 @@
+{
+  "id": "b1-studio-seated-character",
+  "version": "20260802.1",
+  "display_name": "B1 Identity-Preserving Seated Character",
+  "description": "Private-reference SD 1.5 img2img plus OpenPose ControlNet workflow that creates one matting-backed neutral seated character plate. The portrait conditions identity, the full-body reference conditions wardrobe/proportions, and the plate is later composed deterministically into a B1 studio panel.",
+  "modality": "image",
+  "operations": ["studio-seated-character"],
+  "source": {
+    "type": "catalog",
+    "url": "https://github.com/B1-Mordred/localAIcentre",
+    "revision": "20260802.1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "files": [{"path": "internal/b1-studio-seated-character", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size_bytes": 1, "format": "internal", "quantization": "fp16"}],
+  "runtimes": ["comfyui"],
+  "preferred_runtime": "comfyui",
+  "resource_estimate": {"vram_gib": 5.8, "ram_gib": 6.0, "disk_gib": 1.0, "max_resolution": "512x720", "max_frames": 1},
+  "license": {"name": "B1 internal workflow; SD 1.5 and ControlNet model licences apply", "url": "https://github.com/B1-Mordred/localAIcentre", "redistribution": "inference-only", "attribution": "B1 AI Hub, Stable Diffusion 1.5, and ControlNet.", "acceptance_required": false},
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": ["studio-seated-character"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "permissions": {"visible_to": ["admin", "operator", "creator", "user", "service"], "installable_by": ["admin"], "downloadable_by": [], "inference_roles": ["admin", "operator", "creator", "user", "service"]},
+  "runtime_adapter_versions": {"comfyui": "b1-studio-seated-character-runner/v1"},
+  "deprecation": {"status": "active"}
+}

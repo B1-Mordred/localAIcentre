@@ -1,0 +1,702 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+import re
+import ssl
+import sys
+import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from datetime import UTC, datetime
+from http.cookies import SimpleCookie
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tests.support.evidence import write_private_json  # noqa: E402
+
+
+SECURITY_EVIDENCE_FORMAT = "b1-ai-hub-security-acceptance/v1"
+SECURITY_REQUIRED_CHECKS = (
+    "unauthenticated_requests_rejected",
+    "under_scoped_requests_rejected",
+    "cors_credentials_not_wildcard",
+    "csrf_browser_mutation_rejected",
+    "comfyui_management_routes_blocked",
+    "import_ssrf_blocked",
+    "import_metadata_ssrf_blocked",
+    "import_private_network_blocked",
+    "import_plain_http_blocked",
+    "artifact_traversal_blocked",
+    "artifact_authorization_enforced",
+    "runtime_agent_mutation_guard",
+    "runtime_agent_arbitrary_runtime_rejected",
+    "runtime_agent_arbitrary_logs_rejected",
+    "logs_redacted",
+)
+
+ALLOW_INSECURE_HTTP_ENV = "B1_ACCEPTANCE_ALLOW_INSECURE_HTTP"
+SENSITIVE_BODY_KEYS = {
+    "api_key",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "cookie",
+    "csrf",
+    "key",
+    "password",
+    "secret",
+    "session",
+    "token",
+}
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def bounded(value: str, limit: int = 1000) -> str:
+    return value.strip()[:limit]
+
+
+def body_has_sensitive_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(marker in lowered for marker in SENSITIVE_BODY_KEYS) and item is not None and item != "":
+                return True
+            if body_has_sensitive_value(item):
+                return True
+    if isinstance(value, list):
+        return any(body_has_sensitive_value(item) for item in value)
+    return False
+
+
+@unittest.skipUnless(os.getenv("B1_SECURITY_LIVE_TEST") == "1", "set B1_SECURITY_LIVE_TEST=1 to run deployed security acceptance")
+class LiveSecurityAcceptanceTests(unittest.TestCase):
+    checks: dict[str, dict[str, Any]] = {}
+    samples: list[dict[str, Any]] = []
+    temp_api_client_id: str = ""
+    temp_artifact_reader_client_id: str = ""
+    artifact_reader_key: str = ""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.checks = {}
+        cls.samples = []
+        cls.temp_api_client_id = ""
+        cls.temp_artifact_reader_client_id = ""
+        cls.artifact_reader_key = os.getenv("B1_SECURITY_ARTIFACT_READER_API_KEY", "").strip()
+        cls.api_base = os.getenv("B1_SECURITY_API_BASE", "https://api.ai.b1.germering").rstrip("/")
+        cls.comfy_base = os.getenv("B1_SECURITY_COMFY_BASE", "https://comfy.ai.b1.germering").rstrip("/")
+        cls.api_key = os.getenv("B1_SECURITY_API_KEY") or os.getenv("B1_SMOKE_ADMIN_API_KEY") or os.getenv("B1_AI_HUB_API_KEY") or ""
+        cls.under_scoped_key = os.getenv("B1_SECURITY_UNDERSCOPED_API_KEY", "").strip()
+        cls.timeout_seconds = float(os.getenv("B1_SECURITY_TIMEOUT_SECONDS", "30"))
+        cls.api_host_header = os.getenv("B1_SECURITY_API_HOST_HEADER", "").strip()
+        cls.comfy_host_header = os.getenv("B1_SECURITY_COMFY_HOST_HEADER", "").strip()
+        cls.session_cookie_name = os.getenv("B1_SECURITY_SESSION_COOKIE_NAME", "b1_ai_hub_session")
+        cls.browser_cookie = os.getenv("B1_SECURITY_BROWSER_SESSION_COOKIE", "").strip()
+        if not cls.api_key:
+            raise unittest.SkipTest("set B1_SECURITY_API_KEY, B1_SMOKE_ADMIN_API_KEY, or B1_AI_HUB_API_KEY to an admin key")
+        if not cls.under_scoped_key and env_flag("B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT", False):
+            cls.under_scoped_key = cls.create_temp_under_scoped_client()
+        if not cls.under_scoped_key:
+            raise unittest.SkipTest("set B1_SECURITY_UNDERSCOPED_API_KEY or B1_SECURITY_CREATE_TEMP_UNDERSCOPED_CLIENT=1")
+        if not cls.artifact_reader_key:
+            cls.artifact_reader_key = cls.create_temp_artifact_reader_client()
+        if not cls.browser_cookie:
+            cls.browser_cookie = cls.login_browser_session()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls.temp_api_client_id:
+            try:
+                cls.request_json(
+                    cls.api_base,
+                    "DELETE",
+                    f"/admin/api-clients/{urllib.parse.quote(cls.temp_api_client_id)}",
+                    token=cls.api_key,
+                    allow_http_error=True,
+                )
+            except AssertionError:
+                pass
+        if cls.temp_artifact_reader_client_id:
+            try:
+                cls.request_json(
+                    cls.api_base,
+                    "DELETE",
+                    f"/admin/api-clients/{urllib.parse.quote(cls.temp_artifact_reader_client_id)}",
+                    token=cls.api_key,
+                    allow_http_error=True,
+                )
+            except AssertionError:
+                pass
+        evidence_path = os.getenv("B1_SECURITY_EVIDENCE", "").strip()
+        if not evidence_path:
+            return
+        path = Path(evidence_path)
+        status = "ok" if all(cls.checks.get(name, {}).get("status") == "ok" for name in SECURITY_REQUIRED_CHECKS) else "incomplete"
+        write_private_json(
+            path,
+            {
+                "format": SECURITY_EVIDENCE_FORMAT,
+                "generated_at": datetime.now(tz=UTC).isoformat(),
+                "base_url": cls.api_base,
+                "comfy_base_url": cls.comfy_base,
+                "status": status,
+                "required_checks": list(SECURITY_REQUIRED_CHECKS),
+                "checks": cls.checks,
+                "samples": cls.samples,
+            },
+        )
+
+    @classmethod
+    def ssl_context(cls, base_url: str) -> ssl.SSLContext | None:
+        if not base_url.lower().startswith("https://"):
+            return None
+        if not env_flag("B1_SECURITY_TLS_VERIFY", True):
+            return ssl._create_unverified_context()
+        ca_file = os.getenv("B1_SECURITY_CA_FILE", "").strip()
+        if ca_file:
+            return ssl.create_default_context(cafile=ca_file)
+        return ssl.create_default_context()
+
+    @classmethod
+    def host_header(cls, base_url: str) -> str:
+        if base_url == cls.comfy_base:
+            return cls.comfy_host_header
+        return cls.api_host_header
+
+    @classmethod
+    def enforce_sensitive_transport_security(cls, url: str, *, token: str = "", cookie: str = "", body: Any = None) -> None:
+        if not (token or cookie or body_has_sensitive_value(body)):
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and env_flag(ALLOW_INSECURE_HTTP_ENV):
+            return
+        raise RuntimeError(
+            "refusing to send B1 security acceptance credentials over plain HTTP; use HTTPS "
+            f"or set {ALLOW_INSECURE_HTTP_ENV}=true only for an isolated development harness"
+        )
+
+    @classmethod
+    def request_raw(
+        cls,
+        base_url: str,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | bytes | None = None,
+        token: str = "",
+        headers: dict[str, str] | None = None,
+        cookie: str = "",
+        allow_http_error: bool = False,
+    ) -> tuple[int, dict[str, str], bytes]:
+        request_headers = dict(headers or {})
+        request_headers.setdefault("Accept", "application/json")
+        host = cls.host_header(base_url)
+        if host:
+            request_headers["Host"] = host
+        if token:
+            request_headers["Authorization"] = f"Bearer {token}"
+        if cookie:
+            request_headers["Cookie"] = cookie
+        data: bytes | None
+        if isinstance(body, dict):
+            data = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/json")
+        else:
+            data = body
+        url = urllib.parse.urljoin(base_url + "/", path.lstrip("/"))
+        cls.enforce_sensitive_transport_security(url, token=token, cookie=cookie, body=body)
+        request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=cls.timeout_seconds, context=cls.ssl_context(base_url)) as response:
+                return int(getattr(response, "status", response.getcode())), dict(response.headers.items()), response.read()
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read()
+            if allow_http_error:
+                return int(exc.code), dict(exc.headers.items()), body_bytes
+            raise AssertionError(f"{method} {path} returned HTTP {exc.code}: {body_bytes[:300]!r}") from exc
+        except urllib.error.URLError as exc:
+            raise AssertionError(f"{method} {path} failed: {exc.reason}") from exc
+
+    @classmethod
+    def request_json(
+        cls,
+        base_url: str,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+        token: str = "",
+        headers: dict[str, str] | None = None,
+        cookie: str = "",
+        allow_http_error: bool = False,
+    ) -> tuple[int, dict[str, str], Any]:
+        status, response_headers, raw = cls.request_raw(
+            base_url,
+            method,
+            path,
+            body=body,
+            token=token,
+            headers=headers,
+            cookie=cookie,
+            allow_http_error=allow_http_error,
+        )
+        if not raw:
+            return status, response_headers, None
+        try:
+            return status, response_headers, json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return status, response_headers, {"non_json_body": raw[:300].decode("utf-8", errors="replace")}
+
+    @classmethod
+    def create_temp_under_scoped_client(cls) -> str:
+        display_name = f"security-acceptance-{uuid.uuid4().hex[:8]}"
+        status, _headers, payload = cls.request_json(
+            cls.api_base,
+            "POST",
+            "/admin/api-clients",
+            body={"display_name": display_name, "role": "user", "scopes": ["models:read"], "cidr_allowlist": []},
+            token=cls.api_key,
+            allow_http_error=True,
+        )
+        if status != 200 or not isinstance(payload, dict) or not payload.get("api_key"):
+            raise unittest.SkipTest(f"could not create temporary under-scoped API client: HTTP {status}")
+        cls.temp_api_client_id = str(payload.get("id") or "")
+        return str(payload["api_key"])
+
+    @classmethod
+    def create_temp_artifact_reader_client(cls) -> str:
+        display_name = f"artifact-auth-acceptance-{uuid.uuid4().hex[:8]}"
+        status, _headers, payload = cls.request_json(
+            cls.api_base,
+            "POST",
+            "/admin/api-clients",
+            body={"display_name": display_name, "role": "user", "scopes": ["jobs:read"], "cidr_allowlist": []},
+            token=cls.api_key,
+            allow_http_error=True,
+        )
+        if status != 200 or not isinstance(payload, dict) or not payload.get("api_key"):
+            raise unittest.SkipTest(f"could not create temporary artifact-reader API client: HTTP {status}")
+        cls.temp_artifact_reader_client_id = str(payload.get("id") or "")
+        return str(payload["api_key"])
+
+    @classmethod
+    def login_browser_session(cls) -> str:
+        username = os.getenv("B1_SECURITY_BROWSER_USERNAME", "").strip()
+        password = os.getenv("B1_SECURITY_BROWSER_PASSWORD", "")
+        if not username or not password:
+            raise unittest.SkipTest("set B1_SECURITY_BROWSER_SESSION_COOKIE or B1_SECURITY_BROWSER_USERNAME/B1_SECURITY_BROWSER_PASSWORD")
+        status, headers, payload = cls.request_json(
+            cls.api_base,
+            "POST",
+            "/auth/login",
+            body={"username": username, "password": password},
+            allow_http_error=True,
+        )
+        if status != 200 or not isinstance(payload, dict) or payload.get("authenticated") is not True:
+            raise unittest.SkipTest(f"browser login failed for CSRF acceptance check: HTTP {status}")
+        cookie = SimpleCookie()
+        cookie.load(headers.get("Set-Cookie", ""))
+        morsel = cookie.get(cls.session_cookie_name)
+        if morsel is None or not morsel.value:
+            raise unittest.SkipTest("browser login did not return the configured session cookie")
+        return f"{cls.session_cookie_name}={morsel.value}"
+
+    def record_check(self, name: str, status: str = "ok", **data: Any) -> None:
+        self.checks[name] = {
+            "status": status,
+            "recorded_at": datetime.now(tz=UTC).isoformat(),
+            **data,
+        }
+
+    def sample(self, label: str, **data: Any) -> None:
+        self.samples.append({"label": label, **data})
+
+    def test_deployed_security_controls(self) -> None:
+        self.verify_unauthenticated_rejected()
+        self.verify_under_scoped_rejected()
+        self.verify_cors_denied_without_wildcard_credentials()
+        self.verify_csrf_browser_mutation_rejected()
+        self.verify_comfyui_management_route_blocked()
+        self.verify_import_url_policy_blocked()
+        self.verify_artifact_traversal_blocked()
+        self.verify_artifact_authorization_enforced()
+        self.verify_runtime_agent_mutation_guard()
+        self.verify_runtime_agent_arbitrary_operations_rejected()
+        self.verify_logs_redacted()
+
+    def verify_unauthenticated_rejected(self) -> None:
+        status, _headers, payload = self.request_json(self.api_base, "GET", "/admin/self-test", allow_http_error=True)
+        self.assertEqual(status, 401, payload)
+        self.record_check("unauthenticated_requests_rejected", path="/admin/self-test", http_status=status)
+        self.sample("unauthenticated-admin", path="/admin/self-test", http_status=status)
+
+    def verify_under_scoped_rejected(self) -> None:
+        status, _headers, status_payload = self.request_json(
+            self.api_base,
+            "GET",
+            "/auth/status",
+            token=self.under_scoped_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 200, status_payload)
+        self.assertIsInstance(status_payload, dict)
+        self.assertTrue(status_payload.get("authenticated"), status_payload)
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            "/admin/self-test",
+            token=self.under_scoped_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 403, payload)
+        self.record_check(
+            "under_scoped_requests_rejected",
+            auth_status=bool(status_payload.get("authenticated")),
+            rejected_path="/admin/self-test",
+            http_status=status,
+            temporary_client=bool(self.temp_api_client_id),
+        )
+        self.sample("under-scoped-admin", path="/admin/self-test", http_status=status)
+
+    def verify_cors_denied_without_wildcard_credentials(self) -> None:
+        origin = os.getenv("B1_SECURITY_BLOCKED_ORIGIN", "https://evil.example").strip()
+        status, headers, payload = self.request_json(
+            self.api_base,
+            "OPTIONS",
+            "/admin/self-test",
+            headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+            allow_http_error=True,
+        )
+        header_map = {key.lower(): value for key, value in headers.items()}
+        self.assertEqual(status, 400, payload)
+        self.assertNotEqual(header_map.get("access-control-allow-origin"), "*")
+        self.assertFalse(
+            header_map.get("access-control-allow-origin") == "*" and header_map.get("access-control-allow-credentials", "").lower() == "true"
+        )
+        self.record_check(
+            "cors_credentials_not_wildcard",
+            blocked_origin=origin,
+            http_status=status,
+            allow_origin=header_map.get("access-control-allow-origin", ""),
+            allow_credentials=header_map.get("access-control-allow-credentials", ""),
+            wildcard_credentials=False,
+        )
+        self.sample("cors-denied-origin", http_status=status, allow_origin=header_map.get("access-control-allow-origin", ""))
+
+    def verify_csrf_browser_mutation_rejected(self) -> None:
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "POST",
+            "/admin/network-policy/validate",
+            body={"cors_allow_origins": [], "trusted_proxy_cidrs": []},
+            cookie=self.browser_cookie,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 403, payload)
+        self.assertIn("CSRF", json.dumps(payload, sort_keys=True))
+        self.record_check("csrf_browser_mutation_rejected", path="/admin/network-policy/validate", http_status=status)
+        self.sample("csrf-missing-token", path="/admin/network-policy/validate", http_status=status)
+
+    def verify_comfyui_management_route_blocked(self) -> None:
+        path = os.getenv("B1_SECURITY_COMFY_DENIED_PATH", "/api/manager/install")
+        status, _headers, payload = self.request_json(
+            self.comfy_base,
+            "POST",
+            path,
+            body={"url": "https://example.invalid/node"},
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 403, payload)
+        self.assertIn("comfyui_route_denied", json.dumps(payload, sort_keys=True))
+        self.record_check("comfyui_management_routes_blocked", path=path, http_status=status, authenticated_probe=True)
+        self.sample("comfyui-manager-denied", path=path, http_status=status)
+
+    def assert_import_url_rejected(self, check_name: str, manifest_url: str, *, policy_case: str) -> None:
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "POST",
+            "/admin/models/download-plan",
+            body={"manifest_url": manifest_url},
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 422, payload)
+        payload_text = json.dumps(payload, sort_keys=True)
+        self.assertRegex(payload_text, r"public HTTPS URL|private|loopback|link-local|SSRF|scheme")
+        parsed = urllib.parse.urlsplit(manifest_url)
+        self.record_check(
+            check_name,
+            path="/admin/models/download-plan",
+            http_status=status,
+            policy_case=policy_case,
+            rejected_scheme=parsed.scheme,
+            rejected_host=parsed.hostname or "",
+        )
+        self.sample(check_name.replace("_", "-"), http_status=status, rejected_host=parsed.hostname or "")
+
+    def verify_import_url_policy_blocked(self) -> None:
+        self.assert_import_url_rejected(
+            "import_ssrf_blocked",
+            os.getenv("B1_SECURITY_SSRF_MANIFEST_URL", "http://127.0.0.1:1/manifest.json"),
+            policy_case="loopback-ssrf",
+        )
+        self.assert_import_url_rejected(
+            "import_metadata_ssrf_blocked",
+            os.getenv("B1_SECURITY_METADATA_MANIFEST_URL", "https://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+            policy_case="link-local-metadata",
+        )
+        self.assert_import_url_rejected(
+            "import_private_network_blocked",
+            os.getenv("B1_SECURITY_PRIVATE_MANIFEST_URL", "https://172.17.0.1/manifest.json"),
+            policy_case="private-network",
+        )
+        self.assert_import_url_rejected(
+            "import_plain_http_blocked",
+            os.getenv("B1_SECURITY_HTTP_MANIFEST_URL", "http://example.com/manifest.json"),
+            policy_case="plain-http",
+        )
+
+    def verify_artifact_traversal_blocked(self) -> None:
+        path = os.getenv("B1_SECURITY_TRAVERSAL_ARTIFACT_PATH", "/artifacts/%2e%2e/secrets/master_encryption_key")
+        status, _headers, body = self.request_raw(self.api_base, "GET", path, token=self.api_key, allow_http_error=True)
+        self.assertIn(status, {400, 403, 404}, body[:300])
+        self.assertLess(len(body), 4096)
+        self.record_check("artifact_traversal_blocked", path=path, http_status=status, response_bytes=len(body))
+        self.sample("artifact-traversal-denied", path=path, http_status=status)
+
+    def resolve_artifact_url_for_authorization_check(self) -> str:
+        configured_url = os.getenv("B1_SECURITY_ARTIFACT_URL", "").strip()
+        if configured_url:
+            return self.internal_artifact_path(configured_url)
+        job_id = os.getenv("B1_SECURITY_ARTIFACT_JOB_ID", "").strip()
+        if job_id:
+            status, _headers, payload = self.request_json(
+                self.api_base,
+                "GET",
+                f"/v1/media/jobs/{urllib.parse.quote(job_id)}/artifacts",
+                token=self.api_key,
+                allow_http_error=True,
+            )
+            self.assertEqual(status, 200, payload)
+            url = self.first_artifact_url(payload)
+            if url:
+                return url
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            "/admin/jobs?state=completed&limit=50",
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        for job in payload.get("data") or []:
+            if not isinstance(job, dict):
+                continue
+            url = self.first_artifact_url(job)
+            if url:
+                return url
+        raise AssertionError("set B1_SECURITY_ARTIFACT_URL or B1_SECURITY_ARTIFACT_JOB_ID; no recent completed artifact was found")
+
+    def first_artifact_url(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            return ""
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            url = artifact.get("url")
+            if isinstance(url, str) and url:
+                return self.internal_artifact_path(url)
+        return ""
+
+    def internal_artifact_path(self, value: str) -> str:
+        parsed = urllib.parse.urlsplit(value)
+        path = parsed.path if parsed.scheme or parsed.netloc else value
+        if not path.startswith("/artifacts/"):
+            raise AssertionError(f"artifact authorization check requires an internal /artifacts URL, got {value!r}")
+        return path
+
+    def verify_artifact_authorization_enforced(self) -> None:
+        path = self.resolve_artifact_url_for_authorization_check()
+        authorized_status, authorized_headers, authorized_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.api_key,
+            headers={"Range": "bytes=0-0"},
+            allow_http_error=True,
+        )
+        authorized_header_map = {key.lower(): value for key, value in authorized_headers.items()}
+        self.assertEqual(authorized_status, 206, authorized_body[:300])
+        self.assertEqual(len(authorized_body), 1)
+        content_range = authorized_header_map.get("content-range", "")
+        self.assertTrue(content_range.startswith("bytes 0-0/"), content_range)
+        self.assertEqual(authorized_header_map.get("content-length"), "1")
+        self.assertTrue(authorized_header_map.get("content-type"), authorized_headers)
+        unauth_status, _unauth_headers, unauth_body = self.request_raw(self.api_base, "GET", path, allow_http_error=True)
+        self.assertEqual(unauth_status, 401, unauth_body[:300])
+        under_scoped_status, _under_headers, under_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.under_scoped_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(under_scoped_status, 403, under_body[:300])
+        other_owner_status, _other_headers, other_body = self.request_raw(
+            self.api_base,
+            "GET",
+            path,
+            token=self.artifact_reader_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(other_owner_status, 403, other_body[:300])
+        self.record_check(
+            "artifact_authorization_enforced",
+            path=path,
+            authorized_status=authorized_status,
+            authorized_byte_count=len(authorized_body),
+            authorized_sha256=hashlib.sha256(authorized_body).hexdigest(),
+            authorized_content_range=content_range,
+            authorized_content_length=authorized_header_map.get("content-length", ""),
+            authorized_content_type=authorized_header_map.get("content-type", ""),
+            authorized_etag=authorized_header_map.get("etag", ""),
+            unauthenticated_status=unauth_status,
+            under_scoped_status=under_scoped_status,
+            other_owner_status=other_owner_status,
+            temporary_reader_client=bool(self.temp_artifact_reader_client_id),
+        )
+        self.sample(
+            "artifact-authorization-denied",
+            path=path,
+            authorized_status=authorized_status,
+            authorized_byte_count=len(authorized_body),
+            unauthenticated_status=unauth_status,
+            under_scoped_status=under_scoped_status,
+            other_owner_status=other_owner_status,
+        )
+
+    def verify_runtime_agent_mutation_guard(self) -> None:
+        status, _headers, payload = self.request_json(self.api_base, "GET", "/admin/self-test", token=self.api_key, allow_http_error=True)
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        checks = payload.get("checks")
+        self.assertIsInstance(checks, list)
+        guard = next((check for check in checks if isinstance(check, dict) and check.get("name") == "runtime-agent:mutation-guard"), None)
+        self.assertIsInstance(guard, dict)
+        self.assertEqual(guard.get("status"), "ok", guard)
+        data = guard.get("data")
+        self.assertIsInstance(data, dict)
+        self.assertIs(data.get("auth_configured"), True)
+        self.assertIs(data.get("allow_missing_auth"), False)
+        self.assertIs(data.get("mtls_enabled"), True)
+        self.assertIs(data.get("client_cert_required"), True)
+        rate_limit = data.get("mutation_rate_limit_per_minute")
+        self.assertIsInstance(rate_limit, int)
+        self.assertGreater(rate_limit, 0)
+        allowed_services = data.get("allowed_services")
+        runtime_action_services = data.get("runtime_action_services")
+        self.assertIsInstance(allowed_services, list)
+        self.assertIsInstance(runtime_action_services, list)
+        self.assertTrue(allowed_services)
+        self.assertTrue(runtime_action_services)
+        self.record_check(
+            "runtime_agent_mutation_guard",
+            path="/admin/self-test",
+            http_status=status,
+            auth_configured=data.get("auth_configured"),
+            allow_missing_auth=data.get("allow_missing_auth"),
+            mtls_enabled=data.get("mtls_enabled"),
+            client_cert_required=data.get("client_cert_required"),
+            mutation_rate_limit_per_minute=rate_limit,
+            allowed_service_count=len(allowed_services),
+            runtime_action_service_count=len(runtime_action_services),
+        )
+        self.sample("runtime-agent-mutation-guard", path="/admin/self-test", http_status=status)
+
+    def verify_runtime_agent_arbitrary_operations_rejected(self) -> None:
+        runtime = os.getenv("B1_SECURITY_FORBIDDEN_RUNTIME", "postgres")
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "POST",
+            f"/admin/runtimes/{urllib.parse.quote(runtime)}/recover",
+            body={"reason": "security acceptance must reject arbitrary runtime names", "timeout_seconds": 1},
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertIn(status, {404, 422}, payload)
+        self.record_check("runtime_agent_arbitrary_runtime_rejected", runtime=runtime, http_status=status)
+        self.sample("runtime-agent-arbitrary-runtime-denied", runtime=runtime, http_status=status)
+
+        service = os.getenv("B1_SECURITY_FORBIDDEN_LOG_SERVICE", "postgres")
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            f"/admin/services/{urllib.parse.quote(service)}/logs?lines=1",
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 404, payload)
+        self.record_check("runtime_agent_arbitrary_logs_rejected", service=service, http_status=status)
+        self.sample("runtime-agent-arbitrary-logs-denied", service=service, http_status=status)
+
+    def verify_logs_redacted(self) -> None:
+        service = os.getenv("B1_SECURITY_LOG_SERVICE", "control-plane")
+        lines = int(os.getenv("B1_SECURITY_LOG_LINES", "200"))
+        status, _headers, payload = self.request_json(
+            self.api_base,
+            "GET",
+            f"/admin/services/{urllib.parse.quote(service)}/logs?lines={max(1, min(lines, 500))}",
+            token=self.api_key,
+            allow_http_error=True,
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIsInstance(payload, dict)
+        entries = payload.get("entries")
+        self.assertIsInstance(entries, list)
+        text = "\n".join(str(entry) for entry in entries)
+        secret_values = [
+            self.api_key,
+            self.under_scoped_key,
+            os.getenv("B1_SECURITY_BROWSER_PASSWORD", ""),
+            os.getenv("B1_SECURITY_SECRET_CANARY", ""),
+        ]
+        for value in secret_values:
+            if value:
+                self.assertNotIn(value, text)
+        self.assertNotIn("github_pat_", text)
+        self.assertIsNone(re.search(r"Authorization:\s*Bearer\s+(?!<redacted>)[A-Za-z0-9._~+/=-]+", text, re.IGNORECASE))
+        self.record_check(
+            "logs_redacted",
+            service=service,
+            http_status=status,
+            line_count=len(entries),
+            secret_values_checked=len([value for value in secret_values if value]),
+            github_pat_absent=True,
+            bearer_tokens_redacted=True,
+        )
+        self.sample("service-logs-redacted", service=service, http_status=status, line_count=len(entries))
+
+
+if __name__ == "__main__":
+    unittest.main()

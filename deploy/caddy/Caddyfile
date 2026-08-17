@@ -1,0 +1,148 @@
+{
+	admin 127.0.0.1:2019
+	local_certs
+	servers {
+		protocols h1 h2
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+(media_capture_security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+		-Server
+	}
+}
+
+(b1_tls) {
+	tls {$B1_CADDY_TLS_ARGS:internal}
+}
+
+(request_limits) {
+	request_body {
+		max_size {$B1_CADDY_REQUEST_BODY_LIMIT:268435456}
+	}
+}
+
+http://{$B1_HOST_CHAT:ai.b1.germering} {
+	@caddy_root path /b1-caddy-root.crt
+	handle @caddy_root {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header {
+			Content-Type application/x-x509-ca-cert
+			Content-Disposition "attachment; filename=b1-caddy-root.crt"
+			Cache-Control "no-store"
+			X-Content-Type-Options "nosniff"
+			X-B1-CA-SHA256 "326339ee673c53ecca71b7006b177996dbec2c5166b94b2e3cfd56060612bb0c"
+			-Server
+		}
+		file_server
+	}
+
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}
+
+{$B1_HOST_CHAT:ai.b1.germering} {
+	import b1_tls
+	import media_capture_security_headers
+	import request_limits
+	reverse_proxy open-webui:8080 {
+		header_up -X-B1-Compatibility
+	}
+}
+
+{$B1_HOST_CONTROL:control.ai.b1.germering} {
+	import b1_tls
+	import security_headers
+	import request_limits
+	@control_api path /auth/* /admin/* /v1/* /modelhub/* /workflows/* /healthz /openapi.json
+	handle @control_api {
+		reverse_proxy control-plane:8000 {
+			header_up -X-B1-Compatibility
+		}
+	}
+	handle {
+		reverse_proxy control-center:8080 {
+			header_up -X-B1-Compatibility
+		}
+	}
+}
+
+{$B1_HOST_MEDIA:media.ai.b1.germering} {
+	import b1_tls
+	import media_capture_security_headers
+	import request_limits
+	@media_api path /auth/* /admin/* /v1/* /modelhub/* /workflows/* /healthz /openapi.json
+	handle @media_api {
+		reverse_proxy control-plane:8000 {
+			header_up -X-B1-Compatibility
+		}
+	}
+	handle {
+		reverse_proxy media-studio:8080 {
+			header_up -X-B1-Compatibility
+		}
+	}
+}
+
+{$B1_HOST_API:api.ai.b1.germering} {
+	import b1_tls
+	import security_headers
+	import request_limits
+	reverse_proxy control-plane:8000 {
+		header_up -X-B1-Compatibility
+	}
+}
+
+{$B1_HOST_MODELS:models.ai.b1.germering} {
+	import b1_tls
+	import security_headers
+	import request_limits
+	reverse_proxy control-plane:8000 {
+		header_up -X-B1-Compatibility
+	}
+}
+
+{$B1_HOST_COMFY:comfy.ai.b1.germering} {
+	import b1_tls
+	import security_headers
+	import request_limits
+	reverse_proxy control-plane:8000 {
+		header_up X-B1-Compatibility comfyui-native
+	}
+}
+
+{$B1_HOST_VOICE:voice.ai.b1.germering} {
+	import b1_tls
+	import media_capture_security_headers
+	import request_limits
+	reverse_proxy control-plane:8000 {
+		header_up X-B1-Compatibility voicebox-native
+	}
+}
+
+{$B1_HOST_MONITORING:monitoring.ai.b1.germering} {
+	import b1_tls
+	import security_headers
+	import request_limits
+	reverse_proxy grafana:3000 {
+		header_up -X-B1-Compatibility
+	}
+}

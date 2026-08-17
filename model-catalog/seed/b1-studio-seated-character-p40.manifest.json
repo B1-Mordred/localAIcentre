@@ -1,0 +1,106 @@
+{
+  "id": "b1-studio-seated-character-p40",
+  "version": "20260809.1",
+  "display_name": "B1 P40 Native 1280x720 Seated Character",
+  "description": "Scheduler-managed P40 SD 1.5 img2img plus OpenPose ControlNet workflow for a native 1280x720 identity-conditioned seated character plate. The backend is reachable only through the authenticated B1 LAN worker adapter.",
+  "modality": "image",
+  "operations": ["studio-seated-character"],
+  "source": {
+    "type": "catalog",
+    "url": "https://p40-worker.b1.germering:9443/media",
+    "revision": "seated-v1",
+    "sha256": "b9088f83a90d7b4ef11ffdab2aa0447b81e81411a5a6e565719865141017c81d"
+  },
+  "files": [
+    {
+      "path": "comfyui/b1-sd15-pruned-emaonly-comfyui/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/diffusion/checkpoints/sd-v1-5-pruned-emaonly-b1.safetensors",
+      "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa",
+      "size_bytes": 4265146304,
+      "format": "safetensors",
+      "quantization": "fp16"
+    },
+    {
+      "path": "comfyui/lllyasviel-control-v11p-sd15-openpose-comfyui/9ae9f970358db89e211b87c915f9535c6686d5ba/diffusion/controlnet/b1-control-v11p-sd15-openpose-fp16.safetensors",
+      "sha256": "b25b1125e870275550b2a7de289056cb3c236c01c293bd5ba883657b1c006e3e",
+      "size_bytes": 722598642,
+      "format": "safetensors",
+      "quantization": "fp16"
+    },
+    {
+      "path": "comfyui/xuebinqin-u2net-human-seg-matting/rembg-v0.0.0/matting/u2net_human_seg.onnx",
+      "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c",
+      "size_bytes": 175997641,
+      "format": "onnx",
+      "quantization": "fp32"
+    }
+  ],
+  "runtimes": ["lan-p40-media"],
+  "preferred_runtime": "lan-p40-media",
+  "resource_estimate": {
+    "vram_gib": 10.0,
+    "ram_gib": 8.0,
+    "disk_gib": 4.81,
+    "max_resolution": "1280x720",
+    "max_frames": 1
+  },
+  "license": {
+    "name": "B1 internal workflow; Stable Diffusion 1.5 OpenRAIL-M and ControlNet licences apply",
+    "url": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
+    "redistribution": "inference-only",
+    "attribution": "B1 AI Hub, Stable Diffusion 1.5, and lllyasviel ControlNet OpenPose.",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference"],
+  "installation_status": "installed",
+  "aliases": ["studio-seated-character-p40"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "permissions": {
+    "visible_to": ["admin", "operator", "creator", "user", "service"],
+    "installable_by": ["admin"],
+    "downloadable_by": [],
+    "inference_roles": ["admin", "operator", "creator", "user", "service"]
+  },
+  "runtime_adapter_versions": {
+    "lan-p40-media": "p40-media-manager/v0.1.0+comfyui-v0.3.77-cu124-sm61"
+  },
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-08-09T20:04:24+00:00",
+    "source": "B1 lease-protected Pascal CUDA kernel and ComfyUI startup gates on the managed P40 worker; native 1280x720 render pending.",
+    "original_resource_estimate": {
+      "vram_gib": 10.0,
+      "ram_gib": 8.0,
+      "disk_gib": 4.81,
+      "max_resolution": "1280x720",
+      "max_frames": 1
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 10.0,
+      "ram_gib": 8.0,
+      "disk_gib": 4.81,
+      "max_resolution": "1280x720",
+      "max_frames": 1
+    },
+    "runs": [
+      {
+        "id": "p40-comfy-pascal-startup-gate-20260809",
+        "type": "catalog-smoke",
+        "status": "ok",
+        "runtime": "lan-p40-media",
+        "model_alias": "studio-seated-character-p40",
+        "resolved_model_version": "b1-studio-seated-character-p40@20260809.1",
+        "peak_vram_mib": 148,
+        "peak_ram_mib": 0,
+        "hook": {
+          "torch": "2.4.1+cu124",
+          "cuda": "12.4",
+          "compute_capability": "6.1",
+          "comfyui_nodes": 419,
+          "actual_cuda_kernel": "passed",
+          "native_1280x720_render": "pending"
+        }
+      }
+    ]
+  },
+  "deprecation": {"status": "active"}
+}

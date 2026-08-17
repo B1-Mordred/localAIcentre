@@ -1,0 +1,1045 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "integrations" / "comfyui-b1-remote-nodes"))
+
+from comfyui_b1_remote_nodes import nodes  # noqa: E402
+
+
+EXAMPLES_ROOT = ROOT / "integrations" / "comfyui-b1-remote-nodes" / "examples"
+REQUIRED_REMOTE_NODE_CLASSES = (
+    "B1ListModels",
+    "B1SelectModelAlias",
+    "B1ChatText",
+    "B1VisionAnalysis",
+    "B1Embeddings",
+    "B1SubmitMediaJob",
+    "B1TextToImage",
+    "B1ImageToImage",
+    "B1TextToVideo",
+    "B1ImageToVideo",
+    "B1TextToSpeech",
+    "B1SpeechToText",
+    "B1UploadMediaBase64",
+    "B1WaitMediaJob",
+    "B1CancelMediaJob",
+    "B1ListJobArtifacts",
+    "B1DownloadArtifact",
+)
+SECRET_VALUE_PATTERN = re.compile(r"\b(?:b1k_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|b1adm_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_]+)\b")
+FORBIDDEN_WORKFLOW_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "credential",
+    "password",
+    "secret",
+    "token",
+}
+
+
+class FakeResponse:
+    def __init__(self, payload: bytes, headers: dict[str, str] | None = None) -> None:
+        self.payload = payload
+        self.headers = headers or {"content-type": "application/json"}
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+class EnvPatch:
+    def __init__(self, **values: str | None) -> None:
+        self.values = values
+        self.original: dict[str, str | None] = {}
+
+    def __enter__(self) -> None:
+        for key, value in self.values.items():
+            self.original[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        for key, value in self.original.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def staged_reference(kind: str = "image", mime_type: str = "image/png") -> dict[str, Any]:
+    return {
+        "source": "staged_upload",
+        "id": "upload_" + "a" * 32,
+        "field": kind,
+        "kind": kind,
+        "mime_type": mime_type,
+        "filename": f"input.{mime_type.split('/', 1)[1]}",
+        "path": f"inputs/user/upload_{'a' * 32}/{kind}-input.{mime_type.split('/', 1)[1]}",
+        "bytes": 8,
+        "sha256": "b" * 64,
+    }
+
+
+def job_payload(job_id: str = "job_1") -> dict[str, Any]:
+    base = f"/v1/media/jobs/{job_id}"
+    return {
+        "id": job_id,
+        "state": "queued",
+        "links": {
+            "self": base,
+            "events": f"{base}/events",
+            "artifacts": f"{base}/artifacts",
+            "cancel": base,
+        },
+    }
+
+
+def chmod_private(path: Path) -> None:
+    if os.name != "nt":
+        path.chmod(0o600)
+
+
+def chmod_public(path: Path) -> None:
+    if os.name != "nt":
+        path.chmod(0o644)
+
+
+def workflow_secret_findings(value: Any, path: str = "$") -> list[str]:
+    findings: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            text_key = str(key)
+            normalized = text_key.lower().replace("-", "_")
+            if any(fragment in normalized for fragment in FORBIDDEN_WORKFLOW_SECRET_KEYS):
+                findings.append(f"{path}.{text_key}")
+            findings.extend(workflow_secret_findings(child, f"{path}.{text_key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            findings.extend(workflow_secret_findings(child, f"{path}[{index}]"))
+    elif isinstance(value, str) and SECRET_VALUE_PATTERN.search(value):
+        findings.append(path)
+    return findings
+
+
+def workflow_node_types(value: Any) -> set[str]:
+    if not isinstance(value, dict) or not isinstance(value.get("nodes"), list):
+        return set()
+    return {
+        item["type"]
+        for item in value["nodes"]
+        if isinstance(item, dict) and isinstance(item.get("type"), str) and item.get("type")
+    }
+
+
+class ComfyUiRemoteNodesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        original_values = {
+            nodes.CONFIG_FILE_ENV: os.environ.get(nodes.CONFIG_FILE_ENV),
+            nodes.CA_FILE_ENV: os.environ.get(nodes.CA_FILE_ENV),
+            nodes.ALLOW_INSECURE_HTTP_ENV: os.environ.get(nodes.ALLOW_INSECURE_HTTP_ENV),
+            nodes.RESOLVE_HOSTS_ENV: os.environ.get(nodes.RESOLVE_HOSTS_ENV),
+        }
+        os.environ[nodes.CONFIG_FILE_ENV] = ""
+        os.environ.pop(nodes.CA_FILE_ENV, None)
+        os.environ.pop(nodes.ALLOW_INSECURE_HTTP_ENV, None)
+        os.environ.pop(nodes.RESOLVE_HOSTS_ENV, None)
+
+        def restore_environment() -> None:
+            for key, value in original_values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore_environment)
+
+    def patch_attr(self, name: str, value: Any) -> None:
+        original = getattr(nodes, name)
+        setattr(nodes, name, value)
+        self.addCleanup(lambda: setattr(nodes, name, original))
+
+    def test_request_json_uses_configured_unified_api_and_bearer_token(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(request: Any, timeout: int = 0) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["method"] = request.get_method()
+            seen["authorization"] = request.get_header("Authorization")
+            seen["body"] = request.data
+            seen["timeout"] = timeout
+            return FakeResponse(json.dumps({"ok": True}).encode("utf-8"))
+
+        self.patch_attr("urllib", nodes.urllib)
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with EnvPatch(B1_AI_HUB_API_BASE="https://api.test.local/", B1_AI_HUB_API_KEY="b1k_public.secret"):
+            result = nodes.request_json("/v1/models", {"probe": True}, method="POST", timeout_seconds=9)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://api.test.local/v1/models")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["authorization"], "Bearer b1k_public.secret")
+        self.assertEqual(json.loads(seen["body"].decode("utf-8")), {"probe": True})
+        self.assertEqual(seen["timeout"], 9)
+
+    def test_request_json_refuses_http_api_key_without_explicit_opt_in(self) -> None:
+        with EnvPatch(B1_AI_HUB_API_BASE="http://api.test.local", B1_AI_HUB_API_KEY="b1k_public.secret"):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "plain HTTP"):
+                nodes.build_request("/v1/models")
+
+    def test_request_json_allows_http_api_key_only_with_explicit_opt_in(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="http://api.test.local",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_ALLOW_INSECURE_HTTP="true",
+        ):
+            request = nodes.build_request("/v1/models")
+
+        self.assertEqual(request.full_url, "http://api.test.local/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer b1k_public.secret")
+
+    def test_ca_file_can_come_from_environment_or_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_ca = Path(tmp) / "env-root.crt"
+            config_ca = Path(tmp) / "config-root.crt"
+            config_path = Path(tmp) / "config.json"
+            env_ca.write_text("env-ca", encoding="utf-8")
+            config_ca.write_text("config-ca", encoding="utf-8")
+            config_path.write_text(json.dumps({"ca_file": "config-root.crt"}), encoding="utf-8")
+
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_CA_FILE=None):
+                self.assertEqual(nodes.ca_file(), str(config_ca))
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_CA_FILE=str(env_ca)):
+                self.assertEqual(nodes.ca_file(), str(env_ca))
+
+    def test_ca_file_rejects_missing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing-root.crt"
+            with EnvPatch(B1_AI_HUB_CA_FILE=str(missing)):
+                with self.assertRaisesRegex(nodes.B1RemoteNodeError, "B1 CA file is not a file"):
+                    nodes.ca_file()
+
+    def test_request_json_uses_configured_ca_file_for_https(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_create_default_context(*, cafile: str | None = None) -> str:
+            seen["cafile"] = cafile
+            return "ssl-context"
+
+        def fake_urlopen(request: Any, timeout: int = 0, context: Any | None = None) -> FakeResponse:
+            seen["url"] = request.full_url
+            seen["context"] = context
+            seen["timeout"] = timeout
+            return FakeResponse(json.dumps({"ok": True}).encode("utf-8"))
+
+        original_context = nodes.ssl.create_default_context
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.ssl.create_default_context = fake_create_default_context
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.ssl, "create_default_context", original_context))
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_path = Path(tmp) / "root.crt"
+            ca_path.write_text("test-ca", encoding="utf-8")
+            with EnvPatch(
+                B1_AI_HUB_API_BASE="https://api.test.local",
+                B1_AI_HUB_API_KEY="b1k_public.secret",
+                B1_AI_HUB_CA_FILE=str(ca_path),
+            ):
+                result = nodes.request_json("/v1/models", timeout_seconds=7)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://api.test.local/v1/models")
+        self.assertEqual(seen["cafile"], str(ca_path))
+        self.assertEqual(seen["context"], "ssl-context")
+        self.assertEqual(seen["timeout"], 7)
+
+    def test_request_json_can_temporarily_resolve_acceptance_hosts(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_getaddrinfo(
+            host: str | bytes | None,
+            port: str | int | None,
+            family: int = 0,
+            type: int = 0,
+            proto: int = 0,
+            flags: int = 0,
+        ) -> list[tuple[Any, ...]]:
+            seen["resolved_host"] = host
+            seen["resolved_port"] = port
+            return []
+
+        def fake_urlopen(request: Any, timeout: int = 0) -> FakeResponse:
+            seen["url"] = request.full_url
+            nodes.socket.getaddrinfo("api.ai.b1.germering", 443)
+            return FakeResponse(json.dumps({"ok": True}).encode("utf-8"))
+
+        original_getaddrinfo = nodes.socket.getaddrinfo
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.socket.getaddrinfo = fake_getaddrinfo
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.socket, "getaddrinfo", original_getaddrinfo))
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="https://api.ai.b1.germering",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_RESOLVE_HOSTS="api.ai.b1.germering=127.0.0.1",
+        ):
+            result = nodes.request_json("/healthz")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["url"], "https://api.ai.b1.germering/healthz")
+        self.assertEqual(seen["resolved_host"], "127.0.0.1")
+        self.assertEqual(seen["resolved_port"], 443)
+        self.assertIs(nodes.socket.getaddrinfo, fake_getaddrinfo)
+
+    def test_request_json_rejects_invalid_temporary_host_resolution_entries(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_API_BASE="https://api.ai.b1.germering",
+            B1_AI_HUB_API_KEY="b1k_public.secret",
+            B1_AI_HUB_RESOLVE_HOSTS="https://api.ai.b1.germering=127.0.0.1",
+        ):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "must not include schemes or paths"):
+                nodes.request_json("/healthz")
+
+    def test_local_config_file_supplies_api_key_base_download_dir_and_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_config.secret\n", encoding="utf-8")
+            chmod_private(key_path)
+            download_dir = Path(tmp) / "downloads"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "api_base": "http://api.test.local/base/",
+                        "api_key_file": "api-key",
+                        "download_dir": str(download_dir),
+                        "max_data_url_bytes": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with EnvPatch(
+                B1_AI_HUB_CONFIG_FILE=str(config_path),
+                B1_AI_HUB_API_BASE=None,
+                B1_AI_HUB_API_KEY=None,
+                B1_AI_HUB_DOWNLOAD_DIR=None,
+                B1_AI_HUB_MAX_DATA_URL_BYTES=None,
+                B1_AI_HUB_ALLOW_INSECURE_HTTP="true",
+            ):
+                request = nodes.build_request("/v1/models")
+                self.assertEqual(request.full_url, "http://api.test.local/base/v1/models")
+                self.assertEqual(request.get_header("Authorization"), "Bearer b1k_config.secret")
+                self.assertEqual(nodes.configured_download_dir(), download_dir)
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.require_media_reference("data:image/png;base64,QUFB", "image")
+
+    def test_environment_values_override_local_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            config_path.write_text(json.dumps({"api_base": "http://config.test", "api_key": "config-key"}), encoding="utf-8")
+            chmod_public(config_path)
+            with EnvPatch(
+                B1_AI_HUB_CONFIG_FILE=str(config_path),
+                B1_AI_HUB_API_BASE="https://env.test.local/",
+                B1_AI_HUB_API_KEY="b1k_env.secret",
+            ):
+                request = nodes.build_request("/v1/models")
+
+        self.assertEqual(request.full_url, "https://env.test.local/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer b1k_env.secret")
+
+    def test_config_file_can_be_disabled_and_explicit_missing_file_fails(self) -> None:
+        with EnvPatch(
+            B1_AI_HUB_CONFIG_FILE="",
+            B1_AI_HUB_API_BASE=None,
+            B1_AI_HUB_API_KEY=None,
+            B1_AI_HUB_DOWNLOAD_DIR=None,
+        ):
+            self.assertEqual(nodes.api_base(), "https://api.ai.b1.germering")
+            self.assertEqual(nodes.api_key(), "")
+            self.assertEqual(nodes.configured_download_dir(), Path(nodes.DEFAULT_OUTPUT_DIR))
+        with EnvPatch(B1_AI_HUB_CONFIG_FILE="/tmp/b1-ai-hub-missing-config.json", B1_AI_HUB_API_BASE=None):
+            with self.assertRaises(nodes.B1RemoteNodeError):
+                nodes.api_base()
+
+    def test_api_key_file_env_reads_private_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_private(key_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=str(key_path)):
+                self.assertEqual(nodes.api_key(), "b1k_file.secret")
+
+    def test_api_key_file_rejects_group_or_world_accessible_file(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not portable on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_public(key_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=str(key_path)):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
+
+    def test_inline_config_api_key_requires_private_config_file(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not portable on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            config_path.write_text(json.dumps({"api_key": "b1k_inline.secret"}), encoding="utf-8")
+            chmod_public(config_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=None):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
+                chmod_private(config_path)
+                self.assertEqual(nodes.api_key(), "b1k_inline.secret")
+
+    def test_config_rejects_ambiguous_api_key_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "b1-remote-nodes.json"
+            key_path = Path(tmp) / "api-key"
+            key_path.write_text("b1k_file.secret\n", encoding="utf-8")
+            chmod_private(key_path)
+            config_path.write_text(json.dumps({"api_key": "b1k_inline.secret", "api_key_file": str(key_path)}), encoding="utf-8")
+            chmod_private(config_path)
+            with EnvPatch(B1_AI_HUB_CONFIG_FILE=str(config_path), B1_AI_HUB_API_KEY=None, B1_AI_HUB_API_KEY_FILE=None):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_key()
+
+    def test_api_base_rejects_credentials_query_and_non_http_schemes(self) -> None:
+        for value in [
+            "file:///tmp/api",
+            "https://user:pass@api.test.local",
+            "https://api.test.local?token=secret",
+            "https://api.test.local?",
+            "https://api.test.local/#fragment",
+            "https://api.test.local/#",
+            "https://api.test.local/../admin",
+            "https://api.test.local/%2e%2e/admin",
+            "https://api.test.local/base%2Fescape",
+            "https://api.test.local:bad",
+            "https://api.test.local/base\nadmin",
+            "https://api.test.local/base\\admin",
+        ]:
+            with self.subTest(value=value), EnvPatch(B1_AI_HUB_CONFIG_FILE="", B1_AI_HUB_API_BASE=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.api_base()
+
+    def test_request_url_rejects_paths_that_are_not_api_routes(self) -> None:
+        for value in [
+            "v1/models",
+            "https://api.test.local/v1/models",
+            "//api.test.local/v1/models",
+            "/v1/models?token=secret",
+            "/v1/models?",
+            "/v1/models#fragment",
+            "/v1/models#",
+            "/v1/%2e%2e/admin",
+            "/v1/%2Fsecret",
+            "/v1/models%3Ftoken",
+            "/v1/models%23fragment",
+            "/v1/models%00name",
+            "/v1/models%name",
+            "/v1/models%2/name",
+            "/v1/models%zzname",
+            "/v1/models%ffname",
+            "/v1/models\\admin",
+            "/v1/models\nadmin",
+        ]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.request_url(value)
+
+    def test_request_json_rejects_unsafe_path_before_network(self) -> None:
+        called = False
+
+        def fake_urlopen(request: Any, timeout: int = 0) -> FakeResponse:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be called for unsafe B1 API paths")
+
+        original_urlopen = nodes.urllib.request.urlopen
+        nodes.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(nodes.urllib.request, "urlopen", original_urlopen))
+
+        with EnvPatch(B1_AI_HUB_API_BASE="https://api.test.local", B1_AI_HUB_API_KEY="b1k_public.secret"):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "B1 API path"):
+                nodes.request_json("/v1/%2e%2e/admin")
+
+        self.assertFalse(called)
+
+    def test_text_to_speech_calls_unified_audio_endpoint_not_comfyui(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_bytes(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return b"RIFF....WAVEaudio", {"content-type": "audio/wav", "x-b1-placeholder": "false", "x-b1-cpu-audio-engine": "piper"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest, proof_raw = nodes.B1TextToSpeech().run("tts-fast", "hello", "default", runtime_policy="non_comfy_only")
+            self.assertTrue(Path(file_path).is_file())
+
+        self.assertEqual(calls[0]["path"], "/v1/audio/speech")
+        self.assertNotIn("comfy", calls[0]["path"])
+        self.assertEqual(calls[0]["payload"]["model"], "tts-fast")
+        self.assertEqual(calls[0]["payload"]["runtime_policy"], "non_comfy_only")
+        self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
+        self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["source_path"], "/v1/audio/speech")
+        self.assertEqual(proof["byte_count"], byte_count)
+        self.assertEqual(proof["file_sha256"], digest)
+        self.assertTrue(proof["path_within_download_dir"])
+        self.assertTrue(proof["private_file_mode"])
+        self.assertEqual(
+            proof["placeholder_proof"],
+            {"placeholder": False, "cpu_audio_engine": "piper", "placeholder_failure": False, "reasons": []},
+        )
+
+    def test_text_to_speech_download_returns_placeholder_proof(self) -> None:
+        def fake_request_bytes(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            self.assertEqual(path, "/v1/audio/speech")
+            self.assertEqual(payload["model"], "tts-fast")
+            self.assertEqual(payload["runtime_policy"], "non_comfy_only")
+            return b"RIFF....WAVEaudio", {
+                "content-type": "audio/wav",
+                "x-b1-placeholder": "false",
+                "x-b1-cpu-audio-engine": "piper",
+            }
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest, proof = nodes.text_to_speech_download(
+                "tts-fast",
+                "hello",
+                "default",
+                runtime_policy="non_comfy_only",
+                filename="speech.wav",
+            )
+            self.assertTrue(Path(file_path).is_file())
+
+        self.assertEqual(byte_count, len(b"RIFF....WAVEaudio"))
+        self.assertEqual(digest, nodes.hashlib.sha256(b"RIFF....WAVEaudio").hexdigest())
+        self.assertEqual(
+            proof,
+            {"placeholder": False, "cpu_audio_engine": "piper", "placeholder_failure": False, "reasons": []},
+        )
+
+    def test_tts_placeholder_proof_rejects_scaffold_or_unmarked_audio_cpu(self) -> None:
+        explicit_scaffold = nodes.tts_placeholder_proof({"X-B1-Placeholder": "true", "X-B1-Cpu-Audio-Engine": "scaffold"})
+        self.assertTrue(explicit_scaffold["placeholder_failure"])
+        self.assertIn("explicit_placeholder_marker", explicit_scaffold["reasons"])
+        self.assertIn("scaffold_cpu_audio_engine", explicit_scaffold["reasons"])
+
+        unmarked_real_engine = nodes.tts_placeholder_proof({"X-B1-Cpu-Audio-Engine": "piper"})
+        self.assertTrue(unmarked_real_engine["placeholder_failure"])
+        self.assertIn("placeholder_marker_missing", unmarked_real_engine["reasons"])
+        self.assertIn("audio_cpu_non_placeholder_marker_missing", unmarked_real_engine["reasons"])
+
+        unknown_runtime = nodes.tts_placeholder_proof({})
+        self.assertTrue(unknown_runtime["placeholder_failure"])
+        self.assertIn("placeholder_marker_missing", unknown_runtime["reasons"])
+        self.assertIsNone(unknown_runtime["placeholder"])
+        self.assertIsNone(unknown_runtime["cpu_audio_engine"])
+
+    def test_speech_to_text_uses_openai_style_multipart_model_and_file(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"text": "hello", "b1_placeholder": False}
+
+        self.patch_attr("request_json", fake_request_json)
+        text, raw = nodes.B1SpeechToText().run(
+            "stt-default",
+            nodes.base64.b64encode(b"RIFF....WAVEaudio").decode("ascii"),
+            language="en",
+            runtime_policy="non_comfy_only",
+            audio_mime_type="audio/wav",
+            filename="../sample.wav",
+        )
+
+        self.assertEqual(text, "hello")
+        self.assertEqual(json.loads(raw)["text"], "hello")
+        self.assertEqual(calls[0]["path"], "/v1/audio/transcriptions")
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertIsNone(calls[0]["payload"])
+        self.assertNotIn("X-B1-Model", calls[0]["headers"])
+        content_type = calls[0]["headers"]["Content-Type"]
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        body = calls[0]["data"]
+        self.assertIn(b'name="model"\r\n\r\nstt-default\r\n', body)
+        self.assertIn(b'name="language"\r\n\r\nen\r\n', body)
+        self.assertIn(b'name="runtime_policy"\r\n\r\nnon_comfy_only\r\n', body)
+        self.assertIn(b'name="file"; filename="sample.wav"', body)
+        self.assertIn(b"Content-Type: audio/wav", body)
+        self.assertIn(b"RIFF....WAVEaudio", body)
+        self.assertNotIn(b"X-B1-Model", body)
+
+    def test_multipart_builder_rejects_unsafe_names_and_header_values(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.multipart_form_data({"bad\r\nname": "value"}, [])
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.multipart_form_data({}, [("file", "audio.wav", "audio/wav\r\nX-Bad: yes", b"audio")])
+
+    def test_submit_job_node_posts_parsed_input_json(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"id": "job_1", "state": "queued"}
+
+        self.patch_attr("request_json", fake_request_json)
+        job_id, raw = nodes.B1SubmitMediaJob().run("image", "generation", "image-default", "{\"prompt\":\"x\"}")
+
+        self.assertEqual(job_id, "job_1")
+        self.assertEqual(calls[0]["path"], "/v1/media/jobs")
+        self.assertEqual(calls[0]["payload"]["input"], {"prompt": "x"})
+        self.assertEqual(json.loads(raw)["state"], "queued")
+
+    def test_wait_job_polls_until_terminal_state(self) -> None:
+        responses = [{"id": "job_1", "state": "running"}, {"id": "job_1", "state": "completed"}]
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            self.assertEqual(path, "/v1/media/jobs/job_1")
+            return responses.pop(0)
+
+        self.patch_attr("request_json", fake_request_json)
+        self.patch_attr("time", type("FakeTime", (), {"monotonic": staticmethod(lambda: 0), "sleep": staticmethod(lambda seconds: None)})())
+
+        state, raw = nodes.B1WaitMediaJob().run("job_1", 10, 0.25)
+
+        self.assertEqual(state, "completed")
+        self.assertEqual(json.loads(raw)["id"], "job_1")
+
+    def test_job_id_path_segments_are_validated_for_job_routes(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            if kwargs.get("method") == "DELETE":
+                return {"id": "job_1", "state": "cancelled"}
+            if path.endswith("/artifacts"):
+                return {"data": []}
+            return {"id": "job_1", "state": "completed"}
+
+        self.patch_attr("request_json", fake_request_json)
+        self.patch_attr("time", type("FakeTime", (), {"monotonic": staticmethod(lambda: 0), "sleep": staticmethod(lambda seconds: None)})())
+
+        nodes.B1WaitMediaJob().run(" job_1 ", 10, 0.25)
+        nodes.B1CancelMediaJob().run("job_1")
+        nodes.B1ListJobArtifacts().run("job_1")
+
+        self.assertEqual(
+            [call["path"] for call in calls],
+            ["/v1/media/jobs/job_1", "/v1/media/jobs/job_1", "/v1/media/jobs/job_1/artifacts"],
+        )
+
+        for value in ["", "job_1/../../admin", "job_1%2Fsecret", "job_1?x=1", "../job_1", "job_1\nx"]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.B1CancelMediaJob().run(value)
+
+    def test_job_routes_accept_server_links_from_job_json(self) -> None:
+        calls: list[dict[str, Any]] = []
+        linked_job = job_payload()
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            if kwargs.get("method") == "DELETE":
+                return {**linked_job, "state": "cancelled"}
+            if path.endswith("/artifacts"):
+                return {"artifacts": [{"id": "artifact_1", "url": "/artifacts/images/job_1/0.png"}]}
+            return {**linked_job, "state": "completed"}
+
+        self.patch_attr("request_json", fake_request_json)
+        self.patch_attr("time", type("FakeTime", (), {"monotonic": staticmethod(lambda: 0), "sleep": staticmethod(lambda seconds: None)})())
+
+        raw_job = json.dumps(linked_job)
+        state, waited_raw = nodes.B1WaitMediaJob().run(raw_job, 10, 0.25)
+        cancelled_raw = nodes.B1CancelMediaJob().run(raw_job)[0]
+        artifacts_raw = nodes.B1ListJobArtifacts().run(raw_job)[0]
+
+        self.assertEqual(state, "completed")
+        self.assertEqual(json.loads(waited_raw)["links"]["self"], "/v1/media/jobs/job_1")
+        self.assertEqual(json.loads(cancelled_raw)["state"], "cancelled")
+        self.assertEqual(json.loads(artifacts_raw)["artifacts"][0]["id"], "artifact_1")
+        self.assertEqual(
+            [call["path"] for call in calls],
+            ["/v1/media/jobs/job_1", "/v1/media/jobs/job_1", "/v1/media/jobs/job_1/artifacts"],
+        )
+
+    def test_job_routes_accept_valid_internal_routes_and_reject_unsafe_links(self) -> None:
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job_1", "self"), "/v1/media/jobs/job_1")
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job_1/artifacts", "artifacts"), "/v1/media/jobs/job_1/artifacts")
+        self.assertEqual(nodes.media_job_route("/v1/media/jobs/job%2Fone%20two", "self"), "/v1/media/jobs/job%2Fone%20two")
+
+        invalid_jobs = [
+            ({"id": "job_1", "links": {"self": "https://api.ai.b1.germering/v1/media/jobs/job_1"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/job_1?token=secret"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/%2e%2e"}}, "self", ""),
+            ({"id": "job_1", "links": {"self": "/v1/media/jobs/job_1/events"}}, "self", ""),
+            ({"id": "job_1", "links": {"artifacts": "/v1/media/jobs/job_1"}}, "artifacts", "/artifacts"),
+            ({"id": "job_1", "links": {"cancel": 123}}, "cancel", ""),
+            ({"links": {}}, "self", ""),
+        ]
+        for payload, link_name, suffix in invalid_jobs:
+            with self.subTest(payload=payload):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.media_job_route(json.dumps(payload), link_name, suffix)
+
+    def test_artifact_download_rejects_external_url_and_sanitizes_filename(self) -> None:
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            self.assertEqual(path, "/artifacts/runtime/job/0.png")
+            return b"\x89PNG\r\n\x1a\n", {"content-type": "image/png"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1DownloadArtifact().run("https://api.test.local/artifacts/runtime/job/0.png", "bad.png")
+        for value in [
+            "/artifacts/runtime/job/0.png?token=secret",
+            "/artifacts/runtime/job/0.png#fragment",
+            "/artifacts/runtime/../secret.png",
+            "/artifacts/runtime/%2e%2e/secret.png",
+            "/artifacts/runtime/%2Fsecret.png",
+            "/artifacts/runtime/%/secret.png",
+            "/artifacts/runtime/%2/secret.png",
+            "/artifacts/runtime/%zz/secret.png",
+            "/artifacts/runtime/%ffsecret.png",
+        ]:
+            with self.subTest(value=value):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.B1DownloadArtifact().run(value, "bad.png")
+
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest, proof_raw = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            second_path, second_byte_count, second_digest, second_proof_raw = nodes.B1DownloadArtifact().run("/artifacts/runtime/job/0.png", "../../unsafe name.png")
+            first = Path(file_path)
+            second = Path(second_path)
+            self.assertEqual(first.parent, Path(tmp).resolve())
+            self.assertEqual(second.parent, Path(tmp).resolve())
+            self.assertNotEqual(first, second)
+            self.assertFalse(".." in first.name)
+            self.assertFalse(".." in second.name)
+            self.assertIn(digest[:12], second.name)
+            if os.name != "nt":
+                self.assertEqual(first.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(second.stat().st_mode & 0o777, 0o600)
+            proof = json.loads(proof_raw)
+            second_proof = json.loads(second_proof_raw)
+            self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.png")
+            self.assertEqual(proof["relative_path"], first.name)
+            self.assertEqual(proof["file_sha256"], digest)
+            self.assertEqual(second_proof["relative_path"], second.name)
+            self.assertEqual(second_proof["file_sha256"], second_digest)
+
+        self.assertEqual(byte_count, len(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(digest, nodes.hashlib.sha256(b"\x89PNG\r\n\x1a\n").hexdigest())
+        self.assertEqual(second_byte_count, byte_count)
+        self.assertEqual(second_digest, digest)
+
+    def test_artifact_download_accepts_record_json_and_verifies_metadata(self) -> None:
+        content = b"\x89PNG\r\n\x1a\nverified"
+        digest = nodes.hashlib.sha256(content).hexdigest()
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            calls.append({"path": path, **kwargs})
+            return content, {"content-type": "image/png"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        artifact = {
+            "url": "/artifacts/runtime/job/0.png",
+            "filename": "../server result.png",
+            "bytes": len(content),
+            "sha256": digest.upper(),
+        }
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, actual_digest, proof_raw = nodes.B1DownloadArtifact().run(json.dumps(artifact))
+            self.assertEqual(Path(file_path).name, "server_result.png")
+            self.assertEqual(Path(file_path).read_bytes(), content)
+
+        self.assertEqual(calls[0]["path"], "/artifacts/runtime/job/0.png")
+        self.assertEqual(byte_count, len(content))
+        self.assertEqual(actual_digest, digest)
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["expected_bytes"], len(content))
+        self.assertEqual(proof["expected_sha256"], digest)
+        self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.png")
+        self.assertTrue(proof["private_file_mode"])
+
+    def test_artifact_download_accepts_artifact_list_json_by_index(self) -> None:
+        content = b"RIFF....WEBP"
+        digest = nodes.hashlib.sha256(content).hexdigest()
+        seen_paths: list[str] = []
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            seen_paths.append(path)
+            return content, {"content-type": "image/webp"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        artifact_list = {
+            "artifacts": [
+                {"url": "/artifacts/runtime/job/0.png", "bytes": 99, "sha256": "0" * 64},
+                {"path": "runtime/job/1.webp", "bytes": len(content), "sha256": digest},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, actual_digest, proof_raw = nodes.B1DownloadArtifact().run(json.dumps(artifact_list), artifact_index=1)
+
+        self.assertEqual(seen_paths, ["/artifacts/runtime/job/1.webp"])
+        self.assertEqual(byte_count, len(content))
+        self.assertEqual(actual_digest, digest)
+        self.assertEqual(Path(file_path).suffix, ".webp")
+        proof = json.loads(proof_raw)
+        self.assertEqual(proof["source_path"], "/artifacts/runtime/job/1.webp")
+        self.assertEqual(proof["expected_bytes"], len(content))
+        self.assertEqual(proof["expected_sha256"], digest)
+
+        for bad_index in [-1, 2]:
+            with self.subTest(bad_index=bad_index):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.artifact_reference(json.dumps(artifact_list), bad_index)
+
+    def test_artifact_download_rejects_metadata_mismatch_before_writing(self) -> None:
+        content = b"actual content"
+        artifact = {
+            "url": "/artifacts/runtime/job/0.bin",
+            "filename": "result.bin",
+            "bytes": len(content),
+            "sha256": "0" * 64,
+        }
+
+        def fake_request_bytes(path: str, **kwargs: Any) -> tuple[bytes, dict[str, str]]:
+            return content, {"content-type": "application/octet-stream"}
+
+        self.patch_attr("request_bytes", fake_request_bytes)
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "SHA-256 mismatch"):
+                nodes.B1DownloadArtifact().run(json.dumps(artifact))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+            mismatched_size = {**artifact, "sha256": nodes.hashlib.sha256(content).hexdigest(), "bytes": len(content) + 1}
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "size mismatch"):
+                nodes.B1DownloadArtifact().run(json.dumps(mismatched_size))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_file_proof_rechecks_private_file_digest_and_location(self) -> None:
+        content = b"verified content"
+        with tempfile.TemporaryDirectory() as tmp, EnvPatch(B1_AI_HUB_DOWNLOAD_DIR=tmp):
+            file_path, byte_count, digest = nodes.write_download(content, {"content-type": "application/octet-stream"}, "result.bin")
+            proof = nodes.download_file_proof(file_path, byte_count, digest, source_path="/artifacts/runtime/job/0.bin")
+            self.assertEqual(proof["source_path"], "/artifacts/runtime/job/0.bin")
+            self.assertEqual(proof["file_sha256"], digest)
+            self.assertTrue(proof["path_within_download_dir"])
+
+            Path(file_path).write_bytes(b"tampered")
+            with self.assertRaisesRegex(nodes.B1RemoteNodeError, "size mismatch"):
+                nodes.download_file_proof(file_path, byte_count, digest)
+
+    def test_artifact_record_metadata_rejects_unsafe_values(self) -> None:
+        for payload in [
+            {"url": "https://api.test.local/artifacts/runtime/job/0.png"},
+            {"path": "/tmp/local-file.png"},
+            {"url": "/artifacts/runtime/job/0.png", "bytes": True},
+            {"url": "/artifacts/runtime/job/0.png", "bytes": -1},
+            {"url": "/artifacts/runtime/job/0.png", "sha256": ["bad"]},
+        ]:
+            with self.subTest(payload=payload):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.artifact_reference(json.dumps(payload))
+
+    def test_media_references_reject_local_paths(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("/home/user/private.png", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("https://example.test/image.png", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("{\"path\":\"/home/user/private.png\"}", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("/artifacts/images/job/0.png?token=secret", "image")
+        self.assertEqual(nodes.require_media_reference("/artifacts/images/job/0.png", "image"), "/artifacts/images/job/0.png")
+        self.assertEqual(nodes.require_media_reference("data:image/png;base64,AAAA", "image"), "data:image/png;base64,AAAA")
+        reference = staged_reference()
+        self.assertEqual(nodes.require_media_reference(json.dumps(reference), "image"), reference)
+        self.assertEqual(nodes.require_media_reference(json.dumps({"reference": reference, "input": reference}), "image"), reference)
+
+    def test_media_reference_data_urls_must_be_bounded_base64_media(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("data:image/png,not-base64", "image")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.require_media_reference("data:text/plain;base64,AAAA", "image")
+        with EnvPatch(B1_AI_HUB_MAX_DATA_URL_BYTES="2"):
+            with self.assertRaises(nodes.B1RemoteNodeError):
+                nodes.require_media_reference("data:image/png;base64,QUFB", "image")
+
+    def test_staged_media_references_validate_shape_and_media_kind(self) -> None:
+        reference = staged_reference()
+        for key, value in [
+            ("source", "other"),
+            ("id", "upload_bad"),
+            ("path", "inputs/user/upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/../private.png"),
+            ("mime_type", "text/plain"),
+            ("kind", "audio"),
+            ("bytes", 0),
+            ("sha256", "not-a-sha"),
+        ]:
+            invalid = dict(reference)
+            invalid[key] = value
+            with self.subTest(key=key):
+                with self.assertRaises(nodes.B1RemoteNodeError):
+                    nodes.require_media_reference(json.dumps(invalid), "image")
+
+    def test_upload_media_returns_direct_reference_and_full_response(self) -> None:
+        reference = staged_reference()
+        upload = {"input": reference, "reference": reference}
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return upload
+
+        self.patch_attr("request_json", fake_request_json)
+        reference_json, upload_json = nodes.B1UploadMediaBase64().run(
+            "image",
+            "image/png",
+            "../input.png",
+            nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+        )
+
+        self.assertEqual(json.loads(reference_json), reference)
+        self.assertEqual(json.loads(upload_json), upload)
+        self.assertEqual(calls[0]["path"], "/v1/media/uploads")
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["data"], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(calls[0]["headers"]["Content-Type"], "image/png")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Filename"], "input.png")
+
+    def test_upload_media_normalizes_headers_and_rejects_unsafe_values(self) -> None:
+        reference = staged_reference()
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"reference": reference}
+
+        self.patch_attr("request_json", fake_request_json)
+        nodes.B1UploadMediaBase64().run(
+            "image",
+            "IMAGE/PNG; charset=utf-8",
+            "../../unsafe name.png",
+            nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+        )
+
+        self.assertEqual(calls[0]["headers"]["Content-Type"], "image/png")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Filename"], "unsafe_name.png")
+
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("bad\r\nfield", "image/png", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "image/png\r\nX-Bad: yes", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "text/plain", "input.png", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("media", "application/octet-stream", "input.bin", "AAAA")
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run("image", "image/bmp", "input.bmp", "AAAA")
+
+    def test_upload_media_validates_custom_field_response_kind_from_mime(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_request_json(path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"path": path, "payload": payload, **kwargs})
+            return {"reference": staged_reference(kind="image", mime_type="image/webp")}
+
+        self.patch_attr("request_json", fake_request_json)
+        reference_json, _ = nodes.B1UploadMediaBase64().run(
+            "source_image",
+            "image/webp",
+            "input.webp",
+            nodes.base64.b64encode(b"RIFFxxxxWEBP").decode("ascii"),
+        )
+        self.assertEqual(json.loads(reference_json)["kind"], "image")
+        self.assertEqual(calls[0]["headers"]["X-B1-Field"], "source_image")
+
+        self.patch_attr("request_json", lambda *args, **kwargs: {"reference": staged_reference(kind="audio", mime_type="audio/wav")})
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1UploadMediaBase64().run(
+                "source_image",
+                "image/png",
+                "input.png",
+                nodes.base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii"),
+            )
+
+    def test_image_to_image_submits_staged_reference_object(self) -> None:
+        reference = staged_reference()
+        calls: list[dict[str, Any]] = []
+
+        def fake_submit_media_job(modality: str, operation: str, model: str, input_payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            calls.append({"modality": modality, "operation": operation, "model": model, "input": input_payload, **kwargs})
+            return {"id": "job_1", "state": "queued"}
+
+        self.patch_attr("submit_media_job", fake_submit_media_job)
+        job_id, raw = nodes.B1ImageToImage().run("image-edit", "repair", json.dumps({"reference": reference}))
+
+        self.assertEqual(job_id, "job_1")
+        self.assertEqual(json.loads(raw)["state"], "queued")
+        self.assertEqual(calls[0]["modality"], "image")
+        self.assertEqual(calls[0]["operation"], "edit")
+        self.assertEqual(calls[0]["input"]["image"], reference)
+
+    def test_vision_analysis_rejects_staged_json_reference(self) -> None:
+        with self.assertRaises(nodes.B1RemoteNodeError):
+            nodes.B1VisionAnalysis().run("vision-default", "describe", json.dumps(staged_reference()))
+
+    def test_example_workflows_cover_required_node_surface_without_credentials(self) -> None:
+        workflow_files = sorted(EXAMPLES_ROOT.glob("*.json"))
+        self.assertGreaterEqual(len(workflow_files), 1)
+        node_types: set[str] = set()
+        secret_findings: list[str] = []
+        for path in workflow_files:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            node_types.update(workflow_node_types(payload))
+            secret_findings.extend(f"{path.name}:{finding}" for finding in workflow_secret_findings(payload))
+
+        self.assertFalse(secret_findings)
+        self.assertEqual(sorted(set(REQUIRED_REMOTE_NODE_CLASSES) - node_types), [])
+
+    def test_required_node_classes_are_registered(self) -> None:
+        for name in REQUIRED_REMOTE_NODE_CLASSES:
+            self.assertIn(name, nodes.NODE_CLASS_MAPPINGS)
+            self.assertIn(name, nodes.NODE_DISPLAY_NAME_MAPPINGS)
+        self.assertEqual(nodes.B1TextToSpeech.RETURN_NAMES, ("file_path", "bytes", "sha256", "proof_json"))
+        self.assertEqual(nodes.B1DownloadArtifact.RETURN_NAMES, ("file_path", "bytes", "sha256", "proof_json"))
+
+
+if __name__ == "__main__":
+    unittest.main()

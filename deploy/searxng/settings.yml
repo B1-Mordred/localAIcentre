@@ -1,0 +1,16 @@
+use_default_settings: true
+
+general:
+  instance_name: B1 AI Hub Search
+
+server:
+  bind_address: 0.0.0.0
+  port: 8080
+  secret_key: b1-ai-hub-internal-search-only
+  limiter: false
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json

@@ -1,0 +1,88 @@
+{
+  "id": "b1-qwen2.5-0.5b-instruct-q4-k-m",
+  "version": "9217f5db79a29953eb74d5343926648285ec7e67",
+  "display_name": "Qwen2.5 0.5B Instruct GGUF Q4_K_M",
+  "description": "Small pinned LocalAI chat model for proving the RTX 3060 6 GB production profile. It is intentionally not the final quality recommendation; it establishes the managed LocalAI, scheduler, and model-smoke path with a real GGUF.",
+  "modality": "llm",
+  "operations": ["chat"],
+  "source": {
+    "type": "huggingface",
+    "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "revision": "9217f5db79a29953eb74d5343926648285ec7e67"
+  },
+  "files": [
+    {
+      "path": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+      "size_bytes": 491400032,
+      "format": "gguf",
+      "quantization": "Q4_K_M"
+    }
+  ],
+  "runtimes": ["localai"],
+  "preferred_runtime": "localai",
+  "resource_estimate": {
+    "vram_gib": 1.2,
+    "ram_gib": 3.0,
+    "disk_gib": 0.46,
+    "context_tokens": 4096
+  },
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "redistribution": "downloadable",
+    "attribution": "Qwen Team, Qwen2.5-0.5B-Instruct-GGUF",
+    "acceptance_required": false
+  },
+  "execution_modes": ["hosted-inference", "downloadable"],
+  "installation_status": "available",
+  "aliases": ["chat-default", "chat-fast"],
+  "visibility_roles": ["admin", "operator", "creator", "user", "service"],
+  "runtime_adapter_versions": {
+    "localai": "b1-runtime-adapter/v1alpha1"
+  },
+  "runtime_smoke": {
+    "schema": "b1-ai-hub-runtime-smoke/v1",
+    "description": "Tiny non-streaming LocalAI chat completion through the generated LocalAI GGUF config.",
+    "localai": {
+      "request": {
+        "path": "/v1/chat/completions",
+        "method": "POST"
+      },
+      "timeout_seconds": 300
+    }
+  },
+  "measurements": {
+    "schema": "b1-ai-hub-model-measurements/v1",
+    "updated_at": "2026-07-26T21:00:00+00:00",
+    "source": "catalog seed from pinned Hugging Face metadata and LocalAI config generation; live RTX smoke required before handoff",
+    "original_resource_estimate": {
+      "vram_gib": 1.2,
+      "ram_gib": 3.0,
+      "disk_gib": 0.46,
+      "context_tokens": 4096
+    },
+    "latest_resource_estimate": {
+      "vram_gib": 1.2,
+      "ram_gib": 3.0,
+      "disk_gib": 0.46,
+      "context_tokens": 4096
+    },
+    "runs": [
+      {
+        "id": "qwen2.5-0.5b-q4-k-m-catalog-metadata-20260726",
+        "type": "catalog-metadata",
+        "status": "ok",
+        "runtime": "localai",
+        "model_alias": "chat-default",
+        "resolved_model_version": "b1-qwen2.5-0.5b-instruct-q4-k-m@9217f5db79a29953eb74d5343926648285ec7e67",
+        "peak_vram_mib": 1229,
+        "peak_ram_mib": 3072,
+        "hook": {
+          "status": "unconfirmed",
+          "reason": "catalog_metadata_not_runtime_smoke"
+        }
+      }
+    ]
+  }
+}
