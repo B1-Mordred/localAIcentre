@@ -31,6 +31,8 @@ Reasoning-capable B1 models must keep their structured reasoning visible in Open
   Evidence: The repository's dependency-complete quality container subsequently ran the full suite successfully: 1,634 tests passed and 2 were skipped.
 - Observation: The live internal model dictionary keeps merged capabilities under `info.meta.capabilities`, in addition to the API response's top-level and nested representations.
   Evidence: A real saved-format Laguna search completed two tool calls but still omitted reasoning after the first deployment; the original gate did not inspect the internal `info.meta` location used throughout OpenWebUI's tool code.
+- Observation: Laguna's pinned GLM template emits structured reasoning without tool definitions, but suppresses `reasoning_content` whenever OpenWebUI's native web tools are attached; DeepSeek is unaffected.
+  Evidence: The same difficult coding prompt returned 2,438 structured reasoning characters without tools and zero with a native search tool. A managed B1 search loop completed successfully but discarded intermediate Laguna reasoning from its final response.
 
 ## Decision Log
 
@@ -40,6 +42,9 @@ Reasoning-capable B1 models must keep their structured reasoning visible in Open
 - Decision: Patch the pinned managed OpenWebUI image at build time using an idempotent, anchor-checked script.
   Rationale: The deployment already carries B1-owned build-time patches; this remains reproducible and fails the image build if upstream v0.11.0 changes incompatibly.
   Date/Author: 2026-08-16 / Codex
+- Decision: For the `laguna_glm_thinking_v8` capability only, omit OpenWebUI-native web definitions and use B1's existing managed current-information loop; carry Laguna's intermediate reasoning into that loop's final response.
+  Rationale: Ordinary Laguna turns regain structured reasoning, current-information turns retain automatic managed web access and reasoning, while DeepSeek and every other model keep their native streaming tools unchanged.
+  Date/Author: 2026-08-17 / Codex
 
 ## Outcomes & Retrospective
 
@@ -98,3 +103,5 @@ Plan updated 2026-08-16 after the capability-gated build-time patch and focused 
 Plan updated 2026-08-16 after the exact OpenWebUI image build and dependency-complete repository quality gate passed.
 
 Plan updated 2026-08-17 after the first live tool loop exposed the internal `info.meta.capabilities` representation and the gate was extended without changing its explicit-capability requirement.
+
+Plan updated 2026-08-17 after controlled native-tool/no-tool comparisons isolated Laguna's template interaction and selected the B1-managed fallback.

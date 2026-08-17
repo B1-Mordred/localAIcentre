@@ -6,9 +6,18 @@ from pathlib import Path
 MIDDLEWARE_PATH = Path("/app/backend/open_webui/utils/middleware.py")
 FEATURES_ANCHOR = "    features = form_data.pop('features', None) or {}\n"
 MANAGED_WEB_DEFAULT = '''    # B1 exposes search/fetch through private SearXNG and Firecrawl services.
-    # Make that capability available in every browser chat; the model still
-    # decides whether a web tool is relevant to the current turn.
-    if os.getenv('B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}:
+    # Laguna's pinned GLM template cannot preserve structured reasoning while
+    # native tool definitions are present. Let B1's managed current-information
+    # policy execute search/fetch for that template; all other models retain
+    # OpenWebUI's native streaming tools.
+    model_capabilities = (model.get('info', {}).get('meta', {}).get('capabilities') or {})
+    use_b1_managed_web_fallback = (
+        model_capabilities.get('chat_template') == 'laguna_glm_thinking_v8'
+        and model_capabilities.get('reasoning_content') is True
+    )
+    if use_b1_managed_web_fallback:
+        features.pop('web_search', None)
+    elif os.getenv('B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}:
         features['web_search'] = True
 '''
 

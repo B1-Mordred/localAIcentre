@@ -19,13 +19,13 @@ def load_patcher():
 
 
 class OpenWebUIManagedWebDefaultsTests(unittest.TestCase):
-    def test_patch_enables_web_search_for_every_ui_request_and_is_idempotent(self) -> None:
+    def test_patch_keeps_native_web_tools_for_compatible_models_and_is_idempotent(self) -> None:
         patcher = load_patcher()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "middleware.py"
             path.write_text(
                 "import os\n\n"
-                "async def process(form_data):\n"
+                "async def process(form_data, model):\n"
                 "    features = form_data.pop('features', None) or {}\n"
                 "    return features\n",
                 encoding="utf-8",
@@ -38,7 +38,56 @@ class OpenWebUIManagedWebDefaultsTests(unittest.TestCase):
         self.assertEqual(source.count("B1_OPEN_WEBUI_DEFAULT_WEB_ACCESS"), 1)
         self.assertIn("features['web_search'] = True", source)
         self.assertLess(source.index("features = form_data.pop"), source.index("features['web_search'] = True"))
-        compile(source, str(path), "exec")
+        namespace: dict[str, object] = {}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        import asyncio
+
+        process = namespace["process"]
+        deepseek = {
+            "info": {
+                "meta": {
+                    "capabilities": {
+                        "chat_template": "unsloth_deepseek4_e643c31fcec17f34",
+                        "reasoning_content": True,
+                    }
+                }
+            }
+        }
+        ordinary = {"info": {"meta": {"capabilities": {}}}}
+        self.assertEqual(asyncio.run(process({}, deepseek)), {"web_search": True})
+        self.assertEqual(asyncio.run(process({}, ordinary)), {"web_search": True})
+
+    def test_patch_routes_laguna_web_access_through_b1_managed_fallback(self) -> None:
+        patcher = load_patcher()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "middleware.py"
+            path.write_text(
+                "import os\n\n"
+                "async def process(form_data, model):\n"
+                "    features = form_data.pop('features', None) or {}\n"
+                "    return features\n",
+                encoding="utf-8",
+            )
+            patcher.patch_managed_web_defaults(path)
+            namespace: dict[str, object] = {}
+            exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+
+        import asyncio
+
+        laguna = {
+            "info": {
+                "meta": {
+                    "capabilities": {
+                        "chat_template": "laguna_glm_thinking_v8",
+                        "reasoning_content": True,
+                    }
+                }
+            }
+        }
+        process = namespace["process"]
+        self.assertEqual(asyncio.run(process({}, laguna)), {})
+        self.assertEqual(asyncio.run(process({"features": {"web_search": True}}, laguna)), {})
 
     def test_patch_fails_closed_when_upstream_anchor_changes(self) -> None:
         patcher = load_patcher()

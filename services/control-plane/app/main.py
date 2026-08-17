@@ -5943,6 +5943,7 @@ async def _call_chat_with_b1_tools_under_lease(
     enabled_tool_set = set(requested_tools)
     seen_tool_signatures: set[tuple[str, str]] = set()
     executed_results: list[dict[str, Any]] = []
+    reasoning_traces: list[str] = []
     for iteration in range(payload.b1_tool_max_iterations):
         response: JSONResponse | None = None
         # LocalAI may briefly return 502/503/504 while replacing its single
@@ -5969,6 +5970,10 @@ async def _call_chat_with_b1_tools_under_lease(
             return response
         body = json_response_body(response)
         assistant_message, tool_calls = first_chat_message_tool_calls(body)
+        if isinstance(assistant_message, dict):
+            reasoning_content = assistant_message.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content.strip():
+                reasoning_traces.append(reasoning_content)
         if not tool_calls and assistant_message is not None:
             text_tool_call = parse_b1_text_tool_call(assistant_message.get("content"), enabled_tool_set)
             if text_tool_call is not None:
@@ -6005,6 +6010,7 @@ async def _call_chat_with_b1_tools_under_lease(
                     )
                 response = retry
                 response.headers["X-B1-GPT-OSS-Final-Retry"] = "1"
+            response = preserve_laguna_tool_loop_reasoning(response, resolution, reasoning_traces)
             response.headers["X-B1-Tool-Iterations"] = str(iteration)
             response.headers["X-B1-Tools"] = ",".join(requested_tools)
             return response
@@ -6333,6 +6339,33 @@ def normalize_laguna_reasoning_response(body: Any, resolution: RuntimeResolution
         if reasoning and reasoning != final and not message.get("reasoning_content"):
             message["reasoning_content"] = reasoning
     return body
+
+
+def preserve_laguna_tool_loop_reasoning(
+    response: JSONResponse,
+    resolution: RuntimeResolution,
+    reasoning_traces: list[str],
+) -> JSONResponse:
+    """Attach Laguna's intermediate tool reasoning to the completed answer."""
+    model_hint = f"{getattr(resolution, 'model_id', '')} {resolution.resolved_model_version}".lower()
+    traces = [trace.strip() for trace in reasoning_traces if isinstance(trace, str) and trace.strip()]
+    if "laguna" not in model_hint or not traces or response.status_code >= 400:
+        return response
+    body = json_response_body(response)
+    choices = body.get("choices") if isinstance(body, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+    message = first.get("message") if isinstance(first, dict) else None
+    if not isinstance(message, dict):
+        return response
+    existing = message.get("reasoning_content")
+    combined = [*traces, *(([existing.strip()] if isinstance(existing, str) and existing.strip() else []))]
+    message["reasoning_content"] = "\n\n".join(dict.fromkeys(combined))
+    safe_headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() not in {"content-length", "content-type"}
+    }
+    return JSONResponse(status_code=response.status_code, content=body, headers=safe_headers)
 
 
 async def call_openai_runtime_json(

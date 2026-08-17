@@ -664,6 +664,24 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["choices"][0]["message"]["content"], "Final answer")
         self.assertEqual(normalized["choices"][0]["message"]["reasoning_content"], "Inspect the source.")
 
+    def test_laguna_completed_tool_loop_retains_intermediate_reasoning_only_for_laguna(self) -> None:
+        response = JSONResponse({"choices": [{"message": {"role": "assistant", "content": "Verified answer."}}]})
+        laguna = SimpleNamespace(model_id="poolside-laguna-s", resolved_model_version="laguna@v1")
+        preserved = main.preserve_laguna_tool_loop_reasoning(
+            response,
+            laguna,
+            ["Choose a search query.", "Inspect the fetched source."],
+        )
+        body = json.loads(preserved.body.decode("utf-8"))
+        self.assertEqual(
+            body["choices"][0]["message"]["reasoning_content"],
+            "Choose a search query.\n\nInspect the fetched source.",
+        )
+
+        deepseek = SimpleNamespace(model_id="deepseek-v4", resolved_model_version="deepseek@v1")
+        unchanged = main.preserve_laguna_tool_loop_reasoning(response, deepseek, ["Do not attach this."])
+        self.assertIs(unchanged, response)
+
     def test_open_webui_output_history_is_normalized_for_chat_runtimes(self) -> None:
         messages = main.normalize_open_webui_chat_messages(
             [
@@ -953,14 +971,20 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(lambda: setattr(main, "execute_b1_tool_call", original_execute))
 
         payload = main.ChatCompletionRequest(
-            model="chat-default",
+            model="laguna-s-quality",
             messages=[{"role": "user", "content": "Check the source."}],
             b1_tools=["web_fetch"],
         )
-        await main.call_chat_with_b1_tools(
+        response = await main.call_chat_with_b1_tools(
             payload,
             main.strip_b1_chat_fields(payload.model_dump(exclude_none=True)),
-            SimpleNamespace(runtime="localai", resolved_model_version="model@v1", public_alias="chat-default"),
+            SimpleNamespace(
+                runtime="lan-localai-worker",
+                model_id="poolside-laguna-s",
+                resolved_model_version="laguna@v1",
+                public_alias="laguna-s-quality",
+                requires_gpu=False,
+            ),
             ["web_fetch"],
             model_tools.ModelToolRegistry(model_tools.ModelToolSettings(allowed_tools=("web_fetch",))),
             owner_id="user_1",
@@ -977,6 +1001,11 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Verified source text", tool["content"])
         self.assertEqual(calls[1]["messages"][-3]["reasoning_content"], "I should fetch the source before answering.")
         self.assertEqual(calls[1]["messages"][-2]["tool_call_id"], "call_1")
+        final_body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(
+            final_body["choices"][0]["message"]["reasoning_content"],
+            "I should fetch the source before answering.",
+        )
 
     async def test_chat_tool_loop_replaces_client_tools_with_b1_tool_allowlist(self) -> None:
         calls: list[dict[str, object]] = []
