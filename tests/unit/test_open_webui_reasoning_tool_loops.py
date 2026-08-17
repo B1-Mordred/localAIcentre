@@ -49,6 +49,23 @@ class OpenWebUIReasoningToolLoopTests(unittest.TestCase):
         self.assertEqual(
             get_reasoning_format(
                 {
+                    "id": "laguna-s-quality",
+                    "provider": "",
+                    "info": {
+                        "meta": {
+                            "capabilities": {
+                                "reasoning_content": True,
+                                "tool_calls": True,
+                            }
+                        }
+                    },
+                }
+            ),
+            "reasoning_content",
+        )
+        self.assertEqual(
+            get_reasoning_format(
+                {
                     "id": "deepseek-quality",
                     "provider": "openai",
                     "openai": {"capabilities": {"reasoning_content": True}},
@@ -75,6 +92,15 @@ class OpenWebUIReasoningToolLoopTests(unittest.TestCase):
                     "id": "chat-default",
                     "provider": "openai",
                     "capabilities": {"reasoning_content": False},
+                }
+            )
+        )
+        self.assertIsNone(
+            get_reasoning_format(
+                {
+                    "id": "chat-default",
+                    "provider": "openai",
+                    "info": {"meta": {"capabilities": {"reasoning_content": False}}},
                 }
             )
         )

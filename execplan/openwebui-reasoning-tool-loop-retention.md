@@ -29,6 +29,8 @@ Reasoning-capable B1 models must keep their structured reasoning visible in Open
   Evidence: `get_reasoning_format()` returns `None` for B1's OpenAI-compatible connection even though B1's model record explicitly advertises `capabilities.reasoning_content=true`.
 - Observation: The host `make validate` environment is not a valid full-suite runner because its Python 3.14 environment lacks backend dependencies such as httpx, Starlette, AnyIO, and OpenCV.
   Evidence: The repository's dependency-complete quality container subsequently ran the full suite successfully: 1,634 tests passed and 2 were skipped.
+- Observation: The live internal model dictionary keeps merged capabilities under `info.meta.capabilities`, in addition to the API response's top-level and nested representations.
+  Evidence: A real saved-format Laguna search completed two tool calls but still omitted reasoning after the first deployment; the original gate did not inspect the internal `info.meta` location used throughout OpenWebUI's tool code.
 
 ## Decision Log
 
@@ -94,3 +96,5 @@ Plan created 2026-08-16 after direct SSE, tool-continuation, and saved-output in
 Plan updated 2026-08-16 after the capability-gated build-time patch and focused tests were implemented.
 
 Plan updated 2026-08-16 after the exact OpenWebUI image build and dependency-complete repository quality gate passed.
+
+Plan updated 2026-08-17 after the first live tool loop exposed the internal `info.meta.capabilities` representation and the gate was extended without changing its explicit-capability requirement.

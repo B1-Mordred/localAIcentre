@@ -37,15 +37,23 @@ FUNCTION_REPLACEMENT = '''def get_reasoning_format(model: dict) -> str | None:
         return 'reasoning_content'
 
     # B1 is exposed to OpenWebUI as an OpenAI-compatible provider. Its model
-    # records retain the upstream capability object both at the merged model
-    # level and in the nested ``openai`` record. Honor only the explicit
-    # structured-reasoning contract so ordinary OpenAI-compatible models keep
-    # the strict-provider behavior above.
-    capabilities = model.get('capabilities')
-    if not isinstance(capabilities, dict):
-        upstream = model.get('openai')
-        capabilities = upstream.get('capabilities') if isinstance(upstream, dict) else None
-    if isinstance(capabilities, dict) and capabilities.get('reasoning_content') is True:
+    # records retain the upstream capability object in the merged model, the
+    # nested ``openai`` record, or OpenWebUI's internal ``info.meta`` record.
+    # Honor only the explicit structured-reasoning contract so ordinary
+    # OpenAI-compatible models keep the strict-provider behavior above.
+    capability_sets = [model.get('capabilities')]
+    upstream = model.get('openai')
+    if isinstance(upstream, dict):
+        capability_sets.append(upstream.get('capabilities'))
+    info = model.get('info')
+    if isinstance(info, dict):
+        meta = info.get('meta')
+        if isinstance(meta, dict):
+            capability_sets.append(meta.get('capabilities'))
+    if any(
+        isinstance(capabilities, dict) and capabilities.get('reasoning_content') is True
+        for capabilities in capability_sets
+    ):
         return 'reasoning_content'
     return None
 '''
