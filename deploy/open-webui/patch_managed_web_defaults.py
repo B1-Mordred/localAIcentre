@@ -10,10 +10,20 @@ MANAGED_WEB_DEFAULT = '''    # B1 exposes search/fetch through private SearXNG a
     # native tool definitions are present. Let B1's managed current-information
     # policy execute search/fetch for that template; all other models retain
     # OpenWebUI's native streaming tools.
-    model_capabilities = (model.get('info', {}).get('meta', {}).get('capabilities') or {})
-    use_b1_managed_web_fallback = (
-        model_capabilities.get('chat_template') == 'laguna_glm_thinking_v8'
-        and model_capabilities.get('reasoning_content') is True
+    capability_sets = [model.get('capabilities')]
+    upstream = model.get('openai')
+    if isinstance(upstream, dict):
+        capability_sets.append(upstream.get('capabilities'))
+    info = model.get('info')
+    if isinstance(info, dict):
+        meta = info.get('meta')
+        if isinstance(meta, dict):
+            capability_sets.append(meta.get('capabilities'))
+    use_b1_managed_web_fallback = any(
+        isinstance(capabilities, dict)
+        and capabilities.get('chat_template') == 'laguna_glm_thinking_v8'
+        and capabilities.get('reasoning_content') is True
+        for capabilities in capability_sets
     )
     if use_b1_managed_web_fallback:
         features.pop('web_search', None)

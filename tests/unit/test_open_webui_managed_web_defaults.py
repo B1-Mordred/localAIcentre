@@ -75,7 +75,7 @@ class OpenWebUIManagedWebDefaultsTests(unittest.TestCase):
 
         import asyncio
 
-        laguna = {
+        laguna_internal = {
             "info": {
                 "meta": {
                     "capabilities": {
@@ -85,9 +85,23 @@ class OpenWebUIManagedWebDefaultsTests(unittest.TestCase):
                 }
             }
         }
+        laguna_live = {
+            "capabilities": {
+                "chat_template": "laguna_glm_thinking_v8",
+                "reasoning_content": True,
+            },
+            "openai": {
+                "capabilities": {
+                    "chat_template": "laguna_glm_thinking_v8",
+                    "reasoning_content": True,
+                }
+            },
+        }
+        laguna_upstream_only = {"openai": laguna_live["openai"]}
         process = namespace["process"]
-        self.assertEqual(asyncio.run(process({}, laguna)), {})
-        self.assertEqual(asyncio.run(process({"features": {"web_search": True}}, laguna)), {})
+        for laguna in (laguna_internal, laguna_live, laguna_upstream_only):
+            self.assertEqual(asyncio.run(process({}, laguna)), {})
+            self.assertEqual(asyncio.run(process({"features": {"web_search": True}}, laguna)), {})
 
     def test_patch_fails_closed_when_upstream_anchor_changes(self) -> None:
         patcher = load_patcher()
