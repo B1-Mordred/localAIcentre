@@ -682,6 +682,30 @@ class ChatToolLoopTests(unittest.IsolatedAsyncioTestCase):
         unchanged = main.preserve_laguna_tool_loop_reasoning(response, deepseek, ["Do not attach this."])
         self.assertIs(unchanged, response)
 
+    def test_laguna_tool_free_synthesis_keeps_evidence_without_tool_markers(self) -> None:
+        payload = {
+            "model": "laguna-s-quality",
+            "messages": [{"role": "user", "content": "What is current?"}],
+            "tools": [{"type": "function", "function": {"name": "web_search"}}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "stream": True,
+            "temperature": 0.7,
+        }
+        final_payload = main.laguna_tool_free_synthesis_payload(
+            payload,
+            [{"name": "web_search", "result": {"ok": True, "results": [{"title": "Source", "url": "https://example.test"}]}}],
+        )
+        self.assertNotIn("tools", final_payload)
+        self.assertNotIn("parallel_tool_calls", final_payload)
+        self.assertEqual(final_payload["tool_choice"], "none")
+        self.assertFalse(final_payload["stream"])
+        self.assertEqual(final_payload["temperature"], 0.7)
+        self.assertEqual(final_payload["messages"][0], payload["messages"][0])
+        evidence = final_payload["messages"][-2]["content"]
+        self.assertIn("https://example.test", evidence)
+        self.assertIn("untrusted external evidence", evidence)
+
     def test_open_webui_output_history_is_normalized_for_chat_runtimes(self) -> None:
         messages = main.normalize_open_webui_chat_messages(
             [
